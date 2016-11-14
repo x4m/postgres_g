@@ -685,6 +685,13 @@ gistdoinsert(Relation r, IndexTuple itup, Size freespace, GISTSTATE *giststate)
 			GISTInsertStack *item;
 			OffsetNumber downlinkoffnum;
 
+
+
+			if(GistPageCanStoreLazy(stack->page, itup))
+			{
+
+			}
+
 			downlinkoffnum = gistchoose(state.r, stack->page, itup, giststate);
 			iid = PageGetItemId(stack->page, downlinkoffnum);
 			idxtuple = (IndexTuple) PageGetItem(stack->page, iid);
@@ -825,12 +832,13 @@ gistdoinsert(Relation r, IndexTuple itup, Size freespace, GISTSTATE *giststate)
 							InvalidOffsetNumber);
 			LockBuffer(stack->buffer, GIST_UNLOCK);
 
-			/* Release any pins we might still hold before exiting */
-			for (; stack; stack = stack->parent)
-				ReleaseBuffer(stack->buffer);
+
 			break;
 		}
 	}
+	/* Release any pins we might still hold before exiting */
+				for (; stack; stack = stack->parent)
+					ReleaseBuffer(stack->buffer);
 }
 
 /*

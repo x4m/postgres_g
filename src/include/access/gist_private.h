@@ -320,6 +320,7 @@ typedef struct
 #define  GistTupleIsInvalid(itup)	( ItemPointerGetOffsetNumber( &((itup)->t_tid) ) == TUPLE_IS_INVALID )
 #define  GistTupleSetValid(itup)	ItemPointerSetOffsetNumber( &((itup)->t_tid), TUPLE_IS_VALID )
 
+#define GistPageCanStoreLazy(page,itup) ((int) ((PageHeader) page)->pd_upper - (int) ((PageHeader) page)->pd_lower - IndexTupleSize(itup) > 1024)
 
 
 
