@@ -885,7 +885,11 @@ gistdoinsertloop(Relation r, IndexTuple itup, Size freespace, GISTSTATE *giststa
 
 	/* Release any pins we might still hold before exiting */
 				for (; stack; stack = stack->parent)
-					ReleaseBuffer(stack->buffer);
+					{
+						ReleaseBuffer(stack->buffer);
+						if(stack == givenstack)
+							break;
+					}
 }
 
 /*
