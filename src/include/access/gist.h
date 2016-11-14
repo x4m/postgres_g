@@ -125,12 +125,13 @@ typedef struct GISTENTRY
 	Page		page;
 	OffsetNumber offset;
 	bool		leafkey;
+	bool		leafpage;
 } GISTENTRY;
 
 #define GistPageGetOpaque(page) ( (GISTPageOpaque) PageGetSpecialPointer(page) )
 
 #define GistPageIsLeaf(page)	( GistPageGetOpaque(page)->flags & F_LEAF)
-#define GIST_LEAF(entry) (GistPageIsLeaf((entry)->page))
+#define GIST_LEAF(entry) (((entry)->leafpage))
 
 #define GistPageIsDeleted(page) ( GistPageGetOpaque(page)->flags & F_DELETED)
 #define GistPageSetDeleted(page)	( GistPageGetOpaque(page)->flags |= F_DELETED)
@@ -168,6 +169,6 @@ typedef struct
  */
 #define gistentryinit(e, k, r, pg, o, l) \
 	do { (e).key = (k); (e).rel = (r); (e).page = (pg); \
-		 (e).offset = (o); (e).leafkey = (l); } while (0)
+		 (e).offset = (o); (e).leafkey = (l); (e).leafpage = (pg) && GistPageIsLeaf(pg);} while (0)
 
 #endif   /* GIST_H */

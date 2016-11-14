@@ -520,7 +520,7 @@ extern OffsetNumber gistchoose(Relation r, Page p,
 extern void GISTInitBuffer(Buffer b, uint32 f);
 extern void gistdentryinit(GISTSTATE *giststate, int nkey, GISTENTRY *e,
 			   Datum k, Relation r, Page pg, OffsetNumber o,
-			   bool l, bool isNull);
+			   bool l, bool isNull, bool lazy);
 
 extern float gistpenalty(GISTSTATE *giststate, int attno,
 			GISTENTRY *key1, bool isNull1,
