@@ -438,6 +438,9 @@ gistchoose(Relation r, Page p, IndexTuple it,	/* it has compressed entry */
 		bool		zero_penalty;
 		int			j;
 
+		if(GistTupleIsLazy(itup))
+			continue;
+
 		zero_penalty = true;
 
 		/* Loop over index attributes. */
@@ -563,7 +566,14 @@ gistdentryinit(GISTSTATE *giststate, int nkey, GISTENTRY *e,
 		}
 	}
 	else
+	{
 		gistentryinit(*e, (Datum) 0, r, pg, o, l);
+
+		if(lazy)
+		{
+			e->leafpage = false;
+		}
+	}
 }
 
 IndexTuple

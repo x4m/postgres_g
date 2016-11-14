@@ -707,7 +707,7 @@ gistdoinsertloop(Relation r, IndexTuple itup, Size freespace, GISTSTATE *giststa
 
 
 
-			if(0 && GistPageCanStoreLazy(stack->page, itup))
+			if(GistPageCanStoreLazy(stack->page, itup))
 			{
 				if (!xlocked)
 								{
