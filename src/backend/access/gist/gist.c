@@ -689,7 +689,25 @@ gistdoinsert(Relation r, IndexTuple itup, Size freespace, GISTSTATE *giststate)
 
 			if(GistPageCanStoreLazy(stack->page, itup))
 			{
+				if (!xlocked)
+								{
+									LockBuffer(stack->buffer, GIST_UNLOCK);
+									LockBuffer(stack->buffer, GIST_EXCLUSIVE);
+									xlocked = true;
+									stack->page = (Page) BufferGetPage(stack->buffer);
 
+									if (PageGetLSN(stack->page) != stack->lsn)
+									{
+										/* the page was changed while we unlocked it, retry */
+										continue;
+									}
+								}
+
+				GistTupleSetLazy(itup);
+				gistinserttuple(&state, stack, giststate, itup,
+											InvalidOffsetNumber);
+				LockBuffer(stack->buffer, GIST_UNLOCK);
+				break;
 			}
 
 			downlinkoffnum = gistchoose(state.r, stack->page, itup, giststate);
