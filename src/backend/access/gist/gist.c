@@ -524,6 +524,8 @@ gistplacetopage(Relation rel, Size freespace, GISTSTATE *giststate,
 			gistfillbuffer(page, itup, ntup, InvalidOffsetNumber);
 		}
 
+		GistPageGetOpaque(page)->nlazy+=ntup;
+
 		MarkBufferDirty(buffer);
 
 		if (BufferIsValid(leftchildbuf))
@@ -589,6 +591,7 @@ gistplacetopage(Relation rel, Size freespace, GISTSTATE *giststate,
  * this routine assumes it is invoked in a short-lived memory context,
  * so it does not bother releasing palloc'd allocations.
  */
+
 void
 gistdoinsert(Relation r, IndexTuple itup, Size freespace, GISTSTATE *giststate)
 {
@@ -609,6 +612,23 @@ gistdoinsert(Relation r, IndexTuple itup, Size freespace, GISTSTATE *giststate)
 	firststack.parent = NULL;
 	firststack.downlinkoffnum = InvalidOffsetNumber;
 	state.stack = stack = &firststack;
+
+
+	gistdoinsertloop(r,itup,freespace, giststate, stack, state);
+
+
+}
+
+void
+gistdoinsertloop(Relation r, IndexTuple itup, Size freespace, GISTSTATE *giststate,GISTInsertStack *givenstack, GISTInsertState state)
+{
+	ItemId		iid;
+	IndexTuple	idxtuple;
+
+	bool		xlocked = false;
+	GISTInsertStack *stack = givenstack;
+
+
 
 	/*
 	 * Walk down along the path of smallest penalty, updating the parent
@@ -687,7 +707,7 @@ gistdoinsert(Relation r, IndexTuple itup, Size freespace, GISTSTATE *giststate)
 
 
 
-			if(GistPageCanStoreLazy(stack->page, itup))
+			if(0 && GistPageCanStoreLazy(stack->page, itup))
 			{
 				if (!xlocked)
 								{
@@ -703,11 +723,18 @@ gistdoinsert(Relation r, IndexTuple itup, Size freespace, GISTSTATE *giststate)
 									}
 								}
 
+				//elog(WARNING,"writing lazy tuple");
+
 				GistTupleSetLazy(itup);
 				gistinserttuple(&state, stack, giststate, itup,
 											InvalidOffsetNumber);
 				LockBuffer(stack->buffer, GIST_UNLOCK);
 				break;
+			}
+			else if (GistPageGetOpaque(stack->page)->nlazy)
+			{
+
+				GistPageGetOpaque(stack->page)->nlazy = 0;
 			}
 
 			downlinkoffnum = gistchoose(state.r, stack->page, itup, giststate);
@@ -854,6 +881,8 @@ gistdoinsert(Relation r, IndexTuple itup, Size freespace, GISTSTATE *giststate)
 			break;
 		}
 	}
+
+
 	/* Release any pins we might still hold before exiting */
 				for (; stack; stack = stack->parent)
 					ReleaseBuffer(stack->buffer);

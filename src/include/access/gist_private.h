@@ -436,6 +436,12 @@ extern void gistdoinsert(Relation r,
 			 IndexTuple itup,
 			 Size freespace,
 			 GISTSTATE *GISTstate);
+extern void gistdoinsertloop(Relation r,
+			 IndexTuple itup,
+			 Size freespace,
+			 GISTSTATE *GISTstate,
+			 GISTInsertStack *stack,
+			 GISTInsertState state);
 
 /* A List of these is returned from gistplacetopage() in *splitinfo */
 typedef struct
