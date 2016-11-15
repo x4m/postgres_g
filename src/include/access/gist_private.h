@@ -441,7 +441,8 @@ extern void gistdoinsertloop(Relation r,
 			 Size freespace,
 			 GISTSTATE *GISTstate,
 			 GISTInsertStack *stack,
-			 GISTInsertState state);
+			 GISTInsertState state,
+			 GISTInsertStack *nolazy);
 
 /* A List of these is returned from gistplacetopage() in *splitinfo */
 typedef struct
@@ -505,6 +506,7 @@ extern Buffer gistNewBuffer(Relation r);
 extern void gistfillbuffer(Page page, IndexTuple *itup, int len,
 			   OffsetNumber off);
 extern IndexTuple *gistextractpage(Page page, int *len /* out */ );
+extern IndexTuple *gistextractlazy(Page page, int *len /* out */ );
 extern IndexTuple *gistjoinvector(
 			   IndexTuple *itvec, int *len,
 			   IndexTuple *additvec, int addlen);

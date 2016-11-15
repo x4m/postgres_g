@@ -105,6 +105,45 @@ gistextractpage(Page page, int *len /* out */ )
 	return itvec;
 }
 
+
+IndexTuple *
+gistextractlazy(Page page, int *len /* out */ )
+{
+	OffsetNumber i,
+				maxoff;
+	IndexTuple *itvec;
+	OffsetNumber* itemNos;
+	//elog(WARNING,"extracting for push");
+
+	maxoff = PageGetMaxOffsetNumber(page);
+	*len = 0;
+	itvec = palloc(sizeof(IndexTuple) * maxoff);
+	itemNos = palloc(sizeof(OffsetNumber) * maxoff);
+	for (i = FirstOffsetNumber; i <= maxoff; i = OffsetNumberNext(i))
+	{
+		ItemId tid = PageGetItemId(page, i);
+		IndexTuple it = (IndexTuple) PageGetItem(page, tid);
+		if(GistTupleIsLazy(it))
+		{
+			//elog(WARNING,"extract item %d",i);
+			IndexTuple copy = palloc(tid->lp_len);
+			//elog(WARNING,"memmove",i);
+			memmove(copy,it,tid->lp_len);
+			//elog(WARNING,"offset %d to index %d",i,*len);
+			itemNos[*len] = i;
+			//elog(WARNING,"ptr",i);
+			itvec[*len] = copy;
+			*len = *len+1;
+			//elog(WARNING,"done",i);
+		}
+	}
+
+	//elog(WARNING,"deleting %d",*len);
+	PageIndexMultiDelete(page,itemNos,*len);
+
+	return itvec;
+}
+
 /*
  * join two vectors into one
  */

@@ -265,6 +265,7 @@ gistplacetopage(Relation rel, Size freespace, GISTSTATE *giststate,
 		bool		is_rootsplit;
 		int			npage;
 
+
 		is_rootsplit = (blkno == GIST_ROOT_BLKNO);
 
 		/*
@@ -524,7 +525,7 @@ gistplacetopage(Relation rel, Size freespace, GISTSTATE *giststate,
 			gistfillbuffer(page, itup, ntup, InvalidOffsetNumber);
 		}
 
-		GistPageGetOpaque(page)->nlazy+=ntup;
+		GistPageGetOpaque(page)->nlazy=1; //DO NOT FORGET: remark pages after split
 
 		MarkBufferDirty(buffer);
 
@@ -600,7 +601,6 @@ gistdoinsert(Relation r, IndexTuple itup, Size freespace, GISTSTATE *giststate)
 	GISTInsertStack firststack;
 	GISTInsertStack *stack;
 	GISTInsertState state;
-	bool		xlocked = false;
 
 	memset(&state, 0, sizeof(GISTInsertState));
 	state.freespace = freespace;
@@ -614,13 +614,11 @@ gistdoinsert(Relation r, IndexTuple itup, Size freespace, GISTSTATE *giststate)
 	state.stack = stack = &firststack;
 
 
-	gistdoinsertloop(r,itup,freespace, giststate, stack, state);
-
-
+	gistdoinsertloop(r,itup,freespace, giststate, stack, state, 0);
 }
 
 void
-gistdoinsertloop(Relation r, IndexTuple itup, Size freespace, GISTSTATE *giststate,GISTInsertStack *givenstack, GISTInsertState state)
+gistdoinsertloop(Relation r, IndexTuple itup, Size freespace, GISTSTATE *giststate,GISTInsertStack *givenstack, GISTInsertState state, GISTInsertStack *nolazy)
 {
 	ItemId		iid;
 	IndexTuple	idxtuple;
@@ -707,39 +705,84 @@ gistdoinsertloop(Relation r, IndexTuple itup, Size freespace, GISTSTATE *giststa
 
 
 
-			if(GistPageCanStoreLazy(stack->page, itup))
+			if(stack!=nolazy)
 			{
-				if (!xlocked)
-								{
-									LockBuffer(stack->buffer, GIST_UNLOCK);
-									LockBuffer(stack->buffer, GIST_EXCLUSIVE);
-									xlocked = true;
-									stack->page = (Page) BufferGetPage(stack->buffer);
-
-									if (PageGetLSN(stack->page) != stack->lsn)
+				if(GistPageCanStoreLazy(stack->page, itup))
+				{
+					if (!xlocked)
 									{
-										/* the page was changed while we unlocked it, retry */
-										continue;
+										LockBuffer(stack->buffer, GIST_UNLOCK);
+										LockBuffer(stack->buffer, GIST_EXCLUSIVE);
+										xlocked = true;
+										stack->page = (Page) BufferGetPage(stack->buffer);
+
+										if (PageGetLSN(stack->page) != stack->lsn)
+										{
+											/* the page was changed while we unlocked it, retry */
+											continue;
+										}
 									}
-								}
 
-				//elog(WARNING,"writing lazy tuple");
+					//elog(WARNING,"writing lazy tuple");
 
-				GistTupleSetLazy(itup);
-				gistinserttuple(&state, stack, giststate, itup,
-											InvalidOffsetNumber);
-				LockBuffer(stack->buffer, GIST_UNLOCK);
-				break;
+					GistTupleSetLazy(itup);
+					gistinserttuple(&state, stack, giststate, itup,
+												InvalidOffsetNumber);
+					LockBuffer(stack->buffer, GIST_UNLOCK);
+					xlocked = false;
+
+					break;
+				}
+				else if (GistPageGetOpaque(stack->page)->nlazy)
+				{
+					OffsetNumber i;
+					OffsetNumber maxoff = PageGetMaxOffsetNumber(stack->page);
+
+					elog(WARNING,"starting push");
+					if (!xlocked)
+									{
+										elog(WARNING,"xloc for push");
+										LockBuffer(stack->buffer, GIST_UNLOCK);
+										LockBuffer(stack->buffer, GIST_EXCLUSIVE);
+										xlocked = true;
+										stack->page = (Page) BufferGetPage(stack->buffer);
+
+										if (PageGetLSN(stack->page) != stack->lsn)
+										{
+											/* the page was changed while we unlocked it, retry */
+											continue;
+										}
+									}
+
+					int nlen;
+					IndexTuple* lazys = gistextractlazy(stack->page,&nlen);
+
+					LockBuffer(stack->buffer, GIST_UNLOCK);
+
+					xlocked = false;
+
+					for (i = 0; i < nlen; i++)
+						{
+							IndexTuple ltup = lazys[i];
+							elog(WARNING,"push %d",i);
+							GistTupleUnsetLazy(ltup);
+							gistdoinsertloop(r,ltup,freespace,giststate,stack,state,stack);
+							elog(WARNING,"push out, on page %d tuples", PageGetMaxOffsetNumber(stack->page));
+						}
+					LockBuffer(stack->buffer, GIST_SHARE);
+					GistPageGetOpaque(stack->page)->nlazy = 0;
+				}
+
 			}
-			else if (GistPageGetOpaque(stack->page)->nlazy)
+			else
 			{
-
-				GistPageGetOpaque(stack->page)->nlazy = 0;
+				elog(WARNING,"skipped laziness");
 			}
 
 			downlinkoffnum = gistchoose(state.r, stack->page, itup, giststate);
 			iid = PageGetItemId(stack->page, downlinkoffnum);
 			idxtuple = (IndexTuple) PageGetItem(stack->page, iid);
+			elog(WARNING,"picked %d",downlinkoffnum);
 			childblkno = ItemPointerGetBlockNumber(&(idxtuple->t_tid));
 
 			/*
@@ -805,6 +848,7 @@ gistdoinsertloop(Relation r, IndexTuple itup, Size freespace, GISTSTATE *giststa
 					continue;
 				}
 			}
+
 			LockBuffer(stack->buffer, GIST_UNLOCK);
 			xlocked = false;
 
@@ -886,7 +930,8 @@ gistdoinsertloop(Relation r, IndexTuple itup, Size freespace, GISTSTATE *giststa
 	/* Release any pins we might still hold before exiting */
 				for (; stack; stack = stack->parent)
 					{
-						ReleaseBuffer(stack->buffer);
+						if(nolazy != stack)
+							ReleaseBuffer(stack->buffer);
 						if(stack == givenstack)
 							break;
 					}
@@ -1315,6 +1360,8 @@ gistfinishsplit(GISTInsertState *state, GISTInsertStack *stack,
 	GISTPageSplitInfo *left;
 	IndexTuple	tuples[2];
 
+
+	elog(WARNING, "fixsplit");
 	/* A split always contains at least two halves */
 	Assert(list_length(splitinfo) >= 2);
 
