@@ -738,10 +738,10 @@ gistdoinsertloop(Relation r, IndexTuple itup, Size freespace, GISTSTATE *giststa
 					OffsetNumber i;
 					OffsetNumber maxoff = PageGetMaxOffsetNumber(stack->page);
 
-					elog(WARNING,"starting push");
+					//elog(WARNING,"starting push");
 					if (!xlocked)
 									{
-										elog(WARNING,"xloc for push");
+										//elog(WARNING,"xloc for push");
 										LockBuffer(stack->buffer, GIST_UNLOCK);
 										LockBuffer(stack->buffer, GIST_EXCLUSIVE);
 										xlocked = true;
@@ -764,10 +764,10 @@ gistdoinsertloop(Relation r, IndexTuple itup, Size freespace, GISTSTATE *giststa
 					for (i = 0; i < nlen; i++)
 						{
 							IndexTuple ltup = lazys[i];
-							elog(WARNING,"push %d",i);
+							//elog(WARNING,"push %d",i);
 							GistTupleUnsetLazy(ltup);
 							gistdoinsertloop(r,ltup,freespace,giststate,stack,state,stack);
-							elog(WARNING,"push out, on page %d tuples", PageGetMaxOffsetNumber(stack->page));
+							//elog(WARNING,"push out, on page %d tuples", PageGetMaxOffsetNumber(stack->page));
 						}
 					LockBuffer(stack->buffer, GIST_SHARE);
 					GistPageGetOpaque(stack->page)->nlazy = 0;
@@ -776,13 +776,13 @@ gistdoinsertloop(Relation r, IndexTuple itup, Size freespace, GISTSTATE *giststa
 			}
 			else
 			{
-				elog(WARNING,"skipped laziness");
+				//elog(WARNING,"skipped laziness");
 			}
 
 			downlinkoffnum = gistchoose(state.r, stack->page, itup, giststate);
 			iid = PageGetItemId(stack->page, downlinkoffnum);
 			idxtuple = (IndexTuple) PageGetItem(stack->page, iid);
-			elog(WARNING,"picked %d",downlinkoffnum);
+			//elog(WARNING,"picked %d",downlinkoffnum);
 			childblkno = ItemPointerGetBlockNumber(&(idxtuple->t_tid));
 
 			/*
@@ -1361,7 +1361,6 @@ gistfinishsplit(GISTInsertState *state, GISTInsertStack *stack,
 	IndexTuple	tuples[2];
 
 
-	elog(WARNING, "fixsplit");
 	/* A split always contains at least two halves */
 	Assert(list_length(splitinfo) >= 2);
 
