@@ -109,7 +109,7 @@ xlogVacuumPage(Relation index, Buffer buffer)
 }
 
 static bool
-ginVacuumPostingTreeLeaves(GinVacuumState *gvs, BlockNumber blkno, bool isRoot, Buffer *rootBuffer)
+ginVacuumPostingTreeLeaves(GinVacuumState *gvs, BlockNumber blkno)
 {
 	Buffer		buffer;
 	Page		page;
@@ -120,16 +120,7 @@ ginVacuumPostingTreeLeaves(GinVacuumState *gvs, BlockNumber blkno, bool isRoot, 
 								RBM_NORMAL, gvs->strategy);
 	page = BufferGetPage(buffer);
 
-	/*
-	 * We should be sure that we don't concurrent with inserts, insert process
-	 * never release root page until end (but it can unlock it and lock
-	 * again). New scan can't start but previously started ones work
-	 * concurrently.
-	 */
-	if (isRoot)
-		LockBufferForCleanup(buffer);
-	else
-		LockBuffer(buffer, GIN_EXCLUSIVE);
+	ginTraverseLock(buffer,false);
 
 	Assert(GinPageIsData(page));
 
@@ -141,41 +132,67 @@ ginVacuumPostingTreeLeaves(GinVacuumState *gvs, BlockNumber blkno, bool isRoot, 
 		MemoryContextReset(gvs->tmpCxt);
 
 		/* if root is a leaf page, we don't desire further processing */
-		if (!isRoot && !hasVoidPage && GinDataLeafPageIsEmpty(page))
+		if (GinDataLeafPageIsEmpty(page))
 			hasVoidPage = TRUE;
+
+		UnlockReleaseBuffer(buffer);
+
+		return hasVoidPage;
 	}
 	else
 	{
 		OffsetNumber i;
 		bool		isChildHasVoid = FALSE;
+		OffsetNumber	maxoff = GinPageGetOpaque(page)->maxoff;
+		BlockNumber*	children = palloc(sizeof(BlockNumber) * maxoff);
 
-		for (i = FirstOffsetNumber; i <= GinPageGetOpaque(page)->maxoff; i++)
+		for (i = FirstOffsetNumber; i <= maxoff; i++)
 		{
 			PostingItem *pitem = GinDataPageGetPostingItem(page, i);
 
-			if (ginVacuumPostingTreeLeaves(gvs, PostingItemGetBlockNumber(pitem), FALSE, NULL))
+			children[i] = PostingItemGetBlockNumber(pitem);
+		}
+
+		UnlockReleaseBuffer(buffer);
+
+		for (i = FirstOffsetNumber; i <= maxoff; i++)
+		{
+			if (ginVacuumPostingTreeLeaves(gvs, children[i], FALSE))
 				isChildHasVoid = TRUE;
 		}
 
-		if (isChildHasVoid)
-			hasVoidPage = TRUE;
-	}
+		pfree(children); // seems it's good to clean up here, at least root caller did it
 
-	/*
-	 * if we have root and there are empty pages in tree, then we don't
-	 * release lock to go further processing and guarantee that tree is unused
-	 */
-	if (!(isRoot && hasVoidPage))
-	{
-		UnlockReleaseBuffer(buffer);
-	}
-	else
-	{
-		Assert(rootBuffer);
-		*rootBuffer = buffer;
-	}
+		vacuum_delay_point();
 
-	return hasVoidPage;
+		if(isChildHasVoid)
+		{
+			DataPageDeleteStack root,
+					   *ptr,
+					   *tmp;
+
+			LockBufferForCleanup(buffer);
+
+			memset(&root, 0, sizeof(DataPageDeleteStack));
+				root.leftBlkno = InvalidBlockNumber;
+				root.isRoot = TRUE;
+
+			ginScanToDelete(gvs, blkno, TRUE, &root, InvalidOffsetNumber);
+
+			ptr = root.child;
+
+			while (ptr)
+			{
+				tmp = ptr->child;
+				pfree(ptr);
+				ptr = tmp;
+			}
+
+			UnlockReleaseBuffer(buffer);
+		}
+
+		return FALSE; // I do not wish to clean inner pages as for now
+	}
 }
 
 /*
@@ -282,16 +299,6 @@ ginDeletePage(GinVacuumState *gvs, BlockNumber deleteBlkno, BlockNumber leftBlkn
 	gvs->result->pages_deleted++;
 }
 
-typedef struct DataPageDeleteStack
-{
-	struct DataPageDeleteStack *child;
-	struct DataPageDeleteStack *parent;
-
-	BlockNumber blkno;			/* current block number */
-	BlockNumber leftBlkno;		/* rightest non-deleted page on left */
-	bool		isRoot;
-} DataPageDeleteStack;
-
 /*
  * scans posting tree and deletes empty pages
  */
@@ -369,34 +376,7 @@ ginScanToDelete(GinVacuumState *gvs, BlockNumber blkno, bool isRoot,
 static void
 ginVacuumPostingTree(GinVacuumState *gvs, BlockNumber rootBlkno)
 {
-	Buffer		rootBuffer = InvalidBuffer;
-	DataPageDeleteStack root,
-			   *ptr,
-			   *tmp;
-
-	if (ginVacuumPostingTreeLeaves(gvs, rootBlkno, TRUE, &rootBuffer) == FALSE)
-	{
-		Assert(rootBuffer == InvalidBuffer);
-		return;
-	}
-
-	memset(&root, 0, sizeof(DataPageDeleteStack));
-	root.leftBlkno = InvalidBlockNumber;
-	root.isRoot = TRUE;
-
-	vacuum_delay_point();
-
-	ginScanToDelete(gvs, rootBlkno, TRUE, &root, InvalidOffsetNumber);
-
-	ptr = root.child;
-	while (ptr)
-	{
-		tmp = ptr->child;
-		pfree(ptr);
-		ptr = tmp;
-	}
-
-	UnlockReleaseBuffer(rootBuffer);
+	ginVacuumPostingTreeLeaves(gvs, rootBlkno, TRUE);
 }
 
 /*
