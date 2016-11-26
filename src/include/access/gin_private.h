@@ -983,15 +983,4 @@ ginCompareItemPointers(ItemPointer a, ItemPointer b)
 
 extern int ginTraverseLock(Buffer buffer, bool searchMode);
 
-
-typedef struct DataPageDeleteStack
-{
-	struct DataPageDeleteStack *child;
-	struct DataPageDeleteStack *parent;
-
-	BlockNumber blkno;			/* current block number */
-	BlockNumber leftBlkno;		/* rightest non-deleted page on left */
-	bool		isRoot;
-} DataPageDeleteStack;
-
 #endif   /* GIN_PRIVATE_H */
