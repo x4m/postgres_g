@@ -258,8 +258,10 @@ ginScanToDelete(GinVacuumState *gvs, BlockNumber blkno, bool isRoot,
 	buffer = ReadBufferExtended(gvs->index, MAIN_FORKNUM, blkno,
 								RBM_NORMAL, gvs->strategy);
 
-	page = BufferGetPage(buffer);
+	//if(!isRoot)
+	//	LockBuffer(buffer, GIN_EXCLUSIVE);
 
+	page = BufferGetPage(buffer);
 
 	Assert(GinPageIsData(page));
 
@@ -292,6 +294,9 @@ ginScanToDelete(GinVacuumState *gvs, BlockNumber blkno, bool isRoot,
 			meDelete = TRUE;
 		}
 	}
+
+	//if(!isRoot)
+	//		LockBuffer(buffer, GIN_UNLOCK);
 
 	ReleaseBuffer(buffer);
 
