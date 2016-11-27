@@ -336,7 +336,7 @@ ginVacuumPostingTreeLeaves(GinVacuumState *gvs, BlockNumber blkno)
 		OffsetNumber i;
 		bool		isChildHasVoid = FALSE;
 		OffsetNumber	maxoff = GinPageGetOpaque(page)->maxoff;
-		BlockNumber*	children = palloc(sizeof(BlockNumber) * maxoff);
+		BlockNumber*	children = palloc(sizeof(BlockNumber) * (maxoff + 1));
 
 		for (i = FirstOffsetNumber; i <= maxoff; i++)
 		{
@@ -357,7 +357,7 @@ ginVacuumPostingTreeLeaves(GinVacuumState *gvs, BlockNumber blkno)
 
 		vacuum_delay_point();
 
-		if(isChildHasVoid)
+		if(0 && isChildHasVoid)
 		{
 			DataPageDeleteStack root,
 					   *ptr,
