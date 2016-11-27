@@ -137,6 +137,8 @@ ginDeletePage(GinVacuumState *gvs, BlockNumber deleteBlkno, BlockNumber leftBlkn
 	/*
 	 * Lock the pages in the same order as an insertion would, to avoid
 	 * deadlocks: left, then right, then parent.
+	 *
+	 * AB: WE HAVE CLEANUP LOCK, NO INSERTS HERE
 	 */
 	lBuffer = ReadBufferExtended(gvs->index, MAIN_FORKNUM, leftBlkno,
 								 RBM_NORMAL, gvs->strategy);
@@ -146,10 +148,10 @@ ginDeletePage(GinVacuumState *gvs, BlockNumber deleteBlkno, BlockNumber leftBlkn
 								 RBM_NORMAL, gvs->strategy);
 
 	LockBuffer(lBuffer, GIN_EXCLUSIVE);
-	LockBuffer(dBuffer, GIN_EXCLUSIVE);
-	if (!isParentRoot)			/* parent is already locked by
-								 * LockBufferForCleanup() */
-		LockBuffer(pBuffer, GIN_EXCLUSIVE);
+	//LockBuffer(dBuffer, GIN_EXCLUSIVE);
+	//if (!isParentRoot)			/* parent is already locked by
+	//							 * LockBufferForCleanup() */
+	//	LockBuffer(pBuffer, GIN_EXCLUSIVE);
 
 	START_CRIT_SECTION();
 
@@ -213,11 +215,11 @@ ginDeletePage(GinVacuumState *gvs, BlockNumber deleteBlkno, BlockNumber leftBlkn
 		PageSetLSN(BufferGetPage(lBuffer), recptr);
 	}
 
-	if (!isParentRoot)
-		LockBuffer(pBuffer, GIN_UNLOCK);
+	//if (!isParentRoot)
+	//	LockBuffer(pBuffer, GIN_UNLOCK);
 	ReleaseBuffer(pBuffer);
 	UnlockReleaseBuffer(lBuffer);
-	UnlockReleaseBuffer(dBuffer);
+	ReleaseBuffer(dBuffer);//UnlockReleaseBuffer(dBuffer);
 
 	END_CRIT_SECTION();
 
@@ -258,8 +260,8 @@ ginScanToDelete(GinVacuumState *gvs, BlockNumber blkno, bool isRoot,
 	buffer = ReadBufferExtended(gvs->index, MAIN_FORKNUM, blkno,
 								RBM_NORMAL, gvs->strategy);
 
-	//if(!isRoot)
-	//	LockBuffer(buffer, GIN_EXCLUSIVE);
+	if(!isRoot)
+		LockBuffer(buffer, GIN_EXCLUSIVE);
 
 	page = BufferGetPage(buffer);
 
@@ -295,8 +297,8 @@ ginScanToDelete(GinVacuumState *gvs, BlockNumber blkno, bool isRoot,
 		}
 	}
 
-	//if(!isRoot)
-	//		LockBuffer(buffer, GIN_UNLOCK);
+	if(!isRoot)
+			LockBuffer(buffer, GIN_UNLOCK);
 
 	ReleaseBuffer(buffer);
 
