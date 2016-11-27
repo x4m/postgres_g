@@ -257,7 +257,11 @@ ginScanToDelete(GinVacuumState *gvs, BlockNumber blkno, bool isRoot,
 
 	buffer = ReadBufferExtended(gvs->index, MAIN_FORKNUM, blkno,
 								RBM_NORMAL, gvs->strategy);
+	if(!isRoot)
+		LockBuffer(buffer,GIN_EXCLUSIVE);
+
 	page = BufferGetPage(buffer);
+
 
 	Assert(GinPageIsData(page));
 
@@ -291,7 +295,10 @@ ginScanToDelete(GinVacuumState *gvs, BlockNumber blkno, bool isRoot,
 		}
 	}
 
-	ReleaseBuffer(buffer);
+	if(isRoot)
+		ReleaseBuffer(buffer);
+	else
+		UnlockReleaseBuffer(buffer);
 
 	if (!meDelete)
 		me->leftBlkno = blkno;
@@ -301,7 +308,7 @@ ginScanToDelete(GinVacuumState *gvs, BlockNumber blkno, bool isRoot,
 
 
 static bool
-ginVacuumPostingTreeLeaves(GinVacuumState *gvs, BlockNumber blkno)
+ginVacuumPostingTreeLeaves(GinVacuumState *gvs, BlockNumber blkno, bool isRoot)
 {
 	Buffer		buffer;
 	Page		page;
@@ -333,8 +340,9 @@ ginVacuumPostingTreeLeaves(GinVacuumState *gvs, BlockNumber blkno)
 	}
 	else
 	{
-		OffsetNumber i;
-		bool		isChildHasVoid = FALSE;
+		OffsetNumber 	i;
+		bool			isChildHasVoid = FALSE;
+		bool			isanyonealife = FALSE;
 		OffsetNumber	maxoff = GinPageGetOpaque(page)->maxoff;
 		BlockNumber*	children = palloc(sizeof(BlockNumber) * (maxoff + 1));
 
@@ -349,20 +357,27 @@ ginVacuumPostingTreeLeaves(GinVacuumState *gvs, BlockNumber blkno)
 
 		for (i = FirstOffsetNumber; i <= maxoff; i++)
 		{
-			if (ginVacuumPostingTreeLeaves(gvs, children[i]))
+			if (ginVacuumPostingTreeLeaves(gvs, children[i], FALSE))
 				isChildHasVoid = TRUE;
+			else
+				isanyonealife = TRUE;
 		}
 
 		pfree(children); // seems it's good to clean up here, at least root caller did it
 
 		vacuum_delay_point();
 
-		if(0 && isChildHasVoid)
+		if(isChildHasVoid && !isanyonealife && !isRoot) // we have to kill this page
+			return TRUE; // let the parent do cleanup locked deletion
+
+		if(isChildHasVoid)
 		{
 			DataPageDeleteStack root,
 					   *ptr,
 					   *tmp;
 
+			buffer = ReadBufferExtended(gvs->index, MAIN_FORKNUM, blkno,
+											RBM_NORMAL, gvs->strategy);
 			LockBufferForCleanup(buffer);
 
 			memset(&root, 0, sizeof(DataPageDeleteStack));
@@ -383,14 +398,14 @@ ginVacuumPostingTreeLeaves(GinVacuumState *gvs, BlockNumber blkno)
 			UnlockReleaseBuffer(buffer);
 		}
 
-		return FALSE; // I do not wish to clean inner pages as for now
+		return FALSE;
 	}
 }
 
 static void
 ginVacuumPostingTree(GinVacuumState *gvs, BlockNumber rootBlkno)
 {
-	ginVacuumPostingTreeLeaves(gvs, rootBlkno);
+	ginVacuumPostingTreeLeaves(gvs, rootBlkno, TRUE);
 }
 
 /*
