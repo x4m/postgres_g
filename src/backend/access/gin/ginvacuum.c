@@ -135,10 +135,16 @@ ginDeletePage(GinVacuumState *gvs, BlockNumber deleteBlkno, BlockNumber leftBlkn
 	BlockNumber rightlink;
 
 	/*
-	 * Lock the pages in the same order as an insertion would, to avoid
+	 * OBSOLETE COMMENT: Lock the pages in the same order as an insertion would, to avoid
 	 * deadlocks: left, then right, then parent.
 	 *
-	 * AB: WE HAVE CLEANUP LOCK, NO INSERTS HERE
+	 * AB: I will delete this comment and all following single line comments.
+	 * they are here to highlight changes in locking
+	 *
+	 * This function MUST be called only if someone of parent pages hold
+	 * exclusive cleanup lock. This guarantees that no insertions currently
+	 * happen in this subtree. We still acquire Exclusive lock to exclude
+	 * reads. Parent and this page is already locked.
 	 */
 	lBuffer = ReadBufferExtended(gvs->index, MAIN_FORKNUM, leftBlkno,
 								 RBM_NORMAL, gvs->strategy);
@@ -217,6 +223,7 @@ ginDeletePage(GinVacuumState *gvs, BlockNumber deleteBlkno, BlockNumber leftBlkn
 
 	//if (!isParentRoot)
 	//	LockBuffer(pBuffer, GIN_UNLOCK);
+	// These comments will be deleted, explanation is upper
 	ReleaseBuffer(pBuffer);
 	UnlockReleaseBuffer(lBuffer);
 	ReleaseBuffer(dBuffer);//UnlockReleaseBuffer(dBuffer);
@@ -309,6 +316,13 @@ ginScanToDelete(GinVacuumState *gvs, BlockNumber blkno, bool isRoot,
 }
 
 
+/*
+ * Scan through posting tree, delete empty tuples from leaf pages.
+ * Also, this function collects empty subtrees (with all empty leafs).
+ * For parents of these subtrees CleanUp lock is taken, then we call
+ * ScanToDelete. This is done for every inner page, which points to
+ * empty subtree.
+ */
 static bool
 ginVacuumPostingTreeLeaves(GinVacuumState *gvs, BlockNumber blkno, bool isRoot)
 {
@@ -344,9 +358,14 @@ ginVacuumPostingTreeLeaves(GinVacuumState *gvs, BlockNumber blkno, bool isRoot)
 	{
 		OffsetNumber 	i;
 		bool			isChildHasVoid = FALSE;
-		bool			isanyonealife = FALSE;
+		bool			isAnyNonempy = FALSE;
 		OffsetNumber	maxoff = GinPageGetOpaque(page)->maxoff;
 		BlockNumber*	children = palloc(sizeof(BlockNumber) * (maxoff + 1));
+
+		/*
+		 * Read all children BlockNumbers.
+		 * Not sure it is safe if there are many concurrent vacuums.
+		 */
 
 		for (i = FirstOffsetNumber; i <= maxoff; i++)
 		{
@@ -362,15 +381,20 @@ ginVacuumPostingTreeLeaves(GinVacuumState *gvs, BlockNumber blkno, bool isRoot)
 			if (ginVacuumPostingTreeLeaves(gvs, children[i], FALSE))
 				isChildHasVoid = TRUE;
 			else
-				isanyonealife = TRUE;
+				isAnyNonempy = TRUE;
 		}
 
-		pfree(children); // seems it's good to clean up here, at least root caller did it
+		pfree(children);
 
 		vacuum_delay_point();
 
-		if(isChildHasVoid && !isanyonealife && !isRoot) // we have to kill this page
-			return TRUE; // let the parent do cleanup locked deletion
+		/*
+		 * All subtree is empty - just return TRUE to indicate that parent must
+		 * do a cleanup. Unless we are ROOT an there is way to go upper.
+		 */
+
+		if(isChildHasVoid && !isAnyNonempy && !isRoot)
+			return TRUE;
 
 		if(isChildHasVoid)
 		{
@@ -400,6 +424,7 @@ ginVacuumPostingTreeLeaves(GinVacuumState *gvs, BlockNumber blkno, bool isRoot)
 			UnlockReleaseBuffer(buffer);
 		}
 
+		/* Here we have deleted all empty subtrees */
 		return FALSE;
 	}
 }

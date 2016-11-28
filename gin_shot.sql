@@ -1,11 +1,11 @@
 --\setrandom uid 1 1500000
-\set uid 777
+\set uid random(1,1500000)
 --\setrandom lid 1 1000
 --\setrandom lid2 1 1000
 --\setrandom lid3 1 1000
-\set lid 1
-\set lid2 2
-\set lid3 3
+\set lid random(1,1000)
+\set lid2 random(1,1000)
+\set lid3 random(1,1000)
 BEGIN;
 insert into box values(:uid,'{:lid,:lid2,:lid3}');
 insert into box values(:uid,'{}');
