@@ -973,4 +973,6 @@ ginCompareItemPointers(ItemPointer a, ItemPointer b)
 #define ginCompareItemPointers(a, b) ItemPointerCompare(a, b)
 #endif   /* PG_USE_INLINE */
 
+extern int ginTraverseLock(Buffer buffer, bool searchMode);
+
 #endif   /* GIN_PRIVATE_H */
