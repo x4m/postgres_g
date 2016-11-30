@@ -143,8 +143,9 @@ ginDeletePage(GinVacuumState *gvs, BlockNumber deleteBlkno, BlockNumber leftBlkn
 	 *
 	 * This function MUST be called only if someone of parent pages hold
 	 * exclusive cleanup lock. This guarantees that no insertions currently
-	 * happen in this subtree. We still acquire Exclusive lock to exclude
-	 * reads. Parent and this page is already locked.
+	 * happen in this subtree. Caller also acquire Exclusive lock on deletable
+	 * page and is acquiring and releasing exclusive lock on left page before.
+	 * Left page was locked and released. Then parent and this page are locked.
 	 */
 	lBuffer = ReadBufferExtended(gvs->index, MAIN_FORKNUM, leftBlkno,
 								 RBM_NORMAL, gvs->strategy);
@@ -153,7 +154,7 @@ ginDeletePage(GinVacuumState *gvs, BlockNumber deleteBlkno, BlockNumber leftBlkn
 	pBuffer = ReadBufferExtended(gvs->index, MAIN_FORKNUM, parentBlkno,
 								 RBM_NORMAL, gvs->strategy);
 
-	LockBuffer(lBuffer, GIN_EXCLUSIVE);
+	//LockBuffer(lBuffer, GIN_EXCLUSIVE);
 	//LockBuffer(dBuffer, GIN_EXCLUSIVE);
 	//if (!isParentRoot)			/* parent is already locked by
 	//							 * LockBufferForCleanup() */
@@ -225,7 +226,7 @@ ginDeletePage(GinVacuumState *gvs, BlockNumber deleteBlkno, BlockNumber leftBlkn
 	//	LockBuffer(pBuffer, GIN_UNLOCK);
 	// These comments will be deleted, explanation is upper
 	ReleaseBuffer(pBuffer);
-	UnlockReleaseBuffer(lBuffer);
+	ReleaseBuffer(lBuffer);//UnlockReleaseBuffer(lBuffer);
 	ReleaseBuffer(dBuffer);//UnlockReleaseBuffer(dBuffer);
 
 	END_CRIT_SECTION();
