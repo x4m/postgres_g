@@ -322,7 +322,8 @@ posting tree. To exclude interference with readers vacuum takes exclusive
 locks in a depth-first scan in leaf-to-right order of page tuples. Leftmost
 page is never deleted. Thus before deleting any page we obtain exclusive
 lock on any left page, effectively excluding deadlock with any reader, despite
-takinf parent lock first and not holding left lock at all.
+taking parent lock before current and left lock after current. We take left
+lock not for a concurrency reasons, but rather in need to mark page dirty.
 In the entry tree, we never delete pages.
 
 (This is quite different from the mechanism the btree indexam uses to make
