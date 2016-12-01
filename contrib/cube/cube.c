@@ -920,7 +920,6 @@ cube_size(PG_FUNCTION_ARGS)
 static void
 rt_cube_size(NDBOX *a, double *size)
 {
-	double		result;
 	int			i;
 	double		result = 0;
 
@@ -942,11 +941,6 @@ rt_cube_size(NDBOX *a, double *size)
 	}
 	*size = result;
 	*size = Abs(result);
-<<<<<<< .mine
-
-=======
-	return;
->>>>>>> .theirs
 }
 
 #ifdef ADVANCED_PENALTY
