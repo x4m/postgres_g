@@ -18,6 +18,7 @@
 
 #include "cubedata.h"
 
+
 PG_MODULE_MAGIC;
 
 /*
@@ -25,6 +26,15 @@ PG_MODULE_MAGIC;
  */
 #define ARRPTR(x)  ( (double *) ARR_DATA_PTR(x) )
 #define ARRNELEMS(x)  ArrayGetNItems( ARR_NDIM(x), ARR_DIMS(x))
+
+/*
+ * If IEEE754 floats are fully supported we use advanced penalty
+ * which takes into account cube volume, perimeter and tend to favor
+ * small nodes over big ones. For more info see g_cube_penalty implementation
+ */
+#ifdef __STDC_IEC_559__
+#define ADVANCED_PENALTY
+#endif
 
 /*
 ** Input/Output routines
@@ -91,14 +101,18 @@ PG_FUNCTION_INFO_V1(cube_enlarge);
 /*
 ** For internal use only
 */
-int32		cube_cmp_v0(NDBOX *a, NDBOX *b);
-bool		cube_contains_v0(NDBOX *a, NDBOX *b);
-bool		cube_overlap_v0(NDBOX *a, NDBOX *b);
-NDBOX	   *cube_union_v0(NDBOX *a, NDBOX *b);
-void		rt_cube_size(NDBOX *a, double *sz);
-NDBOX	   *g_cube_binary_union(NDBOX *r1, NDBOX *r2, int *sizep);
-bool		g_cube_leaf_consistent(NDBOX *key, NDBOX *query, StrategyNumber strategy);
-bool		g_cube_internal_consistent(NDBOX *key, NDBOX *query, StrategyNumber strategy);
+static int32		cube_cmp_v0(NDBOX *a, NDBOX *b);
+static bool		cube_contains_v0(NDBOX *a, NDBOX *b);
+static bool		cube_overlap_v0(NDBOX *a, NDBOX *b);
+static NDBOX	   *cube_union_v0(NDBOX *a, NDBOX *b);
+#ifdef ADVANCED_PENALTY
+static float		pack_float(float value, int realm);
+static void		rt_cube_edge(NDBOX *a, double *sz);
+#endif
+static void		rt_cube_size(NDBOX *a, double *sz);
+static NDBOX	   *g_cube_binary_union(NDBOX *r1, NDBOX *r2, int *sizep);
+static bool		g_cube_leaf_consistent(NDBOX *key, NDBOX *query, StrategyNumber strategy);
+static bool		g_cube_internal_consistent(NDBOX *key, NDBOX *query, StrategyNumber strategy);
 
 /*
 ** Auxiliary funxtions
@@ -401,7 +415,36 @@ g_cube_decompress(PG_FUNCTION_ARGS)
 	}
 	PG_RETURN_POINTER(entry);
 }
+/*
+ * Function to pack floats of different realms
+ * This function serves to pack bit flags inside float type
+ * Resulted value represent can be from four different "realms"
+ * Every value from realm 3 is greater than any value from realms 2,1 and 0.
+ * Every value from realm 2 is less than every value from realm 3 and greater
+ * than any value from realm 1 and 0, and so on. Values from the same realm
+ * loose two bits of precision. This technique is possible due to floating
+ * point numbers specification according to IEEE 754: exponent bits are highest
+ * (excluding sign bits, but here penalty is always positive). If float a is
+ * greater than float b, integer A with same bit representation as a is greater
+ * than integer B with same bits as b.
+ */
+#ifdef ADVANCED_PENALTY
+static float
+pack_float(const float value, const int realm)
+{
+  union {
+    float f;
+    struct { unsigned value:31, sign:1; } vbits;
+    struct { unsigned value:29, realm:2, sign:1; } rbits;
+  } a;
 
+  a.f = value;
+  a.rbits.value = a.vbits.value >> 2;
+  a.rbits.realm = realm;
+
+  return a.f;
+}
+#endif
 
 /*
 ** The GiST Penalty method for boxes
@@ -422,6 +465,42 @@ g_cube_penalty(PG_FUNCTION_ARGS)
 	rt_cube_size(ud, &tmp1);
 	rt_cube_size(DatumGetNDBOX(origentry->key), &tmp2);
 	*result = (float) (tmp1 - tmp2);
+
+#ifdef ADVANCED_PENALTY
+	/* Realm tricks are used only in case of IEEE754 support(IEC 60559) */
+
+	/* REALM 0: No extension is required, volume is zero, return edge	*/
+	/* REALM 1: No extension is required, return nonzero volume			*/
+	/* REALM 2: Volume extension is zero, return nonzero edge extension	*/
+	/* REALM 3: Volume extension is nonzero, return it					*/
+
+	if( *result == 0 )
+	{
+		double tmp3 = tmp1; /* remember entry volume */
+		rt_cube_edge(ud, &tmp1);
+		rt_cube_edge(DatumGetNDBOX(origentry->key), &tmp2);
+		*result = (float) (tmp1 - tmp2);
+		if( *result == 0 )
+		{
+			if( tmp3 != 0 )
+			{
+				*result = pack_float(tmp3, 1); /* REALM 1 */
+			}
+			else
+			{
+				*result = pack_float(tmp1, 0); /* REALM 0 */
+			}
+		}
+		else
+		{
+			*result = pack_float(*result, 2); /* REALM 2 */
+		}
+	}
+	else
+	{
+		*result = pack_float(*result, 3); /* REALM 3 */
+	}
+#endif
 
 	PG_RETURN_FLOAT8(*result);
 }
@@ -599,7 +678,7 @@ g_cube_same(PG_FUNCTION_ARGS)
 /*
 ** SUPPORT ROUTINES
 */
-bool
+static bool
 g_cube_leaf_consistent(NDBOX *key,
 					   NDBOX *query,
 					   StrategyNumber strategy)
@@ -628,7 +707,7 @@ g_cube_leaf_consistent(NDBOX *key,
 	return (retval);
 }
 
-bool
+static bool
 g_cube_internal_consistent(NDBOX *key,
 						   NDBOX *query,
 						   StrategyNumber strategy)
@@ -655,7 +734,7 @@ g_cube_internal_consistent(NDBOX *key,
 	return (retval);
 }
 
-NDBOX *
+static NDBOX *
 g_cube_binary_union(NDBOX *r1, NDBOX *r2, int *sizep)
 {
 	NDBOX	   *retval;
@@ -668,7 +747,7 @@ g_cube_binary_union(NDBOX *r1, NDBOX *r2, int *sizep)
 
 
 /* cube_union_v0 */
-NDBOX *
+static NDBOX *
 cube_union_v0(NDBOX *a, NDBOX *b)
 {
 	int			i;
@@ -838,11 +917,12 @@ cube_size(PG_FUNCTION_ARGS)
 	PG_RETURN_FLOAT8(result);
 }
 
-void
+static void
 rt_cube_size(NDBOX *a, double *size)
 {
 	double		result;
 	int			i;
+	double		result = 0;
 
 	if (a == (NDBOX *) NULL)
 	{
@@ -858,14 +938,37 @@ rt_cube_size(NDBOX *a, double *size)
 	{
 		result = 1.0;
 		for (i = 0; i < DIM(a); i++)
-			result *= Abs(UR_COORD(a, i) - LL_COORD(a, i));
+			result *= UR_COORD(a, i) - LL_COORD(a, i);
 	}
 	*size = result;
+	*size = Abs(result);
+<<<<<<< .mine
+
+=======
+	return;
+>>>>>>> .theirs
 }
+
+#ifdef ADVANCED_PENALTY
+static void
+rt_cube_edge(NDBOX *a, double *size)
+{
+	int			i;
+	double		result = 0;
+
+	if (a != (NDBOX *) NULL)
+	{
+		for (i = 0; i < DIM(a); i++)
+			result += Abs(UR_COORD(a, i) - LL_COORD(a, i));
+	}
+	*size = result;
+	return;
+}
+#endif
 
 /* make up a metric in which one box will be 'lower' than the other
    -- this can be useful for sorting and to determine uniqueness */
-int32
+static int32
 cube_cmp_v0(NDBOX *a, NDBOX *b)
 {
 	int			i;
@@ -1052,7 +1155,7 @@ cube_ge(PG_FUNCTION_ARGS)
 
 /* Contains */
 /* Box(A) CONTAINS Box(B) IFF pt(A) < pt(B) */
-bool
+static bool
 cube_contains_v0(NDBOX *a, NDBOX *b)
 {
 	int			i;
@@ -1122,7 +1225,7 @@ cube_contained(PG_FUNCTION_ARGS)
 
 /* Overlap */
 /* Box(A) Overlap Box(B) IFF (pt(a)LL < pt(B)UR) && (pt(b)LL < pt(a)UR) */
-bool
+static bool
 cube_overlap_v0(NDBOX *a, NDBOX *b)
 {
 	int			i;
