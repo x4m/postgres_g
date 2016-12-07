@@ -70,6 +70,9 @@ extern void RecoveryConflictInterrupt(ProcSignalReason reason); /* called from S
 extern void ProcessClientReadInterrupt(bool blocked);
 extern void ProcessClientWriteInterrupt(bool blocked);
 
+extern void start_xact_command(void);
+extern void finish_xact_command(void);
+
 extern void process_postgres_switches(int argc, char *argv[],
 						  GucContext ctx, const char **dbname);
 extern void PostgresMain(int argc, char *argv[],
