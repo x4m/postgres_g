@@ -31,8 +31,6 @@
 
 static PyObject *PLy_spi_execute_query(char *query, long limit);
 static PyObject *PLy_spi_execute_plan(PyObject *ob, PyObject *list, long limit);
-static PyObject *PLy_spi_execute_fetch_result(SPITupleTable *tuptable,
-							 uint64 rows, int status);
 static void PLy_spi_exception_set(PyObject *excclass, ErrorData *edata);
 
 
@@ -291,6 +289,7 @@ PLy_spi_execute_plan(PyObject *ob, PyObject *list, long limit)
 		rv = SPI_execute_plan(plan->plan, plan->values, nulls,
 							  exec_ctx->curr_proc->fn_readonly, limit);
 		ret = PLy_spi_execute_fetch_result(SPI_tuptable, SPI_processed, rv);
+		SPI_freetuptable(SPI_tuptable);
 
 		if (nargs > 0)
 			pfree(nulls);
@@ -360,6 +359,7 @@ PLy_spi_execute_query(char *query, long limit)
 		pg_verifymbstr(query, strlen(query), false);
 		rv = SPI_execute(query, exec_ctx->curr_proc->fn_readonly, limit);
 		ret = PLy_spi_execute_fetch_result(SPI_tuptable, SPI_processed, rv);
+		SPI_freetuptable(SPI_tuptable);
 
 		PLy_spi_subtransaction_commit(oldcontext, oldowner);
 	}
@@ -382,7 +382,7 @@ PLy_spi_execute_query(char *query, long limit)
 	return ret;
 }
 
-static PyObject *
+PyObject *
 PLy_spi_execute_fetch_result(SPITupleTable *tuptable, uint64 rows, int status)
 {
 	PLyResultObject *result;
@@ -469,7 +469,6 @@ PLy_spi_execute_fetch_result(SPITupleTable *tuptable, uint64 rows, int status)
 		PG_END_TRY();
 
 		MemoryContextDelete(cxt);
-		SPI_freetuptable(tuptable);
 	}
 
 	return (PyObject *) result;

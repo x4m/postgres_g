@@ -1,0 +1,236 @@
+<!-- doc/src/sgml/bgsession.sgml -->
+
+<chapter id="bgsession">
+ <title>Background Session API</title>
+
+ <para>
+  The background session API is a C API for creating additional database
+  sessions in the background and running SQL statements in them.  A background
+  session behaves like a normal (foreground) session in that it has session
+  state, transactions, can run SQL statements, and so on.  Unlike a foreground
+  session, it is not connected directly to a client.  Instead the foreground
+  session can use this API to execute SQL statements and retrieve their
+  results.  Higher-level integrations, such as in procedural languages, can
+  make this functionality available to clients.  Background sessions are
+  independent from their foreground sessions in their session and transaction
+  state.  So a background session cannot see uncommitted data in foreground
+  sessions or vice versa, and there is no preferential treatment about
+  locking.  Like all sessions, background sessions are separate processes.
+  Foreground and background sessions communicate over shared memory messages
+  queues instead of the sockets that a client/server connection uses.
+ </para>
+
+ <para>
+  Background sessions can be useful in a variety of scenarios when effects
+  that are independent of the foreground session are to be achieved, for
+  example:
+  <itemizedlist>
+   <listitem>
+    <para>
+     Commit data independent of whether a foreground transaction commits, for
+     example for auditing.  A trigger in the foreground session could effect
+     the necessary writes via a background session.
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     Large changes can be split up into smaller transactions.  A foreground
+     session can orchestrate the logic, for example in a function, while the
+     actual writes and commits are executed in a background session.
+    </para>
+   </listitem>
+  </itemizedlist>
+ </para>
+
+ <sect1 id="bgsession-types">
+  <title>API</title>
+
+  <para>
+   Use <literal>#include "tcop/bgsession.h"</literal> to include the API
+   declarations.
+  </para>
+
+  <sect2>
+   <title>Types</title>
+
+   <variablelist>
+    <varlistentry>
+     <term><type>BackgroundSession</type></term>
+     <listitem>
+      <para>
+       An opaque connection handle.  Multiple background sessions can exist at
+       the same time, and each is prepresented by an instance of this type.
+      </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry>
+     <term><type>BackgroundSessionPreparedStatement</type></term>
+     <listitem>
+      <para>
+       An opaque handle for a prepared statement, created when the statement
+       is prepared and used when the statement is executed.
+      </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry>
+     <term><type>BackgroundSessionResult</type></term>
+     <listitem>
+      <para>
+       A handle for a query result, defined as:
+<programlisting>
+typedef struct BackgroundSessionResult
+{
+    TupleDesc   tupdesc;
+    List       *tuples;
+    const char *command;
+} BackgroundSessionResult;
+</programlisting>
+       <structfield>tupdesc</structfield> describes the result
+       rows, <symbol>NULL</symbol> if the command does not return
+       rows.  <structfield>tuples</structfield> is a list
+       of <type>HeapTuple</type>s with the result
+       rows.  <structfield>command</structfield> is the tag of the executed
+       command.
+      </para>
+     </listitem>
+    </varlistentry>
+   </variablelist>
+  </sect2>
+
+  <sect2>
+   <title>Functions</title>
+
+   <variablelist>
+    <varlistentry>
+     <term>
+      <funcsynopsis>
+       <funcprototype>
+        <funcdef>BackgroundSession *<function>BackgroundSessionStart</function></funcdef>
+        <paramdef>void</paramdef>
+       </funcprototype>
+      </funcsynopsis>
+     </term>
+     <listitem>
+      <para>
+       Creates a background session.  This starts the background worker and
+       establishes a connection to it.
+      </para>
+
+      <para>
+       A background session does not automatically end when the foreground
+       transaction or session ends.
+       Use <function>BackgroundSessionEnd()</function> to end a background
+       session.
+      </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry>
+     <term>
+      <funcsynopsis>
+       <funcprototype>
+        <funcdef>void <function>BackgroundSessionEnd</function></funcdef>
+        <paramdef>BackgroundSession *<parameter>session</parameter></paramdef>
+       </funcprototype>
+      </funcsynopsis>
+     </term>
+     <listitem>
+      <para>
+       Ends a background session.  This closes the connection the background
+       worker.
+      </para>
+
+      <para>
+       It is an error to close a background session with a transaction block
+       open.
+      </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry>
+     <term>
+      <funcsynopsis>
+       <funcprototype>
+        <funcdef>BackgroundSessionResult *<function>BackgroundSessionExecute</function></funcdef>
+        <paramdef>BackgroundSession *<parameter>session</parameter></paramdef>
+        <paramdef>const char *<parameter>sql</parameter></paramdef>
+       </funcprototype>
+      </funcsynopsis>
+     </term>
+     <listitem>
+      <para>
+       Execute an SQL statement and return the result.  Access the fields of
+       the result structure to get details about the command result.  If there
+       is an error, this function does not return.
+      </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry>
+     <term>
+      <funcsynopsis>
+       <funcprototype>
+        <funcdef>BackgroundSessionPreparedStatement *<function>BackgroundSessionPrepare</function></funcdef>
+        <paramdef>BackgroundSession *<parameter>session</parameter></paramdef>
+        <paramdef>const char *<parameter>sql</parameter></paramdef>
+        <paramdef>int <parameter>nargs</parameter></paramdef>
+        <paramdef>Oid <parameter>argtypes</parameter>[]</paramdef>
+        <paramdef>const char *<parameter>argnames</parameter></paramdef>
+       </funcprototype>
+      </funcsynopsis>
+     </term>
+     <listitem>
+      <para>
+       Prepare an SQL statement for later execution
+       by <function>BackgroundSessionExecutePrepared()</function>.
+      </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry>
+     <term>
+      <funcsynopsis>
+       <funcprototype>
+        <funcdef>BackgroundSessionResult *<function>BackgroundSessionExecutePrepared</function></funcdef>
+        <paramdef>BackgroundSessionPreparedStatement *<parameter>stmt</parameter></paramdef>
+        <paramdef>int <parameter>nargs</parameter></paramdef>
+        <paramdef>Datum <parameter>values</parameter>[]</paramdef>
+        <paramdef>bool <parameter>nulls</parameter>[]</paramdef>
+       </funcprototype>
+      </funcsynopsis>
+     </term>
+     <listitem>
+      <para>
+       Execute a statement previously prepared by
+       <function>BackgroundSessionPrepare()</function>.
+      </para>
+     </listitem>
+    </varlistentry>
+   </variablelist>
+
+   <para>
+    Here is a very simple example:
+
+<programlisting>
+#include "tcop/bgsession.h"
+
+void
+myfunc()
+{
+    BackgroundSession *session;
+    BackgroundSessionResult *result;
+
+    session = BackgroundSessionStart();
+
+    result = BackgroundSessionExecute(session, "SELECT ...");
+    elog(INFO, "returned %d rows", list_length(result->tuples));
+
+    BackgroundSessionEnd(session);
+}
+</programlisting>
+   </para>
+  </sect2>
+ </sect1>
+</chapter>

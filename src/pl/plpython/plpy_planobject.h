@@ -6,6 +6,7 @@
 #define PLPY_PLANOBJECT_H
 
 #include "executor/spi.h"
+#include "tcop/bgsession.h"
 #include "plpy_typeio.h"
 
 
@@ -13,6 +14,7 @@ typedef struct PLyPlanObject
 {
 	PyObject_HEAD
 	SPIPlanPtr	plan;
+	BackgroundSessionPreparedStatement *bgstmt;
 	int			nargs;
 	Oid		   *types;
 	Datum	   *values;

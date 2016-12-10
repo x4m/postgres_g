@@ -43,10 +43,53 @@ contents.sort()
 return ", ".join(contents)
 $$ LANGUAGE plpythonu;
 select module_contents();
+<<<<<<< .mine
                                                                                module_contents                                                                                
 ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
  Error, Fatal, SPIError, cursor, debug, error, execute, fatal, info, log, notice, prepare, quote_ident, quote_literal, quote_nullable, spiexceptions, subtransaction, warning
 (1 row)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+=======
+  module_contents  
+-------------------
+ BackgroundSession
+ Error
+ Fatal
+ SPIError
+ cursor
+ debug
+ error
+ execute
+ fatal
+ info
+ log
+ notice
+ prepare
+ quote_ident
+ quote_literal
+ quote_nullable
+ spiexceptions
+ subtransaction
+ warning
+(19 rows)
+>>>>>>> .theirs
 
 CREATE FUNCTION elog_test_basic() RETURNS void
 AS $$

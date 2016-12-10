@@ -20,6 +20,7 @@ PGFILEDESC = "PL/Python - procedural language"
 NAME = plpython$(python_majorversion)
 
 OBJS = \
+	plpy_bgsession.o \
 	plpy_cursorobject.o \
 	plpy_elog.o \
 	plpy_exec.o \
@@ -89,6 +90,7 @@ REGRESS = \
 	plpython_quote \
 	plpython_composite \
 	plpython_subtransaction \
+	plpython_bgsession \
 	plpython_drop
 
 REGRESS_PLPYTHON3_MANGLE := $(REGRESS)

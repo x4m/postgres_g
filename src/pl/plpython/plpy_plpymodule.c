@@ -13,6 +13,7 @@
 
 #include "plpy_plpymodule.h"
 
+#include "plpy_bgsession.h"
 #include "plpy_cursorobject.h"
 #include "plpy_elog.h"
 #include "plpy_planobject.h"
@@ -134,6 +135,8 @@ PyInit_plpy(void)
 		return NULL;
 
 	PLy_add_exceptions(m);
+	if (PLy_bgsession_init_type(plpy) < 0)
+		return NULL;
 
 	return m;
 }
@@ -164,6 +167,8 @@ PLy_init_plpy(void)
 #else
 	plpy = Py_InitModule("plpy", PLy_methods);
 	PLy_add_exceptions(plpy);
+	if (PLy_bgsession_init_type(plpy) < 0)
+		PLy_elog(ERROR, "could not initialize BackgroundSession type");
 #endif
 
 	/* PyDict_SetItemString(plpy, "PlanType", (PyObject *) &PLy_PlanType); */

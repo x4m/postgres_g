@@ -57,6 +57,12 @@ extern PlannedStmt *pg_plan_query(Query *querytree, int cursorOptions,
 			  ParamListInfo boundParams);
 extern List *pg_plan_queries(List *querytrees, int cursorOptions,
 				ParamListInfo boundParams);
+extern void exec_simple_query(const char *query_string, int16 format);
+extern void exec_parse_message(const char *query_string, const char *stmt_name,
+							   Oid paramTypes[], int numParams);
+extern void exec_bind_message(StringInfo input_message);
+extern void exec_execute_message(const char *portal_name, long max_rows);
+extern void exec_describe_statement_message(const char *stmt_name);
 
 extern bool check_max_stack_depth(int *newval, void **extra, GucSource source);
 extern void assign_max_stack_depth(int newval, void *extra);
@@ -69,6 +75,9 @@ extern void RecoveryConflictInterrupt(ProcSignalReason reason); /* called from S
 																 * handler */
 extern void ProcessClientReadInterrupt(bool blocked);
 extern void ProcessClientWriteInterrupt(bool blocked);
+
+extern void start_xact_command(void);
+extern void finish_xact_command(void);
 
 extern void process_postgres_switches(int argc, char *argv[],
 						  GucContext ctx, const char **dbname);
