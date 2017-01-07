@@ -1357,6 +1357,108 @@ $$ LANGUAGE plpythonu;
   </sect2>
  </sect1>
 
+ <sect1 id="plpython-bgsession">
+  <title>Background Sessions</title>
+
+  <para>
+   PL/Python exposes the background session interface described
+   in <xref linkend="bgsession"> as a Python API.  A background session is
+   represented by a Python object of type <type>plpy.BackgroundSession</type>.
+   It has these methods:
+
+   <variablelist>
+    <varlistentry>
+     <term><literal>.close()</literal></term>
+     <listitem>
+      <para>
+       Close the session.  This must be called or the session will leak.
+      </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry>
+     <term><literal>.execute(<parameter>sql</parameter>)</literal></term>
+     <listitem>
+      <para>
+       Execute an SQL statement.  The return value is a result object of the
+       same type as returned by <literal>plpy.execute</literal>.
+      </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry>
+     <term><literal>.prepare(<parameter>sql</parameter>, <replaceable>types</replaceable>)</literal></term>
+     <listitem>
+      <para>
+       Prepare an SQL statement.  The parameter data types are specified as
+       for <literal>plpy.prepare</literal>.  The return value is a plan
+       object.
+      </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry>
+     <term><literal>.execute_prepared(<parameter>plan</parameter>, <replaceable>values</replaceable>)</literal></term>
+     <listitem>
+      <para>
+       Execute a prepared statement.  The parameter values are specified as
+       for <literal>plpy.execute</literal>.  The return value is a result
+       object.
+      </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry>
+     <term><literal>.__enter__()</literal></term>
+     <listitem>
+      <para>
+       This just returns self.  It is supplied so that
+       a <classname>BackgroundSession</classname> object can be used as a
+       context manager.  See example below.
+      </para>
+     </listitem>
+    </varlistentry>
+
+    <varlistentry>
+     <term><literal>.__exit__(<parameter>exc_type</parameter>, <parameter>exc</parameter>, <parameter>tb</parameter>)</literal></term>
+     <listitem>
+      <para>
+       This is the same as <literal>.close()</literal>.  It is supplied so
+       that a <classname>BackgroundSession</classname> object can be used as a
+       context manager.  (The arguments are ignored.)
+      </para>
+     </listitem>
+    </varlistentry>
+   </variablelist>
+  </para>
+
+  <para>
+   A <classname>BackgroundSession</classname> object can be preserved across
+   function calls or passed between functions via the <varname>SD</varname>
+   and <varname>GD</varname> variables.
+  </para>
+
+  <para>
+   Example:
+<programlisting>
+CREATE FUNCTION bulkload() RETURNS integer
+LANGUAGE plpythonu
+AS $$
+with plpy.BackgroundSession() as a:
+    for i in range(1, 1001):
+        a.execute("BEGIN")
+        a.execute("INSERT INTO test1 (a) VALUES (%d)" % i)
+        if i % 100 == 0:
+            a.execute("COMMIT")
+
+return 0
+$$;
+</programlisting>
+   This function inserts 1000 values into the table and commits after every
+   100 values.
+  </para>
+ </sect1>
+
  <sect1 id="plpython-util">
   <title>Utility Functions</title>
   <para>

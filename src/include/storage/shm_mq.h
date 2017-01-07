@@ -79,6 +79,9 @@ extern shm_mq_result shm_mq_receive(shm_mq_handle *mqh,
 /* Wait for our counterparty to attach to the queue. */
 extern shm_mq_result shm_mq_wait_for_attach(shm_mq_handle *mqh);
 
+/* Get error message string. */
+extern const char *shm_mq_strerror(shm_mq_result res);
+
 /* Smallest possible queue. */
 extern PGDLLIMPORT const Size shm_mq_minimum_size;
 

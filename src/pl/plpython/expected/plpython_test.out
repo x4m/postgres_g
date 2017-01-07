@@ -43,8 +43,9 @@ contents.sort()
 return contents
 $$ LANGUAGE plpythonu;
 select module_contents();
- module_contents 
------------------
+  module_contents  
+-------------------
+ BackgroundSession
  Error
  Fatal
  SPIError
@@ -63,7 +64,7 @@ select module_contents();
  spiexceptions
  subtransaction
  warning
-(18 rows)
+(19 rows)
 
 CREATE FUNCTION elog_test_basic() RETURNS void
 AS $$

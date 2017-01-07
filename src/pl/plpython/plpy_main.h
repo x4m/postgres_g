@@ -7,6 +7,8 @@
 
 #include "plpy_procedure.h"
 
+#include "tcop/bgsession.h"
+
 /* the interpreter's globals dict */
 extern PyObject *PLy_interp_globals;
 
@@ -19,6 +21,7 @@ typedef struct PLyExecutionContext
 {
 	PLyProcedure *curr_proc;	/* the currently executing procedure */
 	MemoryContext scratch_ctx;	/* a context for things like type I/O */
+	BackgroundSession *bgsession;
 	struct PLyExecutionContext *next;	/* previous stack level */
 } PLyExecutionContext;
 

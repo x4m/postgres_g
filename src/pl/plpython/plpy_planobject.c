@@ -77,6 +77,7 @@ PLy_plan_new(void)
 		return NULL;
 
 	ob->plan = NULL;
+	ob->bgstmt = NULL;
 	ob->nargs = 0;
 	ob->types = NULL;
 	ob->values = NULL;

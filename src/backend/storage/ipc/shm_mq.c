@@ -805,6 +805,25 @@ shm_mq_get_queue(shm_mq_handle *mqh)
 }
 
 /*
+ * Get error message string.
+ */
+const char *
+shm_mq_strerror(shm_mq_result res)
+{
+	switch (res)
+	{
+		case SHM_MQ_SUCCESS:
+			return gettext_noop("Success");
+		case SHM_MQ_WOULD_BLOCK:
+			return gettext_noop("Operation would block");
+		case SHM_MQ_DETACHED:
+			return gettext_noop("Other process has detached queue");
+		default:
+			return gettext_noop("Unknown error");
+	}
+}
+
+/*
  * Write bytes into a shared message queue.
  */
 static shm_mq_result
