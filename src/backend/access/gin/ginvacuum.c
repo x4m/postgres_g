@@ -135,12 +135,6 @@ ginDeletePage(GinVacuumState *gvs, BlockNumber deleteBlkno, BlockNumber leftBlkn
 	BlockNumber rightlink;
 
 	/*
-	 * OBSOLETE COMMENT: Lock the pages in the same order as an insertion would, to avoid
-	 * deadlocks: left, then right, then parent.
-	 *
-	 * AB: I will delete this comment and all following single line comments.
-	 * they are here to highlight changes in locking
-	 *
 	 * This function MUST be called only if someone of parent pages hold
 	 * exclusive cleanup lock. This guarantees that no insertions currently
 	 * happen in this subtree. Caller also acquire Exclusive lock on deletable
@@ -157,10 +151,6 @@ ginDeletePage(GinVacuumState *gvs, BlockNumber deleteBlkno, BlockNumber leftBlkn
 								 RBM_NORMAL, gvs->strategy);
 
 	LockBuffer(lBuffer, GIN_EXCLUSIVE);
-	//LockBuffer(dBuffer, GIN_EXCLUSIVE);
-	//if (!isParentRoot)			/* parent is already locked by
-	//							 * LockBufferForCleanup() */
-	//	LockBuffer(pBuffer, GIN_EXCLUSIVE);
 
 	START_CRIT_SECTION();
 
@@ -224,12 +214,9 @@ ginDeletePage(GinVacuumState *gvs, BlockNumber deleteBlkno, BlockNumber leftBlkn
 		PageSetLSN(BufferGetPage(lBuffer), recptr);
 	}
 
-	//if (!isParentRoot)
-	//	LockBuffer(pBuffer, GIN_UNLOCK);
-	// These comments will be deleted, explanation is upper
 	ReleaseBuffer(pBuffer);
 	UnlockReleaseBuffer(lBuffer);
-	ReleaseBuffer(dBuffer);//UnlockReleaseBuffer(dBuffer);
+	ReleaseBuffer(dBuffer);
 
 	END_CRIT_SECTION();
 
