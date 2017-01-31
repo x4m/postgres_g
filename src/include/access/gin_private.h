@@ -703,6 +703,7 @@ extern Buffer ginStepRight(Buffer buffer, Relation index, int lockmode);
 extern void freeGinBtreeStack(GinBtreeStack *stack);
 extern void ginInsertValue(GinBtree btree, GinBtreeStack *stack,
 			   void *insertdata, GinStatsData *buildStats);
+extern int ginTraverseLock(Buffer buffer, bool searchMode);
 
 /* ginentrypage.c */
 extern IndexTuple GinFormTuple(GinState *ginstate,

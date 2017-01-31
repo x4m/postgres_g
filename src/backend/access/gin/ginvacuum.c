@@ -120,16 +120,7 @@ ginVacuumPostingTreeLeaves(GinVacuumState *gvs, BlockNumber blkno, bool isRoot, 
 								RBM_NORMAL, gvs->strategy);
 	page = BufferGetPage(buffer);
 
-	/*
-	 * We should be sure that we don't concurrent with inserts, insert process
-	 * never release root page until end (but it can unlock it and lock
-	 * again). New scan can't start but previously started ones work
-	 * concurrently.
-	 */
-	if (isRoot)
-		LockBufferForCleanup(buffer);
-	else
-		LockBuffer(buffer, GIN_EXCLUSIVE);
+	ginTraverseLock(buffer,false);
 
 	Assert(GinPageIsData(page));
 
@@ -324,6 +315,12 @@ ginScanToDelete(GinVacuumState *gvs, BlockNumber blkno, bool isRoot,
 
 	buffer = ReadBufferExtended(gvs->index, MAIN_FORKNUM, blkno,
 								RBM_NORMAL, gvs->strategy);
+
+	/* We exclue any possible concurrent searches here. Root must be locked by caller. */
+	if (!isRoot)
+	{
+		LockBuffer(buffer, GIN_EXCLUSIVE);
+	}
 	page = BufferGetPage(buffer);
 
 	Assert(GinPageIsData(page));
@@ -346,6 +343,11 @@ ginScanToDelete(GinVacuumState *gvs, BlockNumber blkno, bool isRoot,
 		isempty = GinDataLeafPageIsEmpty(page);
 	else
 		isempty = GinPageGetOpaque(page)->maxoff < FirstOffsetNumber;
+
+	if (!isRoot)
+	{
+		LockBuffer(buffer, GIN_UNLOCK);
+	}
 
 	if (isempty)
 	{
@@ -384,7 +386,15 @@ ginVacuumPostingTree(GinVacuumState *gvs, BlockNumber rootBlkno)
 	root.leftBlkno = InvalidBlockNumber;
 	root.isRoot = TRUE;
 
-	vacuum_delay_point();
+	/*
+	 * We should be sure that we don't concurrent with inserts, insert process
+	 * never release root page until end (but it can unlock it and lock
+	 * again). New scan can't start but previously started ones work
+	 * concurrently.
+	 */
+	LockBuffer(rootBuffer,GIN_UNLOCK);
+	LockBufferForCleanup(rootBuffer);
+
 
 	ginScanToDelete(gvs, rootBlkno, TRUE, &root, InvalidOffsetNumber);
 
