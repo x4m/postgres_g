@@ -108,6 +108,8 @@ xlogVacuumPage(Relation index, Buffer buffer)
 	PageSetLSN(page, recptr);
 }
 
+static int pagesLocked;
+
 static bool
 ginVacuumPostingTreeLeaves(GinVacuumState *gvs, BlockNumber blkno, bool isRoot, Buffer *rootBuffer)
 {
@@ -130,6 +132,8 @@ ginVacuumPostingTreeLeaves(GinVacuumState *gvs, BlockNumber blkno, bool isRoot, 
 		LockBufferForCleanup(buffer);
 	else
 		LockBuffer(buffer, GIN_EXCLUSIVE);
+	pagesLocked++;
+
 
 	Assert(GinPageIsData(page));
 
@@ -366,6 +370,8 @@ ginScanToDelete(GinVacuumState *gvs, BlockNumber blkno, bool isRoot,
 	return meDelete;
 }
 
+
+
 static void
 ginVacuumPostingTree(GinVacuumState *gvs, BlockNumber rootBlkno)
 {
@@ -374,11 +380,16 @@ ginVacuumPostingTree(GinVacuumState *gvs, BlockNumber rootBlkno)
 			   *ptr,
 			   *tmp;
 
+	pagesLocked = 0;
+	elog(NOTICE,"Vacuum of posting tree at %d", rootBlkno);
+
 	if (ginVacuumPostingTreeLeaves(gvs, rootBlkno, TRUE, &rootBuffer) == FALSE)
 	{
 		Assert(rootBuffer == InvalidBuffer);
 		return;
 	}
+
+	elog(NOTICE,"Vacuum of posting tree was locking %d pages",pagesLocked);
 
 	memset(&root, 0, sizeof(DataPageDeleteStack));
 	root.leftBlkno = InvalidBlockNumber;
