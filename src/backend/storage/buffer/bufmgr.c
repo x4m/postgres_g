@@ -76,34 +76,6 @@ typedef struct PrivateRefCountEntry
 /* 64 bytes, about the size of a cache line on common systems */
 #define REFCOUNT_ARRAY_ENTRIES 8
 
-/*
- * Status of buffers to checkpoint for a particular tablespace, used
- * internally in BufferSync.
- */
-typedef struct CkptTsStatus
-{
-	/* oid of the tablespace */
-	Oid			tsId;
-
-	/*
-	 * Checkpoint progress for this tablespace. To make progress comparable
-	 * between tablespaces the progress is, for each tablespace, measured as a
-	 * number between 0 and the total number of to-be-checkpointed pages. Each
-	 * page checkpointed in this tablespace increments this space's progress
-	 * by progress_slice.
-	 */
-	float8		progress;
-	float8		progress_slice;
-
-	/* number of to-be checkpointed pages in this tablespace */
-	int			num_to_scan;
-	/* already processed pages in this tablespace */
-	int			num_scanned;
-
-	/* current offset in CkptBufferIds for this tablespace */
-	int			index;
-} CkptTsStatus;
-
 /* GUC variables */
 bool		zero_damaged_pages = false;
 int			bgwriter_lru_maxpages = 100;
@@ -1764,6 +1736,10 @@ UnpinBuffer(BufferDesc *buf, bool fixOwner)
 	}
 }
 
+
+/* Hook for plugins to get control in BufferSync() */
+checkpointer_buffer_sync_hook_type checkpointer_buffer_sync_hook = NULL;
+
 /*
  * BufferSync -- Write out all dirty buffers in the pool.
  *
@@ -1925,6 +1901,11 @@ BufferSync(int flags)
 	}
 
 	Assert(num_spaces > 0);
+
+	if(checkpointer_buffer_sync_hook)
+		checkpointer_buffer_sync_hook(CheckpointStats.ckpt_write_t,
+										CkptBufferIds,
+										per_ts_stat);
 
 	/*
 	 * Build a min-heap over the write-progress in the individual tablespaces,

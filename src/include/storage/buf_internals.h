@@ -278,8 +278,6 @@ extern PGDLLIMPORT WritebackContext BackendWritebackContext;
 /* in localbuf.c */
 extern BufferDesc *LocalBufferDescriptors;
 
-/* in bufmgr.c */
-
 /*
  * Structure to sort buffers per file on checkpoints.
  *
@@ -295,7 +293,44 @@ typedef struct CkptSortItem
 	int			buf_id;
 } CkptSortItem;
 
+/* in bufmgr.c */
 extern CkptSortItem *CkptBufferIds;
+
+/*
+ * Status of buffers to checkpoint for a particular tablespace, used
+ * internally in BufferSync.
+ */
+typedef struct CkptTsStatus
+{
+	/* oid of the tablespace */
+	Oid			tsId;
+
+	/*
+	 * Checkpoint progress for this tablespace. To make progress comparable
+	 * between tablespaces the progress is, for each tablespace, measured as a
+	 * number between 0 and the total number of to-be-checkpointed pages. Each
+	 * page checkpointed in this tablespace increments this space's progress
+	 * by progress_slice.
+	 */
+	float8		progress;
+	float8		progress_slice;
+
+	/* number of to-be checkpointed pages in this tablespace */
+	int			num_to_scan;
+	/* already processed pages in this tablespace */
+	int			num_scanned;
+
+	/* current offset in CkptBufferIds for this tablespace */
+	int			index;
+} CkptTsStatus;
+
+/* Hook for plugins to get control in BufferSync() */
+typedef void (*checkpointer_buffer_sync_hook_type) (TimestampTz ckpt_write_t,
+													CkptSortItem *ckptBufferIds,
+													CkptTsStatus *per_ts_stat);
+
+/* in bufmgr.c */
+extern PGDLLIMPORT checkpointer_buffer_sync_hook_type checkpointer_buffer_sync_hook;
 
 /*
  * Internal buffer management routines
