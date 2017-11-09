@@ -304,12 +304,6 @@ gistMemorizeLinkToDelete(HTAB* map, BlockNumber blkno, GistBlockInfoFlag flag) {
  *
  * Result: a palloc'd struct containing statistical info for VACUUM displays.
  */
-<<<<<<< ours
-IndexBulkDeleteResult *
-gistbulkdelete(IndexVacuumInfo *info, IndexBulkDeleteResult *stats,
-			   IndexBulkDeleteCallback callback, void *callback_state)
-{
-=======
 static Datum
 gistbulkdeletelogical(IndexVacuumInfo * info, IndexBulkDeleteResult * stats, IndexBulkDeleteCallback callback, void* callback_state)
 {
@@ -318,7 +312,6 @@ gistbulkdeletelogical(IndexVacuumInfo * info, IndexBulkDeleteResult * stats, Ind
 	IndexBulkDeleteResult *stats = (IndexBulkDeleteResult *) PG_GETARG_POINTER(1);
 	IndexBulkDeleteCallback callback = (IndexBulkDeleteCallback) PG_GETARG_POINTER(2);
 	void	   *callback_state = (void *) PG_GETARG_POINTER(3); */
->>>>>>> theirs
 	Relation	rel = info->index;
 	GistBDItem *stack,
 			   *ptr;

@@ -181,10 +181,6 @@ typedef struct GISTScanOpaqueData
 
 typedef GISTScanOpaqueData *GISTScanOpaque;
 
-<<<<<<< ours
-/* despite the name, gistxlogPage is not part of any xlog record */
-=======
-
 /* XLog stuff */
 
 #define XLOG_GIST_PAGE_UPDATE		0x00
@@ -242,7 +238,7 @@ typedef struct gistxlogPageRightlinkChange
 } gistxlogPageRightlinkChange;
 
 
->>>>>>> theirs
+/* despite the name, gistxlogPage is not part of any xlog record */
 typedef struct gistxlogPage
 {
 	BlockNumber blkno;
