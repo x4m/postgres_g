@@ -60,6 +60,50 @@ gistRedoClearFollowRight(XLogReaderState *record, uint8 block_id)
 		UnlockReleaseBuffer(buffer);
 }
 
+static void
+gistRedoRightlinkChange(XLogReaderState *record) {
+	XLogRecPtr	lsn = record->EndRecPtr;
+	gistxlogPageRightlinkChange *xldata = (gistxlogPageRightlinkChange *) XLogRecGetData(record);
+	Buffer		buffer;
+	Page		page;
+	BlockNumber	newright;
+	GISTPageOpaque opaque;
+
+	if (XLogReadBufferForRedo(record, 0, &buffer) == BLK_NEEDS_REDO)
+	{
+		newright = xldata->newRightLink;
+		page = BufferGetPage(buffer);
+		opaque = GistPageGetOpaque(page);
+		opaque->rightlink = newright;
+		/*if(newright == InvalidBlockNumber) {
+			GistClearFollowRight(page);
+		}*/
+		PageSetLSN(page, lsn);
+		MarkBufferDirty(buffer);
+	}
+}
+
+static void
+gistRedoPageSetDeleted(XLogReaderState *record) {
+	XLogRecPtr	lsn = record->EndRecPtr;
+	gistxlogPageDelete *xldata = (gistxlogPageDelete *) XLogRecGetData(record);
+	Buffer		buffer;
+	Page		page;
+	PageHeader		header;
+
+	if (XLogReadBufferForRedo(record, 0, &buffer) == BLK_NEEDS_REDO)
+	{
+		page = (Page) BufferGetPage(buffer);
+		header = (PageHeader) page;
+
+		header->pd_prune_xid = xldata->id;
+		GistPageSetDeleted(page);
+
+		PageSetLSN(page, lsn);
+		MarkBufferDirty(buffer);
+
+	}
+}
 /*
  * redo any page update (except page split)
  */
@@ -77,6 +121,7 @@ gistRedoPageUpdateRecord(XLogReaderState *record)
 		char	   *data;
 		Size		datalen;
 		int			ninserted = 0;
+		//BlockNumber blkno;
 
 		data = begin = XLogRecGetBlockData(record, 0, &datalen);
 
@@ -112,8 +157,8 @@ gistRedoPageUpdateRecord(XLogReaderState *record)
 			data += sizeof(OffsetNumber) * xldata->ntodelete;
 
 			PageIndexMultiDelete(page, todelete, xldata->ntodelete);
-			if (GistPageIsLeaf(page))
-				GistMarkTuplesDeleted(page);
+			
+			GistMarkTuplesDeleted(page);
 		}
 
 		/* Add new tuples if any */
@@ -324,6 +369,12 @@ gist_redo(XLogReaderState *record)
 		case XLOG_GIST_CREATE_INDEX:
 			gistRedoCreateIndex(record);
 			break;
+		case XLOG_GIST_PAGE_DELETE:
+			gistRedoPageSetDeleted(record);
+			break;
+		case XLOG_GIST_RIGHTLINK_CHANGE:
+			gistRedoRightlinkChange(record);
+			break;
 		default:
 			elog(PANIC, "gist_redo: unknown op code %u", info);
 	}
@@ -442,6 +493,40 @@ gistXLogSplit(bool page_is_leaf,
 	return recptr;
 }
 
+
+XLogRecPtr
+gistXLogSetDeleted(RelFileNode node, Buffer buffer, TransactionId xid) {
+	gistxlogPageDelete xlrec;
+	XLogRecPtr	recptr;
+
+	xlrec.id = xid;
+
+	XLogBeginInsert();
+	XLogRegisterData((char *) &xlrec, sizeof(gistxlogPageDelete));
+
+	XLogRegisterBuffer(0, buffer, REGBUF_STANDARD);
+	/* new tuples */
+	recptr = XLogInsert(RM_GIST_ID, XLOG_GIST_PAGE_DELETE);
+	return recptr;
+}
+
+XLogRecPtr
+gistXLogRightLinkChange(RelFileNode node, Buffer buffer,
+					BlockNumber newRightLink) {
+	gistxlogPageRightlinkChange xlrec;
+	XLogRecPtr	recptr;
+
+	xlrec.newRightLink = newRightLink;
+
+	XLogBeginInsert();
+	XLogRegisterData((char *) &xlrec, sizeof(gistxlogPageRightlinkChange));
+
+	XLogRegisterBuffer(0, buffer, REGBUF_STANDARD);
+	/* new tuples */
+	recptr = XLogInsert(RM_GIST_ID, XLOG_GIST_RIGHTLINK_CHANGE);
+	return recptr;
+}
+
 /*
  * Write XLOG record describing a page update. The update can include any
  * number of deletions and/or insertions of tuples on a single index page.
@@ -453,6 +538,7 @@ gistXLogSplit(bool page_is_leaf,
  * to the target buffer; they need not be stored in XLOG if XLogInsert decides
  * to log the whole buffer contents instead.
  */
+
 XLogRecPtr
 gistXLogUpdate(Buffer buffer,
 			   OffsetNumber *todelete, int ntodelete,
