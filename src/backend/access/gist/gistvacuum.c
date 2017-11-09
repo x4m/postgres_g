@@ -432,7 +432,7 @@ gistbulkdeletelogical(IndexVacuumInfo * info, IndexBulkDeleteResult * stats, Ind
 		vacuum_delay_point();
 	}
 
-	return stats;
+	return PointerGetDatum(stats);
 }
 
 static void
@@ -549,7 +549,7 @@ gistvacuumrepairpage(Relation rel, IndexVacuumInfo * info, IndexBulkDeleteResult
 			if (RelationNeedsWAL(rel)) {
 				XLogRecPtr recptr;
 
-				recptr = gistXLogUpdate(rel->rd_node, buffer, todelete,
+				recptr = gistXLogUpdate(buffer, todelete,
 						ntodelete,
 						NULL, 0, InvalidBuffer);
 				PageSetLSN(page, recptr);
@@ -698,7 +698,7 @@ gistphysicalvacuum(Relation rel, IndexVacuumInfo * info, IndexBulkDeleteResult *
 				if (RelationNeedsWAL(rel)) {
 					XLogRecPtr recptr;
 
-					recptr = gistXLogUpdate(rel->rd_node, buffer, todelete,
+					recptr = gistXLogUpdate(buffer, todelete,
 							ntodelete,
 							NULL, 0, InvalidBuffer);
 					PageSetLSN(page, recptr);
@@ -864,7 +864,7 @@ gistrescanvacuum(Relation rel, IndexVacuumInfo * info, IndexBulkDeleteResult * s
 							if (RelationNeedsWAL(rel)) {
 								XLogRecPtr recptr;
 
-								recptr = gistXLogUpdate(rel->rd_node,
+								recptr = gistXLogUpdate(
 										childBuffer, todeletechild,
 										ntodeletechild,
 										NULL, 0, InvalidBuffer);
@@ -918,7 +918,7 @@ gistrescanvacuum(Relation rel, IndexVacuumInfo * info, IndexBulkDeleteResult * s
 				if (RelationNeedsWAL(rel)) {
 					XLogRecPtr recptr;
 
-					recptr = gistXLogUpdate(rel->rd_node, buffer, todelete,
+					recptr = gistXLogUpdate(buffer, todelete,
 							ntodelete,
 							NULL, 0, InvalidBuffer);
 					PageSetLSN(page, recptr);

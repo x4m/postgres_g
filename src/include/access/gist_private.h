@@ -16,6 +16,7 @@
 
 #include "access/amapi.h"
 #include "access/gist.h"
+#include "access/gistxlog.h"
 #include "access/itup.h"
 #include "fmgr.h"
 #include "lib/pairingheap.h"
@@ -180,70 +181,6 @@ typedef struct GISTScanOpaqueData
 } GISTScanOpaqueData;
 
 typedef GISTScanOpaqueData *GISTScanOpaque;
-
-/* XLog stuff */
-
-#define XLOG_GIST_PAGE_UPDATE		0x00
- /* #define XLOG_GIST_NEW_ROOT			 0x20 */	/* not used anymore */
-#define XLOG_GIST_PAGE_SPLIT		0x30
- /* #define XLOG_GIST_INSERT_COMPLETE	 0x40 */	/* not used anymore */
-#define XLOG_GIST_CREATE_INDEX		0x50
-#define XLOG_GIST_PAGE_DELETE		 0x60
-#define XLOG_GIST_RIGHTLINK_CHANGE		 0x70
-
-/*
- * Backup Blk 0: updated page.
- * Backup Blk 1: If this operation completes a page split, by inserting a
- *				 downlink for the split page, the left half of the split
- */
-typedef struct gistxlogPageUpdate
-{
-	/* number of deleted offsets */
-	uint16		ntodelete;
-	uint16		ntoinsert;
-
-	/*
-	 * In payload of blk 0 : 1. todelete OffsetNumbers 2. tuples to insert
-	 */
-} gistxlogPageUpdate;
-
-/*
- * Backup Blk 0: If this operation completes a page split, by inserting a
- *				 downlink for the split page, the left half of the split
- * Backup Blk 1 - npage: split pages (1 is the original page)
- */
-typedef struct gistxlogPageSplit
-{
-	BlockNumber origrlink;		/* rightlink of the page before split */
-	GistNSN		orignsn;		/* NSN of the page before split */
-	bool		origleaf;		/* was splitted page a leaf page? */
-
-	uint16		npage;			/* # of pages in the split */
-	bool		markfollowright;	/* set F_FOLLOW_RIGHT flags */
-
-	/*
-	 * follow: 1. gistxlogPage and array of IndexTupleData per page
-	 */
-} gistxlogPageSplit;
-
-typedef struct gistxlogPageDelete
-{
-	TransactionId id;
-} gistxlogPageDelete;
-
-typedef struct gistxlogPageRightlinkChange
-{
-	BlockNumber newRightLink;
-
-} gistxlogPageRightlinkChange;
-
-
-/* despite the name, gistxlogPage is not part of any xlog record */
-typedef struct gistxlogPage
-{
-	BlockNumber blkno;
-	int			num;			/* number of index tuples following */
-} gistxlogPage;
 
 /* SplitedPageLayout - gistSplit function result */
 typedef struct SplitedPageLayout
@@ -484,7 +421,7 @@ extern XLogRecPtr gistXLogSetDeleted(RelFileNode node, Buffer buffer,
 extern XLogRecPtr gistXLogRightLinkChange(RelFileNode node, Buffer buffer,
 					BlockNumber newRightLink) ;
 
-extern XLogRecPtr gistXLogUpdate(RelFileNode node, Buffer buffer,
+extern XLogRecPtr gistXLogUpdate(Buffer buffer,
 			   OffsetNumber *todelete, int ntodelete,
 			   IndexTuple *itup, int ntup,
 			   Buffer leftchild);
@@ -562,10 +499,7 @@ extern void gistMakeUnionKey(GISTSTATE *giststate, int attno,
 extern XLogRecPtr gistGetFakeLSN(Relation rel);
 
 /* gistvacuum.c */
-extern IndexBulkDeleteResult *gistbulkdelete(IndexVacuumInfo *info,
-			   IndexBulkDeleteResult *stats,
-			   IndexBulkDeleteCallback callback,
-			   void *callback_state);
+Datum gistbulkdelete(PG_FUNCTION_ARGS);
 extern IndexBulkDeleteResult *gistvacuumcleanup(IndexVacuumInfo *info,
 				  IndexBulkDeleteResult *stats);
 
