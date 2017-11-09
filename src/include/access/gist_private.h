@@ -499,7 +499,10 @@ extern void gistMakeUnionKey(GISTSTATE *giststate, int attno,
 extern XLogRecPtr gistGetFakeLSN(Relation rel);
 
 /* gistvacuum.c */
-Datum gistbulkdelete(PG_FUNCTION_ARGS);
+IndexBulkDeleteResult *gistbulkdelete(IndexVacuumInfo *info,
+	IndexBulkDeleteResult *stats,
+	IndexBulkDeleteCallback callback,
+	void *callback_state);
 extern IndexBulkDeleteResult *gistvacuumcleanup(IndexVacuumInfo *info,
 				  IndexBulkDeleteResult *stats);
 

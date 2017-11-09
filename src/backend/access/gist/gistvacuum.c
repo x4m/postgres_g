@@ -304,7 +304,7 @@ gistMemorizeLinkToDelete(HTAB* map, BlockNumber blkno, GistBlockInfoFlag flag) {
  *
  * Result: a palloc'd struct containing statistical info for VACUUM displays.
  */
-static Datum
+static IndexBulkDeleteResult *
 gistbulkdeletelogical(IndexVacuumInfo * info, IndexBulkDeleteResult * stats, IndexBulkDeleteCallback callback, void* callback_state)
 {
 	/*
@@ -432,7 +432,7 @@ gistbulkdeletelogical(IndexVacuumInfo * info, IndexBulkDeleteResult * stats, Ind
 		vacuum_delay_point();
 	}
 
-	return PointerGetDatum(stats);
+	return stats;
 }
 
 static void
@@ -443,7 +443,7 @@ gistvacuumcheckrightlink(Relation rel, IndexVacuumInfo * info,
 	 *
 	 * if there is right link on this page but not rightlink from this page. remove rightlink from left page.
 	 * if there is right link on this page and there is a right link . right link of left page must be rightlink to rightlink of this page.
-	 * */
+	 */
 
 	BlockNumber leftblkno;
 	GISTPageOpaque childopaque;
@@ -452,7 +452,7 @@ gistvacuumcheckrightlink(Relation rel, IndexVacuumInfo * info,
 	if (leftblkno != InvalidBlockNumber) {
 		/*
 		 * there is a right link to child page
-		 * */
+		 */
 		BlockNumber newRight = InvalidBuffer;
 		GISTPageOpaque leftOpaque;
 		Page left;
@@ -480,7 +480,7 @@ gistvacuumcheckrightlink(Relation rel, IndexVacuumInfo * info,
 		if (leftOpaque->rightlink == InvalidBlockNumber) {
 			/*
 			 * error!! we dont find leftpage.
-			 * */
+			 */
 
 			UnlockReleaseBuffer(leftbuffer);
 			return;
@@ -524,7 +524,7 @@ gistvacuumrepairpage(Relation rel, IndexVacuumInfo * info, IndexBulkDeleteResult
 	page = (Page) BufferGetPage(buffer);
 	/*
 	 * if page is inner do nothing.
-	 * */
+	 */
 	if(GistPageIsLeaf(page)) {
 		maxoff = PageGetMaxOffsetNumber(page);
 		for (i = FirstOffsetNumber; i <= maxoff; i = OffsetNumberNext(i)) {
@@ -559,13 +559,13 @@ gistvacuumrepairpage(Relation rel, IndexVacuumInfo * info, IndexBulkDeleteResult
 
 			/*
 			 * ok. links has been deleted. and this in wal! now we can set deleted and repair rightlinks
-			 * */
+			 */
 
 			gistvacuumcheckrightlink(rel, info, infomap, blkno, page);
 
 			/*
 			 * ok. rightlinks has been repaired.
-			 * */
+			 */
 			header = (PageHeader) page;
 
 			header->pd_prune_xid = GetCurrentTransactionId();
@@ -641,7 +641,7 @@ gistphysicalvacuum(Relation rel, IndexVacuumInfo * info, IndexBulkDeleteResult *
 		} else {
 			/*
 			 * first scan
-			 * */
+			 */
 
 			maxoff = PageGetMaxOffsetNumber(page);
 			if (blkno != GIST_ROOT_BLKNO
@@ -649,7 +649,7 @@ gistphysicalvacuum(Relation rel, IndexVacuumInfo * info, IndexBulkDeleteResult *
 					&& opaque->rightlink != InvalidBlockNumber) {
 				/*
 				 * build left link map. add to rescan later.
-				 * */
+				 */
 				item = (GistBDSItem *) palloc(sizeof(GistBDSItem));
 
 				item->isParent = false;
@@ -818,7 +818,7 @@ gistrescanvacuum(Relation rel, IndexVacuumInfo * info, IndexBulkDeleteResult * s
 				delete = gistGetDeleteLink(infomap, child);
 				/*
 				 * leaf is needed to delete????
-				 * */
+				 */
 				if (delete) {
 					IndexTuple idxtuplechild;
 					ItemId iidchild;
@@ -879,7 +879,7 @@ gistrescanvacuum(Relation rel, IndexVacuumInfo * info, IndexBulkDeleteResult * s
 								 *
 								 * if there is right link on this page but not rightlink from this page. remove rightlink from left page.
 								 * if there is right link on this page and there is a right link . right link of left page must be rightlink to rightlink of this page.
-								 * */
+								 */
 								todelete[ntodelete] = i - ntodelete;
 								setdeletedblkno[ntodelete] = child;
 								ntodelete++;
@@ -902,9 +902,9 @@ gistrescanvacuum(Relation rel, IndexVacuumInfo * info, IndexBulkDeleteResult * s
 			} else {
 				/*
 				 * delete links to pages
-				 * */
+				 */
 				if(ntodelete && (ntodelete == maxoff) ) {
-					// save 1 link on inner page
+					/* save 1 link on inner page */
 					ntodelete--;
 				}
 				START_CRIT_SECTION();
@@ -928,7 +928,7 @@ gistrescanvacuum(Relation rel, IndexVacuumInfo * info, IndexBulkDeleteResult * s
 
 				/*
 				 * ok. links has been deleted. and this in wal! now we can set deleted and repair rightlinks
-				 * */
+				 */
 				for (i = 0; i < ntodelete; i++) {
 					Buffer childBuffertodelete;
 					Page childpagetodelete;
@@ -966,13 +966,11 @@ gistrescanvacuum(Relation rel, IndexVacuumInfo * info, IndexBulkDeleteResult * s
 	}
 }
 
-Datum
-gistbulkdelete(PG_FUNCTION_ARGS)
+IndexBulkDeleteResult *gistbulkdelete(IndexVacuumInfo *info,
+	IndexBulkDeleteResult *stats,
+	IndexBulkDeleteCallback callback,
+	void *callback_state)
 {
-	IndexVacuumInfo *info = (IndexVacuumInfo *) PG_GETARG_POINTER(0);
-	IndexBulkDeleteResult *stats = (IndexBulkDeleteResult *) PG_GETARG_POINTER(1);
-	IndexBulkDeleteCallback callback = (IndexBulkDeleteCallback) PG_GETARG_POINTER(2);
-	void	   *callback_state = (void *) PG_GETARG_POINTER(3);
 	Relation	rel = info->index;
 	GistBDSItem *rescanstack = NULL,
 			   *tail = NULL;
@@ -1006,7 +1004,7 @@ gistbulkdelete(PG_FUNCTION_ARGS)
 	/*
 	 * estimate memory limit
 	 * if map more than maintance_mem_work use old version of vacuum
-	 * */
+	 */
 
 	memoryneeded = npages * (sizeof(GistBlockInfo));
 	if(memoryneeded > maintenance_work_mem * 1024) {
@@ -1030,7 +1028,7 @@ gistbulkdelete(PG_FUNCTION_ARGS)
 	 * this part of the vacuum use scan in physical order. Also this function fill hashmap `infomap`
 	 * that stores information about parent, rightlinks and etc. Pages is needed to rescan will be pushed to tail of rescanstack.
 	 * this function don't set flag gist_deleted.
-	 * */
+	 */
 	gistphysicalvacuum(rel, info, stats, callback, callback_state, npages, infomap, rescanstack, tail);
 	/*
 	 * this part of the vacuum is not in physical order. It scans only pages from rescanstack.
@@ -1039,9 +1037,9 @@ gistbulkdelete(PG_FUNCTION_ARGS)
 	 * if any pages is empty or new after processing set flag gist_delete , store prune_xid number
 	 * and etc. if all links from pages are deleted push parent of page to rescan stack to processing.
 	 * special case is when all tuples are deleted from index. in this case root block will be setted in leaf.
-	 * */
+	 */
 	gistrescanvacuum(rel, info, stats, callback, callback_state, infomap, rescanstack, tail);
 
 	hash_destroy(infomap);
-	PG_RETURN_POINTER(stats);
+	return stats;
 }
