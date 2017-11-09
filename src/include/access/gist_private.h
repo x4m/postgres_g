@@ -471,9 +471,6 @@ extern bool gistplacetopage(Relation rel, Size freespace, GISTSTATE *giststate,
 extern SplitedPageLayout *gistSplit(Relation r, Page page, IndexTuple *itup,
 		  int len, GISTSTATE *giststate);
 
-<<<<<<< ours
-extern XLogRecPtr gistXLogUpdate(Buffer buffer,
-=======
 /* gistxlog.c */
 extern void gist_redo(XLogReaderState *record);
 extern void gist_desc(StringInfo buf, XLogReaderState *record);
@@ -488,7 +485,6 @@ extern XLogRecPtr gistXLogRightLinkChange(RelFileNode node, Buffer buffer,
 					BlockNumber newRightLink) ;
 
 extern XLogRecPtr gistXLogUpdate(RelFileNode node, Buffer buffer,
->>>>>>> theirs
 			   OffsetNumber *todelete, int ntodelete,
 			   IndexTuple *itup, int ntup,
 			   Buffer leftchild);
