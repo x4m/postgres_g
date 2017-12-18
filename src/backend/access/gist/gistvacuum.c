@@ -746,7 +746,7 @@ gistrescanvacuum(Relation rel, IndexVacuumInfo * info, IndexBulkDeleteResult * s
 		BlockNumber setdeletedblkno[MaxOffsetNumber];
 
 		blkno = rescanstack->blkno;
-		if (gistGetParentTab(infomap, blkno) == InvalidBlockNumber && blkno != GIST_ROOT_BLKNO) {
+		if (blkno != GIST_ROOT_BLKNO && gistGetParentTab(infomap, blkno) == InvalidBlockNumber) {
 			/*
 			 * strange pages. it's maybe(pages without parent but is not root).
 			 * for example when last vacuum shut down and we can delete link to this page but dont set deleted
@@ -900,11 +900,13 @@ gistrescanvacuum(Relation rel, IndexVacuumInfo * info, IndexBulkDeleteResult * s
 		}
 		isNew = PageIsNew(page) || PageIsEmpty(page);
 		if (ntodelete || isNew) {
-			if(GistPageIsLeaf(page)) {
+			if (GistPageIsLeaf(page)) {
 				item = (GistBDSItem *) palloc(sizeof(GistBDSItem));
 
 				item->isParent = false;
-				item->blkno = gistGetParentTab(infomap, blkno);
+				if (blkno != GIST_ROOT_BLKNO) {
+					item->blkno = gistGetParentTab(infomap, blkno);
+				}
 				item->next = rescanstack->next;
 				rescanstack->next = item;
 			} else {
