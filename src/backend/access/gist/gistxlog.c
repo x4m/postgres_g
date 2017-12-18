@@ -61,7 +61,8 @@ gistRedoClearFollowRight(XLogReaderState *record, uint8 block_id)
 }
 
 static void
-gistRedoRightlinkChange(XLogReaderState *record) {
+gistRedoRightlinkChange(XLogReaderState *record)
+{
 	XLogRecPtr	lsn = record->EndRecPtr;
 	gistxlogPageRightlinkChange *xldata = (gistxlogPageRightlinkChange *) XLogRecGetData(record);
 	Buffer		buffer;
@@ -75,16 +76,14 @@ gistRedoRightlinkChange(XLogReaderState *record) {
 		page = BufferGetPage(buffer);
 		opaque = GistPageGetOpaque(page);
 		opaque->rightlink = newright;
-		/*if(newright == InvalidBlockNumber) {
-			GistClearFollowRight(page);
-		}*/
 		PageSetLSN(page, lsn);
 		MarkBufferDirty(buffer);
 	}
 }
 
 static void
-gistRedoPageSetDeleted(XLogReaderState *record) {
+gistRedoPageSetDeleted(XLogReaderState *record)
+{
 	XLogRecPtr	lsn = record->EndRecPtr;
 	gistxlogPageDelete *xldata = (gistxlogPageDelete *) XLogRecGetData(record);
 	Buffer		buffer;
@@ -511,7 +510,8 @@ gistXLogSetDeleted(RelFileNode node, Buffer buffer, TransactionId xid) {
 
 XLogRecPtr
 gistXLogRightLinkChange(RelFileNode node, Buffer buffer,
-					BlockNumber newRightLink) {
+					BlockNumber newRightLink)
+{
 	gistxlogPageRightlinkChange xlrec;
 	XLogRecPtr	recptr;
 

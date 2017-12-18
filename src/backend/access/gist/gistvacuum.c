@@ -120,16 +120,13 @@ typedef enum
 	NOT_NEED_TO_PROCESS,	/* without action */
 	PROCESSED,				/* action is done */
 	NEED_TO_PROCESS,
-	NEED_TO_DELETE			/* */
+	NEED_TO_DELETE
 } GistBlockInfoFlag;
 
 typedef struct GistBlockInfo {
-	BlockNumber blkno;
 	BlockNumber parent;
 	BlockNumber leftblock;		/* block that has rightlink on blkno */
 	GistBlockInfoFlag flag;
-	//bool toDelete;				/* is need delete this block? */
-	//bool isDeleted;				/* this block was processed 	*/
 	bool hasRightLink;
 } GistBlockInfo;
 
@@ -167,8 +164,6 @@ gistFillBlockInfo(HTAB * map, BlockNumber blkno)
 		entry->leftblock = InvalidBlockNumber;
 		entry->hasRightLink = false;
 		entry->flag = NOT_NEED_TO_PROCESS;
-		//entry->toDelete = false;
-		//entry->isDeleted = false;
 	}
 }
 
@@ -218,7 +213,8 @@ gistGetLeftLink(HTAB * map, BlockNumber right)
 										   &found);
 	if (!found)
 		return InvalidBlockNumber;
-	if(entry->hasRightLink == false) {
+	if(entry->hasRightLink == false)
+	{
 		return InvalidBlockNumber;
 	}
 	return entry->leftblock;
@@ -232,18 +228,23 @@ gistMemorizeLeftLink(HTAB * map, BlockNumber right, BlockNumber left, bool hasRi
 										   (const void *) &right,
 										   HASH_ENTER,
 										   &found);
-	if (!found) {
+	if (!found)
+	{
 		entry->leftblock = InvalidBlockNumber;
 		entry->parent = InvalidBlockNumber;
 		entry->hasRightLink = false;
 		entry->flag = NOT_NEED_TO_PROCESS;
 	}
 
-	if(hasRightLink) {
+	if(hasRightLink)
+	{
 		entry->leftblock = left;
 		entry->hasRightLink = hasRightLink;
-	} else {
-		if(!found) {
+	}
+	else
+	{
+		if(!found)
+		{
 			entry->leftblock = left;
 			entry->hasRightLink = hasRightLink;
 		}
@@ -252,7 +253,8 @@ gistMemorizeLeftLink(HTAB * map, BlockNumber right, BlockNumber left, bool hasRi
 }
 
 static bool
-gistGetDeleteLink(HTAB* map, BlockNumber blkno) {
+gistGetDeleteLink(HTAB* map, BlockNumber blkno)
+{
 	GistBlockInfo *entry;
 	bool		found;
 
@@ -268,7 +270,8 @@ gistGetDeleteLink(HTAB* map, BlockNumber blkno) {
 	return entry->flag == NEED_TO_DELETE;
 }
 static bool
-gistIsProcessed(HTAB* map, BlockNumber blkno) {
+gistIsProcessed(HTAB* map, BlockNumber blkno)
+{
 	GistBlockInfo *entry;
 	bool		found;
 
@@ -281,14 +284,16 @@ gistIsProcessed(HTAB* map, BlockNumber blkno) {
 	return entry ? entry->flag == PROCESSED: false;
 }
 static void
-gistMemorizeLinkToDelete(HTAB* map, BlockNumber blkno, GistBlockInfoFlag flag) {
+gistMemorizeLinkToDelete(HTAB* map, BlockNumber blkno, GistBlockInfoFlag flag)
+{
 	GistBlockInfo *entry;
 	bool		found;
 	entry = (GistBlockInfo *) hash_search(map,
 										   (const void *) &blkno,
 										   HASH_ENTER,
 										   &found);
-	if (!found) {
+	if (!found)
+	{
 		entry->parent = InvalidBlockNumber;
 		entry->leftblock = InvalidBlockNumber;
 		entry->hasRightLink = false;
@@ -457,7 +462,8 @@ gistvacuumcheckrightlink(Relation rel, IndexVacuumInfo * info,
 	GISTPageOpaque childopaque;
 
 	leftblkno = gistGetLeftLink(infomap, blkno);
-	if (leftblkno != InvalidBlockNumber) {
+	if (leftblkno != InvalidBlockNumber)
+	{
 		/*
 		 * there is a right link to child page
 		 */
@@ -474,7 +480,8 @@ gistvacuumcheckrightlink(Relation rel, IndexVacuumInfo * info,
 		leftOpaque = GistPageGetOpaque(left);
 
 		while (leftOpaque->rightlink != InvalidBlockNumber
-				&& leftOpaque->rightlink != blkno) {
+				&& leftOpaque->rightlink != blkno)
+		{
 			leftblkno = leftOpaque->rightlink;
 			UnlockReleaseBuffer(leftbuffer);
 			leftbuffer = ReadBufferExtended(rel, MAIN_FORKNUM, leftblkno,
@@ -485,7 +492,8 @@ gistvacuumcheckrightlink(Relation rel, IndexVacuumInfo * info,
 			leftOpaque = GistPageGetOpaque(left);
 
 		}
-		if (leftOpaque->rightlink == InvalidBlockNumber) {
+		if (leftOpaque->rightlink == InvalidBlockNumber)
+		{
 			/*
 			 * error!! we dont find leftpage.
 			 */
@@ -493,26 +501,29 @@ gistvacuumcheckrightlink(Relation rel, IndexVacuumInfo * info,
 			UnlockReleaseBuffer(leftbuffer);
 			return;
 		}
-		if (childopaque->rightlink != InvalidBlockNumber) {
+		if (childopaque->rightlink != InvalidBlockNumber)
+		{
 			newRight = childopaque->rightlink;
 		}
 		leftOpaque->rightlink = newRight;
 
-		if (RelationNeedsWAL(rel)) {
+		if (RelationNeedsWAL(rel))
+		{
 			XLogRecPtr recptr;
 			recptr = gistXLogRightLinkChange(rel->rd_node, leftbuffer, newRight);
 			PageSetLSN(left, recptr);
-		} else
+		}
+		else
+		{
 			PageSetLSN(left, gistGetFakeLSN(rel));
+		}
 
 		UnlockReleaseBuffer(leftbuffer);
 	}
 }
 static void
 gistvacuumrepairpage(Relation rel, IndexVacuumInfo * info, IndexBulkDeleteResult * stats,
-		IndexBulkDeleteCallback callback, void* callback_state,
-
-		HTAB* infomap, BlockNumber blkno)
+		IndexBulkDeleteCallback callback, void* callback_state, HTAB* infomap, BlockNumber blkno)
 {
 	Buffer buffer;
 	Page page;
@@ -533,19 +544,23 @@ gistvacuumrepairpage(Relation rel, IndexVacuumInfo * info, IndexBulkDeleteResult
 	/*
 	 * if page is inner do nothing.
 	 */
-	if(GistPageIsLeaf(page)) {
+	if(GistPageIsLeaf(page))
+	{
 		maxoff = PageGetMaxOffsetNumber(page);
-		for (i = FirstOffsetNumber; i <= maxoff; i = OffsetNumberNext(i)) {
+		for (i = FirstOffsetNumber; i <= maxoff; i = OffsetNumberNext(i))
+		{
 			iid = PageGetItemId(page, i);
 			idxtuple = (IndexTuple) PageGetItem(page, iid);
 
-			if (callback(&(idxtuple->t_tid), callback_state)) {
+			if (callback(&(idxtuple->t_tid), callback_state))
+			{
 				todelete[ntodelete] = i - ntodelete;
 				ntodelete++;
 			}
 		}
 		isNew = PageIsNew(page) || PageIsEmpty(page);
-		if (ntodelete || isNew) {
+		if (ntodelete || isNew)
+		{
 			START_CRIT_SECTION();
 
 			MarkBufferDirty(buffer);
@@ -554,15 +569,19 @@ gistvacuumrepairpage(Relation rel, IndexVacuumInfo * info, IndexBulkDeleteResult
 				PageIndexTupleDelete(page, todelete[i]);
 			GistMarkTuplesDeleted(page);
 
-			if (RelationNeedsWAL(rel)) {
+			if (RelationNeedsWAL(rel))
+			{
 				XLogRecPtr recptr;
 
 				recptr = gistXLogUpdate(buffer, todelete,
 						ntodelete,
 						NULL, 0, InvalidBuffer);
 				PageSetLSN(page, recptr);
-			} else
+			}
+			else
+			{
 				PageSetLSN(page, gistGetFakeLSN(rel));
+			}
 			END_CRIT_SECTION();
 
 			/*
@@ -581,7 +600,8 @@ gistvacuumrepairpage(Relation rel, IndexVacuumInfo * info, IndexBulkDeleteResult
 			GistPageSetDeleted(page);
 			stats->pages_deleted++;
 
-			if (RelationNeedsWAL(rel)) {
+			if (RelationNeedsWAL(rel))
+			{
 				XLogRecPtr recptr;
 
 				recptr = gistXLogSetDeleted(rel->rd_node, buffer, header->pd_prune_xid);
@@ -600,7 +620,8 @@ gistphysicalvacuum(Relation rel, IndexVacuumInfo * info, IndexBulkDeleteResult *
 		GistBDSItem* rescanstack, GistBDSItem* tail)
 {
 	BlockNumber blkno = GIST_ROOT_BLKNO;
-	for (; blkno < npages; blkno++) {
+	for (; blkno < npages; blkno++)
+	{
 		Buffer buffer;
 		Page page;
 		OffsetNumber i, maxoff;
@@ -626,27 +647,36 @@ gistphysicalvacuum(Relation rel, IndexVacuumInfo * info, IndexBulkDeleteResult *
 
 		gistMemorizeLeftLink(infomap, blkno, InvalidBlockNumber, false);
 
-		if(opaque->rightlink != InvalidBlockNumber) {
+		if(opaque->rightlink != InvalidBlockNumber)
+		{
 			gistMemorizeLeftLink(infomap, opaque->rightlink, blkno, true);
 		}
-		if (GistPageIsLeaf(page)) {
+		if (GistPageIsLeaf(page))
+		{
 
 			LockBuffer(buffer, GIST_UNLOCK);
 			LockBuffer(buffer, GIST_EXCLUSIVE);
 
 			maxoff = PageGetMaxOffsetNumber(page);
-			for (i = FirstOffsetNumber; i <= maxoff; i = OffsetNumberNext(i)) {
+			for (i = FirstOffsetNumber; i <= maxoff; i = OffsetNumberNext(i))
+			{
 				iid = PageGetItemId(page, i);
 				idxtuple = (IndexTuple) PageGetItem(page, iid);
 
-				if (callback(&(idxtuple->t_tid), callback_state)) {
+				if (callback(&(idxtuple->t_tid), callback_state))
+				{
 					todelete[ntodelete] = i - ntodelete;
 					ntodelete++;
 					stats->tuples_removed += 1;
-				} else
+				}
+				else
+				{
 					stats->num_index_tuples += 1;
+				}
 			}
-		} else {
+		}
+		else
+		{
 			/*
 			 * first scan
 			 */
@@ -654,7 +684,8 @@ gistphysicalvacuum(Relation rel, IndexVacuumInfo * info, IndexBulkDeleteResult *
 			maxoff = PageGetMaxOffsetNumber(page);
 			if (blkno != GIST_ROOT_BLKNO
 					/* && (GistFollowRight(page) || lastNSN < GistPageGetNSN(page)) */
-					&& opaque->rightlink != InvalidBlockNumber) {
+					&& opaque->rightlink != InvalidBlockNumber)
+			{
 				/*
 				 * build left link map. add to rescan later.
 				 */
@@ -668,7 +699,8 @@ gistphysicalvacuum(Relation rel, IndexVacuumInfo * info, IndexBulkDeleteResult *
 				tail = item;
 
 			}
-			for (i = FirstOffsetNumber; i <= maxoff; i = OffsetNumberNext(i)) {
+			for (i = FirstOffsetNumber; i <= maxoff; i = OffsetNumberNext(i))
+			{
 				iid = PageGetItemId(page, i);
 				idxtuple = (IndexTuple) PageGetItem(page, iid);
 				child = ItemPointerGetBlockNumber(&(idxtuple->t_tid));
@@ -681,8 +713,10 @@ gistphysicalvacuum(Relation rel, IndexVacuumInfo * info, IndexBulkDeleteResult *
 			}
 
 		}
-		if (ntodelete || isNew) {
-			if ((maxoff == ntodelete) || isNew) {
+		if (ntodelete || isNew)
+		{
+			if ((maxoff == ntodelete) || isNew)
+			{
 
 				item = (GistBDSItem *) palloc(sizeof(GistBDSItem));
 				item->isParent = true;
@@ -694,7 +728,9 @@ gistphysicalvacuum(Relation rel, IndexVacuumInfo * info, IndexBulkDeleteResult *
 
 
 				gistMemorizeLinkToDelete(infomap, blkno, NEED_TO_DELETE);
-			} else {
+			}
+			else
+			{
 				START_CRIT_SECTION();
 
 				MarkBufferDirty(buffer);
@@ -703,15 +739,19 @@ gistphysicalvacuum(Relation rel, IndexVacuumInfo * info, IndexBulkDeleteResult *
 					PageIndexTupleDelete(page, todelete[i]);
 				GistMarkTuplesDeleted(page);
 
-				if (RelationNeedsWAL(rel)) {
+				if (RelationNeedsWAL(rel))
+				{
 					XLogRecPtr recptr;
 
 					recptr = gistXLogUpdate(buffer, todelete,
 							ntodelete,
 							NULL, 0, InvalidBuffer);
 					PageSetLSN(page, recptr);
-				} else
+				}
+				else
+				{
 					PageSetLSN(page, gistGetFakeLSN(rel));
+				}
 
 				END_CRIT_SECTION();
 			}
@@ -723,12 +763,12 @@ gistphysicalvacuum(Relation rel, IndexVacuumInfo * info, IndexBulkDeleteResult *
 }
 static void
 gistrescanvacuum(Relation rel, IndexVacuumInfo * info, IndexBulkDeleteResult * stats,
-		IndexBulkDeleteCallback callback, void* callback_state,
-		HTAB* infomap,
+		IndexBulkDeleteCallback callback, void* callback_state, HTAB* infomap,
 		GistBDSItem* rescanstack, GistBDSItem* tail)
 {
 	GistBDSItem * ptr;
-	while (rescanstack != NULL) {
+	while (rescanstack != NULL)
+	{
 		Buffer buffer;
 		Page page;
 		OffsetNumber i, maxoff;
@@ -746,7 +786,8 @@ gistrescanvacuum(Relation rel, IndexVacuumInfo * info, IndexBulkDeleteResult * s
 		BlockNumber setdeletedblkno[MaxOffsetNumber];
 
 		blkno = rescanstack->blkno;
-		if (blkno != GIST_ROOT_BLKNO && gistGetParentTab(infomap, blkno) == InvalidBlockNumber) {
+		if (blkno != GIST_ROOT_BLKNO && gistGetParentTab(infomap, blkno) == InvalidBlockNumber)
+		{
 			/*
 			 * strange pages. it's maybe(pages without parent but is not root).
 			 * for example when last vacuum shut down and we can delete link to this page but dont set deleted
@@ -762,14 +803,15 @@ gistrescanvacuum(Relation rel, IndexVacuumInfo * info, IndexBulkDeleteResult * s
 			vacuum_delay_point();
 			continue;
 		}
-		if (rescanstack->isParent == true) {
+		if (rescanstack->isParent == true)
+		{
 			blkno = gistGetParentTab(infomap, blkno);
 		}
 
 		isProcessed = gistIsProcessed(infomap, blkno);
 
-		if(isProcessed == true || blkno == InvalidBlockNumber) {
-
+		if(isProcessed == true || blkno == InvalidBlockNumber)
+		{
 			ptr = rescanstack->next;
 			pfree(rescanstack);
 			rescanstack = ptr;
@@ -787,7 +829,8 @@ gistrescanvacuum(Relation rel, IndexVacuumInfo * info, IndexBulkDeleteResult * s
 		opaque = GistPageGetOpaque(page);
 
 		if (blkno != GIST_ROOT_BLKNO
-				&& opaque->rightlink != InvalidBlockNumber) {
+				&& opaque->rightlink != InvalidBlockNumber)
+		{
 			item = (GistBDSItem *) palloc(sizeof(GistBDSItem));
 
 			item->isParent = false;
@@ -797,26 +840,32 @@ gistrescanvacuum(Relation rel, IndexVacuumInfo * info, IndexBulkDeleteResult * s
 			rescanstack->next = item;
 		}
 
-		if (GistPageIsLeaf(page)) {
+		if (GistPageIsLeaf(page))
+		{
 			/* usual procedure with leafs pages*/
 			LockBuffer(buffer, GIST_UNLOCK);
 			LockBuffer(buffer, GIST_EXCLUSIVE);
 
 			maxoff = PageGetMaxOffsetNumber(page);
-			for (i = FirstOffsetNumber; i <= maxoff; i = OffsetNumberNext(i)) {
+			for (i = FirstOffsetNumber; i <= maxoff; i = OffsetNumberNext(i))
+			{
 				iid = PageGetItemId(page, i);
 				idxtuple = (IndexTuple) PageGetItem(page, iid);
 
-				if (callback(&(idxtuple->t_tid), callback_state)) {
+				if (callback(&(idxtuple->t_tid), callback_state))
+				{
 					todelete[ntodelete] = i - ntodelete;
 					ntodelete++;
 				}
 			}
-		} else {
+		}
+		else
+		{
 			LockBuffer(buffer, GIST_UNLOCK);
 			LockBuffer(buffer, GIST_EXCLUSIVE);
 			maxoff = PageGetMaxOffsetNumber(page);
-			for (i = FirstOffsetNumber; i <= maxoff; i = OffsetNumberNext(i)) {
+			for (i = FirstOffsetNumber; i <= maxoff; i = OffsetNumberNext(i))
+			{
 				bool delete;
 				iid = PageGetItemId(page, i);
 				idxtuple = (IndexTuple) PageGetItem(page, iid);
@@ -827,7 +876,8 @@ gistrescanvacuum(Relation rel, IndexVacuumInfo * info, IndexBulkDeleteResult * s
 				/*
 				 * leaf is needed to delete????
 				 */
-				if (delete) {
+				if (delete)
+				{
 					IndexTuple idxtuplechild;
 					ItemId iidchild;
 					OffsetNumber todeletechild[MaxOffsetNumber];
@@ -844,22 +894,24 @@ gistrescanvacuum(Relation rel, IndexVacuumInfo * info, IndexBulkDeleteResult * s
 					childpage = (Page) BufferGetPage(childBuffer);
 					childIsNew = PageIsNew(childpage) || PageIsEmpty(childpage);
 
-					if (GistPageIsLeaf(childpage)) {
+					if (GistPageIsLeaf(childpage))
+					{
 						maxoffchild = PageGetMaxOffsetNumber(childpage);
-						for (j = FirstOffsetNumber; j <= maxoffchild; j =
-								OffsetNumberNext(j)) {
+						for (j = FirstOffsetNumber; j <= maxoffchild; j = OffsetNumberNext(j))
+						{
 							iidchild = PageGetItemId(childpage, j);
 							idxtuplechild = (IndexTuple) PageGetItem(childpage,
 									iidchild);
 
-							if (callback(&(idxtuplechild->t_tid),
-									callback_state)) {
+							if (callback(&(idxtuplechild->t_tid), callback_state))
+							{
 								todeletechild[ntodeletechild] = j
 										- ntodeletechild;
 								ntodeletechild++;
 							}
 						}
-						if (ntodeletechild || childIsNew) {
+						if (ntodeletechild || childIsNew)
+						{
 							START_CRIT_SECTION();
 
 							MarkBufferDirty(childBuffer);
@@ -869,7 +921,8 @@ gistrescanvacuum(Relation rel, IndexVacuumInfo * info, IndexBulkDeleteResult * s
 										todeletechild[j]);
 							GistMarkTuplesDeleted(childpage);
 
-							if (RelationNeedsWAL(rel)) {
+							if (RelationNeedsWAL(rel))
+							{
 								XLogRecPtr recptr;
 
 								recptr = gistXLogUpdate(
@@ -882,7 +935,8 @@ gistrescanvacuum(Relation rel, IndexVacuumInfo * info, IndexBulkDeleteResult * s
 
 							END_CRIT_SECTION();
 
-							if ((ntodeletechild == maxoffchild) || childIsNew) {
+							if ((ntodeletechild == maxoffchild) || childIsNew)
+							{
 								/*
 								 *
 								 * if there is right link on this page but not rightlink from this page. remove rightlink from left page.
@@ -899,21 +953,27 @@ gistrescanvacuum(Relation rel, IndexVacuumInfo * info, IndexBulkDeleteResult * s
 			}
 		}
 		isNew = PageIsNew(page) || PageIsEmpty(page);
-		if (ntodelete || isNew) {
-			if (GistPageIsLeaf(page)) {
+		if (ntodelete || isNew)
+		{
+			if (GistPageIsLeaf(page))
+			{
 				item = (GistBDSItem *) palloc(sizeof(GistBDSItem));
 
 				item->isParent = false;
-				if (blkno != GIST_ROOT_BLKNO) {
+				if (blkno != GIST_ROOT_BLKNO)
+				{
 					item->blkno = gistGetParentTab(infomap, blkno);
 				}
 				item->next = rescanstack->next;
 				rescanstack->next = item;
-			} else {
+			}
+			else
+			{
 				/*
 				 * delete links to pages
 				 */
-				if(ntodelete && (ntodelete == maxoff) ) {
+				if(ntodelete && (ntodelete == maxoff))
+				{
 					/* save 1 link on inner page */
 					ntodelete--;
 				}
@@ -925,21 +985,26 @@ gistrescanvacuum(Relation rel, IndexVacuumInfo * info, IndexBulkDeleteResult * s
 					PageIndexTupleDelete(page, todelete[i]);
 				GistMarkTuplesDeleted(page);
 
-				if (RelationNeedsWAL(rel)) {
+				if (RelationNeedsWAL(rel))
+				{
 					XLogRecPtr recptr;
 
 					recptr = gistXLogUpdate(buffer, todelete,
 							ntodelete,
 							NULL, 0, InvalidBuffer);
 					PageSetLSN(page, recptr);
-				} else
+				}
+				else
+				{
 					PageSetLSN(page, gistGetFakeLSN(rel));
+				}
 				END_CRIT_SECTION();
 
 				/*
 				 * ok. links has been deleted. and this in wal! now we can set deleted and repair rightlinks
 				 */
-				for (i = 0; i < ntodelete; i++) {
+				for (i = 0; i < ntodelete; i++)
+				{
 					Buffer childBuffertodelete;
 					Page childpagetodelete;
 					PageHeader p;
@@ -1017,7 +1082,8 @@ IndexBulkDeleteResult *gistbulkdelete(IndexVacuumInfo *info,
 	 */
 
 	memoryneeded = npages * (sizeof(GistBlockInfo));
-	if(memoryneeded > maintenance_work_mem * 1024) {
+	if(memoryneeded > maintenance_work_mem * 1024)
+	{
 		return gistbulkdeletelogical(info, stats, callback, callback_state);
 	}
 

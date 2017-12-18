@@ -693,7 +693,8 @@ gistdoinsert(Relation r, IndexTuple itup, Size freespace, GISTSTATE *giststate)
 			GISTInsertStack *item;
 			OffsetNumber downlinkoffnum;
 
-			if(GistPageIsDeleted(stack->page)) {
+			if(GistPageIsDeleted(stack->page))
+			{
 				UnlockReleaseBuffer(stack->buffer);
 				xlocked = false;
 				state.stack = stack = stack->parent;
