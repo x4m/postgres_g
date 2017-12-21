@@ -17,6 +17,7 @@
 #include "access/gin_private.h"
 #include "access/ginxlog.h"
 #include "access/xlogutils.h"
+#include "access/ptrack.h"
 #include "utils/memutils.h"
 
 static MemoryContext opCtx;		/* working memory for operations */
@@ -27,6 +28,11 @@ ginRedoClearIncompleteSplit(XLogReaderState *record, uint8 block_id)
 	XLogRecPtr	lsn = record->EndRecPtr;
 	Buffer		buffer;
 	Page		page;
+	RelFileNode rnode;
+	BlockNumber blkno;
+
+	XLogRecGetBlockTag(record, block_id, &rnode, NULL, &blkno);
+	ptrack_add_block_redo(rnode, blkno);
 
 	if (XLogReadBufferForRedo(record, block_id, &buffer) == BLK_NEEDS_REDO)
 	{
@@ -47,8 +53,12 @@ ginRedoCreateIndex(XLogReaderState *record)
 	Buffer		RootBuffer,
 				MetaBuffer;
 	Page		page;
+	RelFileNode rnode;
+
+	XLogRecGetBlockTag(record, 0, &rnode, NULL, NULL);
 
 	MetaBuffer = XLogInitBufferForRedo(record, 0);
+	ptrack_add_block_redo(rnode, BufferGetBlockNumber(MetaBuffer));
 	Assert(BufferGetBlockNumber(MetaBuffer) == GIN_METAPAGE_BLKNO);
 	page = (Page) BufferGetPage(MetaBuffer);
 
@@ -58,6 +68,7 @@ ginRedoCreateIndex(XLogReaderState *record)
 	MarkBufferDirty(MetaBuffer);
 
 	RootBuffer = XLogInitBufferForRedo(record, 1);
+	ptrack_add_block_redo(rnode, BufferGetBlockNumber(RootBuffer));
 	Assert(BufferGetBlockNumber(RootBuffer) == GIN_ROOT_BLKNO);
 	page = (Page) BufferGetPage(RootBuffer);
 
@@ -78,8 +89,13 @@ ginRedoCreatePTree(XLogReaderState *record)
 	char	   *ptr;
 	Buffer		buffer;
 	Page		page;
+	RelFileNode rnode;
+
+	XLogRecGetBlockTag(record, 0, &rnode, NULL, NULL);
 
 	buffer = XLogInitBufferForRedo(record, 0);
+	ptrack_add_block_redo(rnode, BufferGetBlockNumber(buffer));
+
 	page = (Page) BufferGetPage(buffer);
 
 	GinInitBuffer(buffer, GIN_DATA | GIN_LEAF | GIN_COMPRESSED);
@@ -331,6 +347,11 @@ ginRedoInsert(XLogReaderState *record)
 #endif
 	BlockNumber rightChildBlkno = InvalidBlockNumber;
 	bool		isLeaf = (data->flags & GIN_INSERT_ISLEAF) != 0;
+	RelFileNode rnode;
+	BlockNumber blkno;
+
+	XLogRecGetBlockTag(record, 0, &rnode, NULL, &blkno);
+	ptrack_add_block_redo(rnode, blkno);
 
 	/*
 	 * First clear incomplete-split flag on child page if this finishes a
@@ -384,6 +405,18 @@ ginRedoSplit(XLogReaderState *record)
 				rootbuf;
 	bool		isLeaf = (data->flags & GIN_INSERT_ISLEAF) != 0;
 	bool		isRoot = (data->flags & GIN_SPLIT_ROOT) != 0;
+	RelFileNode rnode;
+	BlockNumber blkno;
+
+	XLogRecGetBlockTag(record, 0, &rnode, NULL, &blkno);
+	ptrack_add_block_redo(rnode, blkno);
+	XLogRecGetBlockTag(record, 1, &rnode, NULL, &blkno);
+	ptrack_add_block_redo(rnode, blkno);
+	if (isRoot)
+	{
+		XLogRecGetBlockTag(record, 2, &rnode, NULL, &blkno);
+		ptrack_add_block_redo(rnode, blkno);
+	}
 
 	/*
 	 * First clear incomplete-split flag on child page if this finishes a
@@ -417,6 +450,11 @@ static void
 ginRedoVacuumPage(XLogReaderState *record)
 {
 	Buffer		buffer;
+	RelFileNode rnode;
+	BlockNumber blkno;
+
+	XLogRecGetBlockTag(record, 0, &rnode, NULL, &blkno);
+	ptrack_add_block_redo(rnode, blkno);
 
 	if (XLogReadBufferForRedo(record, 0, &buffer) != BLK_RESTORED)
 	{
@@ -430,6 +468,11 @@ ginRedoVacuumDataLeafPage(XLogReaderState *record)
 {
 	XLogRecPtr	lsn = record->EndRecPtr;
 	Buffer		buffer;
+	RelFileNode rnode;
+	BlockNumber blkno;
+
+	XLogRecGetBlockTag(record, 0, &rnode, NULL, &blkno);
+	ptrack_add_block_redo(rnode, blkno);
 
 	if (XLogReadBufferForRedo(record, 0, &buffer) == BLK_NEEDS_REDO)
 	{
@@ -459,6 +502,15 @@ ginRedoDeletePage(XLogReaderState *record)
 	Buffer		pbuffer;
 	Buffer		lbuffer;
 	Page		page;
+	RelFileNode rnode;
+	BlockNumber blkno;
+
+	XLogRecGetBlockTag(record, 0, &rnode, NULL, &blkno);
+	ptrack_add_block_redo(rnode, blkno);
+	XLogRecGetBlockTag(record, 1, &rnode, NULL, &blkno);
+	ptrack_add_block_redo(rnode, blkno);
+	XLogRecGetBlockTag(record, 2, &rnode, NULL, &blkno);
+	ptrack_add_block_redo(rnode, blkno);
 
 	if (XLogReadBufferForRedo(record, 0, &dbuffer) == BLK_NEEDS_REDO)
 	{
@@ -504,6 +556,13 @@ ginRedoUpdateMetapage(XLogReaderState *record)
 	Buffer		metabuffer;
 	Page		metapage;
 	Buffer		buffer;
+	RelFileNode rnode;
+	BlockNumber blkno;
+
+	XLogRecGetBlockTag(record, 0, &rnode, NULL, &blkno);
+	ptrack_add_block_redo(rnode, blkno);
+	XLogRecGetBlockTag(record, 1, &rnode, NULL, &blkno);
+	ptrack_add_block_redo(rnode, blkno);
 
 	/*
 	 * Restore the metapage. This is essentially the same as a full-page
@@ -602,6 +661,11 @@ ginRedoInsertListPage(XLogReaderState *record)
 	char	   *payload;
 	IndexTuple	tuples;
 	Size		totaltupsize;
+	RelFileNode rnode;
+	BlockNumber blkno;
+
+	XLogRecGetBlockTag(record, 0, &rnode, NULL, &blkno);
+	ptrack_add_block_redo(rnode, blkno);
 
 	/* We always re-initialize the page. */
 	buffer = XLogInitBufferForRedo(record, 0);
@@ -651,6 +715,11 @@ ginRedoDeleteListPages(XLogReaderState *record)
 	Buffer		metabuffer;
 	Page		metapage;
 	int			i;
+	RelFileNode rnode;
+	BlockNumber blkno;
+
+	XLogRecGetBlockTag(record, 0, &rnode, NULL, &blkno);
+	ptrack_add_block_redo(rnode, blkno);
 
 	metabuffer = XLogInitBufferForRedo(record, 0);
 	Assert(BufferGetBlockNumber(metabuffer) == GIN_METAPAGE_BLKNO);
@@ -681,6 +750,9 @@ ginRedoDeleteListPages(XLogReaderState *record)
 	{
 		Buffer		buffer;
 		Page		page;
+
+		XLogRecGetBlockTag(record, i+1, &rnode, NULL, &blkno);
+		ptrack_add_block_redo(rnode, blkno);
 
 		buffer = XLogInitBufferForRedo(record, i + 1);
 		page = BufferGetPage(buffer);

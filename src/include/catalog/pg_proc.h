@@ -5475,6 +5475,18 @@ DESCR("list files in the log directory");
 DATA(insert OID = 3354 (  pg_ls_waldir				 PGNSP PGUID 12 10 20 0 0 f f f f t t v s 0 0 2249 "" "{25,20,1184}" "{o,o,o}" "{name,size,modification}" _null_ _null_ pg_ls_waldir _null_ _null_ _null_ ));
 DESCR("list of files in the WAL directory");
 
+/* ptrack related functions*/
+DATA(insert OID = 6016 ( pg_ptrack_clear		PGNSP PGUID 12 1 0 0 0 f f f f t f v u 0 0 2278 "" _null_ _null_ _null_ _null_ _null_ pg_ptrack_clear _null_ _null_ _null_ ));
+DESCR("clear ptrack fork files");
+DATA(insert OID = 6018 ( pg_ptrack_get_and_clear		PGNSP PGUID 12 1 0 0 0 f f f f t f v s 2 0 17 "26 26" _null_ _null_ _null_ _null_ _null_ pg_ptrack_get_and_clear _null_ _null_ _null_ ));
+DESCR("get ptrack file as bytea and clear it");
+DATA(insert OID = 6022 ( pg_ptrack_get_and_clear_db		PGNSP PGUID 12 1 0 0 0 f f f f t f v s 2 0 16 "26 26" _null_ _null_ _null_ _null_ _null_ pg_ptrack_get_and_clear_db _null_ _null_ _null_ ));
+DESCR("check if ptrack_init_file exists in the given database");
+DATA(insert OID =  6021 ( ptrack_version	PGNSP PGUID 12 1 0 0 0 f f f f t f s s 0 0 25 "" _null_ _null_ _null_ _null_ _null_ ptrack_version _null_ _null_ _null_ ));
+DESCR("Ptrack version string");
+DATA(insert OID =  6023 ( pg_ptrack_control_lsn	PGNSP PGUID 12 1 0 0 0 f f f f t f s s 0 0 3220 "" _null_ _null_ _null_ _null_ _null_ pg_ptrack_control_lsn _null_ _null_ _null_ ));
+DESCR("read LSN from ptrack_control file");
+
 /*
  * Symbolic values for provolatile column: these indicate whether the result
  * of a function is dependent *only* on the values of its explicit arguments,

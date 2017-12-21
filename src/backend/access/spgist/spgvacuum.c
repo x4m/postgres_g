@@ -20,6 +20,7 @@
 #include "access/spgxlog.h"
 #include "access/transam.h"
 #include "access/xloginsert.h"
+#include "access/ptrack.h"
 #include "catalog/storage_xlog.h"
 #include "commands/vacuum.h"
 #include "miscadmin.h"
@@ -324,6 +325,7 @@ vacuumLeafPage(spgBulkDeleteState *bds, Relation index, Buffer buffer,
 		elog(ERROR, "inconsistent counts of deletable tuples");
 
 	/* Do the updates */
+	ptrack_add_block(index, BufferGetBlockNumber(buffer));
 	START_CRIT_SECTION();
 
 	spgPageIndexMultiDelete(&bds->spgstate, page,
@@ -448,6 +450,7 @@ vacuumLeafRoot(spgBulkDeleteState *bds, Relation index, Buffer buffer)
 		return;					/* nothing more to do */
 
 	/* Do the update */
+	ptrack_add_block(index, BufferGetBlockNumber(buffer));
 	START_CRIT_SECTION();
 
 	/* The tuple numbers are in order, so we can use PageIndexMultiDelete */
@@ -505,6 +508,7 @@ vacuumRedirectAndPlaceholder(Relation index, Buffer buffer)
 	xlrec.nToPlaceholder = 0;
 	xlrec.newestRedirectXid = InvalidTransactionId;
 
+	ptrack_add_block(index, BufferGetBlockNumber(buffer));
 	START_CRIT_SECTION();
 
 	/*

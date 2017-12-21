@@ -15,6 +15,7 @@
 #include "access/brin_revmap.h"
 #include "access/brin_xlog.h"
 #include "access/xloginsert.h"
+#include "access/ptrack.h"
 #include "miscadmin.h"
 #include "storage/bufmgr.h"
 #include "storage/freespace.h"
@@ -181,6 +182,7 @@ brin_doupdate(Relation idxrel, BlockNumber pagesPerRange,
 			UnlockReleaseBuffer(newbuf);
 		}
 
+		ptrack_add_block(idxrel, BufferGetBlockNumber(oldbuf));
 		START_CRIT_SECTION();
 		if (!PageIndexTupleOverwrite(oldpage, oldoff, (Item) newtup, newsz))
 			elog(ERROR, "failed to replace BRIN tuple");
@@ -239,6 +241,9 @@ brin_doupdate(Relation idxrel, BlockNumber pagesPerRange,
 
 		revmapbuf = brinLockRevmapPageForUpdate(revmap, heapBlk);
 
+		ptrack_add_block(idxrel, BufferGetBlockNumber(newbuf));
+		ptrack_add_block(idxrel, BufferGetBlockNumber(oldbuf));
+		ptrack_add_block(idxrel, BufferGetBlockNumber(revmapbuf));
 		START_CRIT_SECTION();
 
 		/*
@@ -408,6 +413,8 @@ brin_doinsert(Relation idxrel, BlockNumber pagesPerRange,
 	blk = BufferGetBlockNumber(*buffer);
 
 	/* Execute the actual insertion */
+	ptrack_add_block(idxrel, BufferGetBlockNumber(*buffer));
+	ptrack_add_block(idxrel, BufferGetBlockNumber(revmapbuf));
 	START_CRIT_SECTION();
 	if (extended)
 		brin_page_init(BufferGetPage(*buffer), BRIN_PAGETYPE_REGULAR);
@@ -861,6 +868,7 @@ brin_initialize_empty_new_buffer(Relation idxrel, Buffer buffer)
 			   "brin_initialize_empty_new_buffer: initializing blank page %u",
 			   BufferGetBlockNumber(buffer)));
 
+	ptrack_add_block(idxrel, BufferGetBlockNumber(buffer));
 	START_CRIT_SECTION();
 	page = BufferGetPage(buffer);
 	brin_page_init(page, BRIN_PAGETYPE_REGULAR);

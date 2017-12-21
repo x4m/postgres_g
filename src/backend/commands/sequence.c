@@ -22,6 +22,7 @@
 #include "access/xlog.h"
 #include "access/xloginsert.h"
 #include "access/xlogutils.h"
+#include "access/ptrack.h"
 #include "catalog/dependency.h"
 #include "catalog/indexing.h"
 #include "catalog/namespace.h"
@@ -374,6 +375,7 @@ fill_seq_with_data(Relation rel, HeapTuple tuple)
 	if (RelationNeedsWAL(rel))
 		GetTopTransactionId();
 
+	ptrack_add_block(rel, BufferGetBlockNumber(buf));
 	START_CRIT_SECTION();
 
 	MarkBufferDirty(buf);
@@ -759,6 +761,7 @@ nextval_internal(Oid relid, bool check_permissions)
 		GetTopTransactionId();
 
 	/* ready to change the on-disk (or really, in-buffer) tuple */
+	ptrack_add_block(seqrel, BufferGetBlockNumber(buf));
 	START_CRIT_SECTION();
 
 	/*
@@ -970,6 +973,7 @@ do_setval(Oid relid, int64 next, bool iscalled)
 		GetTopTransactionId();
 
 	/* ready to change the on-disk (or really, in-buffer) tuple */
+	ptrack_add_block(seqrel, BufferGetBlockNumber(buf));
 	START_CRIT_SECTION();
 
 	seq->last_value = next;		/* last fetched number */
@@ -1882,6 +1886,11 @@ seq_redo(XLogReaderState *record)
 	Size		itemsz;
 	xl_seq_rec *xlrec = (xl_seq_rec *) XLogRecGetData(record);
 	sequence_magic *sm;
+	RelFileNode rnode;
+	BlockNumber blkno;
+
+	XLogRecGetBlockTag(record, 0, &rnode, NULL, &blkno);
+	ptrack_add_block_redo(rnode, blkno);
 
 	if (info != XLOG_SEQ_LOG)
 		elog(PANIC, "seq_redo: unknown op code %u", info);

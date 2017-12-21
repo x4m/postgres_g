@@ -44,6 +44,7 @@
 #include "access/transam.h"
 #include "access/visibilitymap.h"
 #include "access/xlog.h"
+#include "access/ptrack.h"
 #include "catalog/catalog.h"
 #include "catalog/storage.h"
 #include "commands/dbcommands.h"
@@ -863,6 +864,7 @@ lazy_scan_heap(Relation onerel, int options, LVRelStats *vacrelstats,
 				empty_pages++;
 			}
 			freespace = PageGetHeapFreeSpace(page);
+			ptrack_add_block(onerel, BufferGetBlockNumber(buf));
 			MarkBufferDirty(buf);
 			UnlockReleaseBuffer(buf);
 
@@ -878,6 +880,7 @@ lazy_scan_heap(Relation onerel, int options, LVRelStats *vacrelstats,
 			/* empty pages are always all-visible and all-frozen */
 			if (!PageIsAllVisible(page))
 			{
+				ptrack_add_block(onerel, BufferGetBlockNumber(buf));
 				START_CRIT_SECTION();
 
 				/* mark buffer dirty before writing a WAL record */
@@ -1112,6 +1115,7 @@ lazy_scan_heap(Relation onerel, int options, LVRelStats *vacrelstats,
 		 */
 		if (nfrozen > 0)
 		{
+			ptrack_add_block(onerel, BufferGetBlockNumber(buf));
 			START_CRIT_SECTION();
 
 			MarkBufferDirty(buf);
@@ -1185,6 +1189,7 @@ lazy_scan_heap(Relation onerel, int options, LVRelStats *vacrelstats,
 			 * rare cases after a crash, it is not worth optimizing.
 			 */
 			PageSetAllVisible(page);
+			ptrack_add_block(onerel, BufferGetBlockNumber(buf));
 			MarkBufferDirty(buf);
 			visibilitymap_set(onerel, blkno, buf, InvalidXLogRecPtr,
 							  vmbuffer, visibility_cutoff_xid, flags);
@@ -1224,6 +1229,7 @@ lazy_scan_heap(Relation onerel, int options, LVRelStats *vacrelstats,
 			elog(WARNING, "page containing dead tuples is marked as all-visible in relation \"%s\" page %u",
 				 relname, blkno);
 			PageClearAllVisible(page);
+			ptrack_add_block(onerel, BufferGetBlockNumber(buf));
 			MarkBufferDirty(buf);
 			visibilitymap_clear(onerel, blkno, vmbuffer,
 								VISIBILITYMAP_VALID_BITS);
@@ -1462,6 +1468,7 @@ lazy_vacuum_page(Relation onerel, BlockNumber blkno, Buffer buffer,
 
 	pgstat_progress_update_param(PROGRESS_VACUUM_HEAP_BLKS_VACUUMED, blkno);
 
+	ptrack_add_block(onerel, BufferGetBlockNumber(buffer));
 	START_CRIT_SECTION();
 
 	for (; tupindex < vacrelstats->num_dead_tuples; tupindex++)

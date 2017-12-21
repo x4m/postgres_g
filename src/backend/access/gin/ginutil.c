@@ -18,6 +18,7 @@
 #include "access/ginxlog.h"
 #include "access/reloptions.h"
 #include "access/xloginsert.h"
+#include "access/ptrack.h"
 #include "catalog/pg_collation.h"
 #include "catalog/pg_type.h"
 #include "miscadmin.h"
@@ -667,6 +668,7 @@ ginUpdateStats(Relation index, const GinStatsData *stats)
 	metapage = BufferGetPage(metabuffer);
 	metadata = GinPageGetMeta(metapage);
 
+	ptrack_add_block(index, BufferGetBlockNumber(metabuffer));
 	START_CRIT_SECTION();
 
 	metadata->nTotalPages = stats->nTotalPages;

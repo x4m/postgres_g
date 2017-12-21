@@ -21,6 +21,7 @@
 #include "access/gin_private.h"
 #include "access/ginxlog.h"
 #include "access/xloginsert.h"
+#include "access/ptrack.h"
 #include "access/xlog.h"
 #include "commands/vacuum.h"
 #include "catalog/pg_am.h"
@@ -69,6 +70,7 @@ writeListPage(Relation index, Buffer buffer,
 	/* workspace could be a local array; we use palloc for alignment */
 	workspace = palloc(BLCKSZ);
 
+	ptrack_add_block(index, BufferGetBlockNumber(buffer));
 	START_CRIT_SECTION();
 
 	GinInitBuffer(buffer, GIN_LIST);
@@ -295,6 +297,7 @@ ginHeapTupleFastInsert(GinState *ginstate, GinTupleCollector *collector)
 			/*
 			 * Main list is empty, so just insert sublist as main list
 			 */
+			ptrack_add_block(index, BufferGetBlockNumber(metabuffer));
 			START_CRIT_SECTION();
 
 			metadata->head = sublist.head;
@@ -318,6 +321,8 @@ ginHeapTupleFastInsert(GinState *ginstate, GinTupleCollector *collector)
 
 			Assert(GinPageGetOpaque(page)->rightlink == InvalidBlockNumber);
 
+			ptrack_add_block(index, BufferGetBlockNumber(metabuffer));
+			ptrack_add_block(index, BufferGetBlockNumber(buffer));
 			START_CRIT_SECTION();
 
 			GinPageGetOpaque(page)->rightlink = sublist.head;
@@ -360,6 +365,8 @@ ginHeapTupleFastInsert(GinState *ginstate, GinTupleCollector *collector)
 		if (needWal)
 			XLogBeginInsert();
 
+		ptrack_add_block(index, BufferGetBlockNumber(metabuffer));
+		ptrack_add_block(index, BufferGetBlockNumber(buffer));
 		START_CRIT_SECTION();
 
 		/*
@@ -558,6 +565,10 @@ shiftList(Relation index, Buffer metabuffer, BlockNumber newHead,
 		 */
 		if (RelationNeedsWAL(index))
 			XLogEnsureRecordSpace(data.ndeleted, 0);
+
+		ptrack_add_block(index, BufferGetBlockNumber(metabuffer));
+		for (i = 0; i < data.ndeleted; i++)
+			ptrack_add_block(index, BufferGetBlockNumber(buffers[i]));
 
 		START_CRIT_SECTION();
 

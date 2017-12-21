@@ -21,6 +21,7 @@
 #include "access/nbtree.h"
 #include "access/relscan.h"
 #include "access/xlog.h"
+#include "access/ptrack.h"
 #include "catalog/index.h"
 #include "commands/vacuum.h"
 #include "pgstat.h"
@@ -297,6 +298,7 @@ btbuildempty(Relation index)
 	PageSetChecksumInplace(metapage, BTREE_METAPAGE);
 	smgrwrite(index->rd_smgr, INIT_FORKNUM, BTREE_METAPAGE,
 			  (char *) metapage, true);
+
 	log_newpage(&index->rd_smgr->smgr_rnode.node, INIT_FORKNUM,
 				BTREE_METAPAGE, metapage, false);
 
