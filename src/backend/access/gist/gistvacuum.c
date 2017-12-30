@@ -32,7 +32,9 @@ gistvacuumcleanup(IndexVacuumInfo *info, IndexBulkDeleteResult *stats)
 	BlockNumber npages,
 				blkno;
 	BlockNumber totFreePages;
-	bool		needLock;
+	bool		needLock,
+				shouldcount = false;
+	uint64_t	tuples_count = 0;
 
 	/* No-op in ANALYZE ONLY mode */
 	if (info->analyze_only)
@@ -45,11 +47,7 @@ gistvacuumcleanup(IndexVacuumInfo *info, IndexBulkDeleteResult *stats)
 		/* use heap's tuple count */
 		stats->num_index_tuples = info->num_heap_tuples;
 		stats->estimated_count = info->estimated_count;
-
-		/*
-		 * XXX the above is wrong if index is partial.  Would it be OK to just
-		 * return NULL, or is there work we must do below?
-		 */
+		shouldcount = rel->rd_indpred != NIL;
 	}
 
 	/*
@@ -82,11 +80,24 @@ gistvacuumcleanup(IndexVacuumInfo *info, IndexBulkDeleteResult *stats)
 			totFreePages++;
 			RecordFreeIndexPage(rel, blkno);
 		}
+		else
+		{
+			if (shouldcount && GistPageIsLeaf(page))
+			{
+				tuples_count += PageGetMaxOffsetNumber(page);
+			}
+		}
 		UnlockReleaseBuffer(buffer);
 	}
 
 	/* Finally, vacuum the FSM */
 	IndexFreeSpaceMapVacuum(info->index);
+
+	if (shouldcount)
+	{
+		stats->num_index_tuples = tuples_count;
+		stats->estimated_count = false;
+	}
 
 	/* return statistics */
 	stats->pages_free = totFreePages;
