@@ -131,6 +131,10 @@ extern char *output_files[];
  */
 #define JSONB_FORMAT_CHANGE_CAT_VER 201409291
 
+/*
+ * change in SLRU format to add checksums
+ */
+#define SLRU_FORMAT_CHANGE_CAT_VER 201803181
 
 /*
  * Each relation is represented by a relinfo structure.

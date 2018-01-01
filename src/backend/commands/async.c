@@ -150,7 +150,7 @@
  * than that, so changes in that data structure won't affect user-visible
  * restrictions.
  */
-#define NOTIFY_PAYLOAD_MAX_LENGTH	(BLCKSZ - NAMEDATALEN - 128)
+#define NOTIFY_PAYLOAD_MAX_LENGTH	(BLCKSZ - NAMEDATALEN - 128 - CHKSUMSZ)
 
 /*
  * Struct representing an entry in the global notify queue

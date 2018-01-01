@@ -315,7 +315,7 @@ static SlruCtlData OldSerXidSlruCtlData;
 
 #define OLDSERXID_PAGESIZE			BLCKSZ
 #define OLDSERXID_ENTRYSIZE			sizeof(SerCommitSeqNo)
-#define OLDSERXID_ENTRIESPERPAGE	(OLDSERXID_PAGESIZE / OLDSERXID_ENTRYSIZE)
+#define OLDSERXID_ENTRIESPERPAGE	((OLDSERXID_PAGESIZE - CHKSUMSZ) / OLDSERXID_ENTRYSIZE)
 
 /*
  * Set maximum pages based on the lesser of the number needed to track all

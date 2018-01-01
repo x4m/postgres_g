@@ -101,6 +101,7 @@
  */
 
 #include "storage/bufpage.h"
+#include "storage/checksum.h"
 
 /* number of checksums to calculate in parallel */
 #define N_SUMS 32
@@ -204,4 +205,49 @@ pg_checksum_page(char *page, BlockNumber blkno)
 	 * one. That avoids checksums of zero, which seems like a good idea.
 	 */
 	return (checksum % 65535) + 1;
+}
+
+
+#define SLRU_CHECKSUM_UINT16_OFFSET (BLCKSZ / sizeof(uint16) - 1)
+/*
+ * Compute the checksum for a Postgres SLRU page.  The page must be aligned on a
+ * 4-byte boundary.
+ *
+ * The checksum save itself to the last 2 bytes (CHKSUMSZ = 2 bytes) of the page
+ */
+uint16
+pg_checksum_slru_page(char *page)
+{
+	uint16 *page_casted = (uint16*) page;
+	uint16		save_checksum;
+	uint32		checksum;
+
+	save_checksum = page_casted[SLRU_CHECKSUM_UINT16_OFFSET];
+	page_casted[SLRU_CHECKSUM_UINT16_OFFSET] = 0;
+
+	checksum = (pg_checksum_block(page, BLCKSZ) % 65535) + 1;
+
+	page_casted[SLRU_CHECKSUM_UINT16_OFFSET] = save_checksum;
+
+	return checksum;
+}
+
+/*
+ * Get the checksum for a Postgres SLRU page.
+ */
+uint16
+pg_getchecksum_slru_page(char *page)
+{
+	uint16 *page_casted = (uint16*) page;
+	return page_casted[SLRU_CHECKSUM_UINT16_OFFSET];
+}
+
+/*
+ * Compute and install the checksum for a Postgres SLRU page.
+ */
+void
+pg_setchecksum_slru_page(char *page)
+{
+	uint16 *page_casted = (uint16*) page;
+	page_casted[SLRU_CHECKSUM_UINT16_OFFSET] = pg_checksum_slru_page(page);
 }

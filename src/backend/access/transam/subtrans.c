@@ -49,7 +49,7 @@
  */
 
 /* We need four bytes per xact */
-#define SUBTRANS_XACTS_PER_PAGE (BLCKSZ / sizeof(TransactionId))
+#define SUBTRANS_XACTS_PER_PAGE ((BLCKSZ - CHKSUMSZ) / sizeof(TransactionId))
 
 #define TransactionIdToPage(xid) ((xid) / (TransactionId) SUBTRANS_XACTS_PER_PAGE)
 #define TransactionIdToEntry(xid) ((xid) % (TransactionId) SUBTRANS_XACTS_PER_PAGE)

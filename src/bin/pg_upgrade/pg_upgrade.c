@@ -404,17 +404,183 @@ copy_subdir_files(const char *old_subdir, const char *new_subdir)
 	check_ok();
 }
 
+#include "storage/checksum.h"
+
+#include <dirent.h>
+#include <math.h>
+#include <fcntl.h>
+
+#define SLRU_PAGES_PER_SEGMENT	32
+#define SLRU_SEGMENT_SIZE (BLCKSZ * SLRU_PAGES_PER_SEGMENT)
+
+#define CLOG_BYTES_PER_PAGE_NEW	(BLCKSZ - CHKSUMSZ)
+#define CLOG_BYTES_PER_SEGMENT_NEW	(BLCKSZ - CHKSUMSZ) * SLRU_PAGES_PER_SEGMENT
+
+static void write_xact_data_to_file(char *file_name, uint32 local_start, char *data, uint32 length)
+{
+	int		dest_fd;
+	int		local_end = local_start + length;
+	char   *buffer = pg_malloc(SLRU_SEGMENT_SIZE);
+
+	Assert(length <= CLOG_BYTES_PER_SEGMENT_NEW);
+
+	if ((dest_fd = open(file_name, O_RDWR | O_CREAT | O_EXCL | PG_BINARY,
+						S_IRUSR | S_IWUSR)) < 0)
+		pg_fatal("could not create file \"%s\": %s\n", file_name, strerror(errno));
+
+	if (ftruncate(dest_fd, SLRU_SEGMENT_SIZE) < 0)
+		pg_fatal("could not set size of file \"%s\": %s\n", file_name, strerror(errno));
+
+	while (local_start < local_end)
+	{
+		int nbytes;
+		int page = local_start / CLOG_BYTES_PER_PAGE_NEW;
+		int page_start = local_start - (page * CLOG_BYTES_PER_PAGE_NEW);
+		int delta = Min((page + 1) * CLOG_BYTES_PER_PAGE_NEW, local_end) - local_start;		
+
+		if (lseek(dest_fd, page * BLCKSZ, SEEK_SET) < 0)
+			pg_fatal("could not set position in file \"%s\": %s\n", file_name, strerror(errno));
+
+		nbytes = read(dest_fd, buffer, BLCKSZ);
+
+		if (nbytes < 0)
+			pg_fatal("could not read file \"%s\": %s\n", file_name, strerror(errno));
+
+		memmove(buffer + page_start, data, delta);
+
+		pg_setchecksum_slru_page(buffer);
+
+		if (lseek(dest_fd, page * BLCKSZ, SEEK_SET) < 0)
+			pg_fatal("could not set position in file \"%s\": %s\n", file_name, strerror(errno));
+
+		if (write(dest_fd, buffer, BLCKSZ) != BLCKSZ)
+		{
+			pg_fatal("could not write file \"%s\": %s\n", file_name, strerror(errno));
+		}
+		
+		local_start += delta;
+		data += delta;
+	}
+
+	pg_free(buffer);
+	close(dest_fd);
+}
+
+static void
+distribute_xact_data(char *buffer, int nbytes, int oldsegno, const char *new_subdir)
+{
+	uint64 start = oldsegno * ((uint64) SLRU_SEGMENT_SIZE);
+	uint64 end = start + nbytes;
+
+	while (start < end)
+	{
+		int new_segno = start / (CLOG_BYTES_PER_SEGMENT_NEW);
+		uint64 local_start = start - new_segno * CLOG_BYTES_PER_SEGMENT_NEW;
+		uint64 local_end = Min(end, ((uint64)new_segno + 1) * CLOG_BYTES_PER_SEGMENT_NEW);
+		int64 length = local_end - start;
+		char		new_file[MAXPGPATH];
+
+		Assert(length > 0);
+		Assert(length == (uint32)length);
+		Assert(local_start == (uint32)local_start);
+
+		snprintf(new_file, sizeof(new_file), "%s/%s/%04X", new_cluster.pgdata, new_subdir, new_segno);
+
+		write_xact_data_to_file(new_file, (uint32)local_start, buffer, (uint32)length);
+
+		start +=length;
+		buffer +=length;
+	}
+}
+
+static void
+upgrade_one_xact_file(const char *old_file, int segno, const char *new_subdir)
+{
+	char 	   *buffer = pg_malloc(SLRU_SEGMENT_SIZE);
+	int			src_fd;
+	ssize_t		nbytes;
+
+	if ((src_fd = open(old_file, O_RDONLY | PG_BINARY, 0)) < 0)
+		pg_fatal("could not open file \"%s\": %s\n", old_file, strerror(errno));
+	
+	nbytes = read(src_fd, buffer, SLRU_SEGMENT_SIZE);
+
+	if (nbytes < 0)
+			pg_fatal("could not read file \"%s\": %s\n", old_file, strerror(errno));
+
+	distribute_xact_data(buffer, nbytes, segno, new_subdir);
+
+	pg_free(buffer);
+	close(src_fd);
+}
+
+static void
+upgrade_xact_files(const char *old_subdir, const char *new_subdir)
+{
+	char		old_path[MAXPGPATH];
+	char		old_file[MAXPGPATH];
+
+	DIR		   *cldir;
+	struct dirent *clde;
+	int			segno;
+
+	remove_new_subdir(new_subdir, false);
+
+	snprintf(old_path, sizeof(old_path), "%s/%s", old_cluster.pgdata, old_subdir);
+
+	prep_status("Upgrading old %s to new cluster", old_subdir);
+
+	
+	if ((cldir = opendir(old_path)) == NULL)
+	{
+		pg_fatal("could not open dir \"%s\": %s\n", old_path, strerror(errno));
+	}
+
+	while (errno = 0, (clde = readdir(cldir)) != NULL)
+	{
+		size_t		len;
+
+		len = strlen(clde->d_name);
+
+		if ((len == 4 || len == 5 || len == 6) &&
+			strspn(clde->d_name, "0123456789ABCDEF") == len)
+		{
+			segno = (int) strtol(clde->d_name, NULL, 16);
+			snprintf(old_file, sizeof(old_file), "%s/%s", old_path, clde->d_name);
+
+			upgrade_one_xact_file(old_file, segno, new_subdir);
+		}
+	}
+
+	if (errno)
+	{
+		pg_fatal("could not read dir \"%s\": %s\n", old_path, strerror(errno));
+	}
+	check_ok();
+}
+
 static void
 copy_xact_xlog_xid(void)
 {
-	/*
-	 * Copy old commit logs to new data dir. pg_clog has been renamed to
-	 * pg_xact in post-10 clusters.
-	 */
-	copy_subdir_files(GET_MAJOR_VERSION(old_cluster.major_version) < 1000 ?
-					  "pg_clog" : "pg_xact",
-					  GET_MAJOR_VERSION(new_cluster.major_version) < 1000 ?
-					  "pg_clog" : "pg_xact");
+	bool slru_changed = (new_cluster.controldata.cat_ver >= SLRU_FORMAT_CHANGE_CAT_VER &&
+		old_cluster.controldata.cat_ver < SLRU_FORMAT_CHANGE_CAT_VER);
+	char *xact_old_subdir = GET_MAJOR_VERSION(old_cluster.major_version) < 1000 ?
+					  "pg_clog" : "pg_xact";
+	char *xact_new_subdir = GET_MAJOR_VERSION(new_cluster.major_version) < 1000 ?
+					  "pg_clog" : "pg_xact";
+
+	if (slru_changed)
+	{
+		upgrade_xact_files(xact_old_subdir, xact_new_subdir);
+	}
+	else
+	{
+		/*
+		* Copy old commit logs to new data dir. pg_clog has been renamed to
+		* pg_xact in post-10 clusters.
+		*/
+		copy_subdir_files(xact_old_subdir, xact_new_subdir);
+	}
 
 	/* set the next transaction id and epoch of the new cluster */
 	prep_status("Setting next transaction ID and epoch for new cluster");
@@ -442,7 +608,8 @@ copy_xact_xlog_xid(void)
 	 * server doesn't attempt to read multis older than the cutoff value.
 	 */
 	if (old_cluster.controldata.cat_ver >= MULTIXACT_FORMATCHANGE_CAT_VER &&
-		new_cluster.controldata.cat_ver >= MULTIXACT_FORMATCHANGE_CAT_VER)
+		new_cluster.controldata.cat_ver >= MULTIXACT_FORMATCHANGE_CAT_VER && 
+		!slru_changed)
 	{
 		copy_subdir_files("pg_multixact/offsets", "pg_multixact/offsets");
 		copy_subdir_files("pg_multixact/members", "pg_multixact/members");
@@ -462,7 +629,8 @@ copy_xact_xlog_xid(void)
 				  new_cluster.pgdata);
 		check_ok();
 	}
-	else if (new_cluster.controldata.cat_ver >= MULTIXACT_FORMATCHANGE_CAT_VER)
+	else if (new_cluster.controldata.cat_ver >= MULTIXACT_FORMATCHANGE_CAT_VER ||
+				slru_changed)
 	{
 		/*
 		 * Remove offsets/0000 file created by initdb that no longer matches

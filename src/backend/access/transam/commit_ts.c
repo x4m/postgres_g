@@ -64,7 +64,7 @@ typedef struct CommitTimestampEntry
 									sizeof(RepOriginId))
 
 #define COMMIT_TS_XACTS_PER_PAGE \
-	(BLCKSZ / SizeOfCommitTimestampEntry)
+	((BLCKSZ - CHKSUMSZ) / SizeOfCommitTimestampEntry)
 
 #define TransactionIdToCTsPage(xid) \
 	((xid) / (TransactionId) COMMIT_TS_XACTS_PER_PAGE)

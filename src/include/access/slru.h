@@ -14,6 +14,7 @@
 #define SLRU_H
 
 #include "access/xlogdefs.h"
+#include "storage/checksum.h"
 #include "storage/lwlock.h"
 
 
