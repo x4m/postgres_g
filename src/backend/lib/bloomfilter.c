@@ -262,7 +262,7 @@ optimal_k(int64 bitset_bits, int64 total_elems)
 static void
 k_hashes(bloom_filter *filter, uint32 *hashes, unsigned char *elem, size_t len)
 {
-	uint32	hasha,
+	uint64	hasha,
 			hashb;
 	int		i;
 
@@ -280,17 +280,11 @@ k_hashes(bloom_filter *filter, uint32 *hashes, unsigned char *elem, size_t len)
 	hasha = hasha % filter->bitset_bits;
 	hashb = hashb % filter->bitset_bits;
 
-	/* First hash */
-	hashes[0] = hasha;
-
 	/* Subsequent hashes */
-	for (i = 1; i < filter->k_hash_funcs; i++)
+	for (i = 0; i < filter->k_hash_funcs; i++)
 	{
-		hasha = (hasha + hashb) % filter->bitset_bits;
-		hashb = (hashb + i) % filter->bitset_bits;
-
 		/* Accumulate hash value for caller */
-		hashes[i] = hasha;
+		hashes[i] = (hasha + i * hashb + i) % filter->bitset_bits;
 	}
 }
 
