@@ -1101,8 +1101,9 @@ is_innerrel_unique_for(PlannerInfo *root,
 		if (restrictinfo->is_pushed_down && IS_OUTER_JOIN(jointype))
 			continue;
 
-		/* Ignore if it's not a mergejoinable clause */
+		/* Ignore if it's not a mergejoinable clause or is a range join */
 		if (!restrictinfo->can_join ||
+			restrictinfo->rangejoin ||
 			restrictinfo->mergeopfamilies == NIL)
 			continue;			/* not mergejoinable */
 

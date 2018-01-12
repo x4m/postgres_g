@@ -1125,6 +1125,7 @@ select_outer_pathkeys_for_merge(PlannerInfo *root,
 	int			nClauses = list_length(mergeclauses);
 	EquivalenceClass **ecs;
 	int		   *scores;
+	bool	   *range_ecs;
 	int			necs;
 	ListCell   *lc;
 	int			j;
@@ -1139,6 +1140,7 @@ select_outer_pathkeys_for_merge(PlannerInfo *root,
 	 */
 	ecs = (EquivalenceClass **) palloc(nClauses * sizeof(EquivalenceClass *));
 	scores = (int *) palloc(nClauses * sizeof(int));
+	range_ecs = palloc(nClauses * sizeof(bool));
 	necs = 0;
 
 	foreach(lc, mergeclauses)
@@ -1179,6 +1181,7 @@ select_outer_pathkeys_for_merge(PlannerInfo *root,
 
 		ecs[necs] = oeclass;
 		scores[necs] = score;
+		range_ecs[necs] = rinfo->rangejoin;
 		necs++;
 	}
 
@@ -1196,6 +1199,11 @@ select_outer_pathkeys_for_merge(PlannerInfo *root,
 
 			for (j = 0; j < necs; j++)
 			{
+				/* for range join, the input order must be ascending */
+				if (range_ecs[j] &&
+					query_pathkey->pk_strategy != BTLessStrategyNumber)
+					continue;
+
 				if (ecs[j] == query_ec)
 					break;		/* found match */
 			}

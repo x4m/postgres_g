@@ -522,4 +522,118 @@ INSERT 0 1
 </programlisting>
   </para>
  </sect2>
+ <sect2 id="rangetypes-join">
+  <title>Range Join</title>
+
+  <indexterm>
+    <primary>range type</primary>
+    <secondary>join</secondary>
+  </indexterm>
+
+  <para>
+    A Range Join is a join where one of the join conditions is the range
+    overlaps operator (see <xref linkend="range-operators-table"/>). In other
+    words, rather than returning rows where corresponding fields are equal, it
+    returns rows where the corresponding fields overlap.
+  </para>
+  <para>
+    For instance, to find users who were active on a website at the same time
+    as they were using a mobile app, you might issue a query like:
+<programlisting>
+CREATE TABLE web_session(
+    web_session_id text primary key,
+    username text,
+    during tstzrange);
+CREATE TABLE app_session(
+    app_session_id text primary key,
+    username text,
+    during tstzrange);
+INSERT INTO web_session VALUES
+    ('0cc175b9c0f1b6a8', 'user1', '[2017-02-01 09:30, 2017-02-01 10:45)'),
+    ('92eb5ffee6ae2fec', 'user2', '[2017-02-01 09:30, 2017-02-01 10:45)'),
+    ('4a8a08f09d37b737', 'user3', '[2017-02-01 09:30, 2017-02-01 10:45)');
+INSERT INTO app_session VALUES
+    ('8277e0910d750195', 'user1', '[2017-02-01 10:30, 2017-02-01 11:45)'),
+    ('b448797616e091ad', 'user3', '[2017-02-01 09:00, 2017-02-01 11:00)'),
+    ('95649038408b5f33', 'user4', '[2017-02-01 09:30, 2017-02-01 10:45)');
+
+SELECT w.username,
+       w.during * a.during AS both_during
+    FROM  web_session w, app_session a
+    WHERE w.username = a.username
+    AND w.during &amp;&amp; a.during;
+ username |                     both_during                     
+----------+-----------------------------------------------------
+ user1    | ["2017-02-01 10:30:00-08","2017-02-01 10:45:00-08")
+ user3    | ["2017-02-01 09:30:00-08","2017-02-01 10:45:00-08")
+(2 rows)
+</programlisting>
+  </para>
+  <para>
+    In addition to the general execution strategies available, Postgres also
+    has special support for a variant of Merge Join called Range Merge Join,
+    which offers much better performance in most cases:
+<programlisting>
+EXPLAIN (costs off) SELECT w.username,
+      w.during * a.during AS both_during
+   FROM  web_session w, app_session a
+   WHERE w.username = a.username
+   AND w.during &amp;&amp; a.during;
+                              QUERY PLAN                              
+----------------------------------------------------------------------
+ Range Merge Join
+   Merge Cond: ((w.during &amp;&amp; a.during) AND (w.username = a.username))
+   ->  Sort
+         Sort Key: w.during, w.username
+         ->  Seq Scan on web_session w
+   ->  Sort
+         Sort Key: a.during, a.username
+         ->  Seq Scan on app_session a
+(8 rows)
+</programlisting>
+  </para>
+  <para>
+    If the base table does not use range types, you can still use Range Join
+    by constructing the appropriate range types in the query itself:
+<programlisting>
+CREATE TABLE web_session(
+    web_session_id text primary key,
+    username text,
+    start_time timestamptz,
+    end_time timestamptz);
+CREATE TABLE app_session(
+    app_session_id text primary key,
+    username text,
+    start_time timestamptz,
+    end_time timestamptz);
+INSERT INTO web_session VALUES
+    ('0cc175b9c0f1b6a8', 'user1', '2017-02-01 09:30', '2017-02-01 10:45'),
+    ('92eb5ffee6ae2fec', 'user2', '2017-02-01 09:30', '2017-02-01 10:45'),
+    ('4a8a08f09d37b737', 'user3', '2017-02-01 09:30', '2017-02-01 10:45');
+INSERT INTO app_session VALUES
+    ('8277e0910d750195', 'user1', '2017-02-01 10:30', '2017-02-01 11:45'),
+    ('b448797616e091ad', 'user3', '2017-02-01 09:00', '2017-02-01 11:00'),
+    ('95649038408b5f33', 'user4', '2017-02-01 09:30', '2017-02-01 10:45');
+
+EXPLAIN (costs off) SELECT *
+   FROM  web_session w, app_session a
+   WHERE w.username = a.username
+   AND tstzrange(w.start_time,w.end_time) &amp;&amp; tstzrange(a.start_time,a.end_time);
+                                                           QUERY PLAN                     
+                                      
+------------------------------------------------------------------------------------------
+--------------------------------------
+ Range Merge Join
+   Merge Cond: (((tstzrange(w.start_time, w.end_time)) &amp;&amp; (tstzrange(a.start_time, a.end_t
+ime))) AND (w.username = a.username))
+   ->  Sort
+         Sort Key: (tstzrange(w.start_time, w.end_time)), w.username
+         ->  Seq Scan on web_session w
+   ->  Sort
+         Sort Key: (tstzrange(a.start_time, a.end_time)), a.username
+         ->  Seq Scan on app_session a
+(8 rows)
+</programlisting>
+  </para>
+ </sect2>
 </sect1>

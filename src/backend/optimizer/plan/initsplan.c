@@ -14,6 +14,7 @@
  */
 #include "postgres.h"
 
+#include "catalog/pg_operator.h"
 #include "catalog/pg_type.h"
 #include "catalog/pg_class.h"
 #include "nodes/nodeFuncs.h"
@@ -1961,7 +1962,7 @@ distribute_qual_to_rels(PlannerInfo *root, Node *clause,
 	 */
 	if (restrictinfo->mergeopfamilies)
 	{
-		if (maybe_equivalence)
+		if (maybe_equivalence && !restrictinfo->rangejoin)
 		{
 			if (check_equivalence_delay(root, restrictinfo) &&
 				process_equivalence(root, &restrictinfo, below_outer_join))
@@ -2615,6 +2616,12 @@ check_mergejoinable(RestrictInfo *restrictinfo)
 
 	opno = ((OpExpr *) clause)->opno;
 	leftarg = linitial(((OpExpr *) clause)->args);
+
+	if (opno == OID_RANGE_OVERLAP_OP)
+	{
+		restrictinfo->rangejoin = true;
+		opno = OID_RANGE_EQ_OP;
+	}
 
 	if (op_mergejoinable(opno, exprType(leftarg)) &&
 		!contain_volatile_functions((Node *) clause))

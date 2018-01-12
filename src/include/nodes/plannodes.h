@@ -715,6 +715,7 @@ typedef struct MergeJoin
 	Oid		   *mergeCollations;	/* per-clause OIDs of collations */
 	int		   *mergeStrategies;	/* per-clause ordering (ASC or DESC) */
 	bool	   *mergeNullsFirst;	/* per-clause nulls ordering */
+	bool	    mergeRangeJoin;		/* is this a range merge join? */
 } MergeJoin;
 
 /* ----------------

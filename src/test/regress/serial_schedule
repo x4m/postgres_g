@@ -167,6 +167,7 @@ test: copy2
 test: temp
 test: domain
 test: rangefuncs
+test: rangejoin
 test: prepare
 test: without_oid
 test: conversion

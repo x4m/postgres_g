@@ -89,15 +89,67 @@
  *		proceed to another state.  This state is stored in the node's
  *		execution state information and is preserved across calls to
  *		ExecMergeJoin. -cim 10/31/89
+ *
+ *		RANGE MERGE JOIN
+ *
+ *		Range Merge Join is a generalization of merge join. When a join
+ *		predicate involves the range overlaps operator (&&), a merge join
+ *		becomes a range join.
+ *
+ *		The input ranges must be ordered by (lower-bound, upper-bound), which
+ *		is the ordinary range_ops operator class. MJCompare must not simply
+ *		use the operator class's comparison semantics though; instead it
+ *		returns:
+ *
+ *		  - MJCMP_MATCHES if outer range overlaps inner range
+ *		  - MJCMP_LEFTOF if outer range is strictly left-of inner range
+ *		  - MJCMP_RIGHTOF if outer range is strictly right-of inner range
+ *
+ *		NB: the above is a simplification considering only a single merge
+ *		clause. When there are multiple merge clauses, it's possible that one
+ *		tuple is neither right-of, nor left-of, nor matching. For instance, if
+ *		an earlier range merge clause matches (overlaps), but a later clause
+ *		fails. In that case, MJCompare returns MJCMP_NOSKIP.
+ *
+ *		If MJCompare returns MJCMP_RIGHTOF, later or earlier tuples on the
+ *		inner side may match. For example:
+ *
+ *		    OUTER     INNER
+ *		    ...		 [1,9]  matches current outer
+ *		    [4,5]	 [2,3]  no match
+ *		    ...		 [3,5]  matches current outer
+ *		    ...		 [7,9]  no match and no later matches for current outer
+ *
+ *		Outer tuple [4,5] does not match [2,3], but it matches (overlaps with)
+ *		the earlier tuple [1,9] and the later tuple [3,5]. But once we
+ *		encounter [7,9], we know that no later inner tuple can possibly match
+ *		the outer.
+ *
+ *		When doing a range join, we lose two merge join optimizations:
+ *
+ *		1. Ordinary merge join only restores to the mark if it's equal to the
+ *		   new outer. For range join, we must always restore to the mark
+ *		   because there may be matches after the mark and before the current
+ *		   inner tuple.
+ *		2. After restoring to the mark, ordinary merge join immediately moves
+ *		   to JOINTUPLES. Range join must move to SKIP_TEST first.
+ *
+ *		Range merge join is unable to implement RIGHT/FULL joins. It's also
+ *		unable to cope with reverse sort order, because there could always be
+ *		some later inner range that matches the outer tuple.
  */
 #include "postgres.h"
 
 #include "access/nbtree.h"
+#include "catalog/pg_operator.h"
 #include "executor/execdebug.h"
 #include "executor/nodeMergejoin.h"
 #include "miscadmin.h"
+#include "nodes/nodeFuncs.h"
 #include "utils/lsyscache.h"
 #include "utils/memutils.h"
+#include "utils/rangetypes.h"
+#include "utils/typcache.h"
 
 
 /*
@@ -138,6 +190,10 @@ typedef struct MergeJoinClauseData
 	 * stored here.
 	 */
 	SortSupportData ssup;
+
+	/* needed for Range Join */
+	bool			 isrange;
+	TypeCacheEntry	*range_typcache;
 }			MergeJoinClauseData;
 
 /* Result type for MJEvalOuterValues and MJEvalInnerValues */
@@ -148,6 +204,13 @@ typedef enum
 	MJEVAL_ENDOFJOIN			/* end of input (physical or effective) */
 } MJEvalResult;
 
+typedef enum
+{
+	MJCMP_LEFTOF,
+	MJCMP_RIGHTOF,
+	MJCMP_MATCHES,
+	MJCMP_NOSKIP
+} MJCompareResult;
 
 #define MarkInnerTuple(innerTupleSlot, mergestate) \
 	ExecCopySlot((mergestate)->mj_MarkedTupleSlot, (innerTupleSlot))
@@ -178,12 +241,15 @@ MJExamineQuals(List *mergeclauses,
 			   Oid *mergecollations,
 			   int *mergestrategies,
 			   bool *mergenullsfirst,
+			   bool *israngejoin,
 			   PlanState *parent)
 {
 	MergeJoinClause clauses;
 	int			nClauses = list_length(mergeclauses);
 	int			iClause;
 	ListCell   *cl;
+
+	*israngejoin = false;
 
 	clauses = (MergeJoinClause) palloc0(nClauses * sizeof(MergeJoinClauseData));
 
@@ -196,6 +262,7 @@ MJExamineQuals(List *mergeclauses,
 		Oid			collation = mergecollations[iClause];
 		StrategyNumber opstrategy = mergestrategies[iClause];
 		bool		nulls_first = mergenullsfirst[iClause];
+		Oid			eq_opno;
 		int			op_strategy;
 		Oid			op_lefttype;
 		Oid			op_righttype;
@@ -221,8 +288,32 @@ MJExamineQuals(List *mergeclauses,
 			elog(ERROR, "unsupported mergejoin strategy %d", opstrategy);
 		clause->ssup.ssup_nulls_first = nulls_first;
 
+		/*
+		 * If a range join, the original operator must be "&&" rather than
+		 * "=". Set eq_opno to the range equality operator for the purposes of
+		 * setting up the merge clause, but mark it as a range.
+		 */
+		if (qual->opno == OID_RANGE_OVERLAP_OP)
+		{
+			Oid rngtypid = exprType((Node*)clause->lexpr->expr);
+			Assert(exprType((Node*)clause->lexpr->expr) ==
+				   exprType((Node*)clause->rexpr->expr));
+			eq_opno = OID_RANGE_EQ_OP;
+			clause->isrange = true;
+			clause->range_typcache = lookup_type_cache(rngtypid,
+													   TYPECACHE_RANGE_INFO);
+			*israngejoin = true;
+		}
+		else
+		{
+			eq_opno = qual->opno;
+			clause->isrange = false;
+			clause->range_typcache = NULL;
+		}
+
+
 		/* Extract the operator's declared left/right datatypes */
-		get_op_opfamily_properties(qual->opno, opfamily, false,
+		get_op_opfamily_properties(eq_opno, opfamily, false,
 								   &op_strategy,
 								   &op_lefttype,
 								   &op_righttype);
@@ -324,6 +415,11 @@ MJEvalOuterValues(MergeJoinState *mergestate)
 			else if (result == MJEVAL_MATCHABLE)
 				result = MJEVAL_NONMATCHABLE;
 		}
+		else if (clause->isrange)
+		{
+			if (RangeIsEmpty(DatumGetRangeTypeP(clause->ldatum)))
+				result = MJEVAL_NONMATCHABLE;
+		}
 	}
 
 	MemoryContextSwitchTo(oldContext);
@@ -371,11 +467,44 @@ MJEvalInnerValues(MergeJoinState *mergestate, TupleTableSlot *innerslot)
 			else if (result == MJEVAL_MATCHABLE)
 				result = MJEVAL_NONMATCHABLE;
 		}
+		else if (clause->isrange)
+		{
+			if (RangeIsEmpty(DatumGetRangeTypeP(clause->rdatum)))
+				result = MJEVAL_NONMATCHABLE;
+		}
 	}
 
 	MemoryContextSwitchTo(oldContext);
 
 	return result;
+}
+
+/*
+ * Return 0 if ranges overlap, <0 if the first range is left-of the second, or
+ * >0 if the first range is right-of the second. See comment at the top of the
+ * file for explanation.
+ */
+static int
+ApplyRangeMatch(Datum ldatum, bool lisnull, Datum rdatum, bool risnull,
+				SortSupport ssup, TypeCacheEntry *typcache)
+{
+	/* can't handle reverse sort order; should be prevented by optimizer */
+	Assert(!ssup->ssup_reverse);
+	Assert(!lisnull || !risnull);
+
+	if (lisnull)
+		return ssup->ssup_nulls_first ? -1 : 1;
+	if (risnull)
+		return ssup->ssup_nulls_first ? 1 : -1;
+
+	if (range_before_internal(typcache, DatumGetRangeTypeP(ldatum),
+							  DatumGetRangeTypeP(rdatum)))
+		return -1;
+	else if (range_overlaps_internal(typcache, DatumGetRangeTypeP(ldatum),
+									 DatumGetRangeTypeP(rdatum)))
+		return 0;
+	else
+		return 1;
 }
 
 /*
@@ -388,11 +517,12 @@ MJEvalInnerValues(MergeJoinState *mergestate, TupleTableSlot *innerslot)
  * MJEvalOuterValues and MJEvalInnerValues must already have been called
  * for the current outer and inner tuples, respectively.
  */
-static int
+static MJCompareResult
 MJCompare(MergeJoinState *mergestate)
 {
 	int			result = 0;
 	bool		nulleqnull = false;
+	bool		range_overlaps = false;
 	ExprContext *econtext = mergestate->js.ps.ps_ExprContext;
 	int			i;
 	MemoryContext oldContext;
@@ -418,13 +548,24 @@ MJCompare(MergeJoinState *mergestate)
 			continue;
 		}
 
-		result = ApplySortComparator(clause->ldatum, clause->lisnull,
+		if (clause->isrange)
+		{
+			result = ApplyRangeMatch(clause->ldatum, clause->lisnull,
 									 clause->rdatum, clause->risnull,
-									 &clause->ssup);
+									 &clause->ssup, clause->range_typcache);
+			if (result == 0)
+				range_overlaps = true;
+		}
+		else
+			result = ApplySortComparator(clause->ldatum, clause->lisnull,
+										 clause->rdatum, clause->risnull,
+										 &clause->ssup);
 
 		if (result != 0)
 			break;
 	}
+
+	MemoryContextSwitchTo(oldContext);
 
 	/*
 	 * If we had any NULL-vs-NULL inputs, we do not want to report that the
@@ -437,11 +578,22 @@ MJCompare(MergeJoinState *mergestate)
 	 */
 	if (result == 0 &&
 		(nulleqnull || mergestate->mj_ConstFalseJoin))
-		result = 1;
+		return MJCMP_RIGHTOF;
 
-	MemoryContextSwitchTo(oldContext);
+	/*
+	 * If a range predicate succeeds (overlaps) but a later predicate fails,
+	 * it's neither strictly right-of, nor strictly left-of, nor matching. So
+	 * we return MJCMP_NOSKIP.
+	 */
+	if (result != 0 && range_overlaps)
+		return MJCMP_NOSKIP;
 
-	return result;
+	if (result == 0)
+		return MJCMP_MATCHES;
+	else if (result < 0)
+		return MJCMP_LEFTOF;
+	else
+		return MJCMP_RIGHTOF;
 }
 
 
@@ -532,7 +684,6 @@ check_constant_qual(List *qual, bool *is_const_false)
 	}
 	return true;
 }
-
 
 /* ----------------------------------------------------------------
  *		ExecMergeTupleDump
@@ -891,12 +1042,21 @@ ExecMergeJoin(PlanState *pstate)
 						compareResult = MJCompare(node);
 						MJ_DEBUG_COMPARE(compareResult);
 
-						if (compareResult == 0)
+						if (compareResult == MJCMP_MATCHES)
 							node->mj_JoinState = EXEC_MJ_JOINTUPLES;
+						else if (compareResult == MJCMP_LEFTOF)
+							node->mj_JoinState = EXEC_MJ_NEXTOUTER;
 						else
 						{
-							Assert(compareResult < 0);
-							node->mj_JoinState = EXEC_MJ_NEXTOUTER;
+							/*
+							 * This state is only reached during a range join,
+							 * where earlier tuples may match, the current
+							 * tuple may not match, but a later tuple in the
+							 * inner may still match. See comment at the top
+							 * of the file.
+							 */
+							Assert(((MergeJoin*)node->js.ps.plan)->mergeRangeJoin);
+							node->mj_JoinState = EXEC_MJ_NEXTINNER;
 						}
 						break;
 					case MJEVAL_NONMATCHABLE:
@@ -1038,17 +1198,33 @@ ExecMergeJoin(PlanState *pstate)
 				MJ_printf("ExecMergeJoin: EXEC_MJ_TESTOUTER\n");
 
 				/*
-				 * Here we must compare the outer tuple with the marked inner
-				 * tuple.  (We can ignore the result of MJEvalInnerValues,
-				 * since the marked inner tuple is certainly matchable.)
+				 * We can ignore the result of MJEvalInnerValues, since the
+				 * marked inner tuple is certainly matchable.
 				 */
 				innerTupleSlot = node->mj_MarkedTupleSlot;
 				(void) MJEvalInnerValues(node, innerTupleSlot);
 
+				if (((MergeJoin*)node->js.ps.plan)->mergeRangeJoin)
+				{
+					/*
+					 * For range join, we must always restore to the mark, and
+					 * then move to SKIP_TEST.
+					 */
+					ExecRestrPos(innerPlan);
+					node->mj_InnerTupleSlot = node->mj_MarkedTupleSlot;
+					node->mj_JoinState = EXEC_MJ_SKIP_TEST;
+					break;
+				}
+
+				/*
+				 * Here we must compare the outer tuple with the marked inner
+				 * tuple.
+				 */
 				compareResult = MJCompare(node);
+				Assert(compareResult != MJCMP_NOSKIP);
 				MJ_DEBUG_COMPARE(compareResult);
 
-				if (compareResult == 0)
+				if (compareResult == MJCMP_MATCHES)
 				{
 					/*
 					 * the merge clause matched so now we restore the inner
@@ -1106,7 +1282,7 @@ ExecMergeJoin(PlanState *pstate)
 					 *	no more inners, no more matches are possible.
 					 * ----------------
 					 */
-					Assert(compareResult > 0);
+					Assert(compareResult == MJCMP_RIGHTOF);
 					innerTupleSlot = node->mj_InnerTupleSlot;
 
 					/* reload comparison data for current inner */
@@ -1143,7 +1319,7 @@ ExecMergeJoin(PlanState *pstate)
 				break;
 
 				/*----------------------------------------------------------
-				 * EXEC_MJ_SKIP means compare tuples and if they do not
+				 * EXEC_MJ_SKIP_TEST means compare tuples and if they do not
 				 * match, skip whichever is lesser.
 				 *
 				 * For example:
@@ -1182,19 +1358,23 @@ ExecMergeJoin(PlanState *pstate)
 				compareResult = MJCompare(node);
 				MJ_DEBUG_COMPARE(compareResult);
 
-				if (compareResult == 0)
+				if (compareResult == MJCMP_MATCHES ||
+					compareResult == MJCMP_NOSKIP)
 				{
 					if (!node->mj_SkipMarkRestore)
 						ExecMarkPos(innerPlan);
 
 					MarkInnerTuple(node->mj_InnerTupleSlot, node);
 
-					node->mj_JoinState = EXEC_MJ_JOINTUPLES;
+					if (compareResult == MJCMP_NOSKIP)
+						node->mj_JoinState = EXEC_MJ_NEXTINNER;
+					else
+						node->mj_JoinState = EXEC_MJ_JOINTUPLES;
 				}
-				else if (compareResult < 0)
+				else if (compareResult == MJCMP_LEFTOF)
 					node->mj_JoinState = EXEC_MJ_SKIPOUTER_ADVANCE;
 				else
-					/* compareResult > 0 */
+					/* compareResult == MJCMP_RIGHTOF */
 					node->mj_JoinState = EXEC_MJ_SKIPINNER_ADVANCE;
 				break;
 
@@ -1598,6 +1778,7 @@ ExecInitMergeJoin(MergeJoin *node, EState *estate, int eflags)
 											node->mergeCollations,
 											node->mergeStrategies,
 											node->mergeNullsFirst,
+											&node->mergeRangeJoin,
 											(PlanState *) mergestate);
 
 	/*

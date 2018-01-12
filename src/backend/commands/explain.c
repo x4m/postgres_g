@@ -917,7 +917,11 @@ ExplainNode(PlanState *planstate, List *ancestors,
 			pname = sname = "Nested Loop";
 			break;
 		case T_MergeJoin:
-			pname = "Merge";	/* "Join" gets added by jointype switch */
+			if (((MergeJoin*)plan)->mergeRangeJoin)
+				pname = "Range Merge";	/* "Join" gets added by jointype switch */
+			else
+				pname = "Merge";	/* "Join" gets added by jointype switch */
+
 			sname = "Merge Join";
 			break;
 		case T_HashJoin:

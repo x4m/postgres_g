@@ -1886,6 +1886,9 @@ typedef struct RestrictInfo
 	/* valid if clause is mergejoinable, else NIL */
 	List	   *mergeopfamilies;	/* opfamilies containing clause operator */
 
+	/* is a rangejoin clause? */
+	bool	    rangejoin;
+
 	/* cache space for mergeclause processing; NULL if not yet set */
 	EquivalenceClass *left_ec;	/* EquivalenceClass containing lefthand */
 	EquivalenceClass *right_ec; /* EquivalenceClass containing righthand */

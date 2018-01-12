@@ -186,6 +186,7 @@ make_restrictinfo_internal(Expr *clause,
 	restrictinfo->outer_selec = -1;
 
 	restrictinfo->mergeopfamilies = NIL;
+	restrictinfo->rangejoin = false;
 
 	restrictinfo->left_ec = NULL;
 	restrictinfo->right_ec = NULL;

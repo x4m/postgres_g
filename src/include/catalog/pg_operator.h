@@ -1748,6 +1748,7 @@ DESCR("greater than or equal");
 /* generic range type operators */
 DATA(insert OID = 3882 (  "="	   PGNSP PGUID b t t 3831 3831 16 3882 3883 range_eq eqsel eqjoinsel ));
 DESCR("equal");
+#define OID_RANGE_EQ_OP 3882
 DATA(insert OID = 3883 (  "<>"	   PGNSP PGUID b f f 3831 3831 16 3883 3882 range_ne neqsel neqjoinsel ));
 DESCR("not equal");
 DATA(insert OID = 3884 (  "<"	   PGNSP PGUID b f f 3831 3831 16 3887 3886 range_lt rangesel scalarltjoinsel ));

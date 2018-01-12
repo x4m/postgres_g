@@ -2980,7 +2980,6 @@ mergejoinscansel(PlannerInfo *root, Node *clause,
 			   *right;
 	VariableStatData leftvar,
 				rightvar;
-	int			op_strategy;
 	Oid			op_lefttype;
 	Oid			op_righttype;
 	Oid			opno,
@@ -3017,12 +3016,20 @@ mergejoinscansel(PlannerInfo *root, Node *clause,
 	examine_variable(root, left, 0, &leftvar);
 	examine_variable(root, right, 0, &rightvar);
 
-	/* Extract the operator's declared left/right datatypes */
-	get_op_opfamily_properties(opno, opfamily, false,
-							   &op_strategy,
-							   &op_lefttype,
-							   &op_righttype);
-	Assert(op_strategy == BTEqualStrategyNumber);
+	if (opno == OID_RANGE_OVERLAP_OP)
+	{
+		op_lefttype = op_righttype = ANYRANGEOID;
+	}
+	else
+	{
+		int			op_strategy;
+		/* Extract the operator's declared left/right datatypes */
+		get_op_opfamily_properties(opno, opfamily, false,
+								   &op_strategy,
+								   &op_lefttype,
+								   &op_righttype);
+		Assert(op_strategy == BTEqualStrategyNumber);
+	}
 
 	/*
 	 * Look up the various operators we need.  If we don't find them all, it

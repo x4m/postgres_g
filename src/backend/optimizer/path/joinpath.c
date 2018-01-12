@@ -567,6 +567,19 @@ try_mergejoin_path(PlannerInfo *root,
 	Relids		required_outer;
 	JoinCostWorkspace workspace;
 
+	/* RIGHT/FULL joins don't support range join */
+	if (jointype == JOIN_RIGHT || jointype == JOIN_FULL)
+	{
+		ListCell *lc;
+
+		foreach(lc, mergeclauses)
+		{
+			RestrictInfo *restrictinfo = (RestrictInfo *) lfirst(lc);
+			if (restrictinfo->rangejoin)
+				return;
+		}
+	}
+
 	if (is_partial)
 	{
 		try_partial_mergejoin_path(root,
