@@ -397,6 +397,7 @@ gistScanPage(IndexScanDesc scan, GISTSearchItem *pageItem, double *myDistances,
 		bool		match;
 		bool		recheck;
 		bool		recheck_distances;
+		bool		skip_tuple;
 
 		/*
 		 * If the scan specifies not to return killed tuples, then we treat a
@@ -406,6 +407,7 @@ gistScanPage(IndexScanDesc scan, GISTSearchItem *pageItem, double *myDistances,
 			continue;
 
 		it = (IndexTuple) PageGetItem(page, iid);
+		skip_tuple = IndexTupleIsSkip(it);
 
 		/*
 		 * Must call gistindex_keytest in tempCxt, and clean up any leftover
@@ -421,6 +423,15 @@ gistScanPage(IndexScanDesc scan, GISTSearchItem *pageItem, double *myDistances,
 
 		/* Ignore tuple if it doesn't match */
 		if (!match)
+		{
+			if (skip_tuple)
+			{
+				i += IndexTupleGetSkipCount(it);
+			}
+			continue;
+		}
+
+		if (skip_tuple)
 			continue;
 
 		if (tbm && GistPageIsLeaf(page))
