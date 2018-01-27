@@ -357,7 +357,7 @@ gistplacetopage(Relation rel, Size freespace, GISTSTATE *giststate,
 		if (is_rootsplit)
 		{
 			IndexTuple *downlinks;
-			int			ndownlinks = 0;
+			int			ndownlinks = 1;
 			int			i;
 
 			rootpg.buffer = buffer;
@@ -368,8 +368,11 @@ gistplacetopage(Relation rel, Size freespace, GISTSTATE *giststate,
 			for (ptr = dist; ptr; ptr = ptr->next)
 				ndownlinks++;
 			downlinks = palloc(sizeof(IndexTuple) * ndownlinks);
-			for (i = 0, ptr = dist; ptr; ptr = ptr->next)
+			for (i = 1, ptr = dist; ptr; ptr = ptr->next)
 				downlinks[i++] = ptr->itup;
+			downlinks[0] = gistunion(rel,downlinks + 1, ndownlinks - 1, giststate);
+			IndexTupleMakeSkip(downlinks[0]);
+			IndexTupleSetSkipCount(downlinks[0], ndownlinks - 1);
 
 			rootpg.block.blkno = GIST_ROOT_BLKNO;
 			rootpg.block.num = ndownlinks;
