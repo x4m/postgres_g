@@ -407,7 +407,8 @@ extern bool gistplacetopage(Relation rel, Size freespace, GISTSTATE *giststate,
 				Buffer leftchildbuf,
 				List **splitinfo,
 				bool markleftchild,
-				int ndeltup);
+				int ndeltup,
+				OffsetNumber skipoffnum);
 
 extern SplitedPageLayout *gistSplit(Relation r, Page page, IndexTuple *itup,
 		  int len, GISTSTATE *giststate);
@@ -415,7 +416,7 @@ extern SplitedPageLayout *gistSplit(Relation r, Page page, IndexTuple *itup,
 extern XLogRecPtr gistXLogUpdate(Buffer buffer,
 			   OffsetNumber *todelete, int ntodelete,
 			   IndexTuple *itup, int ntup,
-			   Buffer leftchild);
+			   Buffer leftchild, OffsetNumber skipoffnum);
 
 extern XLogRecPtr gistXLogSplit(bool page_is_leaf,
 			  SplitedPageLayout *dist,

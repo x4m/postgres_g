@@ -81,6 +81,7 @@ gistRedoPageUpdateRecord(XLogReaderState *record)
 		data = begin = XLogRecGetBlockData(record, 0, &datalen);
 
 		page = (Page) BufferGetPage(buffer);
+		elog(FATAL,"TODO WAL");
 
 		if (xldata->ntodelete == 1 && xldata->ntoinsert == 1)
 		{
@@ -457,7 +458,7 @@ XLogRecPtr
 gistXLogUpdate(Buffer buffer,
 			   OffsetNumber *todelete, int ntodelete,
 			   IndexTuple *itup, int ituplen,
-			   Buffer leftchildbuf)
+			   Buffer leftchildbuf, OffsetNumber skipoffnum)
 {
 	gistxlogPageUpdate xlrec;
 	int			i;
@@ -465,6 +466,7 @@ gistXLogUpdate(Buffer buffer,
 
 	xlrec.ntodelete = ntodelete;
 	xlrec.ntoinsert = ituplen;
+	xlrec.skipoffnum = skipoffnum;
 
 	XLogBeginInsert();
 	XLogRegisterData((char *) &xlrec, sizeof(gistxlogPageUpdate));

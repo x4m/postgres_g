@@ -33,7 +33,7 @@ static bool gistinserttuples(GISTInsertState *state, GISTInsertStack *stack,
 				 GISTSTATE *giststate,
 				 IndexTuple *tuples, int ntup, OffsetNumber oldoffnum,
 				 Buffer leftchild, Buffer rightchild,
-				 bool unlockbuf, bool unlockleftchild, int ndeltup);
+				 bool unlockbuf, bool unlockleftchild, int ndeltup, OffsetNumber skipoffnum);
 static void gistfinishsplit(GISTInsertState *state, GISTInsertStack *stack,
 				GISTSTATE *giststate, List *splitinfo, bool releasebuf);
 static void gistvacuumpage(Relation rel, Page page, Buffer buffer);
@@ -216,7 +216,8 @@ gistplacetopage(Relation rel, Size freespace, GISTSTATE *giststate,
 				Buffer leftchildbuf,
 				List **splitinfo,
 				bool markfollowright,
-				int ndeltup)
+				int ndeltup,
+				OffsetNumber skipoffnum)
 {
 	BlockNumber blkno = BufferGetBlockNumber(buffer);
 	Page		page = BufferGetPage(buffer);
@@ -294,6 +295,7 @@ gistplacetopage(Relation rel, Size freespace, GISTSTATE *giststate,
 			if (pos != tlen)
 				memmove(itvec + pos, itvec + pos + ndeltup, sizeof(IndexTuple) * (tlen - pos));
 		}
+		elog(NOTICE,"GS: join splitvector");
 		itvec = gistjoinvector(itvec, &tlen, itup, ntup);
 		elog(NOTICE,"GS: calling extensions split");
 		dist = gistSplit(rel, page, itvec, tlen, giststate);
@@ -521,6 +523,16 @@ gistplacetopage(Relation rel, Size freespace, GISTSTATE *giststate,
 		 */
 		START_CRIT_SECTION();
 
+		if (OffsetNumberIsValid(skipoffnum))
+		{
+			IndexTuple skiptuple = (IndexTuple) PageGetItem(page, PageGetItemId(page, skipoffnum));
+
+			elog(NOTICE,"GS: adjust skipgroup %d by %d", IndexTupleGetSkipCount(skiptuple), ntup - ndeltup);
+
+			Assert(IndexTupleIsSkip(skiptuple));
+			IndexTupleSetSkipCount(skiptuple, IndexTupleGetSkipCount(skiptuple) + ntup - ndeltup);
+		}
+
 		/*
 		 * Delete old tuple if any, then insert new tuple(s) if any.  If
 		 * possible, use the fast path of PageIndexTupleOverwrite.
@@ -571,7 +583,7 @@ gistplacetopage(Relation rel, Size freespace, GISTSTATE *giststate,
 
 			recptr = gistXLogUpdate(buffer,
 									deloffs, ndeloffs, itup, ntup,
-									leftchildbuf);
+									leftchildbuf, skipoffnum);
 
 			PageSetLSN(page, recptr);
 		}
@@ -1225,7 +1237,7 @@ gistinserttuple(GISTInsertState *state, GISTInsertStack *stack,
 {
 	elog(NOTICE,"GS: gistinserttuple");
 	return gistinserttuples(state, stack, giststate, &tuple, 1, oldoffnum,
-							InvalidBuffer, InvalidBuffer, false, false, 1);
+							InvalidBuffer, InvalidBuffer, false, false, 1, InvalidOffsetNumber);
 }
 
 /* ----------------
@@ -1259,7 +1271,7 @@ gistinserttuples(GISTInsertState *state, GISTInsertStack *stack,
 				 GISTSTATE *giststate,
 				 IndexTuple *tuples, int ntup, OffsetNumber oldoffnum,
 				 Buffer leftchild, Buffer rightchild,
-				 bool unlockbuf, bool unlockleftchild, int ndeltup)
+				 bool unlockbuf, bool unlockleftchild, int ndeltup, OffsetNumber skipoffnum)
 {
 	List	   *splitinfo;
 	bool		is_split;
@@ -1271,7 +1283,9 @@ gistinserttuples(GISTInsertState *state, GISTInsertStack *stack,
 							   oldoffnum, NULL,
 							   leftchild,
 							   &splitinfo,
-							   true, ndeltup);
+							   true,
+							   ndeltup,
+							   skipoffnum);
 	/*
 	 * Before recursing up in case the page was split, release locks on the
 	 * child pages. We don't need to keep them locked when updating the
@@ -1349,8 +1363,8 @@ gistfinishsplit(GISTInsertState *state, GISTInsertStack *stack,
 
 		if (gistinserttuples(state, stack->parent, giststate,
 							 &right->downlink, 1,
-							 InvalidOffsetNumber,
-							 left->buf, right->buf, false, false, 0))
+							 stack->downlinkoffnum,
+							 left->buf, right->buf, false, false, 0, stack->skipoffnum))
 		{
 			/*
 			 * If the parent page was split, need to relocate the original
@@ -1378,7 +1392,8 @@ gistfinishsplit(GISTInsertState *state, GISTInsertStack *stack,
 					 left->buf, right->buf,
 					 true,		/* Unlock parent */
 					 unlockbuf,	/* Unlock stack->buffer if caller wants that */
-					 1
+					 1,
+					 stack->skipoffnum
 		);
 	Assert(left->buf == stack->buffer);
 }
@@ -1634,7 +1649,7 @@ gistvacuumpage(Relation rel, Page page, Buffer buffer)
 
 			recptr = gistXLogUpdate(buffer,
 									deletable, ndeletable,
-									NULL, 0, InvalidBuffer);
+									NULL, 0, InvalidBuffer, InvalidOffsetNumber);
 
 			PageSetLSN(page, recptr);
 		}

@@ -452,6 +452,7 @@ gistchoose(Relation r, Page p, IndexTuple it,	/* it has compressed entry */
 	maxoff = PageGetMaxOffsetNumber(p);
 	Assert(maxoff >= FirstOffsetNumber);
 	i = OffsetNumberNext(skipoffnum);
+
 	while (i <= maxoff)
 	{
 		IndexTuple	itup = (IndexTuple) PageGetItem(p, PageGetItemId(p, i));

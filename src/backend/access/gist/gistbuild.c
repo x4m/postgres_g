@@ -691,7 +691,8 @@ gistbufferinginserttuples(GISTBuildState *buildstate, Buffer buffer, int level,
 							   InvalidBuffer,
 							   &splitinfo,
 							   false,
-							   1);
+							   1,
+							   InvalidOffsetNumber);
 
 	/*
 	 * If this is a root split, update the root path item kept in memory. This
