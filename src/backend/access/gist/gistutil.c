@@ -34,6 +34,7 @@ gistfillbuffer(Page page, IndexTuple *itup, int len, OffsetNumber off)
 {
 	OffsetNumber l = InvalidOffsetNumber;
 	int			i;
+	elog(NOTICE,"GS: gistfillbuffer len %d off %d", len, off);
 
 	if (off == InvalidOffsetNumber)
 		off = (PageIsEmpty(page)) ? FirstOffsetNumber :
@@ -55,7 +56,7 @@ gistfillbuffer(Page page, IndexTuple *itup, int len, OffsetNumber off)
  * Check space for itup vector on page
  */
 bool
-gistnospace(Page page, IndexTuple *itvec, int len, OffsetNumber todelete, Size freespace)
+gistnospace(Page page, IndexTuple *itvec, int len, OffsetNumber todelete, Size freespace, int ndeltup)
 {
 	unsigned int size = freespace,
 				deleted = 0;
@@ -66,9 +67,12 @@ gistnospace(Page page, IndexTuple *itvec, int len, OffsetNumber todelete, Size f
 
 	if (todelete != InvalidOffsetNumber)
 	{
-		IndexTuple	itup = (IndexTuple) PageGetItem(page, PageGetItemId(page, todelete));
+		for (i = 0; i < ndeltup; i++)
+		{
+			IndexTuple	itup = (IndexTuple) PageGetItem(page, PageGetItemId(page, todelete + i));
 
-		deleted = IndexTupleSize(itup) + sizeof(ItemIdData);
+			deleted = IndexTupleSize(itup) + sizeof(ItemIdData);
+		}
 	}
 
 	return (PageGetFreeSpace(page) + deleted < size);
@@ -95,13 +99,23 @@ gistextractpage(Page page, int *len /* out */ )
 {
 	OffsetNumber i,
 				maxoff;
-	IndexTuple *itvec;
+	IndexTuple *itvec,
+			   *itvecnext;
 
 	maxoff = PageGetMaxOffsetNumber(page);
 	*len = maxoff;
-	itvec = palloc(sizeof(IndexTuple) * maxoff);
+	itvecnext = itvec = palloc(sizeof(IndexTuple) * maxoff);
 	for (i = FirstOffsetNumber; i <= maxoff; i = OffsetNumberNext(i))
-		itvec[i - FirstOffsetNumber] = (IndexTuple) PageGetItem(page, PageGetItemId(page, i));
+	{
+		IndexTuple tup = (IndexTuple) PageGetItem(page, PageGetItemId(page, i));
+		if (IndexTupleIsSkip(tup))
+		{
+			*len = *len - 1;
+			continue;
+		}
+		*itvecnext = tup;
+		itvecnext++;
+	}
 
 	return itvec;
 }
@@ -357,6 +371,11 @@ gistgetadjusted(Relation r, IndexTuple oldtup, IndexTuple addtup, GISTSTATE *gis
 		/* need to update key */
 		newtup = gistFormTuple(giststate, r, attr, isnull, false);
 		newtup->t_tid = oldtup->t_tid;
+		if (IndexTupleIsSkip(oldtup))
+		{
+			IndexTupleMakeSkip(newtup);
+			IndexTupleSetSkipCount(newtup, IndexTupleGetSkipCount(oldtup));
+		}
 	}
 
 	return newtup;
@@ -370,7 +389,7 @@ gistgetadjusted(Relation r, IndexTuple oldtup, IndexTuple addtup, GISTSTATE *gis
  */
 OffsetNumber
 gistchoose(Relation r, Page p, IndexTuple it,	/* it has compressed entry */
-		   GISTSTATE *giststate)
+		   GISTSTATE *giststate, OffsetNumber skipoffnum)
 {
 	OffsetNumber result;
 	OffsetNumber maxoff;
@@ -432,8 +451,8 @@ gistchoose(Relation r, Page p, IndexTuple it,	/* it has compressed entry */
 	 */
 	maxoff = PageGetMaxOffsetNumber(p);
 	Assert(maxoff >= FirstOffsetNumber);
-
-	for (i = FirstOffsetNumber; i <= maxoff; i = OffsetNumberNext(i))
+	i = OffsetNumberNext(skipoffnum);
+	while (i <= maxoff)
 	{
 		IndexTuple	itup = (IndexTuple) PageGetItem(p, PageGetItemId(p, i));
 		bool		zero_penalty;
@@ -532,8 +551,22 @@ gistchoose(Relation r, Page p, IndexTuple it,	/* it has compressed entry */
 			if (keep_current_best == 1)
 				break;
 		}
+
+		i = OffsetNumberNext(i);
+		if (IndexTupleIsSkip(itup))
+		{
+			if (skipoffnum == InvalidOffsetNumber)
+			{
+				break;
+			}
+			else
+			{
+				i += IndexTupleGetSkipCount(itup);
+			}
+		}
 	}
 
+	elog(NOTICE,"GS: Choose result %d",result);
 	return result;
 }
 

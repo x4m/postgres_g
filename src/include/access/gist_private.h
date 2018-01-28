@@ -216,6 +216,8 @@ typedef struct GISTInsertStack
 	/* offset of the downlink in the parent page, that points to this page */
 	OffsetNumber downlinkoffnum;
 
+	OffsetNumber skipoffnum;
+
 	/* pointer to parent */
 	struct GISTInsertStack *parent;
 } GISTInsertStack;
@@ -404,7 +406,8 @@ extern bool gistplacetopage(Relation rel, Size freespace, GISTSTATE *giststate,
 				OffsetNumber oldoffnum, BlockNumber *newblkno,
 				Buffer leftchildbuf,
 				List **splitinfo,
-				bool markleftchild);
+				bool markleftchild,
+				int ndeltup);
 
 extern SplitedPageLayout *gistSplit(Relation r, Page page, IndexTuple *itup,
 		  int len, GISTSTATE *giststate);
@@ -440,7 +443,7 @@ extern bool gistproperty(Oid index_oid, int attno,
 			 IndexAMProperty prop, const char *propname,
 			 bool *res, bool *isnull);
 extern bool gistfitpage(IndexTuple *itvec, int len);
-extern bool gistnospace(Page page, IndexTuple *itvec, int len, OffsetNumber todelete, Size freespace);
+extern bool gistnospace(Page page, IndexTuple *itvec, int len, OffsetNumber todelete, Size freespace, int ndeltup);
 extern void gistcheckpage(Relation rel, Buffer buf);
 extern Buffer gistNewBuffer(Relation r);
 extern void gistfillbuffer(Page page, IndexTuple *itup, int len,
@@ -462,7 +465,8 @@ extern IndexTuple gistFormTuple(GISTSTATE *giststate,
 
 extern OffsetNumber gistchoose(Relation r, Page p,
 		   IndexTuple it,
-		   GISTSTATE *giststate);
+		   GISTSTATE *giststate,
+		   OffsetNumber skipoffnum);
 
 extern void GISTInitBuffer(Buffer b, uint32 f);
 extern void gistdentryinit(GISTSTATE *giststate, int nkey, GISTENTRY *e,

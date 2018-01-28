@@ -591,7 +591,7 @@ gistProcessItup(GISTBuildState *buildstate, IndexTuple itup,
 		LockBuffer(buffer, GIST_EXCLUSIVE);
 
 		page = (Page) BufferGetPage(buffer);
-		childoffnum = gistchoose(indexrel, page, itup, giststate);
+		childoffnum = gistchoose(indexrel, page, itup, giststate, InvalidOffsetNumber);
 		iid = PageGetItemId(page, childoffnum);
 		idxtuple = (IndexTuple) PageGetItem(page, iid);
 		childblkno = ItemPointerGetBlockNumber(&(idxtuple->t_tid));
@@ -690,7 +690,8 @@ gistbufferinginserttuples(GISTBuildState *buildstate, Buffer buffer, int level,
 							   itup, ntup, oldoffnum, &placed_to_blk,
 							   InvalidBuffer,
 							   &splitinfo,
-							   false);
+							   false,
+							   1);
 
 	/*
 	 * If this is a root split, update the root path item kept in memory. This
