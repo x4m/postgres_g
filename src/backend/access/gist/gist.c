@@ -526,11 +526,13 @@ gistplacetopage(Relation rel, Size freespace, GISTSTATE *giststate,
 		if (OffsetNumberIsValid(skipoffnum))
 		{
 			IndexTuple skiptuple = (IndexTuple) PageGetItem(page, PageGetItemId(page, skipoffnum));
+			int newskipgroupsize = IndexTupleGetSkipCount(skiptuple) + ntup - ndeltup;
 
-			elog(NOTICE,"GS: adjust skipgroup %d by %d", IndexTupleGetSkipCount(skiptuple), ntup - ndeltup);
+			elog(NOTICE,"GS: adjust skipgroup %d by %d newsize %d", IndexTupleGetSkipCount(skiptuple), ntup - ndeltup, newskipgroupsize);
 
 			Assert(IndexTupleIsSkip(skiptuple));
-			IndexTupleSetSkipCount(skiptuple, IndexTupleGetSkipCount(skiptuple) + ntup - ndeltup);
+			Assert(skipoffnum + newskipgroupsize <= PageGetMaxOffsetNumber(page));
+			IndexTupleSetSkipCount(skiptuple, newskipgroupsize);
 		}
 
 		/*
@@ -558,6 +560,7 @@ gistplacetopage(Relation rel, Size freespace, GISTSTATE *giststate,
 			}
 
 			gistfillbuffer(page, itup + noverwrite, ntup - noverwrite, oldoffnum + noverwrite);
+			elog(NOTICE,"GS: place with overwrite done");
 		}
 		else
 		{
@@ -724,6 +727,7 @@ gistdoinsert(Relation r, IndexTuple itup, Size freespace, GISTSTATE *giststate)
 
 		if (!GistPageIsLeaf(stack->page))
 		{
+			OffsetNumber usedskipoffnum = skipoffnum;
 			/*
 			 * This is an internal page so continue to walk down the tree.
 			 * Find the child node that has the minimum insertion penalty.
@@ -817,7 +821,7 @@ gistdoinsert(Relation r, IndexTuple itup, Size freespace, GISTSTATE *giststate)
 			item->blkno = childblkno;
 			item->parent = stack;
 			item->downlinkoffnum = downlinkoffnum;
-			item->skipoffnum = skipoffnum;
+			item->skipoffnum = usedskipoffnum;
 			state.stack = stack = item;
 			elog(NOTICE,"GS: descending");
 		}
@@ -1312,6 +1316,48 @@ gistinserttuples(GISTInsertState *state, GISTInsertStack *stack,
 	return is_split;
 }
 
+static void
+gisttestskipgroup(GISTInsertState *state, GISTInsertStack *stack,
+				 GISTSTATE *giststate, OffsetNumber skipoffnum)
+{
+	Page		page = BufferGetPage(stack->buffer);
+	IndexTuple	skiptuple = (IndexTuple) PageGetItem(page, PageGetItemId(page, skipoffnum));
+	int			skipsize;
+	elog(NOTICE, "gisttestskipgroup begin");
+	Assert(!GistPageIsLeaf(page));
+	Assert(IndexTupleIsSkip(skiptuple));
+	skipsize = IndexTupleGetSkipCount(skiptuple);
+	Assert((skipsize > 0) && (skipsize < BLCKSZ / sizeof(ItemId)));
+	if (skipsize > GIST_SKIPGROUP_THRESHOLD)
+	{
+		IndexTuple* itvec = gistextractrange(page, skipoffnum+1, skipsize);
+		SplitedPageLayout *ptr;
+		SplitedPageLayout *dist = gistSplit(state->r, page, itvec, skipsize, giststate);
+		int totalsize = 0;
+		for (ptr = dist; ptr; ptr = ptr->next)
+		{
+			char	   *data;
+			int i;
+			itvec[totalsize++] = ptr->itup;
+			IndexTupleMakeSkip(ptr->itup);
+			IndexTupleSetSkipCount(ptr->itup, ptr->lenlist);
+			data = (char *) (ptr->list);
+
+			for (i = 0; i < ptr->block.num; i++)
+			{
+				IndexTuple	thistup = (IndexTuple) data;
+
+				itvec[totalsize++] = thistup;
+
+				data += IndexTupleSize(thistup);
+			}
+		}
+		gistinserttuples(state, stack, giststate, itvec, totalsize, skipoffnum,
+							InvalidBuffer, InvalidBuffer, false, false, skipsize, InvalidOffsetNumber);
+	}
+	elog(NOTICE, "gisttestskipgroup end");
+}
+
 /*
  * Finish an incomplete split by inserting/updating the downlinks in parent
  * page. 'splitinfo' contains all the child pages involved in the split,
@@ -1390,11 +1436,14 @@ gistfinishsplit(GISTInsertState *state, GISTInsertStack *stack,
 					 tuples, 2,
 					 stack->downlinkoffnum,
 					 left->buf, right->buf,
-					 true,		/* Unlock parent */
+					 false,		/* Unlock parent */
 					 unlockbuf,	/* Unlock stack->buffer if caller wants that */
 					 1,
 					 stack->skipoffnum
 		);
+	if (stack->skipoffnum != InvalidOffsetNumber)
+		gisttestskipgroup(state,stack->parent, giststate, stack->skipoffnum);
+	LockBuffer(stack->parent->buffer, GIST_UNLOCK);
 	Assert(left->buf == stack->buffer);
 }
 

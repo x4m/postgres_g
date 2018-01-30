@@ -39,6 +39,8 @@
  */
 #define GIST_MAX_SPLIT_PAGES		75
 
+#define GIST_SKIPGROUP_THRESHOLD	16
+
 /* Buffer lock modes */
 #define GIST_SHARE	BUFFER_LOCK_SHARE
 #define GIST_EXCLUSIVE	BUFFER_LOCK_EXCLUSIVE
@@ -450,6 +452,7 @@ extern Buffer gistNewBuffer(Relation r);
 extern void gistfillbuffer(Page page, IndexTuple *itup, int len,
 			   OffsetNumber off);
 extern IndexTuple *gistextractpage(Page page, int *len /* out */ );
+extern IndexTuple *gistextractrange(Page page, OffsetNumber start, int len);
 extern IndexTuple *gistjoinvector(
 			   IndexTuple *itvec, int *len,
 			   IndexTuple *additvec, int addlen);

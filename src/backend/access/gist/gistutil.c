@@ -121,6 +121,35 @@ gistextractpage(Page page, int *len /* out */ )
 }
 
 /*
+ * Read range into itup vector
+ */
+IndexTuple *
+gistextractrange(Page page, OffsetNumber start, int len)
+{
+	OffsetNumber i,
+				maxoff;
+	IndexTuple *itvec,
+			   *itvecnext;
+
+	maxoff = PageGetMaxOffsetNumber(page);
+	elog(NOTICE,"GS: maxoff %d len %d start %d",maxoff,len,start);
+	Assert(maxoff >= start + len - 1);
+
+	/* caller will use this x2 allocation */
+	itvecnext = itvec = palloc(sizeof(IndexTuple) * len * 2);
+
+	for (i = start; i < start + len; i = OffsetNumberNext(i))
+	{
+		IndexTuple tup = (IndexTuple) PageGetItem(page, PageGetItemId(page, i));
+		Assert(!IndexTupleIsSkip(tup));
+		*itvecnext = tup;
+		itvecnext++;
+	}
+
+	return itvec;
+}
+
+/*
  * join two vectors into one
  */
 IndexTuple *

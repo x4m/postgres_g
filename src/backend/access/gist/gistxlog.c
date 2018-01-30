@@ -464,6 +464,8 @@ gistXLogUpdate(Buffer buffer,
 	int			i;
 	XLogRecPtr	recptr;
 
+	char *start, *end;
+
 	xlrec.ntodelete = ntodelete;
 	xlrec.ntoinsert = ituplen;
 	xlrec.skipoffnum = skipoffnum;
@@ -475,8 +477,23 @@ gistXLogUpdate(Buffer buffer,
 	XLogRegisterBufData(0, (char *) todelete, sizeof(OffsetNumber) * ntodelete);
 
 	/* new tuples */
-	for (i = 0; i < ituplen; i++)
-		XLogRegisterBufData(0, (char *) (itup[i]), IndexTupleSize(itup[i]));
+	start = (char *) itup[0];
+	end = start + IndexTupleSize(itup[0]);
+	for (i = 1; i < ituplen; i++)
+	{
+		if (end == (char *) itup[i])
+		{
+			end += IndexTupleSize(itup[i]);
+			continue;
+		}
+		else
+		{
+			XLogRegisterBufData(0, start, end - start);
+			start = (char *) itup[i];
+			end = start + IndexTupleSize(itup[i]);
+		}
+	}
+	XLogRegisterBufData(0, start, end - start);
 
 	/*
 	 * Include a full page image of the child buf. (only necessary if a
