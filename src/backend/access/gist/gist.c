@@ -284,12 +284,12 @@ gistplacetopage(Relation rel, Size freespace, GISTSTATE *giststate,
 		 * Form index tuples vector to split. If we're replacing an old tuple,
 		 * remove the old version from the vector.
 		 */
-		itvec = gistextractpage(page, &tlen);
+		itvec = gistextractpage(page, &tlen, oldoffnum);
 		if (OffsetNumberIsValid(oldoffnum))
 		{
-			elog(NOTICE,"GS: shift extracted vector");
 			/* on inner page we should remove old tuples */
 			int			pos = oldoffnum - FirstOffsetNumber;
+			elog(NOTICE,"GS: shift extracted vector pos %d ndeltup %d maxoff %d", pos, ndeltup, (int)PageGetMaxOffsetNumber(page));
 
 			tlen -= ndeltup;
 			if (pos != tlen)
@@ -528,10 +528,10 @@ gistplacetopage(Relation rel, Size freespace, GISTSTATE *giststate,
 			IndexTuple skiptuple = (IndexTuple) PageGetItem(page, PageGetItemId(page, skipoffnum));
 			int newskipgroupsize = IndexTupleGetSkipCount(skiptuple) + ntup - ndeltup;
 
-			elog(NOTICE,"GS: adjust skipgroup %d by %d newsize %d", IndexTupleGetSkipCount(skiptuple), ntup - ndeltup, newskipgroupsize);
+			elog(NOTICE,"GS: adjust skipgroup at %d current size %d by %d newsize %d maxoff %d",skipoffnum, IndexTupleGetSkipCount(skiptuple), ntup - ndeltup, newskipgroupsize, (int)PageGetMaxOffsetNumber(page));
 
 			Assert(IndexTupleIsSkip(skiptuple));
-			Assert(skipoffnum + newskipgroupsize <= PageGetMaxOffsetNumber(page));
+			Assert(skipoffnum + newskipgroupsize <= PageGetMaxOffsetNumber(page) + ntup - ndeltup);
 			IndexTupleSetSkipCount(skiptuple, newskipgroupsize);
 		}
 
@@ -545,7 +545,7 @@ gistplacetopage(Relation rel, Size freespace, GISTSTATE *giststate,
 			int noverwrite = Min(ntup,ndeltup);
 			for (i = 0; i < noverwrite; i++)
 			{
-				elog(NOTICE,"GS: overwrite %d",i);
+				elog(NOTICE,"GS: overwrite %d at %d",i,oldoffnum + i);
 				if (!PageIndexTupleOverwrite(page, oldoffnum + i, (Item) itup[i],
 											 IndexTupleSize(*itup)))
 					elog(ERROR, "failed to add item to index page in \"%s\"",
@@ -1323,7 +1323,7 @@ gisttestskipgroup(GISTInsertState *state, GISTInsertStack *stack,
 	Page		page = BufferGetPage(stack->buffer);
 	IndexTuple	skiptuple = (IndexTuple) PageGetItem(page, PageGetItemId(page, skipoffnum));
 	int			skipsize;
-	elog(NOTICE, "gisttestskipgroup begin");
+	elog(NOTICE, "GS: gisttestskipgroup begin at %d", skipoffnum);
 	Assert(!GistPageIsLeaf(page));
 	Assert(IndexTupleIsSkip(skiptuple));
 	skipsize = IndexTupleGetSkipCount(skiptuple);
@@ -1340,7 +1340,7 @@ gisttestskipgroup(GISTInsertState *state, GISTInsertStack *stack,
 			int i;
 			itvec[totalsize++] = ptr->itup;
 			IndexTupleMakeSkip(ptr->itup);
-			IndexTupleSetSkipCount(ptr->itup, ptr->lenlist);
+			IndexTupleSetSkipCount(ptr->itup, ptr->block.num);
 			data = (char *) (ptr->list);
 
 			for (i = 0; i < ptr->block.num; i++)
@@ -1353,9 +1353,9 @@ gisttestskipgroup(GISTInsertState *state, GISTInsertStack *stack,
 			}
 		}
 		gistinserttuples(state, stack, giststate, itvec, totalsize, skipoffnum,
-							InvalidBuffer, InvalidBuffer, false, false, skipsize, InvalidOffsetNumber);
+							InvalidBuffer, InvalidBuffer, false, false, skipsize + 1, InvalidOffsetNumber);
 	}
-	elog(NOTICE, "gisttestskipgroup end");
+	elog(NOTICE, "GS: gisttestskipgroup end");
 }
 
 /*
@@ -1376,6 +1376,7 @@ gistfinishsplit(GISTInsertState *state, GISTInsertStack *stack,
 	GISTPageSplitInfo *right;
 	GISTPageSplitInfo *left;
 	IndexTuple	tuples[2];
+	bool		lastmomentsplit;
 
 	/* A split always contains at least two halves */
 	Assert(list_length(splitinfo) >= 2);
@@ -1432,7 +1433,7 @@ gistfinishsplit(GISTInsertState *state, GISTInsertStack *stack,
 	 */
 	tuples[0] = left->downlink;
 	tuples[1] = right->downlink;
-	gistinserttuples(state, stack->parent, giststate,
+	lastmomentsplit = gistinserttuples(state, stack->parent, giststate,
 					 tuples, 2,
 					 stack->downlinkoffnum,
 					 left->buf, right->buf,
@@ -1441,7 +1442,7 @@ gistfinishsplit(GISTInsertState *state, GISTInsertStack *stack,
 					 1,
 					 stack->skipoffnum
 		);
-	if (stack->skipoffnum != InvalidOffsetNumber)
+	if (stack->skipoffnum != InvalidOffsetNumber && !lastmomentsplit)
 		gisttestskipgroup(state,stack->parent, giststate, stack->skipoffnum);
 	LockBuffer(stack->parent->buffer, GIST_UNLOCK);
 	Assert(left->buf == stack->buffer);

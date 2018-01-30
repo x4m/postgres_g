@@ -451,7 +451,7 @@ extern void gistcheckpage(Relation rel, Buffer buf);
 extern Buffer gistNewBuffer(Relation r);
 extern void gistfillbuffer(Page page, IndexTuple *itup, int len,
 			   OffsetNumber off);
-extern IndexTuple *gistextractpage(Page page, int *len /* out */ );
+extern IndexTuple *gistextractpage(Page page, int *len /* out */, OffsetNumber oldoffnum);
 extern IndexTuple *gistextractrange(Page page, OffsetNumber start, int len);
 extern IndexTuple *gistjoinvector(
 			   IndexTuple *itvec, int *len,

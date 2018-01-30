@@ -95,7 +95,7 @@ gistfitpage(IndexTuple *itvec, int len)
  * Read buffer into itup vector
  */
 IndexTuple *
-gistextractpage(Page page, int *len /* out */ )
+gistextractpage(Page page, int *len /* out */ , OffsetNumber oldoffnum)
 {
 	OffsetNumber i,
 				maxoff;
@@ -108,7 +108,7 @@ gistextractpage(Page page, int *len /* out */ )
 	for (i = FirstOffsetNumber; i <= maxoff; i = OffsetNumberNext(i))
 	{
 		IndexTuple tup = (IndexTuple) PageGetItem(page, PageGetItemId(page, i));
-		if (IndexTupleIsSkip(tup))
+		if (IndexTupleIsSkip(tup) && i != oldoffnum)
 		{
 			*len = *len - 1;
 			continue;
@@ -141,6 +141,10 @@ gistextractrange(Page page, OffsetNumber start, int len)
 	for (i = start; i < start + len; i = OffsetNumberNext(i))
 	{
 		IndexTuple tup = (IndexTuple) PageGetItem(page, PageGetItemId(page, i));
+		if (IndexTupleIsSkip(tup))
+		{
+			elog(NOTICE,"GS: dangling %d start %d end %d skipgroupsize %d",i, start, start + len,IndexTupleGetSkipCount(tup));
+		}
 		Assert(!IndexTupleIsSkip(tup));
 		*itvecnext = tup;
 		itvecnext++;
