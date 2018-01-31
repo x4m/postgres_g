@@ -34,7 +34,7 @@ gistfillbuffer(Page page, IndexTuple *itup, int len, OffsetNumber off)
 {
 	OffsetNumber l = InvalidOffsetNumber;
 	int			i;
-	elog(NOTICE,"GS: gistfillbuffer len %d off %d", len, off);
+	//elog(NOTICE,"GS: gistfillbuffer len %d off %d", len, off);
 
 	if (off == InvalidOffsetNumber)
 		off = (PageIsEmpty(page)) ? FirstOffsetNumber :
@@ -95,27 +95,17 @@ gistfitpage(IndexTuple *itvec, int len)
  * Read buffer into itup vector
  */
 IndexTuple *
-gistextractpage(Page page, int *len /* out */ , OffsetNumber oldoffnum)
+gistextractpage(Page page, int *len /* out */ )
 {
 	OffsetNumber i,
 				maxoff;
-	IndexTuple *itvec,
-			   *itvecnext;
+	IndexTuple *itvec;
 
 	maxoff = PageGetMaxOffsetNumber(page);
 	*len = maxoff;
-	itvecnext = itvec = palloc(sizeof(IndexTuple) * maxoff);
+	itvec = palloc(sizeof(IndexTuple) * maxoff);
 	for (i = FirstOffsetNumber; i <= maxoff; i = OffsetNumberNext(i))
-	{
-		IndexTuple tup = (IndexTuple) PageGetItem(page, PageGetItemId(page, i));
-		if (IndexTupleIsSkip(tup) && i != oldoffnum)
-		{
-			*len = *len - 1;
-			continue;
-		}
-		*itvecnext = tup;
-		itvecnext++;
-	}
+		itvec[i - FirstOffsetNumber] = (IndexTuple) PageGetItem(page, PageGetItemId(page, i));
 
 	return itvec;
 }
@@ -132,7 +122,7 @@ gistextractrange(Page page, OffsetNumber start, int len)
 			   *itvecnext;
 
 	maxoff = PageGetMaxOffsetNumber(page);
-	elog(NOTICE,"GS: maxoff %d len %d start %d",maxoff,len,start);
+	//elog(NOTICE,"GS: maxoff %d len %d start %d",maxoff,len,start);
 	Assert(maxoff >= start + len - 1);
 
 	/* caller will use this x2 allocation */
@@ -143,7 +133,7 @@ gistextractrange(Page page, OffsetNumber start, int len)
 		IndexTuple tup = (IndexTuple) PageGetItem(page, PageGetItemId(page, i));
 		if (IndexTupleIsSkip(tup))
 		{
-			elog(NOTICE,"GS: dangling %d start %d end %d skipgroupsize %d",i, start, start + len,IndexTupleGetSkipCount(tup));
+			//elog(NOTICE,"GS: dangling %d start %d end %d skipgroupsize %d",i, start, start + len,IndexTupleGetSkipCount(tup));
 		}
 		Assert(!IndexTupleIsSkip(tup));
 		*itvecnext = tup;
@@ -159,9 +149,27 @@ gistextractrange(Page page, OffsetNumber start, int len)
 IndexTuple *
 gistjoinvector(IndexTuple *itvec, int *len, IndexTuple *additvec, int addlen)
 {
+	int i;
+	int newlen = 0;
+	int oldlen = *len;
+	elog(NOTICE,"GS: gistjoinvector start");
 	itvec = (IndexTuple *) repalloc((void *) itvec, sizeof(IndexTuple) * ((*len) + addlen));
-	memmove(&itvec[*len], additvec, sizeof(IndexTuple) * addlen);
-	*len += addlen;
+
+	for (i = 0; i < oldlen; i++)
+	{
+		if (IndexTupleIsSkip(itvec[i]))
+			continue;
+		itvec[newlen++] = itvec[i];
+	}
+
+	for (i = 0; i < addlen; i++)
+	{
+		if (IndexTupleIsSkip(additvec[i]))
+			continue;
+		itvec[newlen++] = additvec[i];
+	}
+	*len = newlen;
+	elog(NOTICE,"GS: gistjoinvector end");
 	return itvec;
 }
 
@@ -600,7 +608,7 @@ gistchoose(Relation r, Page p, IndexTuple it,	/* it has compressed entry */
 		}
 	}
 
-	elog(NOTICE,"GS: Choose result %d",result);
+	//elog(NOTICE,"GS: Choose result %d",result);
 	return result;
 }
 
