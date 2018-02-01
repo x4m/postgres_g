@@ -226,8 +226,8 @@ gistplacetopage(Relation rel, Size freespace, GISTSTATE *giststate,
 	XLogRecPtr	recptr;
 	int			i;
 	bool		is_split;
-	elog(NOTICE,"GS: gistplacetopage at %d skipoffnum %d", oldoffnum, skipoffnum);
-	//gistcheckskippage(page);
+	//elog(NOTICE,"GS: gistplacetopage at %d skipoffnum %d", oldoffnum, skipoffnum);
+	gistcheckskippage(page);
 	//elog(NOTICE,"GS: check done");
 
 	/*
@@ -279,7 +279,7 @@ gistplacetopage(Relation rel, Size freespace, GISTSTATE *giststate,
 		bool		is_rootsplit;
 		int			npage;
 
-		elog(NOTICE,"GS: Performing split");
+		//elog(NOTICE,"GS: Performing split");
 
 		is_rootsplit = (blkno == GIST_ROOT_BLKNO);
 
@@ -292,17 +292,26 @@ gistplacetopage(Relation rel, Size freespace, GISTSTATE *giststate,
 		{
 			/* on inner page we should remove old tuples */
 			int			pos = oldoffnum - FirstOffsetNumber;
-			elog(NOTICE,"GS: shift extracted vector pos %d ndeltup %d tlen %d", pos, ndeltup, tlen);
+			//elog(NOTICE,"GS: shift extracted vector pos %d ndeltup %d tlen %d", pos, ndeltup, tlen);
 
 			tlen -= ndeltup;
 			if (pos != tlen)
 				memmove(itvec + pos, itvec + pos + ndeltup, sizeof(IndexTuple) * (tlen - pos));
 		}
-		elog(NOTICE,"GS: join splitvector");
+		//elog(NOTICE,"GS: join splitvector");
 		itvec = gistjoinvector(itvec, &tlen, itup, ntup);
-		elog(NOTICE,"GS: calling extensions split");
-		dist = gistSplit(rel, page, itvec, tlen, giststate);
-		elog(NOTICE,"GS: extension split done");
+
+		if (IndexTupleIsSkip(*itvec))
+		{
+			dist = gistSplitBySkipgroup(rel, page, itvec, tlen, giststate);
+		}
+		if (dist == NULL)
+		{
+			gistfiltervector(itvec, &tlen);
+			//elog(NOTICE,"GS: calling extensions split");
+			dist = gistSplit(rel, page, itvec, tlen, giststate);
+			//elog(NOTICE,"GS: extension split done");
+		}
 
 		/*
 		 * Check that split didn't produce too many pages.
@@ -371,7 +380,7 @@ gistplacetopage(Relation rel, Size freespace, GISTSTATE *giststate,
 			IndexTuple *downlinks;
 			int			ndownlinks = 1;
 			int			i;
-			elog(NOTICE,"GS: Ceatting new root");
+			//elog(NOTICE,"GS: Ceatting new root");
 
 			rootpg.buffer = buffer;
 			rootpg.page = PageGetTempPageCopySpecial(BufferGetPage(rootpg.buffer));
@@ -398,7 +407,7 @@ gistplacetopage(Relation rel, Size freespace, GISTSTATE *giststate,
 		}
 		else
 		{
-			elog(NOTICE,"GS: not a root split");
+			//elog(NOTICE,"GS: not a root split");
 			/* Prepare split-info to be returned to caller */
 			for (ptr = dist; ptr; ptr = ptr->next)
 			{
@@ -409,7 +418,7 @@ gistplacetopage(Relation rel, Size freespace, GISTSTATE *giststate,
 				*splitinfo = lappend(*splitinfo, si);
 			}
 		}
-		elog(NOTICE,"GS: Formed newly splitted pages");
+		//elog(NOTICE,"GS: Formed newly splitted pages");
 
 		/*
 		 * Fill all pages. All the pages are new, ie. freshly allocated empty
@@ -422,7 +431,6 @@ gistplacetopage(Relation rel, Size freespace, GISTSTATE *giststate,
 			for (i = 0; i < ptr->block.num; i++)
 			{
 				IndexTuple	thistup = (IndexTuple) data;
-				Assert(is_rootsplit || !IndexTupleIsSkip(thistup));
 
 				if (PageAddItem(ptr->page, (Item) data, IndexTupleSize(thistup), i + FirstOffsetNumber, false, false) == InvalidOffsetNumber)
 					elog(ERROR, "failed to add item to index page in \"%s\"", RelationGetRelationName(rel));
@@ -436,7 +444,7 @@ gistplacetopage(Relation rel, Size freespace, GISTSTATE *giststate,
 
 				data += IndexTupleSize(thistup);
 			}
-			elog(NOTICE,"GS: checking page %p", ptr);
+			//elog(NOTICE,"GS: checking page %p", ptr);
 			gistcheckskippage(ptr->page);
 
 			/* Set up rightlinks */
@@ -466,7 +474,7 @@ gistplacetopage(Relation rel, Size freespace, GISTSTATE *giststate,
 			 */
 			GistPageSetNSN(ptr->page, oldnsn);
 		}
-		elog(NOTICE,"GS: written new pages");
+		//elog(NOTICE,"GS: written new pages");
 
 		/*
 		 * gistXLogSplit() needs to WAL log a lot of pages, prepare WAL
@@ -519,7 +527,7 @@ gistplacetopage(Relation rel, Size freespace, GISTSTATE *giststate,
 			for (ptr = dist->next; ptr; ptr = ptr->next)
 				UnlockReleaseBuffer(ptr->buffer);
 		}
-		elog(NOTICE,"GS: Split Done");
+		//elog(NOTICE,"GS: Split Done");
 	}
 	else
 	{
@@ -534,7 +542,7 @@ gistplacetopage(Relation rel, Size freespace, GISTSTATE *giststate,
 			IndexTuple skiptuple = (IndexTuple) PageGetItem(page, PageGetItemId(page, skipoffnum));
 			int newskipgroupsize = IndexTupleGetSkipCount(skiptuple) + ntup - ndeltup;
 
-			elog(NOTICE,"GS: adjust skipgroup at %d current size %d by %d newsize %d maxoff %d",skipoffnum, IndexTupleGetSkipCount(skiptuple), ntup - ndeltup, newskipgroupsize, (int)PageGetMaxOffsetNumber(page));
+			//elog(NOTICE,"GS: adjust skipgroup at %d current size %d by %d newsize %d maxoff %d",skipoffnum, IndexTupleGetSkipCount(skiptuple), ntup - ndeltup, newskipgroupsize, (int)PageGetMaxOffsetNumber(page));
 
 			Assert(IndexTupleIsSkip(skiptuple));
 			Assert(skipoffnum + newskipgroupsize <= PageGetMaxOffsetNumber(page) + ntup - ndeltup);
@@ -547,11 +555,11 @@ gistplacetopage(Relation rel, Size freespace, GISTSTATE *giststate,
 		 */
 		if (OffsetNumberIsValid(oldoffnum))
 		{
-			elog(NOTICE,"GS: place with overwrite");
+			//elog(NOTICE,"GS: place with overwrite");
 			int noverwrite = Min(ntup,ndeltup);
 			for (i = 0; i < noverwrite; i++)
 			{
-				elog(NOTICE,"GS: overwrite %d at %d",i,oldoffnum + i);
+				//elog(NOTICE,"GS: overwrite %d at %d",i,oldoffnum + i);
 				if (!PageIndexTupleOverwrite(page, oldoffnum + i, (Item) itup[i],
 											 IndexTupleSize(*itup)))
 					elog(ERROR, "failed to add item to index page in \"%s\"",
@@ -561,12 +569,12 @@ gistplacetopage(Relation rel, Size freespace, GISTSTATE *giststate,
 
 			for (i = noverwrite; i < ndeltup; i++)
 			{
-				elog(NOTICE,"GS: delete %d", i);
+				//elog(NOTICE,"GS: delete %d", i);
 				PageIndexTupleDelete(page, oldoffnum + i);
 			}
 
 			gistfillbuffer(page, itup + noverwrite, ntup - noverwrite, oldoffnum + noverwrite);
-			elog(NOTICE,"GS: place with overwrite done");
+			//elog(NOTICE,"GS: place with overwrite done");
 		}
 		else
 		{
@@ -630,9 +638,9 @@ gistplacetopage(Relation rel, Size freespace, GISTSTATE *giststate,
 	}
 
 	END_CRIT_SECTION();
-	elog(NOTICE,"GS: place to page done");
+	//elog(NOTICE,"GS: place to page done");
 	gistcheckskippage(page);
-	elog(NOTICE,"GS: check done");
+	//elog(NOTICE,"GS: check done");
 
 	return is_split;
 }
@@ -672,7 +680,7 @@ gistdoinsert(Relation r, IndexTuple itup, Size freespace, GISTSTATE *giststate)
 	 */
 	for (;;)
 	{
-		elog(NOTICE,"GS: insert cycle");
+		//elog(NOTICE,"GS: insert cycle");
 		if (skipoffnum == InvalidOffsetNumber)
 		{
 			if (XLogRecPtrIsInvalid(stack->lsn))
@@ -831,7 +839,7 @@ gistdoinsert(Relation r, IndexTuple itup, Size freespace, GISTSTATE *giststate)
 			item->downlinkoffnum = downlinkoffnum;
 			item->skipoffnum = usedskipoffnum;
 			state.stack = stack = item;
-			elog(NOTICE,"GS: descending");
+			//elog(NOTICE,"GS: descending");
 		}
 		else
 		{
@@ -896,7 +904,7 @@ gistdoinsert(Relation r, IndexTuple itup, Size freespace, GISTSTATE *giststate)
 							InvalidOffsetNumber);
 			LockBuffer(stack->buffer, GIST_UNLOCK);
 
-			elog(NOTICE,"GS: unpining");
+			//elog(NOTICE,"GS: unpining");
 
 			/* Release any pins we might still hold before exiting */
 			for (; stack; stack = stack->parent)
@@ -904,7 +912,7 @@ gistdoinsert(Relation r, IndexTuple itup, Size freespace, GISTSTATE *giststate)
 			break;
 		}
 	}
-	elog(NOTICE,"GS: gistdoinsert done");
+	//elog(NOTICE,"GS: gistdoinsert done");
 }
 
 /*
@@ -1247,7 +1255,7 @@ static bool
 gistinserttuple(GISTInsertState *state, GISTInsertStack *stack,
 				GISTSTATE *giststate, IndexTuple tuple, OffsetNumber oldoffnum)
 {
-	elog(NOTICE,"GS: gistinserttuple");
+	//elog(NOTICE,"GS: gistinserttuple");
 	return gistinserttuples(state, stack, giststate, &tuple, 1, oldoffnum,
 							InvalidBuffer, InvalidBuffer, false, false, 1, InvalidOffsetNumber);
 }
@@ -1319,7 +1327,7 @@ gistinserttuples(GISTInsertState *state, GISTInsertStack *stack,
 	else if (unlockbuf)
 		LockBuffer(stack->buffer, GIST_UNLOCK);
 
-	elog(NOTICE,"GS: gistinserttuples done");
+	//elog(NOTICE,"GS: gistinserttuples done");
 
 	return is_split;
 }
@@ -1331,6 +1339,7 @@ gistcheckskippage(Page page)
 				maxoff;
 	int skiplast = 0;
 	bool wasskip = false;
+	return;
 
 	maxoff = PageGetMaxOffsetNumber(page);
 	for (i = FirstOffsetNumber; i <= maxoff; i = OffsetNumberNext(i))
@@ -1364,7 +1373,7 @@ gisttestskipgroup(GISTInsertState *state, GISTInsertStack *stack,
 	Page		page = BufferGetPage(stack->buffer);
 	IndexTuple	skiptuple = (IndexTuple) PageGetItem(page, PageGetItemId(page, skipoffnum));
 	int			skipsize;
-	elog(NOTICE, "GS: gisttestskipgroup begin at %d", skipoffnum);
+	//elog(NOTICE, "GS: gisttestskipgroup begin at %d", skipoffnum);
 	gistcheckskippage(page);
 	Assert(!GistPageIsLeaf(page));
 	Assert(IndexTupleIsSkip(skiptuple));
@@ -1397,7 +1406,7 @@ gisttestskipgroup(GISTInsertState *state, GISTInsertStack *stack,
 		gistinserttuples(state, stack, giststate, itvec, totalsize, skipoffnum,
 							InvalidBuffer, InvalidBuffer, false, false, skipsize + 1, InvalidOffsetNumber);
 	}
-	elog(NOTICE, "GS: gisttestskipgroup end");
+	//elog(NOTICE, "GS: gisttestskipgroup end");
 	gistcheckskippage(page);
 }
 
@@ -1489,7 +1498,7 @@ gistfinishsplit(GISTInsertState *state, GISTInsertStack *stack,
 		gisttestskipgroup(state,stack->parent, giststate, stack->skipoffnum);
 
 	gistcheckskippage(BufferGetPage(stack->parent->buffer));
-	elog(NOTICE, "GS: gisttestskipgroup end");
+	//elog(NOTICE, "GS: gistfinishsplit end");
 	LockBuffer(stack->parent->buffer, GIST_UNLOCK);
 	Assert(left->buf == stack->buffer);
 }
@@ -1531,9 +1540,9 @@ gistSplit(Relation r,
 
 	memset(v.spl_lisnull, true, sizeof(bool) * giststate->tupdesc->natts);
 	memset(v.spl_risnull, true, sizeof(bool) * giststate->tupdesc->natts);
-	elog(NOTICE,"GS: calling split by key");
+	//elog(NOTICE,"GS: calling split by key");
 	gistSplitByKey(r, page, itup, len, giststate, &v, 0);
-	elog(NOTICE,"GS: split by key done");
+	//elog(NOTICE,"GS: split by key done");
 
 	/* form left and right vector */
 	lvectup = (IndexTuple *) palloc(sizeof(IndexTuple) * (len + 1));
@@ -1564,6 +1573,119 @@ gistSplit(Relation r,
 				   *subres;
 
 		resptr = subres = gistSplit(r, page, lvectup, v.splitVector.spl_nleft, giststate);
+
+		/* install on list's tail */
+		while (resptr->next)
+			resptr = resptr->next;
+
+		resptr->next = res;
+		res = subres;
+	}
+	else
+	{
+		ROTATEDIST(res);
+		res->block.num = v.splitVector.spl_nleft;
+		res->list = gistfillitupvec(lvectup, v.splitVector.spl_nleft, &(res->lenlist));
+		res->itup = gistFormTuple(giststate, r, v.spl_lattr, v.spl_lisnull, false);
+	}
+
+	return res;
+}
+
+SplitedPageLayout *
+gistSplitBySkipgroup(Relation r,
+		  Page page,
+		  IndexTuple *itup,		/* contains compressed entry */
+		  int len,
+		  GISTSTATE *giststate)
+{
+	IndexTuple *lvectup,
+			   *rvectup,
+			   *skiptuples;
+	OffsetNumber *skipoffsets;
+	GistSplitVector v;
+	int			i, o, p;
+	int 		skipcount = 0;
+	SplitedPageLayout *res = NULL;
+
+	/* this should never recurse very deeply, but better safe than sorry */
+	check_stack_depth();
+
+	skiptuples = (IndexTuple *) palloc(sizeof(IndexTuple) * len);
+	skipoffsets = (OffsetNumber *) palloc(sizeof(OffsetNumber) * len);
+	for (i = 0; i < len; i++)
+	{
+		if (IndexTupleIsSkip(itup[i]))
+		{
+			skipoffsets[skipcount] = i;
+			skiptuples[skipcount++] = itup[i];
+		}
+	}
+
+	/*
+	 * If a single skipgroup doesn't fit on a page, no amount of splitting will
+	 * help.
+	 */
+	if (skipcount <= 1)
+		return NULL;
+
+	memset(v.spl_lisnull, true, sizeof(bool) * giststate->tupdesc->natts);
+	memset(v.spl_risnull, true, sizeof(bool) * giststate->tupdesc->natts);
+	//elog(NOTICE,"GS: calling split by key");
+	gistSplitByKey(r, page, skiptuples, skipcount, giststate, &v, 0);
+	//elog(NOTICE,"GS: split by key done");
+
+	/* form left and right vector */
+	lvectup = (IndexTuple *) palloc(sizeof(IndexTuple) * (len + 1));
+	rvectup = (IndexTuple *) palloc(sizeof(IndexTuple) * (len + 1));
+
+	o = 0;
+	for (i = 0; i < v.splitVector.spl_nleft; i++)
+	{
+		int index = v.splitVector.spl_left[i] - 1;
+		int skipsize = IndexTupleGetSkipCount(itup[index]);
+		for (p = 0; p <= skipsize; p++)
+		{
+			lvectup[o++] = itup[index + p];
+		}
+	}
+	v.splitVector.spl_nleft = o;
+
+	o = 0;
+	for (i = 0; i < v.splitVector.spl_nright; i++)
+	{
+		int index = v.splitVector.spl_right[i] - 1;
+		int skipsize = IndexTupleGetSkipCount(itup[index]);
+		for (p = 0; p <= skipsize; p++)
+		{
+			rvectup[o++] = itup[index + p];
+		}
+	}
+	v.splitVector.spl_nright = o;
+
+	/* finalize splitting (may need another split) */
+	if (!gistfitpage(rvectup, v.splitVector.spl_nright))
+	{
+		res = gistSplitBySkipgroup(r, page, rvectup, v.splitVector.spl_nright, giststate);
+		if (res == NULL)
+			return NULL;
+	}
+	else
+	{
+		ROTATEDIST(res);
+		res->block.num = v.splitVector.spl_nright;
+		res->list = gistfillitupvec(rvectup, v.splitVector.spl_nright, &(res->lenlist));
+		res->itup = gistFormTuple(giststate, r, v.spl_rattr, v.spl_risnull, false);
+	}
+
+	if (!gistfitpage(lvectup, v.splitVector.spl_nleft))
+	{
+		SplitedPageLayout *resptr,
+				   *subres;
+
+		resptr = subres = gistSplitBySkipgroup(r, page, lvectup, v.splitVector.spl_nleft, giststate);
+		if (subres == NULL)
+			return NULL;
 
 		/* install on list's tail */
 		while (resptr->next)

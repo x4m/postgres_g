@@ -149,11 +149,21 @@ gistextractrange(Page page, OffsetNumber start, int len)
 IndexTuple *
 gistjoinvector(IndexTuple *itvec, int *len, IndexTuple *additvec, int addlen)
 {
+	itvec = (IndexTuple *) repalloc((void *) itvec, sizeof(IndexTuple) * ((*len) + addlen));
+	memmove(&itvec[*len], additvec, sizeof(IndexTuple) * addlen);
+	*len += addlen;
+	return itvec;
+}
+
+/*
+ * join two vectors into one
+ */
+void
+gistfiltervector(IndexTuple *itvec, int *len)
+{
 	int i;
 	int newlen = 0;
 	int oldlen = *len;
-	elog(NOTICE,"GS: gistjoinvector start");
-	itvec = (IndexTuple *) repalloc((void *) itvec, sizeof(IndexTuple) * ((*len) + addlen));
 
 	for (i = 0; i < oldlen; i++)
 	{
@@ -161,16 +171,7 @@ gistjoinvector(IndexTuple *itvec, int *len, IndexTuple *additvec, int addlen)
 			continue;
 		itvec[newlen++] = itvec[i];
 	}
-
-	for (i = 0; i < addlen; i++)
-	{
-		if (IndexTupleIsSkip(additvec[i]))
-			continue;
-		itvec[newlen++] = additvec[i];
-	}
 	*len = newlen;
-	elog(NOTICE,"GS: gistjoinvector end");
-	return itvec;
 }
 
 /*

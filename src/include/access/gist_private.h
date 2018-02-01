@@ -415,6 +415,9 @@ extern bool gistplacetopage(Relation rel, Size freespace, GISTSTATE *giststate,
 extern SplitedPageLayout *gistSplit(Relation r, Page page, IndexTuple *itup,
 		  int len, GISTSTATE *giststate);
 
+extern SplitedPageLayout *gistSplitBySkipgroup(Relation r, Page page, IndexTuple *itup,
+		  int len, GISTSTATE *giststate);
+
 extern XLogRecPtr gistXLogUpdate(Buffer buffer,
 			   OffsetNumber *todelete, int ntodelete,
 			   IndexTuple *itup, int ntup,
@@ -456,6 +459,7 @@ extern IndexTuple *gistextractrange(Page page, OffsetNumber start, int len);
 extern IndexTuple *gistjoinvector(
 			   IndexTuple *itvec, int *len,
 			   IndexTuple *additvec, int addlen);
+extern void gistfiltervector(IndexTuple *itvec, int *len);
 extern IndexTupleData *gistfillitupvec(IndexTuple *vec, int veclen, int *memlen);
 
 extern IndexTuple gistunion(Relation r, IndexTuple *itvec,
