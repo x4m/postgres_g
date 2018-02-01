@@ -34,7 +34,7 @@ gistfillbuffer(Page page, IndexTuple *itup, int len, OffsetNumber off)
 {
 	OffsetNumber l = InvalidOffsetNumber;
 	int			i;
-	//elog(NOTICE,"GS: gistfillbuffer len %d off %d", len, off);
+	////elog(NOTICE,"GS: gistfillbuffer len %d off %d", len, off);
 
 	if (off == InvalidOffsetNumber)
 		off = (PageIsEmpty(page)) ? FirstOffsetNumber :
@@ -122,7 +122,7 @@ gistextractrange(Page page, OffsetNumber start, int len)
 			   *itvecnext;
 
 	maxoff = PageGetMaxOffsetNumber(page);
-	//elog(NOTICE,"GS: maxoff %d len %d start %d",maxoff,len,start);
+	////elog(NOTICE,"GS: maxoff %d len %d start %d",maxoff,len,start);
 	Assert(maxoff >= start + len - 1);
 
 	/* caller will use this x2 allocation */
@@ -133,7 +133,7 @@ gistextractrange(Page page, OffsetNumber start, int len)
 		IndexTuple tup = (IndexTuple) PageGetItem(page, PageGetItemId(page, i));
 		if (IndexTupleIsSkip(tup))
 		{
-			//elog(NOTICE,"GS: dangling %d start %d end %d skipgroupsize %d",i, start, start + len,IndexTupleGetSkipCount(tup));
+			////elog(NOTICE,"GS: dangling %d start %d end %d skipgroupsize %d",i, start, start + len,IndexTupleGetSkipCount(tup));
 		}
 		Assert(!IndexTupleIsSkip(tup));
 		*itvecnext = tup;
@@ -615,7 +615,7 @@ gistchoose(Relation r, Page p, IndexTuple it,	/* it has compressed entry */
 		}
 	}
 
-	//elog(NOTICE,"GS: Choose result %d",result);
+	////elog(NOTICE,"GS: Choose result %d",result);
 	return result;
 }
 
