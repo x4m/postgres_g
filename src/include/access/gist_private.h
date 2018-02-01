@@ -458,7 +458,7 @@ extern IndexTuple *gistextractpage(Page page, int *len /* out */);
 extern IndexTuple *gistextractrange(Page page, OffsetNumber start, int len);
 extern IndexTuple *gistjoinvector(
 			   IndexTuple *itvec, int *len,
-			   IndexTuple *additvec, int addlen);
+			   IndexTuple *additvec, int addlen, OffsetNumber oldoffnum);
 extern void gistfiltervector(IndexTuple *itvec, int *len);
 extern IndexTupleData *gistfillitupvec(IndexTuple *vec, int veclen, int *memlen);
 

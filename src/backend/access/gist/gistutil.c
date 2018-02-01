@@ -147,10 +147,16 @@ gistextractrange(Page page, OffsetNumber start, int len)
  * join two vectors into one
  */
 IndexTuple *
-gistjoinvector(IndexTuple *itvec, int *len, IndexTuple *additvec, int addlen)
+gistjoinvector(IndexTuple *itvec, int *len, IndexTuple *additvec, int addlen, OffsetNumber oldoffnum)
 {
+	if (!OffsetNumberIsValid(oldoffnum))
+		oldoffnum = *len;
+	else
+		oldoffnum -= FirstOffsetNumber;
 	itvec = (IndexTuple *) repalloc((void *) itvec, sizeof(IndexTuple) * ((*len) + addlen));
-	memmove(&itvec[*len], additvec, sizeof(IndexTuple) * addlen);
+	if (oldoffnum < *len)
+		memmove(&itvec[oldoffnum + addlen], &itvec[oldoffnum], sizeof(IndexTuple) * (*len - oldoffnum));
+	memmove(&itvec[oldoffnum], additvec, sizeof(IndexTuple) * addlen);
 	*len += addlen;
 	return itvec;
 }
