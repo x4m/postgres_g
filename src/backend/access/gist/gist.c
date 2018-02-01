@@ -37,7 +37,7 @@ static bool gistinserttuples(GISTInsertState *state, GISTInsertStack *stack,
 static void gistfinishsplit(GISTInsertState *state, GISTInsertStack *stack,
 				GISTSTATE *giststate, List *splitinfo, bool releasebuf);
 static void gistvacuumpage(Relation rel, Page page, Buffer buffer);
-static void gistcheckskippage(Page page);
+static inline void gistcheckskippage(Page page);
 
 
 #define ROTATEDIST(d) do { \
@@ -1344,7 +1344,7 @@ gistinserttuples(GISTInsertState *state, GISTInsertStack *stack,
 	return is_split;
 }
 
-static void
+static inline void
 gistcheckskippage(Page page)
 {
 	OffsetNumber i,
