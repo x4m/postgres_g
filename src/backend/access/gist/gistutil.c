@@ -725,6 +725,7 @@ gistFetchTuple(GISTSTATE *giststate, Relation r, IndexTuple tuple)
 	Datum		fetchatt[INDEX_MAX_KEYS];
 	bool		isnull[INDEX_MAX_KEYS];
 	int			i;
+	Assert(!IndexTupleIsSkip(tuple));
 
 	for (i = 0; i < r->rd_att->natts; i++)
 	{

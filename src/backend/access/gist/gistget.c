@@ -334,10 +334,12 @@ gistScanPage(IndexScanDesc scan, GISTSearchItem *pageItem, double *myDistances,
 
 	Assert(!GISTSearchItemIsHeap(*pageItem));
 
+	//elog(NOTICE,"GS: scan page %d",pageItem->blkno);
 	buffer = ReadBuffer(scan->indexRelation, pageItem->blkno);
 	LockBuffer(buffer, GIST_SHARE);
 	gistcheckpage(scan->indexRelation, buffer);
 	page = BufferGetPage(buffer);
+	//gistcheckskippage(page);
 	TestForOldSnapshot(scan->xs_snapshot, r, page);
 	opaque = GistPageGetOpaque(page);
 
@@ -397,7 +399,6 @@ gistScanPage(IndexScanDesc scan, GISTSearchItem *pageItem, double *myDistances,
 		bool		match;
 		bool		recheck;
 		bool		recheck_distances;
-		bool		skip_tuple;
 
 		/*
 		 * If the scan specifies not to return killed tuples, then we treat a
@@ -407,7 +408,7 @@ gistScanPage(IndexScanDesc scan, GISTSearchItem *pageItem, double *myDistances,
 			continue;
 
 		it = (IndexTuple) PageGetItem(page, iid);
-		skip_tuple = IndexTupleIsSkip(it);
+		//elog(NOTICE,"GS: item %d, skiptcount %d", i, IndexTupleGetSkipCount(it));
 
 		/*
 		 * Must call gistindex_keytest in tempCxt, and clean up any leftover
@@ -424,14 +425,17 @@ gistScanPage(IndexScanDesc scan, GISTSearchItem *pageItem, double *myDistances,
 		/* Ignore tuple if it doesn't match */
 		if (!match)
 		{
-			if (skip_tuple)
+			//elog(NOTICE,"GS: not match");
+			if (IndexTupleIsSkip(it))
 			{
+				//elog(NOTICE,"GS: skipping something %d", IndexTupleGetSkipCount(it));
 				i += IndexTupleGetSkipCount(it);
 			}
 			continue;
 		}
+		//elog(NOTICE,"GS: match");
 
-		if (skip_tuple)
+		if (IndexTupleIsSkip(it))
 			continue;
 
 		if (tbm && GistPageIsLeaf(page))
@@ -649,6 +653,7 @@ gistgettuple(IndexScanDesc scan, ScanDirection dir)
 	{
 		/* Begin the scan by processing the root page */
 		GISTSearchItem fakeItem;
+		//elog(NOTICE,"GS: scan first call");
 
 		pgstat_count_index_scan(scan->indexRelation);
 

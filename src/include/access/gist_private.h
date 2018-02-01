@@ -460,6 +460,7 @@ extern IndexTuple *gistjoinvector(
 			   IndexTuple *itvec, int *len,
 			   IndexTuple *additvec, int addlen, OffsetNumber oldoffnum);
 extern void gistfiltervector(IndexTuple *itvec, int *len);
+extern inline void gistcheckskippage(Page page);
 extern IndexTupleData *gistfillitupvec(IndexTuple *vec, int veclen, int *memlen);
 
 extern IndexTuple gistunion(Relation r, IndexTuple *itvec,
