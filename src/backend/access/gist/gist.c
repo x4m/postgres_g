@@ -226,7 +226,7 @@ gistplacetopage(Relation rel, Size freespace, GISTSTATE *giststate,
 	int			i;
 	bool		is_split;
 	//elog(NOTICE,"GS: gistplacetopage at %d skipoffnum %d", oldoffnum, skipoffnum);
-	//gistcheckskippage(page);
+	gistcheckskippage(page);
 	//elog(NOTICE,"GS: check done");
 
 	/*
@@ -456,7 +456,7 @@ gistplacetopage(Relation rel, Size freespace, GISTSTATE *giststate,
 				data += IndexTupleSize(thistup);
 			}
 			//elog(NOTICE,"GS: checking page %p", ptr);
-			//gistcheckskippage(ptr->page);
+			gistcheckskippage(ptr->page);
 
 			/* Set up rightlinks */
 			if (ptr->next && ptr->block.blkno != GIST_ROOT_BLKNO)
@@ -650,7 +650,7 @@ gistplacetopage(Relation rel, Size freespace, GISTSTATE *giststate,
 
 	END_CRIT_SECTION();
 	//elog(NOTICE,"GS: place to page done");
-	//gistcheckskippage(page);
+	gistcheckskippage(page);
 	//elog(NOTICE,"GS: check done");
 
 	return is_split;
@@ -669,7 +669,6 @@ gistdoinsert(Relation r, IndexTuple itup, Size freespace, GISTSTATE *giststate)
 	GISTInsertStack firststack;
 	GISTInsertStack *stack;
 	GISTInsertState state;
-	OffsetNumber skipoffnum = InvalidOffsetNumber;
 	bool		xlocked = false;
 
 	memset(&state, 0, sizeof(GISTInsertState));
@@ -692,69 +691,66 @@ gistdoinsert(Relation r, IndexTuple itup, Size freespace, GISTSTATE *giststate)
 	for (;;)
 	{
 		//elog(NOTICE,"GS: insert cycle");
-		if (skipoffnum == InvalidOffsetNumber)
-		{
-			if (XLogRecPtrIsInvalid(stack->lsn))
-				stack->buffer = ReadBuffer(state.r, stack->blkno);
+		if (XLogRecPtrIsInvalid(stack->lsn))
+			stack->buffer = ReadBuffer(state.r, stack->blkno);
 
-			/*
-			* Be optimistic and grab shared lock first. Swap it for an exclusive
-			* lock later if we need to update the page.
-			*/
+		/*
+		* Be optimistic and grab shared lock first. Swap it for an exclusive
+		* lock later if we need to update the page.
+		*/
+		if (!xlocked)
+		{
+			LockBuffer(stack->buffer, GIST_SHARE);
+			gistcheckpage(state.r, stack->buffer);
+		}
+
+		stack->page = (Page) BufferGetPage(stack->buffer);
+		stack->lsn = xlocked ?
+			PageGetLSN(stack->page) : BufferGetLSNAtomic(stack->buffer);
+		Assert(!RelationNeedsWAL(state.r) || !XLogRecPtrIsInvalid(stack->lsn));
+
+		/*
+		* If this page was split but the downlink was never inserted to the
+		* parent because the inserting backend crashed before doing that, fix
+		* that now.
+		*/
+		if (GistFollowRight(stack->page))
+		{
 			if (!xlocked)
 			{
-				LockBuffer(stack->buffer, GIST_SHARE);
-				gistcheckpage(state.r, stack->buffer);
+				LockBuffer(stack->buffer, GIST_UNLOCK);
+				LockBuffer(stack->buffer, GIST_EXCLUSIVE);
+				xlocked = true;
+				/* someone might've completed the split when we unlocked */
+				if (!GistFollowRight(stack->page))
+					continue;
 			}
+			gistfixsplit(&state, giststate);
 
-			stack->page = (Page) BufferGetPage(stack->buffer);
-			stack->lsn = xlocked ?
-				PageGetLSN(stack->page) : BufferGetLSNAtomic(stack->buffer);
-			Assert(!RelationNeedsWAL(state.r) || !XLogRecPtrIsInvalid(stack->lsn));
+			UnlockReleaseBuffer(stack->buffer);
+			xlocked = false;
+			state.stack = stack = stack->parent;
+			continue;
+		}
 
+		if (stack->blkno != GIST_ROOT_BLKNO &&
+			stack->parent->lsn < GistPageGetNSN(stack->page))
+		{
 			/*
-			* If this page was split but the downlink was never inserted to the
-			* parent because the inserting backend crashed before doing that, fix
-			* that now.
+			* Concurrent split detected. There's no guarantee that the
+			* downlink for this page is consistent with the tuple we're
+			* inserting anymore, so go back to parent and rechoose the best
+			* child.
 			*/
-			if (GistFollowRight(stack->page))
-			{
-				if (!xlocked)
-				{
-					LockBuffer(stack->buffer, GIST_UNLOCK);
-					LockBuffer(stack->buffer, GIST_EXCLUSIVE);
-					xlocked = true;
-					/* someone might've completed the split when we unlocked */
-					if (!GistFollowRight(stack->page))
-						continue;
-				}
-				gistfixsplit(&state, giststate);
-
-				UnlockReleaseBuffer(stack->buffer);
-				xlocked = false;
-				state.stack = stack = stack->parent;
-				continue;
-			}
-
-			if (stack->blkno != GIST_ROOT_BLKNO &&
-				stack->parent->lsn < GistPageGetNSN(stack->page))
-			{
-				/*
-				* Concurrent split detected. There's no guarantee that the
-				* downlink for this page is consistent with the tuple we're
-				* inserting anymore, so go back to parent and rechoose the best
-				* child.
-				*/
-				UnlockReleaseBuffer(stack->buffer);
-				xlocked = false;
-				state.stack = stack = stack->parent;
-				continue;
-			}
+			UnlockReleaseBuffer(stack->buffer);
+			xlocked = false;
+			state.stack = stack = stack->parent;
+			continue;
 		}
 
 		if (!GistPageIsLeaf(stack->page))
 		{
-			OffsetNumber usedskipoffnum = skipoffnum;
+			OffsetNumber skipoffnum;
 			/*
 			 * This is an internal page so continue to walk down the tree.
 			 * Find the child node that has the minimum insertion penalty.
@@ -764,8 +760,68 @@ gistdoinsert(Relation r, IndexTuple itup, Size freespace, GISTSTATE *giststate)
 			GISTInsertStack *item;
 			OffsetNumber downlinkoffnum;
 
-			downlinkoffnum = gistchoose(state.r, stack->page, itup, giststate, skipoffnum);
-			skipoffnum = InvalidOffsetNumber;
+			downlinkoffnum = gistchoose(state.r, stack->page, itup, giststate, &skipoffnum);
+
+			if (OffsetNumberIsValid(skipoffnum))
+			{
+				iid = PageGetItemId(stack->page, skipoffnum);
+				idxtuple = (IndexTuple) PageGetItem(stack->page, iid);
+				Assert(IndexTupleIsSkip(idxtuple));
+
+				/*
+				* Check that the key representing the target child node is
+				* consistent with the key we're inserting. Update it if it's not.
+				*/
+				newtup = gistgetadjusted(state.r, idxtuple, itup, giststate);
+				if (newtup)
+				{
+					/*
+					* Swap shared lock for an exclusive one. Beware, the page may
+					* change while we unlock/lock the page...
+					*/
+					if (!xlocked)
+					{
+						LockBuffer(stack->buffer, GIST_UNLOCK);
+						LockBuffer(stack->buffer, GIST_EXCLUSIVE);
+						xlocked = true;
+						stack->page = (Page) BufferGetPage(stack->buffer);
+
+						if (PageGetLSN(stack->page) != stack->lsn)
+						{
+							/* the page was changed while we unlocked it, retry */
+							continue;
+						}
+					}
+
+					/*
+					* Update the tuple.
+					*
+					* We still hold the lock after gistinserttuple(), but it
+					* might have to split the page to make the updated tuple fit.
+					* In that case the updated tuple might migrate to the other
+					* half of the split, so we have to go back to the parent and
+					* descend back to the half that's a better fit for the new
+					* tuple.
+					*/
+					if (gistinserttuple(&state, stack, giststate, newtup,
+										skipoffnum))
+					{
+						/*
+						* If this was a root split, the root page continues to be
+						* the parent and the updated tuple went to one of the
+						* child pages, so we just need to retry from the root
+						* page.
+						*/
+						if (stack->blkno != GIST_ROOT_BLKNO)
+						{
+							UnlockReleaseBuffer(stack->buffer);
+							xlocked = false;
+							state.stack = stack = stack->parent;
+						}
+						continue;
+					}
+				}
+			}
 			iid = PageGetItemId(stack->page, downlinkoffnum);
 			idxtuple = (IndexTuple) PageGetItem(stack->page, iid);
 			childblkno = ItemPointerGetBlockNumber(&(idxtuple->t_tid));
@@ -834,12 +890,6 @@ gistdoinsert(Relation r, IndexTuple itup, Size freespace, GISTSTATE *giststate)
 				}
 			}
 
-			if (IndexTupleIsSkip(idxtuple))
-			{
-				skipoffnum = downlinkoffnum;
-				continue;
-			}
-
 			LockBuffer(stack->buffer, GIST_UNLOCK);
 			xlocked = false;
 
@@ -848,7 +898,7 @@ gistdoinsert(Relation r, IndexTuple itup, Size freespace, GISTSTATE *giststate)
 			item->blkno = childblkno;
 			item->parent = stack;
 			item->downlinkoffnum = downlinkoffnum;
-			item->skipoffnum = usedskipoffnum;
+			item->skipoffnum = skipoffnum;
 			state.stack = stack = item;
 			//elog(NOTICE,"GS: descending");
 		}
@@ -1386,7 +1436,7 @@ gisttestskipgroup(GISTInsertState *state, GISTInsertStack *stack,
 	IndexTuple	skiptuple = (IndexTuple) PageGetItem(page, PageGetItemId(page, skipoffnum));
 	int			skipsize;
 	//elog(NOTICE,"GS: gisttestskipgroup begin at %d", skipoffnum);
-	//gistcheckskippage(page);
+	gistcheckskippage(page);
 	Assert(!GistPageIsLeaf(page));
 	Assert(IndexTupleIsSkip(skiptuple));
 	skipsize = IndexTupleGetSkipCount(skiptuple);
@@ -1419,7 +1469,7 @@ gisttestskipgroup(GISTInsertState *state, GISTInsertStack *stack,
 							InvalidBuffer, InvalidBuffer, false, false, skipsize + 1, InvalidOffsetNumber);
 	}
 	//elog(NOTICE,"GS: gisttestskipgroup end");
-	//gistcheckskippage(page);
+	gistcheckskippage(page);
 }
 
 /*
@@ -1509,7 +1559,7 @@ gistfinishsplit(GISTInsertState *state, GISTInsertStack *stack,
 	if (stack->skipoffnum != InvalidOffsetNumber && !lastmomentsplit)
 		gisttestskipgroup(state,stack->parent, giststate, stack->skipoffnum);
 
-	//gistcheckskippage(BufferGetPage(stack->parent->buffer));
+	gistcheckskippage(BufferGetPage(stack->parent->buffer));
 	//elog(NOTICE,"GS: gistfinishsplit end");
 	LockBuffer(stack->parent->buffer, GIST_UNLOCK);
 	Assert(left->buf == stack->buffer);

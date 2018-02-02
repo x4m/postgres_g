@@ -475,7 +475,7 @@ extern IndexTuple gistFormTuple(GISTSTATE *giststate,
 extern OffsetNumber gistchoose(Relation r, Page p,
 		   IndexTuple it,
 		   GISTSTATE *giststate,
-		   OffsetNumber skipoffnum);
+		   OffsetNumber *skipoffnum);
 
 extern void GISTInitBuffer(Buffer b, uint32 f);
 extern void gistdentryinit(GISTSTATE *giststate, int nkey, GISTENTRY *e,

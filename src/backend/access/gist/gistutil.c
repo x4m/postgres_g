@@ -437,10 +437,11 @@ gistgetadjusted(Relation r, IndexTuple oldtup, IndexTuple addtup, GISTSTATE *gis
  */
 OffsetNumber
 gistchoose(Relation r, Page p, IndexTuple it,	/* it has compressed entry */
-		   GISTSTATE *giststate, OffsetNumber skipoffnum)
+		   GISTSTATE *giststate, OffsetNumber *skipoffnum)
 {
 	OffsetNumber result;
 	OffsetNumber maxoff;
+	OffsetNumber prevskip = InvalidOffsetNumber;
 	OffsetNumber i;
 	float		best_penalty[INDEX_MAX_KEYS];
 	GISTENTRY	entry,
@@ -499,123 +500,130 @@ gistchoose(Relation r, Page p, IndexTuple it,	/* it has compressed entry */
 	 */
 	maxoff = PageGetMaxOffsetNumber(p);
 	Assert(maxoff >= FirstOffsetNumber);
-	i = OffsetNumberNext(skipoffnum);
 
-	while (i <= maxoff)
+	for (i = FirstOffsetNumber; i <= maxoff; i = OffsetNumberNext(i))
 	{
 		IndexTuple	itup = (IndexTuple) PageGetItem(p, PageGetItemId(p, i));
 		bool		zero_penalty;
 		int			j;
 
-		zero_penalty = true;
-
-		/* Loop over index attributes. */
-		for (j = 0; j < r->rd_att->natts; j++)
+		if (IndexTupleIsSkip(itup))
 		{
 			Datum		datum;
 			float		usize;
 			bool		IsNull;
 
-			/* Compute penalty for this column. */
-			datum = index_getattr(itup, j + 1, giststate->tupdesc, &IsNull);
-			gistdentryinit(giststate, j, &entry, datum, r, p, i,
-						   false, IsNull);
-			usize = gistpenalty(giststate, j, &entry, IsNull,
-								&identry[j], isnull[j]);
-			if (usize > 0)
-				zero_penalty = false;
+			prevskip = i;
 
-			if (best_penalty[j] < 0 || usize < best_penalty[j])
-			{
-				/*
-				 * New best penalty for column.  Tentatively select this tuple
-				 * as the target, and record the best penalty.  Then reset the
-				 * next column's penalty to "unknown" (and indirectly, the
-				 * same for all the ones to its right).  This will force us to
-				 * adopt this tuple's penalty values as the best for all the
-				 * remaining columns during subsequent loop iterations.
-				 */
-				result = i;
-				best_penalty[j] = usize;
-
-				if (j < r->rd_att->natts - 1)
-					best_penalty[j + 1] = -1;
-
-				/* we have new best, so reset keep-it decision */
-				keep_current_best = -1;
-			}
-			else if (best_penalty[j] == usize)
-			{
-				/*
-				 * The current tuple is exactly as good for this column as the
-				 * best tuple seen so far.  The next iteration of this loop
-				 * will compare the next column.
-				 */
-			}
-			else
-			{
-				/*
-				 * The current tuple is worse for this column than the best
-				 * tuple seen so far.  Skip the remaining columns and move on
-				 * to the next tuple, if any.
-				 */
-				zero_penalty = false;	/* so outer loop won't exit */
-				break;
-			}
-		}
-
-		/*
-		 * If we looped past the last column, and did not update "result",
-		 * then this tuple is exactly as good as the prior best tuple.
-		 */
-		if (j == r->rd_att->natts && result != i)
-		{
-			if (keep_current_best == -1)
-			{
-				/* we didn't make the random choice yet for this old best */
-				keep_current_best = (random() <= (MAX_RANDOM_VALUE / 2)) ? 1 : 0;
-			}
-			if (keep_current_best == 0)
-			{
-				/* we choose to use the new tuple */
-				result = i;
-				/* choose again if there are even more exactly-as-good ones */
-				keep_current_best = -1;
-			}
-		}
-
-		/*
-		 * If we find a tuple with zero penalty for all columns, and we've
-		 * decided we don't want to search for another tuple with equal
-		 * penalty, there's no need to examine remaining tuples; just break
-		 * out of the loop and return it.
-		 */
-		if (zero_penalty)
-		{
-			if (keep_current_best == -1)
-			{
-				/* we didn't make the random choice yet for this old best */
-				keep_current_best = (random() <= (MAX_RANDOM_VALUE / 2)) ? 1 : 0;
-			}
-			if (keep_current_best == 1)
-				break;
-		}
-
-		i = OffsetNumberNext(i);
-		if (IndexTupleIsSkip(itup))
-		{
-			if (skipoffnum == InvalidOffsetNumber)
-			{
-				break;
-			}
-			else
+			datum = index_getattr(itup, 1, giststate->tupdesc, &IsNull);
+			gistdentryinit(giststate, 0, &entry, datum, r, p, i,
+							false, IsNull);
+			usize = gistpenalty(giststate, 0, &entry, IsNull,
+									&identry[0], isnull[0]);
+			if (usize > best_penalty[0] && best_penalty[0] >= 0)
 			{
 				i += IndexTupleGetSkipCount(itup);
 			}
 		}
+		else
+		{
+			zero_penalty = true;
+
+			/* Loop over index attributes. */
+			for (j = 0; j < r->rd_att->natts; j++)
+			{
+				Datum		datum;
+				float		usize;
+				bool		IsNull;
+
+				/* Compute penalty for this column. */
+				datum = index_getattr(itup, j + 1, giststate->tupdesc, &IsNull);
+				gistdentryinit(giststate, j, &entry, datum, r, p, i,
+							false, IsNull);
+				usize = gistpenalty(giststate, j, &entry, IsNull,
+									&identry[j], isnull[j]);
+				if (usize > 0)
+					zero_penalty = false;
+
+				if (best_penalty[j] < 0 || usize < best_penalty[j])
+				{
+					/*
+					* New best penalty for column.  Tentatively select this tuple
+					* as the target, and record the best penalty.  Then reset the
+					* next column's penalty to "unknown" (and indirectly, the
+					* same for all the ones to its right).  This will force us to
+					* adopt this tuple's penalty values as the best for all the
+					* remaining columns during subsequent loop iterations.
+					*/
+					result = i;
+					*skipoffnum = prevskip;
+					best_penalty[j] = usize;
+
+					if (j < r->rd_att->natts - 1)
+						best_penalty[j + 1] = -1;
+
+					/* we have new best, so reset keep-it decision */
+					keep_current_best = -1;
+				}
+				else if (best_penalty[j] == usize)
+				{
+					/*
+					* The current tuple is exactly as good for this column as the
+					* best tuple seen so far.  The next iteration of this loop
+					* will compare the next column.
+					*/
+				}
+				else
+				{
+					/*
+					* The current tuple is worse for this column than the best
+					* tuple seen so far.  Skip the remaining columns and move on
+					* to the next tuple, if any.
+					*/
+					zero_penalty = false;	/* so outer loop won't exit */
+					break;
+				}
+			}
+
+			/*
+			* If we looped past the last column, and did not update "result",
+			* then this tuple is exactly as good as the prior best tuple.
+			*/
+			if (j == r->rd_att->natts && result != i)
+			{
+				if (keep_current_best == -1)
+				{
+					/* we didn't make the random choice yet for this old best */
+					keep_current_best = (random() <= (MAX_RANDOM_VALUE / 2)) ? 1 : 0;
+				}
+				if (keep_current_best == 0)
+				{
+					/* we choose to use the new tuple */
+					result = i;
+					/* choose again if there are even more exactly-as-good ones */
+					keep_current_best = -1;
+				}
+			}
+
+			/*
+			* If we find a tuple with zero penalty for all columns, and we've
+			* decided we don't want to search for another tuple with equal
+			* penalty, there's no need to examine remaining tuples; just break
+			* out of the loop and return it.
+			*/
+			if (zero_penalty)
+			{
+				if (keep_current_best == -1)
+				{
+					/* we didn't make the random choice yet for this old best */
+					keep_current_best = (random() <= (MAX_RANDOM_VALUE / 2)) ? 1 : 0;
+				}
+				if (keep_current_best == 1)
+					break;
+			}
+		}
 	}
 
-	////elog(NOTICE,"GS: Choose result %d",result);
 	return result;
 }
 

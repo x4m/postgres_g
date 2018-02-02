@@ -550,6 +550,7 @@ gistProcessItup(GISTBuildState *buildstate, IndexTuple itup,
 	GISTBuildBuffers *gfbb = buildstate->gfbb;
 	Relation	indexrel = buildstate->indexrel;
 	BlockNumber childblkno;
+	OffsetNumber skipoffnum;
 	Buffer		buffer;
 	bool		result = false;
 	BlockNumber blkno;
@@ -591,7 +592,7 @@ gistProcessItup(GISTBuildState *buildstate, IndexTuple itup,
 		LockBuffer(buffer, GIST_EXCLUSIVE);
 
 		page = (Page) BufferGetPage(buffer);
-		childoffnum = gistchoose(indexrel, page, itup, giststate, InvalidOffsetNumber);
+		childoffnum = gistchoose(indexrel, page, itup, giststate, &skipoffnum);
 		iid = PageGetItemId(page, childoffnum);
 		idxtuple = (IndexTuple) PageGetItem(page, iid);
 		childblkno = ItemPointerGetBlockNumber(&(idxtuple->t_tid));
