@@ -225,9 +225,8 @@ gistplacetopage(Relation rel, Size freespace, GISTSTATE *giststate,
 	XLogRecPtr	recptr;
 	int			i;
 	bool		is_split;
-	//elog(NOTICE,"GS: gistplacetopage at %d skipoffnum %d", oldoffnum, skipoffnum);
-	gistcheckskippage(page);
-	//elog(NOTICE,"GS: check done");
+	//elog(NOTICE,"GS: before placetopage check");
+	//gistcheckskippage(page);
 
 	/*
 	 * Refuse to modify a page that's incompletely split. This should not
@@ -278,6 +277,7 @@ gistplacetopage(Relation rel, Size freespace, GISTSTATE *giststate,
 		bool		is_rootsplit;
 		int			npage;
 
+		//elog(NOTICE,"GS: gistplacetopage at %d skipoffnum %d", oldoffnum, skipoffnum);
 		//elog(NOTICE,"GS: Performing split");
 
 		is_rootsplit = (blkno == GIST_ROOT_BLKNO);
@@ -456,7 +456,7 @@ gistplacetopage(Relation rel, Size freespace, GISTSTATE *giststate,
 				data += IndexTupleSize(thistup);
 			}
 			//elog(NOTICE,"GS: checking page %p", ptr);
-			gistcheckskippage(ptr->page);
+			//gistcheckskippage(ptr->page);
 
 			/* Set up rightlinks */
 			if (ptr->next && ptr->block.blkno != GIST_ROOT_BLKNO)
@@ -542,6 +542,8 @@ gistplacetopage(Relation rel, Size freespace, GISTSTATE *giststate,
 	}
 	else
 	{
+		//if (!GistPageIsLeaf(page))
+		//	elog(NOTICE,"GS: gistplacetopage at %d skipoffnum %d", oldoffnum, skipoffnum);
 		//elog(NOTICE,"GS: just place");
 		/*
 		 * Enough space.  We always get here if ntup==0.
@@ -650,7 +652,7 @@ gistplacetopage(Relation rel, Size freespace, GISTSTATE *giststate,
 
 	END_CRIT_SECTION();
 	//elog(NOTICE,"GS: place to page done");
-	gistcheckskippage(page);
+	//gistcheckskippage(page);
 	//elog(NOTICE,"GS: check done");
 
 	return is_split;
@@ -761,6 +763,7 @@ gistdoinsert(Relation r, IndexTuple itup, Size freespace, GISTSTATE *giststate)
 			OffsetNumber downlinkoffnum;
 
 			downlinkoffnum = gistchoose(state.r, stack->page, itup, giststate, &skipoffnum);
+			//elog(NOTICE,"GS: chosen %d skip %d", downlinkoffnum, skipoffnum);
 
 			if (OffsetNumberIsValid(skipoffnum))
 			{
@@ -824,6 +827,7 @@ gistdoinsert(Relation r, IndexTuple itup, Size freespace, GISTSTATE *giststate)
 			}
 			iid = PageGetItemId(stack->page, downlinkoffnum);
 			idxtuple = (IndexTuple) PageGetItem(stack->page, iid);
+			Assert(!IndexTupleIsSkip(idxtuple));
 			childblkno = ItemPointerGetBlockNumber(&(idxtuple->t_tid));
 
 			/*
@@ -1400,6 +1404,7 @@ gistcheckskippage(Page page)
 				maxoff;
 	int skiplast = 0;
 	bool wasskip = false;
+	Assert(false);
 
 	maxoff = PageGetMaxOffsetNumber(page);
 	for (i = FirstOffsetNumber; i <= maxoff; i = OffsetNumberNext(i))
@@ -1408,14 +1413,18 @@ gistcheckskippage(Page page)
 
 		if (IndexTupleIsSkip(tup))
 		{
-			elog(NOTICE, "GS: Skip tuple count %d",IndexTupleGetSkipCount(tup));
+			//elog(NOTICE, "GS: Skip tuple count %d",IndexTupleGetSkipCount(tup));
+			if (skiplast)
+			{
+				elog(NOTICE, "GS: at % d expecting %d more tuples but have skipgroup %d",i, skiplast,IndexTupleGetSkipCount(tup));
+			}
 			Assert(skiplast == 0);
 			skiplast = IndexTupleGetSkipCount(tup);
 			wasskip = true;
 		}
 		else
 		{
-			elog(NOTICE, "GS: not skip");
+			//elog(NOTICE, "GS: not skip");
 			if (!wasskip)
 				continue;
 			if (skiplast<=0)
@@ -1436,7 +1445,7 @@ gisttestskipgroup(GISTInsertState *state, GISTInsertStack *stack,
 	IndexTuple	skiptuple = (IndexTuple) PageGetItem(page, PageGetItemId(page, skipoffnum));
 	int			skipsize;
 	//elog(NOTICE,"GS: gisttestskipgroup begin at %d", skipoffnum);
-	gistcheckskippage(page);
+	//gistcheckskippage(page);
 	Assert(!GistPageIsLeaf(page));
 	Assert(IndexTupleIsSkip(skiptuple));
 	skipsize = IndexTupleGetSkipCount(skiptuple);
@@ -1469,7 +1478,7 @@ gisttestskipgroup(GISTInsertState *state, GISTInsertStack *stack,
 							InvalidBuffer, InvalidBuffer, false, false, skipsize + 1, InvalidOffsetNumber);
 	}
 	//elog(NOTICE,"GS: gisttestskipgroup end");
-	gistcheckskippage(page);
+	//gistcheckskippage(page);
 }
 
 /*
@@ -1559,7 +1568,7 @@ gistfinishsplit(GISTInsertState *state, GISTInsertStack *stack,
 	if (stack->skipoffnum != InvalidOffsetNumber && !lastmomentsplit)
 		gisttestskipgroup(state,stack->parent, giststate, stack->skipoffnum);
 
-	gistcheckskippage(BufferGetPage(stack->parent->buffer));
+	//gistcheckskippage(BufferGetPage(stack->parent->buffer));
 	//elog(NOTICE,"GS: gistfinishsplit end");
 	LockBuffer(stack->parent->buffer, GIST_UNLOCK);
 	Assert(left->buf == stack->buffer);

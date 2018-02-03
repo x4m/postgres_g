@@ -520,7 +520,7 @@ gistchoose(Relation r, Page p, IndexTuple it,	/* it has compressed entry */
 							false, IsNull);
 			usize = gistpenalty(giststate, 0, &entry, IsNull,
 									&identry[0], isnull[0]);
-			if (usize > best_penalty[0] && best_penalty[0] >= 0)
+			if (usize > best_penalty[0] && best_penalty[0] != -1)
 			{
 				i += IndexTupleGetSkipCount(itup);
 			}
@@ -600,6 +600,7 @@ gistchoose(Relation r, Page p, IndexTuple it,	/* it has compressed entry */
 				{
 					/* we choose to use the new tuple */
 					result = i;
+					*skipoffnum = prevskip;
 					/* choose again if there are even more exactly-as-good ones */
 					keep_current_best = -1;
 				}
