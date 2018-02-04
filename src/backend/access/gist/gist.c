@@ -603,11 +603,12 @@ gistplacetopage(Relation rel, Size freespace, GISTSTATE *giststate,
 		if (RelationNeedsWAL(rel))
 		{
 			OffsetNumber ndeloffs = 0,
-						deloffs[1];
+						deloffs[BLCKSZ / sizeof(ItemIdData)];
 
 			if (OffsetNumberIsValid(oldoffnum))
 			{
-				deloffs[0] = oldoffnum;
+				for (i = 0; i < ndeltup; i++)
+					deloffs[i] = oldoffnum + i;
 				ndeloffs = ndeltup;
 			}
 
@@ -1449,7 +1450,7 @@ gisttestskipgroup(GISTInsertState *state, GISTInsertStack *stack,
 	Assert(!GistPageIsLeaf(page));
 	Assert(IndexTupleIsSkip(skiptuple));
 	skipsize = IndexTupleGetSkipCount(skiptuple);
-	Assert((skipsize > 0) && (skipsize < BLCKSZ / sizeof(ItemId)));
+	Assert((skipsize > 0) && (skipsize < BLCKSZ / sizeof(ItemIdData)));
 	if (skipsize > GIST_SKIPGROUP_THRESHOLD)
 	{
 		IndexTuple* itvec = gistextractrange(page, skipoffnum+1, skipsize);

@@ -81,7 +81,6 @@ gistRedoPageUpdateRecord(XLogReaderState *record)
 		data = begin = XLogRecGetBlockData(record, 0, &datalen);
 
 		page = (Page) BufferGetPage(buffer);
-		elog(FATAL,"TODO WAL");
 
 		if (xldata->ntodelete == 1 && xldata->ntoinsert == 1)
 		{
@@ -138,6 +137,15 @@ gistRedoPageUpdateRecord(XLogReaderState *record)
 				off++;
 				ninserted++;
 			}
+		}
+
+		if (xldata->skipoffnum != InvalidOffsetNumber)
+		{
+			IndexTuple skiptuple = (IndexTuple) PageGetItem(page, PageGetItemId(page, xldata->skipoffnum));
+			int newskipgroupsize = IndexTupleGetSkipCount(skiptuple) + xldata->ntoinsert - xldata->ntodelete;
+
+			Assert(IndexTupleIsSkip(skiptuple));
+			IndexTupleSetSkipCount(skiptuple, newskipgroupsize);
 		}
 
 		/* Check that XLOG record contained expected number of tuples */
