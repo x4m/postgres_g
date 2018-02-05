@@ -34,7 +34,6 @@ gistfillbuffer(Page page, IndexTuple *itup, int len, OffsetNumber off)
 {
 	OffsetNumber l = InvalidOffsetNumber;
 	int			i;
-	////elog(NOTICE,"GS: gistfillbuffer len %d off %d", len, off);
 
 	if (off == InvalidOffsetNumber)
 		off = (PageIsEmpty(page)) ? FirstOffsetNumber :
@@ -65,7 +64,7 @@ gistnospace(Page page, IndexTuple *itvec, int len, OffsetNumber todelete, Size f
 	for (i = 0; i < len; i++)
 		size += IndexTupleSize(itvec[i]) + sizeof(ItemIdData);
 
-	if (todelete != InvalidOffsetNumber)
+	if (OffsetNumberIsValid(todelete))
 	{
 		for (i = 0; i < ndeltup; i++)
 		{
@@ -122,7 +121,6 @@ gistextractrange(Page page, OffsetNumber start, int len)
 			   *itvecnext;
 
 	maxoff = PageGetMaxOffsetNumber(page);
-	////elog(NOTICE,"GS: maxoff %d len %d start %d",maxoff,len,start);
 	Assert(maxoff >= start + len - 1);
 
 	/* caller will use this x2 allocation */
@@ -131,10 +129,6 @@ gistextractrange(Page page, OffsetNumber start, int len)
 	for (i = start; i < start + len; i = OffsetNumberNext(i))
 	{
 		IndexTuple tup = (IndexTuple) PageGetItem(page, PageGetItemId(page, i));
-		if (GistTupleIsSkip(tup))
-		{
-			////elog(NOTICE,"GS: dangling %d start %d end %d skipgroupsize %d",i, start, start + len,GistTupleGetSkipCount(tup));
-		}
 		Assert(!GistTupleIsSkip(tup));
 		*itvecnext = tup;
 		itvecnext++;

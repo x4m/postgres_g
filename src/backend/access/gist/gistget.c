@@ -334,12 +334,10 @@ gistScanPage(IndexScanDesc scan, GISTSearchItem *pageItem, double *myDistances,
 
 	Assert(!GISTSearchItemIsHeap(*pageItem));
 
-	//elog(NOTICE,"GS: scan page %d",pageItem->blkno);
 	buffer = ReadBuffer(scan->indexRelation, pageItem->blkno);
 	LockBuffer(buffer, GIST_SHARE);
 	gistcheckpage(scan->indexRelation, buffer);
 	page = BufferGetPage(buffer);
-	//gistcheckskippage(page);
 	TestForOldSnapshot(scan->xs_snapshot, r, page);
 	opaque = GistPageGetOpaque(page);
 
@@ -408,7 +406,6 @@ gistScanPage(IndexScanDesc scan, GISTSearchItem *pageItem, double *myDistances,
 			continue;
 
 		it = (IndexTuple) PageGetItem(page, iid);
-		//elog(NOTICE,"GS: item %d, skiptcount %d", i, GistTupleGetSkipCount(it));
 
 		/*
 		 * Must call gistindex_keytest in tempCxt, and clean up any leftover
@@ -425,15 +422,12 @@ gistScanPage(IndexScanDesc scan, GISTSearchItem *pageItem, double *myDistances,
 		/* Ignore tuple if it doesn't match */
 		if (!match)
 		{
-			//elog(NOTICE,"GS: not match");
 			if (GistTupleIsSkip(it))
 			{
-				//elog(NOTICE,"GS: skipping something %d", GistTupleGetSkipCount(it));
 				i += GistTupleGetSkipCount(it);
 			}
 			continue;
 		}
-		//elog(NOTICE,"GS: match");
 
 		if (GistTupleIsSkip(it))
 			continue;
@@ -653,7 +647,6 @@ gistgettuple(IndexScanDesc scan, ScanDirection dir)
 	{
 		/* Begin the scan by processing the root page */
 		GISTSearchItem fakeItem;
-		//elog(NOTICE,"GS: scan first call");
 
 		pgstat_count_index_scan(scan->indexRelation);
 
