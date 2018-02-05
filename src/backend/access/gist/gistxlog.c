@@ -82,6 +82,15 @@ gistRedoPageUpdateRecord(XLogReaderState *record)
 
 		page = (Page) BufferGetPage(buffer);
 
+		if (xldata->skipoffnum != InvalidOffsetNumber)
+		{
+			IndexTuple skiptuple = (IndexTuple) PageGetItem(page, PageGetItemId(page, xldata->skipoffnum));
+			int newskipgroupsize = GistTupleGetSkipCount(skiptuple) + xldata->ntoinsert - xldata->ntodelete;
+
+			Assert(GistTupleIsSkip(skiptuple));
+			GistTupleSetSkipCount(skiptuple, newskipgroupsize);
+		}
+
 		if (xldata->ntodelete == 1 && xldata->ntoinsert == 1)
 		{
 			/*
@@ -137,15 +146,6 @@ gistRedoPageUpdateRecord(XLogReaderState *record)
 				off++;
 				ninserted++;
 			}
-		}
-
-		if (xldata->skipoffnum != InvalidOffsetNumber)
-		{
-			IndexTuple skiptuple = (IndexTuple) PageGetItem(page, PageGetItemId(page, xldata->skipoffnum));
-			int newskipgroupsize = GistTupleGetSkipCount(skiptuple) + xldata->ntoinsert - xldata->ntodelete;
-
-			Assert(GistTupleIsSkip(skiptuple));
-			GistTupleSetSkipCount(skiptuple, newskipgroupsize);
 		}
 
 		/* Check that XLOG record contained expected number of tuples */
@@ -485,23 +485,26 @@ gistXLogUpdate(Buffer buffer,
 	XLogRegisterBufData(0, (char *) todelete, sizeof(OffsetNumber) * ntodelete);
 
 	/* new tuples */
-	start = (char *) itup[0];
-	end = start + IndexTupleSize(itup[0]);
-	for (i = 1; i < ituplen; i++)
+	if (ituplen > 0)
 	{
-		if (end == (char *) itup[i])
+		start = (char *) itup[0];
+		end = start + IndexTupleSize(itup[0]);
+		for (i = 1; i < ituplen; i++)
 		{
-			end += IndexTupleSize(itup[i]);
-			continue;
+			if (end == (char *) itup[i])
+			{
+				end += IndexTupleSize(itup[i]);
+				continue;
+			}
+			else
+			{
+				XLogRegisterBufData(0, start, end - start);
+				start = (char *) itup[i];
+				end = start + IndexTupleSize(itup[i]);
+			}
 		}
-		else
-		{
-			XLogRegisterBufData(0, start, end - start);
-			start = (char *) itup[i];
-			end = start + IndexTupleSize(itup[i]);
-		}
+		XLogRegisterBufData(0, start, end - start);
 	}
-	XLogRegisterBufData(0, start, end - start);
 
 	/*
 	 * Include a full page image of the child buf. (only necessary if a

@@ -787,7 +787,7 @@ gistgetbitmap(IndexScanDesc scan, TIDBitmap *tbm)
 	scan->xs_hitup = NULL;
 	if (so->pageDataCxt)
 		MemoryContextReset(so->pageDataCxt);
-
+	
 	fakeItem.blkno = GIST_ROOT_BLKNO;
 	memset(&fakeItem.data.parentlsn, 0, sizeof(GistNSN));
 	gistScanPage(scan, &fakeItem, NULL, tbm, &ntids);
