@@ -247,7 +247,7 @@ gistbulkdelete(IndexVacuumInfo *info, IndexBulkDeleteResult *stats,
 				iid = PageGetItemId(page, i);
 				idxtuple = (IndexTuple) PageGetItem(page, iid);
 
-				if (IndexTupleIsSkip(idxtuple))
+				if (GistTupleIsSkip(idxtuple))
 					continue;
 
 				ptr = (GistBDItem *) palloc(sizeof(GistBDItem));

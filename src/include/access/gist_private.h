@@ -280,6 +280,12 @@ typedef struct
 #define  GistTupleSetValid(itup)	ItemPointerSetOffsetNumber( &((itup)->t_tid), TUPLE_IS_VALID )
 
 
+#define INDEX_SKIP_MASK 0x2000
+
+#define GistTupleIsSkip(itup)			((((IndexTuple) (itup))->t_info & INDEX_SKIP_MASK))
+#define GistTupleMakeSkip(itup)		((((IndexTuple) (itup))->t_info |= INDEX_SKIP_MASK))
+#define GistTupleSetSkipCount(itup, skipTupleCnt)	((((IndexTuple) (itup))->t_tid.ip_posid = skipTupleCnt))
+#define GistTupleGetSkipCount(itup)	((((IndexTuple) (itup))->t_tid.ip_posid))
 
 
 /*

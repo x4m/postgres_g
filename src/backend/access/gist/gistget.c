@@ -408,7 +408,7 @@ gistScanPage(IndexScanDesc scan, GISTSearchItem *pageItem, double *myDistances,
 			continue;
 
 		it = (IndexTuple) PageGetItem(page, iid);
-		//elog(NOTICE,"GS: item %d, skiptcount %d", i, IndexTupleGetSkipCount(it));
+		//elog(NOTICE,"GS: item %d, skiptcount %d", i, GistTupleGetSkipCount(it));
 
 		/*
 		 * Must call gistindex_keytest in tempCxt, and clean up any leftover
@@ -426,16 +426,16 @@ gistScanPage(IndexScanDesc scan, GISTSearchItem *pageItem, double *myDistances,
 		if (!match)
 		{
 			//elog(NOTICE,"GS: not match");
-			if (IndexTupleIsSkip(it))
+			if (GistTupleIsSkip(it))
 			{
-				//elog(NOTICE,"GS: skipping something %d", IndexTupleGetSkipCount(it));
-				i += IndexTupleGetSkipCount(it);
+				//elog(NOTICE,"GS: skipping something %d", GistTupleGetSkipCount(it));
+				i += GistTupleGetSkipCount(it);
 			}
 			continue;
 		}
 		//elog(NOTICE,"GS: match");
 
-		if (IndexTupleIsSkip(it))
+		if (GistTupleIsSkip(it))
 			continue;
 
 		if (tbm && GistPageIsLeaf(page))

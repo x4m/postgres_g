@@ -131,11 +131,11 @@ gistextractrange(Page page, OffsetNumber start, int len)
 	for (i = start; i < start + len; i = OffsetNumberNext(i))
 	{
 		IndexTuple tup = (IndexTuple) PageGetItem(page, PageGetItemId(page, i));
-		if (IndexTupleIsSkip(tup))
+		if (GistTupleIsSkip(tup))
 		{
-			////elog(NOTICE,"GS: dangling %d start %d end %d skipgroupsize %d",i, start, start + len,IndexTupleGetSkipCount(tup));
+			////elog(NOTICE,"GS: dangling %d start %d end %d skipgroupsize %d",i, start, start + len,GistTupleGetSkipCount(tup));
 		}
-		Assert(!IndexTupleIsSkip(tup));
+		Assert(!GistTupleIsSkip(tup));
 		*itvecnext = tup;
 		itvecnext++;
 	}
@@ -173,7 +173,7 @@ gistfiltervector(IndexTuple *itvec, int *len)
 
 	for (i = 0; i < oldlen; i++)
 	{
-		if (IndexTupleIsSkip(itvec[i]))
+		if (GistTupleIsSkip(itvec[i]))
 			continue;
 		itvec[newlen++] = itvec[i];
 	}
@@ -419,10 +419,10 @@ gistgetadjusted(Relation r, IndexTuple oldtup, IndexTuple addtup, GISTSTATE *gis
 		/* need to update key */
 		newtup = gistFormTuple(giststate, r, attr, isnull, false);
 		newtup->t_tid = oldtup->t_tid;
-		if (IndexTupleIsSkip(oldtup))
+		if (GistTupleIsSkip(oldtup))
 		{
-			IndexTupleMakeSkip(newtup);
-			IndexTupleSetSkipCount(newtup, IndexTupleGetSkipCount(oldtup));
+			GistTupleMakeSkip(newtup);
+			GistTupleSetSkipCount(newtup, GistTupleGetSkipCount(oldtup));
 		}
 	}
 
@@ -507,7 +507,7 @@ gistchoose(Relation r, Page p, IndexTuple it,	/* it has compressed entry */
 		bool		zero_penalty;
 		int			j;
 
-		if (IndexTupleIsSkip(itup))
+		if (GistTupleIsSkip(itup))
 		{
 			Datum		datum;
 			float		usize;
@@ -522,7 +522,7 @@ gistchoose(Relation r, Page p, IndexTuple it,	/* it has compressed entry */
 									&identry[0], isnull[0]);
 			if (usize > best_penalty[0] && best_penalty[0] != -1)
 			{
-				i += IndexTupleGetSkipCount(itup);
+				i += GistTupleGetSkipCount(itup);
 			}
 		}
 		else
@@ -734,7 +734,7 @@ gistFetchTuple(GISTSTATE *giststate, Relation r, IndexTuple tuple)
 	Datum		fetchatt[INDEX_MAX_KEYS];
 	bool		isnull[INDEX_MAX_KEYS];
 	int			i;
-	Assert(!IndexTupleIsSkip(tuple));
+	Assert(!GistTupleIsSkip(tuple));
 
 	for (i = 0; i < r->rd_att->natts; i++)
 	{

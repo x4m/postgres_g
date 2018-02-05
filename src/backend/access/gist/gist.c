@@ -291,11 +291,11 @@ gistplacetopage(Relation rel, Size freespace, GISTSTATE *giststate,
 		if (OffsetNumberIsValid(skipoffnum))
 		{
 			IndexTuple skiptuple = itvec[skipoffnum - FirstOffsetNumber];
-			int newskipgroupsize = IndexTupleGetSkipCount(skiptuple) + ntup - ndeltup;
+			int newskipgroupsize = GistTupleGetSkipCount(skiptuple) + ntup - ndeltup;
 
-			Assert(IndexTupleIsSkip(skiptuple));
+			Assert(GistTupleIsSkip(skiptuple));
 			Assert(skipoffnum + newskipgroupsize <= PageGetMaxOffsetNumber(page) + ntup - ndeltup);
-			IndexTupleSetSkipCount(skiptuple, newskipgroupsize);
+			GistTupleSetSkipCount(skiptuple, newskipgroupsize);
 		}
 
 		if (OffsetNumberIsValid(oldoffnum) && ndeltup)
@@ -312,7 +312,7 @@ gistplacetopage(Relation rel, Size freespace, GISTSTATE *giststate,
 		//elog(NOTICE,"GS: join splitvector");
 		itvec = gistjoinvector(itvec, &tlen, itup, ntup, oldoffnum);
 
-		if (IndexTupleIsSkip(*itvec))
+		if (GistTupleIsSkip(*itvec))
 		{
 			dist = gistSplitBySkipgroup(rel, page, itvec, tlen, giststate);
 		}
@@ -404,8 +404,8 @@ gistplacetopage(Relation rel, Size freespace, GISTSTATE *giststate,
 			for (i = 1, ptr = dist; ptr; ptr = ptr->next)
 				downlinks[i++] = ptr->itup;
 			downlinks[0] = gistunion(rel,downlinks + 1, ndownlinks - 1, giststate);
-			IndexTupleMakeSkip(downlinks[0]);
-			IndexTupleSetSkipCount(downlinks[0], ndownlinks - 1);
+			GistTupleMakeSkip(downlinks[0]);
+			GistTupleSetSkipCount(downlinks[0], ndownlinks - 1);
 
 			rootpg.block.blkno = GIST_ROOT_BLKNO;
 			rootpg.block.num = ndownlinks;
@@ -553,13 +553,13 @@ gistplacetopage(Relation rel, Size freespace, GISTSTATE *giststate,
 		if (OffsetNumberIsValid(skipoffnum))
 		{
 			IndexTuple skiptuple = (IndexTuple) PageGetItem(page, PageGetItemId(page, skipoffnum));
-			int newskipgroupsize = IndexTupleGetSkipCount(skiptuple) + ntup - ndeltup;
+			int newskipgroupsize = GistTupleGetSkipCount(skiptuple) + ntup - ndeltup;
 
-			//elog(NOTICE,"GS: adjust skipgroup at %d current size %d by %d newsize %d maxoff %d",skipoffnum, IndexTupleGetSkipCount(skiptuple), ntup - ndeltup, newskipgroupsize, (int)PageGetMaxOffsetNumber(page));
+			//elog(NOTICE,"GS: adjust skipgroup at %d current size %d by %d newsize %d maxoff %d",skipoffnum, GistTupleGetSkipCount(skiptuple), ntup - ndeltup, newskipgroupsize, (int)PageGetMaxOffsetNumber(page));
 
-			Assert(IndexTupleIsSkip(skiptuple));
+			Assert(GistTupleIsSkip(skiptuple));
 			Assert(skipoffnum + newskipgroupsize <= PageGetMaxOffsetNumber(page) + ntup - ndeltup);
-			IndexTupleSetSkipCount(skiptuple, newskipgroupsize);
+			GistTupleSetSkipCount(skiptuple, newskipgroupsize);
 		}
 
 		/*
@@ -603,7 +603,7 @@ gistplacetopage(Relation rel, Size freespace, GISTSTATE *giststate,
 		if (RelationNeedsWAL(rel))
 		{
 			OffsetNumber ndeloffs = 0,
-						deloffs[BLCKSZ / sizeof(ItemIdData)];
+						deloffs[BLCKSZ /sizeof(ItemIdData)];
 
 			if (OffsetNumberIsValid(oldoffnum))
 			{
@@ -770,7 +770,7 @@ gistdoinsert(Relation r, IndexTuple itup, Size freespace, GISTSTATE *giststate)
 			{
 				iid = PageGetItemId(stack->page, skipoffnum);
 				idxtuple = (IndexTuple) PageGetItem(stack->page, iid);
-				Assert(IndexTupleIsSkip(idxtuple));
+				Assert(GistTupleIsSkip(idxtuple));
 
 				/*
 				* Check that the key representing the target child node is
@@ -828,7 +828,7 @@ gistdoinsert(Relation r, IndexTuple itup, Size freespace, GISTSTATE *giststate)
 			}
 			iid = PageGetItemId(stack->page, downlinkoffnum);
 			idxtuple = (IndexTuple) PageGetItem(stack->page, iid);
-			Assert(!IndexTupleIsSkip(idxtuple));
+			Assert(!GistTupleIsSkip(idxtuple));
 			childblkno = ItemPointerGetBlockNumber(&(idxtuple->t_tid));
 
 			/*
@@ -1128,7 +1128,7 @@ gistFindCorrectParent(Relation r, GISTInsertStack *child)
 				iid = PageGetItemId(parent->page, i);
 				idxtuple = (IndexTuple) PageGetItem(parent->page, iid);
 
-				if (IndexTupleIsSkip(idxtuple))
+				if (GistTupleIsSkip(idxtuple))
 				{
 					child->skipoffnum = i;
 					continue;
@@ -1412,15 +1412,15 @@ gistcheckskippage(Page page)
 	{
 		IndexTuple tup = (IndexTuple) PageGetItem(page, PageGetItemId(page, i));
 
-		if (IndexTupleIsSkip(tup))
+		if (GistTupleIsSkip(tup))
 		{
-			//elog(NOTICE, "GS: Skip tuple count %d",IndexTupleGetSkipCount(tup));
+			//elog(NOTICE, "GS: Skip tuple count %d",GistTupleGetSkipCount(tup));
 			if (skiplast)
 			{
-				elog(NOTICE, "GS: at % d expecting %d more tuples but have skipgroup %d",i, skiplast,IndexTupleGetSkipCount(tup));
+				elog(NOTICE, "GS: at % d expecting %d more tuples but have skipgroup %d",i, skiplast,GistTupleGetSkipCount(tup));
 			}
 			Assert(skiplast == 0);
-			skiplast = IndexTupleGetSkipCount(tup);
+			skiplast = GistTupleGetSkipCount(tup);
 			wasskip = true;
 		}
 		else
@@ -1448,8 +1448,8 @@ gisttestskipgroup(GISTInsertState *state, GISTInsertStack *stack,
 	//elog(NOTICE,"GS: gisttestskipgroup begin at %d", skipoffnum);
 	//gistcheckskippage(page);
 	Assert(!GistPageIsLeaf(page));
-	Assert(IndexTupleIsSkip(skiptuple));
-	skipsize = IndexTupleGetSkipCount(skiptuple);
+	Assert(GistTupleIsSkip(skiptuple));
+	skipsize = GistTupleGetSkipCount(skiptuple);
 	Assert((skipsize > 0) && (skipsize < BLCKSZ / sizeof(ItemIdData)));
 	if (skipsize > GIST_SKIPGROUP_THRESHOLD)
 	{
@@ -1462,8 +1462,8 @@ gisttestskipgroup(GISTInsertState *state, GISTInsertStack *stack,
 			char	   *data;
 			int i;
 			itvec[totalsize++] = ptr->itup;
-			IndexTupleMakeSkip(ptr->itup);
-			IndexTupleSetSkipCount(ptr->itup, ptr->block.num);
+			GistTupleMakeSkip(ptr->itup);
+			GistTupleSetSkipCount(ptr->itup, ptr->block.num);
 			data = (char *) (ptr->list);
 
 			for (i = 0; i < ptr->block.num; i++)
@@ -1687,7 +1687,7 @@ gistSplitBySkipgroup(Relation r,
 	skipoffsets = (OffsetNumber *) palloc(sizeof(OffsetNumber) * len);
 	for (i = 0; i < len; i++)
 	{
-		if (IndexTupleIsSkip(itup[i]))
+		if (GistTupleIsSkip(itup[i]))
 		{
 			skipoffsets[skipcount] = i;
 			skiptuples[skipcount++] = itup[i];
@@ -1715,13 +1715,13 @@ gistSplitBySkipgroup(Relation r,
 	for (i = 0; i < v.splitVector.spl_nleft; i++)
 	{
 		int index = skipoffsets[v.splitVector.spl_left[i] - 1];
-		Assert(IndexTupleIsSkip(itup[index]));
-		int skipsize = IndexTupleGetSkipCount(itup[index]);
+		Assert(GistTupleIsSkip(itup[index]));
+		int skipsize = GistTupleGetSkipCount(itup[index]);
 		//elog(NOTICE,"GS: skipsize %d", skipsize);
 		for (p = 0; p <= skipsize; p++)
 		{
 			//elog(NOTICE,"GS: step");
-			Assert(p==0 || !IndexTupleIsSkip(itup[index + p]));
+			Assert(p==0 || !GistTupleIsSkip(itup[index + p]));
 			lvectup[o++] = itup[index + p];
 		}
 	}
@@ -1732,13 +1732,13 @@ gistSplitBySkipgroup(Relation r,
 	for (i = 0; i < v.splitVector.spl_nright; i++)
 	{
 		int index = skipoffsets[v.splitVector.spl_right[i] - 1];
-		Assert(IndexTupleIsSkip(itup[index]));
-		int skipsize = IndexTupleGetSkipCount(itup[index]);
+		Assert(GistTupleIsSkip(itup[index]));
+		int skipsize = GistTupleGetSkipCount(itup[index]);
 		//elog(NOTICE,"GS: skipsize %d", skipsize);
 		for (p = 0; p <= skipsize; p++)
 		{
 			//elog(NOTICE,"GS: step");
-			Assert(p==0 || !IndexTupleIsSkip(itup[index + p]));
+			Assert(p==0 || !GistTupleIsSkip(itup[index + p]));
 			rvectup[o++] = itup[index + p];
 		}
 	}

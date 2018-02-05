@@ -724,6 +724,8 @@ gistbufferinginserttuples(GISTBuildState *buildstate, Buffer buffer, int level,
 			{
 				ItemId		iid = PageGetItemId(page, off);
 				IndexTuple	idxtuple = (IndexTuple) PageGetItem(page, iid);
+				if (GistTupleIsSkip(idxtuple))
+					continue;
 				BlockNumber childblkno = ItemPointerGetBlockNumber(&(idxtuple->t_tid));
 				Buffer		childbuf = ReadBuffer(buildstate->indexrel, childblkno);
 
@@ -882,7 +884,7 @@ gistBufferingFindCorrectParent(GISTBuildState *buildstate,
 		ItemId		iid = PageGetItemId(page, *downlinkoffnum);
 		IndexTuple	idxtuple = (IndexTuple) PageGetItem(page, iid);
 
-		if (ItemPointerGetBlockNumber(&(idxtuple->t_tid)) == childblkno)
+		if (ItemPointerGetBlockNumber(&(idxtuple->t_tid)) == childblkno && !GistTupleIsSkip(idxtuple))
 		{
 			/* Still there */
 			return buffer;
@@ -900,6 +902,8 @@ gistBufferingFindCorrectParent(GISTBuildState *buildstate,
 	{
 		ItemId		iid = PageGetItemId(page, off);
 		IndexTuple	idxtuple = (IndexTuple) PageGetItem(page, iid);
+		if (GistTupleIsSkip(idxtuple))
+			continue;
 
 		if (ItemPointerGetBlockNumber(&(idxtuple->t_tid)) == childblkno)
 		{
@@ -1180,6 +1184,8 @@ gistMemorizeAllDownlinks(GISTBuildState *buildstate, Buffer parentbuf)
 	{
 		ItemId		iid = PageGetItemId(page, off);
 		IndexTuple	idxtuple = (IndexTuple) PageGetItem(page, iid);
+		if (GistTupleIsSkip(idxtuple))
+			continue;
 		BlockNumber childblkno = ItemPointerGetBlockNumber(&(idxtuple->t_tid));
 
 		gistMemorizeParent(buildstate, childblkno, parentblkno);

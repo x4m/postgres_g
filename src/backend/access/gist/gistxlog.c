@@ -142,10 +142,10 @@ gistRedoPageUpdateRecord(XLogReaderState *record)
 		if (xldata->skipoffnum != InvalidOffsetNumber)
 		{
 			IndexTuple skiptuple = (IndexTuple) PageGetItem(page, PageGetItemId(page, xldata->skipoffnum));
-			int newskipgroupsize = IndexTupleGetSkipCount(skiptuple) + xldata->ntoinsert - xldata->ntodelete;
+			int newskipgroupsize = GistTupleGetSkipCount(skiptuple) + xldata->ntoinsert - xldata->ntodelete;
 
-			Assert(IndexTupleIsSkip(skiptuple));
-			IndexTupleSetSkipCount(skiptuple, newskipgroupsize);
+			Assert(GistTupleIsSkip(skiptuple));
+			GistTupleSetSkipCount(skiptuple, newskipgroupsize);
 		}
 
 		/* Check that XLOG record contained expected number of tuples */

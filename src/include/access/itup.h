@@ -72,13 +72,6 @@ typedef IndexAttributeBitMapData * IndexAttributeBitMap;
 #define IndexTupleHasNulls(itup)	((((IndexTuple) (itup))->t_info & INDEX_NULL_MASK))
 #define IndexTupleHasVarwidths(itup) ((((IndexTuple) (itup))->t_info & INDEX_VAR_MASK))
 
-#define INDEX_SKIP_MASK 0x2000
-
-#define IndexTupleIsSkip(itup)			((((IndexTuple) (itup))->t_info & INDEX_SKIP_MASK))
-#define IndexTupleMakeSkip(itup)		((((IndexTuple) (itup))->t_info |= INDEX_SKIP_MASK))
-#define IndexTupleSetSkipCount(itup,skipTupleCnt)	((((IndexTuple) (itup))->t_tid.ip_posid = skipTupleCnt))
-#define IndexTupleGetSkipCount(itup)	((((IndexTuple) (itup))->t_tid.ip_posid))	
-
 
 /*
  * Takes an infomask as argument (primarily because this needs to be usable
