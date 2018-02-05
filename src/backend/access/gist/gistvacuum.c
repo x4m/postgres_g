@@ -225,7 +225,7 @@ gistbulkdelete(IndexVacuumInfo *info, IndexBulkDeleteResult *stats,
 
 					recptr = gistXLogUpdate(buffer,
 											todelete, ntodelete,
-											NULL, 0, InvalidBuffer);
+											NULL, 0, InvalidBuffer, InvalidOffsetNumber);
 					PageSetLSN(page, recptr);
 				}
 				else
@@ -246,6 +246,9 @@ gistbulkdelete(IndexVacuumInfo *info, IndexBulkDeleteResult *stats,
 			{
 				iid = PageGetItemId(page, i);
 				idxtuple = (IndexTuple) PageGetItem(page, iid);
+
+				if (GistTupleIsSkip(idxtuple))
+					continue;
 
 				ptr = (GistBDItem *) palloc(sizeof(GistBDItem));
 				ptr->blkno = ItemPointerGetBlockNumber(&(idxtuple->t_tid));

@@ -694,6 +694,7 @@ gistSplitByKey(Relation r, Page page, IndexTuple *itup, int len,
 		/*
 		 * All keys are not-null, so apply user-defined PickSplit method
 		 */
+		//elog(NOTICE,"GS: Call user picksplit");
 		if (gistUserPicksplit(r, entryvec, attno, v, itup, len, giststate))
 		{
 			/*
