@@ -1147,7 +1147,6 @@ PageIndexTupleOverwrite(Page page, OffsetNumber offnum,
 	return true;
 }
 
-
 /*
  * Set checksum for a page in shared buffers.
  *

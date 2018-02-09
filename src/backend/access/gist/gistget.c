@@ -421,6 +421,15 @@ gistScanPage(IndexScanDesc scan, GISTSearchItem *pageItem, double *myDistances,
 
 		/* Ignore tuple if it doesn't match */
 		if (!match)
+		{
+			if (GistTupleIsSkip(it))
+			{
+				i += GistTupleGetSkipCount(it);
+			}
+			continue;
+		}
+
+		if (GistTupleIsSkip(it))
 			continue;
 
 		if (tbm && GistPageIsLeaf(page))
@@ -771,7 +780,7 @@ gistgetbitmap(IndexScanDesc scan, TIDBitmap *tbm)
 	scan->xs_hitup = NULL;
 	if (so->pageDataCxt)
 		MemoryContextReset(so->pageDataCxt);
-
+	
 	fakeItem.blkno = GIST_ROOT_BLKNO;
 	memset(&fakeItem.data.parentlsn, 0, sizeof(GistNSN));
 	gistScanPage(scan, &fakeItem, NULL, tbm, &ntids);
