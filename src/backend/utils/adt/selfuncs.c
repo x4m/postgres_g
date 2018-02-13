@@ -5689,13 +5689,14 @@ find_join_input_rel(PlannerInfo *root, Relids relids)
  */
 static int
 pattern_char_isalpha(char c, bool is_multibyte,
-					 pg_locale_t locale, bool locale_is_c)
+					 pg_locale_t locale, char collprovider, bool locale_is_c)
 {
 	if (locale_is_c)
 		return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z');
 	else if (is_multibyte && IS_HIGHBIT_SET(c))
 		return true;
-	else if (locale && locale->provider == COLLPROVIDER_ICU)
+	else if (collprovider == COLLPROVIDER_ICU &&
+			 GetDatabaseEncoding() != PG_SQL_ASCII)
 		return IS_HIGHBIT_SET(c) ? true : false;
 #ifdef HAVE_LOCALE_T
 	else if (locale && locale->provider == COLLPROVIDER_LIBC)
@@ -5731,6 +5732,7 @@ like_fixed_prefix(Const *patt_const, bool case_insensitive, Oid collation,
 	bool		is_multibyte = (pg_database_encoding_max_length() > 1);
 	pg_locale_t locale = 0;
 	bool		locale_is_c = false;
+	char		collprovider = COLLPROVIDER_LIBC;
 
 	/* the right-hand const is type text or bytea */
 	Assert(typeid == BYTEAOID || typeid == TEXTOID);
@@ -5759,6 +5761,11 @@ like_fixed_prefix(Const *patt_const, bool case_insensitive, Oid collation,
 						 errhint("Use the COLLATE clause to set the collation explicitly.")));
 			}
 			locale = pg_newlocale_from_collation(collation);
+			collprovider = locale->provider;
+		}
+		else
+		{
+			collprovider = get_default_collprovider();
 		}
 	}
 
@@ -5796,7 +5803,8 @@ like_fixed_prefix(Const *patt_const, bool case_insensitive, Oid collation,
 
 		/* Stop if case-varying character (it's sort of a wildcard) */
 		if (case_insensitive &&
-			pattern_char_isalpha(patt[pos], is_multibyte, locale, locale_is_c))
+			pattern_char_isalpha(patt[pos], is_multibyte, locale,
+								 collprovider, locale_is_c))
 			break;
 
 		match[match_pos++] = patt[pos];
