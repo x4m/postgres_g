@@ -1228,6 +1228,9 @@ typedef struct IndexScanState
 	bool	   *iss_OrderByTypByVals;
 	int16	   *iss_OrderByTypLens;
 	Size		iss_PscanLen;
+	int64		iss_tuples_skipped; /* tuple offset, see ExecSetTupleBound */
+	int64		iss_tuples_skipped_remaning; /* tuple offset counter */
+	Buffer		iss_VMBuffer; /* buffer used for visibility map in case of iss_tuples_skipped > 0 */
 } IndexScanState;
 
 /* ----------------
