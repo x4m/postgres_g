@@ -22,6 +22,20 @@ FROM dblink_get_pkey('foo');
         2 | f2
 (2 rows)
 
+-- list the primary key fields with covering index
+CREATE TABLE foo_covering(f1 int, f2 text, f3 text[]);
+CREATE UNIQUE INDEX foo_covering_index on foo_covering (f1,f2) INCLUDE(f3);
+ALTER TABLE foo_covering ADD CONSTRAINT covering_pkey PRIMARY KEY USING INDEX foo_covering_index;
+NOTICE:  ALTER TABLE / ADD CONSTRAINT USING INDEX will rename index "foo_covering_index" to "covering_pkey"
+SELECT *
+FROM dblink_get_pkey('foo_covering');
+ position | colname 
+----------+---------
+        1 | f1
+        2 | f2
+(2 rows)
+
+DROP TABLE foo_covering;
 -- build an insert statement based on a local tuple,
 -- replacing the primary key values with new ones
 SELECT dblink_build_sql_insert('foo','1 2',2,'{"0", "a"}','{"99", "xyz"}');
