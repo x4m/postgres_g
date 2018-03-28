@@ -28,6 +28,10 @@ $node_publisher->safe_psql('postgres',
 $node_publisher->safe_psql('postgres',
 	"CREATE TABLE tab_rep (a int primary key)");
 $node_publisher->safe_psql('postgres',
+	"CREATE TABLE tab_cov (a int, b text)");
+$node_publisher->safe_psql('postgres',
+	"ALTER TABLE tab_cov ADD PRIMARY KEY(a) INCLUDE (b)");
+$node_publisher->safe_psql('postgres',
 	"CREATE TABLE tab_mixed (a int primary key, b text)");
 $node_publisher->safe_psql('postgres',
 	"INSERT INTO tab_mixed (a, b) VALUES (1, 'foo')");
@@ -39,6 +43,10 @@ $node_subscriber->safe_psql('postgres', "CREATE TABLE tab_full (a int)");
 $node_subscriber->safe_psql('postgres', "CREATE TABLE tab_full2 (x text)");
 $node_subscriber->safe_psql('postgres',
 	"CREATE TABLE tab_rep (a int primary key)");
+$node_subscriber->safe_psql('postgres',
+	"CREATE TABLE tab_cov (a int, b text)");
+$node_subscriber->safe_psql('postgres',
+	"ALTER TABLE tab_cov ADD PRIMARY KEY(a) INCLUDE (b)");
 
 # different column count and order than on publisher
 $node_subscriber->safe_psql('postgres',
@@ -50,7 +58,7 @@ $node_publisher->safe_psql('postgres', "CREATE PUBLICATION tap_pub");
 $node_publisher->safe_psql('postgres',
 	"CREATE PUBLICATION tap_pub_ins_only WITH (publish = insert)");
 $node_publisher->safe_psql('postgres',
-"ALTER PUBLICATION tap_pub ADD TABLE tab_rep, tab_full, tab_full2, tab_mixed"
+"ALTER PUBLICATION tap_pub ADD TABLE tab_rep, tab_cov, tab_full, tab_full2, tab_mixed"
 );
 $node_publisher->safe_psql('postgres',
 	"ALTER PUBLICATION tap_pub_ins_only ADD TABLE tab_ins");
@@ -87,6 +95,11 @@ $node_publisher->safe_psql('postgres', "DELETE FROM tab_rep WHERE a > 20");
 $node_publisher->safe_psql('postgres', "UPDATE tab_rep SET a = -a");
 
 $node_publisher->safe_psql('postgres',
+	"INSERT INTO tab_cov SELECT generate_series(1,50)");
+$node_publisher->safe_psql('postgres', "DELETE FROM tab_cov WHERE a > 20");
+$node_publisher->safe_psql('postgres', "UPDATE tab_cov SET a = -a");
+
+$node_publisher->safe_psql('postgres',
 	"INSERT INTO tab_mixed VALUES (2, 'bar')");
 
 $node_publisher->wait_for_catchup($appname);
@@ -97,6 +110,10 @@ is($result, qq(1052|1|1002), 'check replicated inserts on subscriber');
 
 $result = $node_subscriber->safe_psql('postgres',
 	"SELECT count(*), min(a), max(a) FROM tab_rep");
+is($result, qq(20|-20|-1), 'check replicated changes on subscriber');
+
+$result = $node_subscriber->safe_psql('postgres',
+	"SELECT count(*), min(a), max(a) FROM tab_cov");
 is($result, qq(20|-20|-1), 'check replicated changes on subscriber');
 
 $result =
