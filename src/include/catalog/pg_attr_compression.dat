@@ -19,5 +19,6 @@
 [
 
 { acoid => '4002', acname => 'pglz' },
+{ acoid => '4011', acname => 'zlib' },
 
 ]

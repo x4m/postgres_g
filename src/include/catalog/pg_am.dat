@@ -33,5 +33,8 @@
 { oid => '4002', oid_symbol => 'PGLZ_COMPRESSION_AM_OID',
   descr => 'pglz compression access method',
   amname => 'pglz', amhandler => 'pglzhandler', amtype => 'c' },
+{ oid => '4011', oid_symbol => 'ZLIB_COMPRESSION_AM_OID',
+  descr => 'zlib compression access method',
+  amname => 'zlib', amhandler => 'zlibhandler', amtype => 'c' },
 
 ]
