@@ -12,6 +12,6 @@ subdir = src/backend/access/compression
 top_builddir = ../../../..
 include $(top_builddir)/src/Makefile.global
 
-OBJS = cmapi.o
+OBJS = cm_pglz.o cmapi.o
 
 include $(top_srcdir)/src/backend/common.mk

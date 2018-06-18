@@ -19,7 +19,7 @@
 #include "nodes/pg_list.h"
 
 #define IsBuiltinCompression(cmid)	((cmid) < FirstBootstrapObjectId)
-#define DefaultCompressionOid		(InvalidOid)
+#define DefaultCompressionOid		(PGLZ_AC_OID)
 
 typedef struct CompressionAmRoutine CompressionAmRoutine;
 

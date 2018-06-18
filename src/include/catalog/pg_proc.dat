@@ -898,6 +898,12 @@
   prorettype => 'void', proargtypes => 'regclass int8',
   prosrc => 'brin_desummarize_range' },
 
+# Compression access method handlers
+{ oid => '4009', descr => 'pglz compression access method handler',
+  proname => 'pglzhandler', provolatile => 'v',
+  prorettype => 'compression_am_handler', proargtypes => 'internal',
+  prosrc => 'pglzhandler' },
+
 { oid => '338', descr => 'validate an operator class',
   proname => 'amvalidate', provolatile => 'v', prorettype => 'bool',
   proargtypes => 'oid', prosrc => 'amvalidate' },
