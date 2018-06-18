@@ -182,7 +182,6 @@ zlib_cmcompress(CompressionAmOptions *cmoptions, const struct varlena *value)
 	}
 
 	pfree(tmp);
-#endif
 	return NULL;
 }
 
@@ -231,6 +230,7 @@ zlib_cmdecompress(CompressionAmOptions *cmoptions, const struct varlena *value)
 	pfree(zp);
 	return result;
 }
+#endif
 
 Datum
 zlibhandler(PG_FUNCTION_ARGS)
