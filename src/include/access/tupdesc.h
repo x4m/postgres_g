@@ -14,7 +14,9 @@
 #ifndef TUPDESC_H
 #define TUPDESC_H
 
+#include "postgres.h"
 #include "access/attnum.h"
+#include "access/cmapi.h"
 #include "catalog/pg_attribute.h"
 #include "nodes/pg_list.h"
 
@@ -45,6 +47,10 @@ typedef struct tupleConstr
 	uint16		num_check;
 	bool		has_not_null;
 } TupleConstr;
+
+/* tupledesc flags */
+#define TD_ATTR_CUSTOM_COMPRESSED	0x01	/* is TupleDesc contain attributes
+											 * with custom compression? */
 
 /*
  * This struct is passed around within the backend to describe the structure
@@ -82,6 +88,7 @@ typedef struct tupleDesc
 	int			natts;			/* number of attributes in the tuple */
 	Oid			tdtypeid;		/* composite type ID for tuple type */
 	int32		tdtypmod;		/* typmod for tuple type */
+	char		tdflags;		/* tuple additional flags */
 	int			tdrefcount;		/* reference count, or -1 if not counting */
 	TupleConstr *constr;		/* constraints, or NULL if none */
 	/* attrs[N] is the description of Attribute Number N+1 */

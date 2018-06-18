@@ -13,7 +13,6 @@
 #ifndef TUPTOASTER_H
 #define TUPTOASTER_H
 
-#include "access/cmapi.h"
 #include "access/htup_details.h"
 #include "storage/lockdefs.h"
 #include "utils/relcache.h"

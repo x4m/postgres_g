@@ -50,6 +50,7 @@ index_form_tuple(TupleDesc tupleDescriptor,
 	unsigned short infomask = 0;
 	bool		hasnull = false;
 	uint16		tupmask = 0;
+	uint16		tupmask2 = 0;
 	int			numberOfAttributes = tupleDescriptor->natts;
 
 #ifdef TOAST_INDEX_HACK
@@ -162,6 +163,7 @@ index_form_tuple(TupleDesc tupleDescriptor,
 					(char *) tp + hoff,
 					data_size,
 					&tupmask,
+					&tupmask2,
 					(hasnull ? (bits8 *) tp + sizeof(IndexTupleData) : NULL));
 
 #ifdef TOAST_INDEX_HACK

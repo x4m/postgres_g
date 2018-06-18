@@ -1191,6 +1191,7 @@ toast_insert_or_update(Relation rel, HeapTuple newtup, HeapTuple oldtup,
 						(char *) new_data + new_header_len,
 						new_data_len,
 						&(new_data->t_infomask),
+						&(new_data->t_infomask2),
 						has_nulls ? new_data->t_bits : NULL);
 	}
 	else
@@ -1412,6 +1413,7 @@ toast_flatten_tuple_to_datum(HeapTupleHeader tup,
 					(char *) new_data + new_header_len,
 					new_data_len,
 					&(new_data->t_infomask),
+					&(new_data->t_infomask2),
 					has_nulls ? new_data->t_bits : NULL);
 
 	/*

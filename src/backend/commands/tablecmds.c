@@ -166,6 +166,8 @@ typedef struct AlteredTableInfo
 	/* Information saved by Phases 1/2 for Phase 3: */
 	List	   *constraints;	/* List of NewConstraint */
 	List	   *newvals;		/* List of NewColumnValue */
+	HTAB	   *preservedAmInfo;	/* Hash table for preserved compression
+									 * methods */
 	bool		new_notnull;	/* T if we added new NOT NULL constraints */
 	int			rewrite;		/* Reason for forced rewrite, if any */
 	Oid			newTableSpace;	/* new tablespace; 0 means no change */
@@ -4669,7 +4671,7 @@ ATRewriteTable(AlteredTableInfo *tab, Oid OIDNewHeap, LOCKMODE lockmode)
 	if (newrel)
 	{
 		mycid = GetCurrentCommandId(true);
-		bistate = GetBulkInsertState();
+		bistate = GetBulkInsertState(tab->preservedAmInfo);
 
 		hi_options = HEAP_INSERT_SKIP_FSM;
 		if (!XLogIsNeeded())
@@ -4931,6 +4933,24 @@ ATRewriteTable(AlteredTableInfo *tab, Oid OIDNewHeap, LOCKMODE lockmode)
 	}
 
 	FreeExecutorState(estate);
+
+	/* Remove old compression options */
+	if (tab->rewrite & AT_REWRITE_ALTER_COMPRESSION)
+	{
+		AttrCmPreservedInfo *pinfo;
+		HASH_SEQ_STATUS status;
+
+		Assert(tab->preservedAmInfo);
+		hash_seq_init(&status, tab->preservedAmInfo);
+		while ((pinfo = (AttrCmPreservedInfo *) hash_seq_search(&status)) != NULL)
+		{
+			CleanupAttributeCompression(tab->relid, pinfo->attnum,
+										pinfo->preserved_amoids);
+			list_free(pinfo->preserved_amoids);
+		}
+
+		hash_destroy(tab->preservedAmInfo);
+	}
 
 	heap_close(oldrel, NoLock);
 	if (newrel)
@@ -8955,6 +8975,45 @@ createForeignKeyTriggers(Relation rel, Oid refRelOid, Constraint *fkconstraint,
 }
 
 /*
+ * Initialize hash table used to keep rewrite rules for
+ * compression changes in ALTER commands.
+ */
+static void
+setupCompressionRewriteRules(AlteredTableInfo *tab, const char *column,
+							 AttrNumber attnum, List *preserved_amoids)
+{
+	bool		found;
+	AttrCmPreservedInfo *pinfo;
+
+	Assert(!IsBinaryUpgrade);
+	tab->rewrite |= AT_REWRITE_ALTER_COMPRESSION;
+
+	/* initialize hash for oids */
+	if (tab->preservedAmInfo == NULL)
+	{
+		HASHCTL		ctl;
+
+		MemSet(&ctl, 0, sizeof(ctl));
+		ctl.keysize = sizeof(AttrNumber);
+		ctl.entrysize = sizeof(AttrCmPreservedInfo);
+		tab->preservedAmInfo =
+			hash_create("preserved access methods cache", 10, &ctl,
+						HASH_ELEM | HASH_BLOBS);
+	}
+	pinfo = (AttrCmPreservedInfo *) hash_search(tab->preservedAmInfo,
+												&attnum, HASH_ENTER, &found);
+
+	if (found)
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("cannot alter compression of column \"%s\" twice", column),
+				 errhint("Remove one of statements from the command.")));
+
+	pinfo->attnum = attnum;
+	pinfo->preserved_amoids = preserved_amoids;
+}
+
+/*
  * ALTER TABLE DROP CONSTRAINT
  *
  * Like DROP COLUMN, we can't use the normal ALTER TABLE recursion mechanism.
@@ -9831,7 +9890,7 @@ ATExecAlterColumnType(AlteredTableInfo *tab, Relation rel,
 		{
 			/* Set up rewrite of table */
 			attTup->attcompression = InvalidOid;
-			/* TODO: call the rewrite function here */
+			setupCompressionRewriteRules(tab, colName, attOldTup->attnum, NIL);
 		}
 		else if (OidIsValid(attTup->attcompression))
 		{
@@ -9839,7 +9898,7 @@ ATExecAlterColumnType(AlteredTableInfo *tab, Relation rel,
 			ColumnCompression *compression = MakeColumnCompression(attTup->attcompression);
 
 			if (!IsBuiltinCompression(attTup->attcompression))
-				/* TODO: call the rewrite function here */;
+				setupCompressionRewriteRules(tab, colName, attOldTup->attnum, NIL);
 
 			attTup->attcompression = CreateAttributeCompression(attTup, compression, NULL, NULL);
 		}
@@ -12955,7 +13014,8 @@ ATExecSetCompression(AlteredTableInfo *tab,
 	 * toast_insert_or_update
 	 */
 	if (need_rewrite)
-		/* TODO: set up rewrite rules here */;
+		setupCompressionRewriteRules(tab, column, atttableform->attnum,
+									 preserved_amoids);
 
 	atttableform->attcompression = acoid;
 	CatalogTupleUpdate(attrel, &atttuple->t_self, atttuple);
