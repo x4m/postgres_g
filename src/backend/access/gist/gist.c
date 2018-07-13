@@ -700,6 +700,11 @@ gistdoinsert(Relation r, IndexTuple itup, Size freespace, GISTSTATE *giststate)
 			GISTInsertStack *item;
 			OffsetNumber downlinkoffnum;
 
+			/* 
+			 * Currently internal pages are not deleted during vacuum,
+			 * so we do not need to check if page is deleted
+			 */
+
 			downlinkoffnum = gistchoose(state.r, stack->page, itup, giststate);
 			iid = PageGetItemId(stack->page, downlinkoffnum);
 			idxtuple = (IndexTuple) PageGetItem(stack->page, iid);
@@ -832,6 +837,18 @@ gistdoinsert(Relation r, IndexTuple itup, Size freespace, GISTSTATE *giststate)
 					state.stack = stack = stack->parent;
 					continue;
 				}
+			}
+
+			/*
+			 * Leaf pages can be left deleted but still referenced in case of
+			 * crash during VACUUM's gistbulkdelete()
+			 */
+			if(GistPageIsDeleted(stack->page))
+			{
+				UnlockReleaseBuffer(stack->buffer);
+				xlocked = false;
+				state.stack = stack = stack->parent;
+				continue;
 			}
 
 			/* now state.stack->(page, buffer and blkno) points to leaf page */

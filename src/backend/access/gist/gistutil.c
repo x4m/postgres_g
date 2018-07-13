@@ -23,6 +23,7 @@
 #include "storage/lmgr.h"
 #include "utils/builtins.h"
 #include "utils/syscache.h"
+#include "utils/snapmgr.h"
 
 
 /*
@@ -800,13 +801,18 @@ gistNewBuffer(Relation r)
 		if (ConditionalLockBuffer(buffer))
 		{
 			Page		page = BufferGetPage(buffer);
+			PageHeader	p = (PageHeader) page;
 
 			if (PageIsNew(page))
 				return buffer;	/* OK to use, if never initialized */
 
 			gistcheckpage(r, buffer);
 
-			if (GistPageIsDeleted(page))
+			/*
+			 * We use pd_prune_xid to store upper bound for xid that could
+			 * downlinks to this page
+			 */
+			if (GistPageIsDeleted(page) && TransactionIdPrecedes(p->pd_prune_xid, RecentGlobalDataXmin))
 				return buffer;	/* OK to use */
 
 			LockBuffer(buffer, GIST_UNLOCK);
