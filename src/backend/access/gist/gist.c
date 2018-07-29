@@ -937,6 +937,19 @@ gistdoinsert(Relation r, IndexTuple itup, Size freespace, GISTSTATE *giststate)
 				}
 			}
 
+			/*
+			 * Leaf pages can be left deleted but still referenced
+			 * until it's space is reused. Downlink to this page may be already
+			 * removed from the internal page, but this scan can posess it.
+			 */
+			if(GistPageIsDeleted(stack->page))
+			{
+				UnlockReleaseBuffer(stack->buffer);
+				xlocked = false;
+				state.stack = stack = stack->parent;
+				continue;
+			}
+
 			/* now state.stack->(page, buffer and blkno) points to leaf page */
 
 			gistinserttuple(&state, stack, giststate, itup,

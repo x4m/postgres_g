@@ -1133,11 +1133,6 @@ gistGetMaxLevel(Relation index)
  * but will be added there the first time we visit them.
  */
 
-typedef struct
-{
-	BlockNumber childblkno;		/* hash key */
-	BlockNumber parentblkno;
-} ParentMapEntry;
 
 static void
 gistInitParentMap(GISTBuildState *buildstate)

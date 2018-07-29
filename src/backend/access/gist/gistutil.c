@@ -23,6 +23,7 @@
 #include "storage/lmgr.h"
 #include "utils/builtins.h"
 #include "utils/syscache.h"
+#include "utils/snapmgr.h"
 
 
 /*
@@ -916,7 +917,7 @@ gistNewBuffer(Relation r)
 
 			gistcheckpage(r, buffer);
 
-			if (GistPageIsDeleted(page))
+			if (GistPageIsDeleted(page) && TransactionIdPrecedes(GistPageGetDeleteXid(page), RecentGlobalDataXmin))
 				return buffer;	/* OK to use */
 
 			LockBuffer(buffer, GIST_UNLOCK);
@@ -938,8 +939,6 @@ gistNewBuffer(Relation r)
 	if (needLock)
 		UnlockRelationForExtension(r, ExclusiveLock);
 
-	ReleaseBuffer(ReadBuffer(r, P_NEW));// REMOVE THIS LINE
-	
 	return buffer;
 }
 
