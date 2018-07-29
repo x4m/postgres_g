@@ -293,7 +293,7 @@ gistInitBuffering(GISTBuildState *buildstate)
 	 * And we should take padding into account here.
 	 */
 	itupMinSize = (Size) MAXALIGN(sizeof(IndexTupleData));
-	for (i = 0; i < index->rd_att->natts; i++)
+	for (i = 0; i < IndexRelationGetNumberOfKeyAttributes(index); i++)
 	{
 		if (TupleDescAttr(index->rd_att, i)->attlen < 0)
 			itupMinSize += VARHDRSZ;
@@ -469,7 +469,7 @@ gistBuildCallback(Relation index,
 	oldCtx = MemoryContextSwitchTo(buildstate->giststate->tempCxt);
 
 	/* form an index tuple and point it at the heap tuple */
-	itup = gistFormTuple(buildstate->giststate, index, values, isnull, true);
+	itup = gistFormTuple(buildstate->giststate, index, values, isnull, true, false);
 	itup->t_tid = htup->t_self;
 
 	if (buildstate->bufferingMode == GIST_BUFFERING_ACTIVE)

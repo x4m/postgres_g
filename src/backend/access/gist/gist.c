@@ -74,7 +74,7 @@ gisthandler(PG_FUNCTION_ARGS)
 	amroutine->amclusterable = true;
 	amroutine->ampredlocks = true;
 	amroutine->amcanparallel = false;
-	amroutine->amcaninclude = false;
+	amroutine->amcaninclude = true;
 	amroutine->amkeytype = InvalidOid;
 
 	amroutine->ambuild = gistbuild;
@@ -169,7 +169,7 @@ gistinsert(Relation r, Datum *values, bool *isnull,
 	oldCxt = MemoryContextSwitchTo(giststate->tempCxt);
 
 	itup = gistFormTuple(giststate, r,
-						 values, isnull, true /* size is currently bogus */ );
+						 values, isnull, true /* size is currently bogus */, false);
 	itup->t_tid = *ht_ctid;
 
 	gistdoinsert(r, itup, 0, giststate);
@@ -1576,8 +1576,8 @@ gistSplit(Relation r,
 						IndexTupleSize(itup[0]), GiSTPageSize,
 						RelationGetRelationName(r))));
 
-	memset(v.spl_lisnull, true, sizeof(bool) * giststate->tupdesc->natts);
-	memset(v.spl_risnull, true, sizeof(bool) * giststate->tupdesc->natts);
+	memset(v.spl_lisnull, true, sizeof(bool) * giststate->truncTupdesc->natts);
+	memset(v.spl_risnull, true, sizeof(bool) * giststate->truncTupdesc->natts);
 	gistSplitByKey(r, page, itup, len, giststate, &v, 0);
 
 	/* form left and right vector */
@@ -1600,7 +1600,7 @@ gistSplit(Relation r,
 		ROTATEDIST(res);
 		res->block.num = v.splitVector.spl_nright;
 		res->list = gistfillitupvec(rvectup, v.splitVector.spl_nright, &(res->lenlist));
-		res->itup = gistFormTuple(giststate, r, v.spl_rattr, v.spl_risnull, false);
+		res->itup = gistFormTuple(giststate, r, v.spl_rattr, v.spl_risnull, false, true);
 	}
 
 	if (!gistfitpage(lvectup, v.splitVector.spl_nleft))
@@ -1622,7 +1622,7 @@ gistSplit(Relation r,
 		ROTATEDIST(res);
 		res->block.num = v.splitVector.spl_nleft;
 		res->list = gistfillitupvec(lvectup, v.splitVector.spl_nleft, &(res->lenlist));
-		res->itup = gistFormTuple(giststate, r, v.spl_lattr, v.spl_lisnull, false);
+		res->itup = gistFormTuple(giststate, r, v.spl_lattr, v.spl_lisnull, false, true);
 	}
 
 	return res;
@@ -1713,7 +1713,7 @@ gistSplitBySkipgroup(Relation r,
 		ROTATEDIST(res);
 		res->block.num = v.splitVector.spl_nright;
 		res->list = gistfillitupvec(rvectup, v.splitVector.spl_nright, &(res->lenlist));
-		res->itup = gistFormTuple(giststate, r, v.spl_rattr, v.spl_risnull, false);
+		res->itup = gistFormTuple(giststate, r, v.spl_rattr, v.spl_risnull, false, true);
 	}
 
 	if (!gistfitpage(lvectup, v.splitVector.spl_nleft))
@@ -1737,7 +1737,7 @@ gistSplitBySkipgroup(Relation r,
 		ROTATEDIST(res);
 		res->block.num = v.splitVector.spl_nleft;
 		res->list = gistfillitupvec(lvectup, v.splitVector.spl_nleft, &(res->lenlist));
-		res->itup = gistFormTuple(giststate, r, v.spl_lattr, v.spl_lisnull, false);
+		res->itup = gistFormTuple(giststate, r, v.spl_lattr, v.spl_lisnull, false, true);
 	}
 
 	return res;
@@ -1771,8 +1771,10 @@ initGISTstate(Relation index)
 	giststate->scanCxt = scanCxt;
 	giststate->tempCxt = scanCxt;	/* caller must change this if needed */
 	giststate->tupdesc = index->rd_att;
+	giststate->truncTupdesc = CreateTupleDescCopyConstr(index->rd_att);
+	giststate->truncTupdesc->natts = IndexRelationGetNumberOfKeyAttributes(index);
 
-	for (i = 0; i < index->rd_att->natts; i++)
+	for (i = 0; i < IndexRelationGetNumberOfKeyAttributes(index); i++)
 	{
 		fmgr_info_copy(&(giststate->consistentFn[i]),
 					   index_getprocinfo(index, i + 1, GIST_CONSISTENT_PROC),
@@ -1834,6 +1836,24 @@ initGISTstate(Relation index)
 		 * but that seems like expensive overkill --- there aren't going to be
 		 * any cases where a GiST storage type has a nondefault collation.)
 		 */
+		if (OidIsValid(index->rd_indcollation[i]))
+			giststate->supportCollation[i] = index->rd_indcollation[i];
+		else
+			giststate->supportCollation[i] = DEFAULT_COLLATION_OID;
+	}
+
+	for (; i < index->rd_att->natts; i++)
+	{
+		giststate->consistentFn[i].fn_oid = InvalidOid;
+		giststate->unionFn[i].fn_oid = InvalidOid;
+		giststate->compressFn[i].fn_oid = InvalidOid;
+		giststate->decompressFn[i].fn_oid = InvalidOid;
+		giststate->penaltyFn[i].fn_oid = InvalidOid;
+		giststate->picksplitFn[i].fn_oid = InvalidOid;
+		giststate->equalFn[i].fn_oid = InvalidOid;
+		giststate->distanceFn[i].fn_oid = InvalidOid;
+		giststate->fetchFn[i].fn_oid = InvalidOid;
+
 		if (OidIsValid(index->rd_indcollation[i]))
 			giststate->supportCollation[i] = index->rd_indcollation[i];
 		else
