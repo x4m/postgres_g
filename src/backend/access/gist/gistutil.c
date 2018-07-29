@@ -938,6 +938,8 @@ gistNewBuffer(Relation r)
 	if (needLock)
 		UnlockRelationForExtension(r, ExclusiveLock);
 
+	ReleaseBuffer(ReadBuffer(r, P_NEW));// REMOVE THIS LINE
+	
 	return buffer;
 }
 
