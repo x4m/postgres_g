@@ -583,7 +583,7 @@ gistplacetopage(Relation rel, Size freespace, GISTSTATE *giststate,
 	 * the child pages first, we wouldn't know the recptr of the WAL record
 	 * we're about to write.
 	 */
-	if (BufferIsValid(leftchildbuf))
+	if (BufferIsValid(leftchildbuf) && ((random()%20) != 0)) // REMOVE THIS randoms
 	{
 		Page		leftpg = BufferGetPage(leftchildbuf);
 
