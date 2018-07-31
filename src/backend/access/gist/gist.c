@@ -583,7 +583,7 @@ gistplacetopage(Relation rel, Size freespace, GISTSTATE *giststate,
 	 * the child pages first, we wouldn't know the recptr of the WAL record
 	 * we're about to write.
 	 */
-	if (BufferIsValid(leftchildbuf) && ((random()%20) != 0)) // REMOVE THIS randoms
+	if (BufferIsValid(leftchildbuf))
 	{
 		Page		leftpg = BufferGetPage(leftchildbuf);
 
@@ -699,6 +699,11 @@ gistdoinsert(Relation r, IndexTuple itup, Size freespace, GISTSTATE *giststate)
 			IndexTuple	newtup;
 			GISTInsertStack *item;
 			OffsetNumber downlinkoffnum;
+
+			/*
+			 * Currently internal pages are not deleted during vacuum,
+			 * so we do not need to check if page is deleted
+			 */
 
 			downlinkoffnum = gistchoose(state.r, stack->page, itup, giststate);
 			iid = PageGetItemId(stack->page, downlinkoffnum);
@@ -832,6 +837,19 @@ gistdoinsert(Relation r, IndexTuple itup, Size freespace, GISTSTATE *giststate)
 					state.stack = stack = stack->parent;
 					continue;
 				}
+			}
+
+			/*
+			 * Leaf pages can be left deleted but still referenced
+			 * until it's space is reused. Downlink to this page may be already
+			 * removed from the internal page, but this scan can posess it.
+			 */
+			if(GistPageIsDeleted(stack->page))
+			{
+				UnlockReleaseBuffer(stack->buffer);
+				xlocked = false;
+				state.stack = stack = stack->parent;
+				continue;
 			}
 
 			/* now state.stack->(page, buffer and blkno) points to leaf page */
