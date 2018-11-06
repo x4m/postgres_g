@@ -798,6 +798,93 @@ _bt_sortaddtup(Page page,
 		elog(ERROR, "failed to add item to the index page");
 }
 
+static void
+_bt_eyzinger_recursion(OffsetNumber* order, int* next, OffsetNumber low, OffsetNumber high)
+{
+	if (high > low)
+	{
+		OffsetNumber mid = low + ((high - low) / 2);
+
+		order[*next] = mid;
+		(*next)++;
+
+		_bt_eyzinger_recursion(order, next, low, mid);
+		_bt_eyzinger_recursion(order, next, mid + 1, high);
+
+		/* left here for reference
+		if (result >= cmpval)
+			low = mid + 1;
+		else
+			high = mid;*/
+	}
+}
+
+static bool
+_bt_check_layout(Page	page, OffsetNumber* order)
+{
+	char busy[MaxOffsetNumber];
+	OffsetNumber maxoff = PageGetMaxOffsetNumber(page);
+	for (int i = 0; i <= maxoff; i++)
+	{
+		busy[i] = 0;
+	}
+
+	for (int i = 0; i < maxoff; i++)
+	{
+		OffsetNumber current = order[i];
+		if (current > maxoff || current == InvalidOffsetNumber)
+		{
+			elog(ERROR,"Page layout is broken: incorrect offset number %u at %i", current, i);
+		}
+		if (busy[current])
+		{
+			elog(ERROR,"Page layout is broken: offset number %u is used more than once at %i", current, i);
+		}
+		busy[current] = 1;
+	}
+	for (int i = FirstOffsetNumber; i <= maxoff; i++)
+	{	
+		if (!busy[i])
+		{
+			elog(ERROR,"Page layout is broken: offset number %u is not used", i);
+		}
+	}
+	return true;
+}
+
+static bool
+_bt_prepare_layout(Page	page, OffsetNumber* order)
+{
+	BTPageOpaque opaque;
+	OffsetNumber low,
+				high;
+	int			next = 0;
+
+	opaque = (BTPageOpaque) PageGetSpecialPointer(page);
+
+	low = P_FIRSTDATAKEY(opaque);
+	high = PageGetMaxOffsetNumber(page);
+
+	/* check if there is something to defrag*/
+	if (high < low)
+		return false;
+
+	high++;						/* establish the loop invariant for high */
+
+	_bt_eyzinger_recursion(order, &next, low, high);
+
+	if (!P_RIGHTMOST(opaque))
+	{
+		order[next] = P_HIKEY;
+		next++;
+	}
+
+	Assert(next == PageGetMaxOffsetNumber(page));
+	Assert(_bt_check_layout(page, order));
+
+	return true;
+}
+
 /*----------
  * Add an item to a disk page from the sort output.
  *
@@ -1004,6 +1091,11 @@ _bt_buildadd(BTWriteState *wstate, BTPageState *state, IndexTuple itup)
 			nopaque->btpo_prev = oblkno;
 			nopaque->btpo_next = P_NONE;	/* redundant */
 		}
+
+
+		OffsetNumber order[MaxOffsetNumber];
+		_bt_prepare_layout(opage, order);
+		PageMakeSpecialFragmentation(opage, order);
 
 		/*
 		 * Write out the old page.  We never need to touch it again, so we can

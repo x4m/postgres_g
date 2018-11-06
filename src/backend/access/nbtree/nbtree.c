@@ -1359,7 +1359,9 @@ restart:
 		/* pagedel released buffer, so we shouldn't */
 	}
 	else
+	{
 		_bt_relbuf(rel, buf);
+	}
 
 	/*
 	 * This is really tail recursion, but if the compiler is too stupid to

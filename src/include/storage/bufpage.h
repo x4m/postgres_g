@@ -434,5 +434,6 @@ extern bool PageIndexTupleOverwrite(Page page, OffsetNumber offnum,
 						Item newtup, Size newsize);
 extern char *PageSetChecksumCopy(Page page, BlockNumber blkno);
 extern void PageSetChecksumInplace(Page page, BlockNumber blkno);
+extern void PageMakeSpecialFragmentation(Page page, uint16 *order);
 
 #endif							/* BUFPAGE_H */

@@ -395,6 +395,13 @@ _bt_binsrch(Relation rel,
 
 		/* We have low <= mid < high, so mid points at a real slot */
 
+/*               OffsetNumber x = mid + 1 + ((high - mid + 1) / 2);
+               if (x < high)
+                       __builtin_prefetch (PageGetItem(page, PageGetItemId(page, x)), 0, 2);
+               x = low + ((mid - low) / 2);
+               if (x > low)
+                       __builtin_prefetch (PageGetItem(page, PageGetItemId(page, x)), 0, 2);*/
+
 		result = _bt_compare(rel, key, page, mid);
 
 		if (result >= cmpval)
