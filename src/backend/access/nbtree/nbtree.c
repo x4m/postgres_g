@@ -1089,6 +1089,86 @@ btvacuumscan(IndexVacuumInfo *info, IndexBulkDeleteResult *stats,
 		*oldestBtpoXact = vstate.oldestBtpoXact;
 }
 
+static void
+_bt_eyetzinger_recursion(OffsetNumber* order, int* next, OffsetNumber low, OffsetNumber high)
+{
+	//elog(NOTICE, "high %d low %d", high,low);
+	if (high > low)
+	{
+		OffsetNumber low1, high1, mid_low, mid_high;
+
+		OffsetNumber mid = low + ((high - low) / 2);
+		low1 = mid + 1;
+		high1 = mid;
+		mid_low = low + ((high1 - low) / 2);
+		mid_high = low1 + ((high - low1) / 2);
+
+		//elog(NOTICE, "mid %d mid_low %d mid_high %d", mid, mid_low, mid_high);
+
+		//elog(NOTICE, "emit %d", mid);
+		order[*next] = mid;
+		(*next)++;
+		if (mid_low != mid)
+		{
+			//elog(NOTICE, "emit %d", mid_low);
+			order[*next] = mid_low;
+			(*next)++;
+		}
+		if (mid_high != high)
+		{
+			//elog(NOTICE, "emit %d", mid_high);
+			order[*next] = mid_high;
+			(*next)++;
+		}
+
+		/* We have low <= mid < high, so mid points at a real slot */		
+
+		_bt_eyetzinger_recursion(order, next, low, mid_low);
+		_bt_eyetzinger_recursion(order, next, mid_low + 1, mid);
+		_bt_eyetzinger_recursion(order, next, mid + 1, mid_high);
+		_bt_eyetzinger_recursion(order, next, mid_high + 1, high);
+
+		/* left here for reference
+		if (result >= cmpval)
+			low = mid + 1;
+		else
+			high = mid;*/
+	}
+}
+
+static bool
+_bt_eyetzinger(Page	page, OffsetNumber* order)
+{
+	BTPageOpaque opaque;
+	OffsetNumber low,
+				high;
+	int			next = 0;
+
+	opaque = (BTPageOpaque) PageGetSpecialPointer(page);
+
+	low = P_FIRSTDATAKEY(opaque);
+	high = PageGetMaxOffsetNumber(page);
+
+	/* check if there is something to defrag*/
+	if (high < low)
+		return false;
+
+	high++;						/* establish the loop invariant for high */
+
+	_bt_eyetzinger_recursion(order, &next, low, high);
+
+	if (!P_RIGHTMOST(opaque))
+	{
+		order[next] = P_HIKEY;
+		next++;
+	}
+
+	//elog(NOTICE, "Emitted %d maxoff %d", next, (int)PageGetMaxOffsetNumber(page));
+	Assert(next == PageGetMaxOffsetNumber(page));	
+
+	return true;
+}
+
 /*
  * btvacuumpage --- VACUUM one page
  *
@@ -1113,6 +1193,8 @@ btvacuumpage(BTVacState *vstate, BlockNumber blkno, BlockNumber orig_blkno)
 	Buffer		buf;
 	Page		page;
 	BTPageOpaque opaque = NULL;
+
+	OffsetNumber order[MaxOffsetNumber];
 
 restart:
 	delete_now = false;
@@ -1350,7 +1432,11 @@ restart:
 		/* pagedel released buffer, so we shouldn't */
 	}
 	else
+	{
+		_bt_eyetzinger(page, order);
+		PageMakeSpecialFragmentation(page, order);
 		_bt_relbuf(rel, buf);
+	}
 
 	/*
 	 * This is really tail recursion, but if the compiler is too stupid to

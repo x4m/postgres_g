@@ -375,6 +375,32 @@ PageGetTempPageCopy(Page page)
 	return temp;
 }
 
+void
+PageMakeSpecialFragmentation(Page page, uint16 *order)
+{
+	Page temp = PageGetTempPageCopy(page);
+
+	PageHeader	phdr = (PageHeader) page;
+	Offset		upper;
+	int			i;
+	int			nitems = PageGetMaxOffsetNumber(page);
+
+	upper = phdr->pd_special;
+	for (i = nitems - 1; i >= 0; i--)
+	{
+		ItemId lp = PageGetItemId(page, order[i]);
+		upper -= MAXALIGN(ItemIdGetLength(lp));
+		memmove((char *) page + upper,
+				(char *) temp + ItemIdGetOffset(lp),
+				MAXALIGN(ItemIdGetLength(lp)));
+		lp->lp_off = upper;
+	}
+
+	phdr->pd_upper = upper;
+
+	pfree(temp);
+}
+
 /*
  * PageGetTempPageCopySpecial
  *		Get a temporary page in local memory for special processing.
