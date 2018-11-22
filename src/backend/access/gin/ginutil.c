@@ -314,7 +314,12 @@ GinNewBuffer(Relation index)
 			if (PageIsNew(page))
 				return buffer;	/* OK to use, if never initialized */
 
-			if (GinPageIsDeleted(page))
+			/*
+			 * We should not reuse page until every transaction started before
+			 * deletion is over
+			 */
+			if (GinPageIsDeleted(page)
+				&& TransactionIdPrecedes(GinPageGetDeleteXid(page), RecentGlobalDataXmin))
 				return buffer;	/* OK to use */
 
 			LockBuffer(buffer, GIN_UNLOCK);

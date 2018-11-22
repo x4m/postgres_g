@@ -271,9 +271,9 @@ ginFindParents(GinBtree btree, GinBtreeStack *stack)
 			ginFinishSplit(btree, ptr, false, NULL);
 		}
 
-		leftmostBlkno = btree->getLeftMostChild(btree, page);
+		leftmostBlkno = btree->getLeftMostChild(page);
 
-		while ((offset = btree->findChildPtr(btree, page, stack->blkno, InvalidOffsetNumber)) == InvalidOffsetNumber)
+		while ((offset = btree->findChildPtr(page, stack->blkno, InvalidOffsetNumber)) == InvalidOffsetNumber)
 		{
 			blkno = GinPageGetOpaque(page)->rightlink;
 			if (blkno == InvalidBlockNumber)
@@ -708,7 +708,7 @@ ginFinishSplit(GinBtree btree, GinBtreeStack *stack, bool freestack,
 
 		/* move right if it's needed */
 		page = BufferGetPage(parent->buffer);
-		while ((parent->off = btree->findChildPtr(btree, page, stack->blkno, parent->off)) == InvalidOffsetNumber)
+		while ((parent->off = btree->findChildPtr(page, stack->blkno, parent->off)) == InvalidOffsetNumber)
 		{
 			if (GinPageRightMost(page))
 			{

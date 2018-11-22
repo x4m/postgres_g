@@ -284,7 +284,7 @@ entryLocateEntry(GinBtree btree, GinBtreeStack *stack)
 	{
 		stack->off = FirstOffsetNumber;
 		stack->predictNumber *= PageGetMaxOffsetNumber(page);
-		return btree->getLeftMostChild(btree, page);
+		return btree->getLeftMostChild(page);
 	}
 
 	low = FirstOffsetNumber;
@@ -403,7 +403,7 @@ entryLocateLeafEntry(GinBtree btree, GinBtreeStack *stack)
 }
 
 static OffsetNumber
-entryFindChildPtr(GinBtree btree, Page page, BlockNumber blkno, OffsetNumber storedOff)
+entryFindChildPtr(Page page, BlockNumber blkno, OffsetNumber storedOff)
 {
 	OffsetNumber i,
 				maxoff = PageGetMaxOffsetNumber(page);
@@ -444,7 +444,7 @@ entryFindChildPtr(GinBtree btree, Page page, BlockNumber blkno, OffsetNumber sto
 }
 
 static BlockNumber
-entryGetLeftMostPage(GinBtree btree, Page page)
+entryGetLeftMostPage(Page page)
 {
 	IndexTuple	itup;
 

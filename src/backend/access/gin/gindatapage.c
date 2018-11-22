@@ -262,7 +262,7 @@ dataLocateItem(GinBtree btree, GinBtreeStack *stack)
 	{
 		stack->off = FirstOffsetNumber;
 		stack->predictNumber *= GinPageGetOpaque(page)->maxoff;
-		return btree->getLeftMostChild(btree, page);
+		return btree->getLeftMostChild(page);
 	}
 
 	low = FirstOffsetNumber;
@@ -312,8 +312,8 @@ dataLocateItem(GinBtree btree, GinBtreeStack *stack)
 /*
  * Find link to blkno on non-leaf page, returns offset of PostingItem
  */
-static OffsetNumber
-dataFindChildPtr(GinBtree btree, Page page, BlockNumber blkno, OffsetNumber storedOff)
+OffsetNumber
+dataFindChildPtr(Page page, BlockNumber blkno, OffsetNumber storedOff)
 {
 	OffsetNumber i,
 				maxoff = GinPageGetOpaque(page)->maxoff;
@@ -357,8 +357,8 @@ dataFindChildPtr(GinBtree btree, Page page, BlockNumber blkno, OffsetNumber stor
 /*
  * Return blkno of leftmost child
  */
-static BlockNumber
-dataGetLeftMostPage(GinBtree btree, Page page)
+BlockNumber
+dataGetLeftMostPage(Page page)
 {
 	PostingItem *pitem;
 

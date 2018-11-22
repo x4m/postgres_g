@@ -44,6 +44,9 @@ typedef struct GinOptions
 #define GIN_SHARE	BUFFER_LOCK_SHARE
 #define GIN_EXCLUSIVE  BUFFER_LOCK_EXCLUSIVE
 
+#define GinPageGetDeleteXid(page) ( ((PageHeader) (page))->pd_prune_xid )
+#define GinPageSetDeleteXid(page, val) ( ((PageHeader) (page))->pd_prune_xid = val)
+
 
 /*
  * GinState: working data structure describing the index being worked on
@@ -144,12 +147,12 @@ typedef struct GinBtreeData
 {
 	/* search methods */
 	BlockNumber (*findChildPage) (GinBtree, GinBtreeStack *);
-	BlockNumber (*getLeftMostChild) (GinBtree, Page);
+	BlockNumber (*getLeftMostChild) (Page);
 	bool		(*isMoveRight) (GinBtree, Page);
 	bool		(*findItem) (GinBtree, GinBtreeStack *);
 
 	/* insert methods */
-	OffsetNumber (*findChildPtr) (GinBtree, Page, BlockNumber, OffsetNumber);
+	OffsetNumber (*findChildPtr) (Page, BlockNumber, OffsetNumber);
 	GinPlaceToPageRC (*beginPlaceToPage) (GinBtree, Buffer, GinBtreeStack *, void *, BlockNumber, void **, Page *, Page *);
 	void		(*execPlaceToPage) (GinBtree, Buffer, GinBtreeStack *, void *, BlockNumber, void *);
 	void	   *(*prepareDownlink) (GinBtree, Buffer);
@@ -225,6 +228,8 @@ extern void ginInsertItemPointers(Relation index, BlockNumber rootBlkno,
 					  GinStatsData *buildStats);
 extern GinBtreeStack *ginScanBeginPostingTree(GinBtree btree, Relation index, BlockNumber rootBlkno, Snapshot snapshot);
 extern void ginDataFillRoot(GinBtree btree, Page root, BlockNumber lblkno, Page lpage, BlockNumber rblkno, Page rpage);
+extern BlockNumber dataGetLeftMostPage(Page page);
+extern OffsetNumber dataFindChildPtr(Page page, BlockNumber blkno, OffsetNumber storedOff);
 
 /*
  * This is declared in ginvacuum.c, but is passed between ginVacuumItemPointers
