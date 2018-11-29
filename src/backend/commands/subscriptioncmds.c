@@ -30,6 +30,7 @@
 #include "catalog/pg_subscription.h"
 #include "catalog/pg_subscription_rel.h"
 
+#include "commands/dbcommands.h"
 #include "commands/defrem.h"
 #include "commands/event_trigger.h"
 #include "commands/subscriptioncmds.h"
@@ -322,6 +323,21 @@ CreateSubscription(CreateSubscriptionStmt *stmt, bool isTopLevel)
 	char		originname[NAMEDATALEN];
 	bool		create_slot;
 	List	   *publications;
+	AclResult	aclresult;
+	bool 		alltables;
+
+	alltables = !stmt->tables;
+	/* FOR ALL TABLES requires superuser */
+	if (alltables && !superuser())
+		ereport(ERROR,
+				(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
+				 (errmsg("must be superuser to create FOR ALL TABLES subscriptions"))));
+
+	/* must have CREATE privilege on database */
+	aclresult = pg_database_aclcheck(MyDatabaseId, GetUserId(), ACL_CREATE);
+	if (aclresult != ACLCHECK_OK)
+		aclcheck_error(aclresult, OBJECT_DATABASE,
+					   get_database_name(MyDatabaseId));
 
 	/*
 	 * Parse and check options.
@@ -341,11 +357,6 @@ CreateSubscription(CreateSubscriptionStmt *stmt, bool isTopLevel)
 	 */
 	if (create_slot)
 		PreventInTransactionBlock(isTopLevel, "CREATE SUBSCRIPTION ... WITH (create_slot = true)");
-
-	if (!superuser())
-		ereport(ERROR,
-				(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
-				 (errmsg("must be superuser to create subscriptions"))));
 
 	rel = heap_open(SubscriptionRelationId, RowExclusiveLock);
 
@@ -375,6 +386,7 @@ CreateSubscription(CreateSubscriptionStmt *stmt, bool isTopLevel)
 
 	/* Check the connection info string. */
 	walrcv_check_conninfo(conninfo);
+	walrcv_connstr_check(conninfo);
 
 	/* Everything ok, form a new tuple. */
 	memset(values, 0, sizeof(values));
@@ -388,6 +400,7 @@ CreateSubscription(CreateSubscriptionStmt *stmt, bool isTopLevel)
 		DirectFunctionCall1(namein, CStringGetDatum(stmt->subname));
 	values[Anum_pg_subscription_subowner - 1] = ObjectIdGetDatum(owner);
 	values[Anum_pg_subscription_subenabled - 1] = BoolGetDatum(enabled);
+	values[Anum_pg_subscription_suballtables - 1] = BoolGetDatum(alltables);
 	values[Anum_pg_subscription_subconninfo - 1] =
 		CStringGetTextDatum(conninfo);
 	if (slotname)
@@ -411,6 +424,13 @@ CreateSubscription(CreateSubscriptionStmt *stmt, bool isTopLevel)
 	snprintf(originname, sizeof(originname), "pg_%u", subid);
 	replorigin_create(originname);
 
+
+	if (stmt->tables&&!connect)
+	{
+		ereport(ERROR,
+				(errcode(ERRCODE_SYNTAX_ERROR),
+					errmsg("cannot create subscription with connect = false and FOR TABLE")));
+	}
 	/*
 	 * Connect to remote side to execute requested commands and fetch table
 	 * info.
@@ -423,6 +443,7 @@ CreateSubscription(CreateSubscriptionStmt *stmt, bool isTopLevel)
 		List	   *tables;
 		ListCell   *lc;
 		char		table_state;
+		List *tablesiods = NIL;
 
 		/* Try to connect to the publisher. */
 		wrconn = walrcv_connect(conninfo, true, stmt->subname, &err);
@@ -438,6 +459,7 @@ CreateSubscription(CreateSubscriptionStmt *stmt, bool isTopLevel)
 			 */
 			table_state = copy_data ? SUBREL_STATE_INIT : SUBREL_STATE_READY;
 
+			walrcv_security_check(wrconn);
 			/*
 			 * Get the table list from publisher and build local table status
 			 * info.
@@ -446,17 +468,48 @@ CreateSubscription(CreateSubscriptionStmt *stmt, bool isTopLevel)
 			foreach(lc, tables)
 			{
 				RangeVar   *rv = (RangeVar *) lfirst(lc);
-				Oid			relid;
+				Oid         		relid;
 
-				relid = RangeVarGetRelid(rv, AccessShareLock, false);
-
-				/* Check for supported relkind. */
-				CheckSubscriptionRelkind(get_rel_relkind(relid),
-										 rv->schemaname, rv->relname);
-
-				AddSubscriptionRelState(subid, relid, table_state,
-										InvalidXLogRecPtr);
+				relid = RangeVarGetRelid(rv, NoLock, true);
+				tablesiods = lappend_oid(tablesiods, relid);
 			}
+			if (stmt->tables)
+				foreach(lc, stmt->tables)
+				{
+					RangeVar   *rv = (RangeVar *) lfirst(lc);
+					Oid                     relid;
+
+					relid = RangeVarGetRelid(rv, AccessShareLock, false);
+					if (!pg_class_ownercheck(relid, GetUserId()))
+					aclcheck_error(ACLCHECK_NOT_OWNER,
+						get_relkind_objtype(get_rel_relkind(relid)), rv->relname);
+					CheckSubscriptionRelkind(get_rel_relkind(relid),
+											rv->schemaname, rv->relname);
+					if (!list_member_oid(tablesiods, relid))
+						ereport(ERROR,
+							(errcode(ERRCODE_UNDEFINED_OBJECT),
+								errmsg("table \"%s.%s\" not preset in publication",
+										get_namespace_name(get_rel_namespace(relid)),
+										get_rel_name(relid))));
+					AddSubscriptionRelState(subid, relid, table_state,
+											InvalidXLogRecPtr);
+				}
+			else
+				foreach(lc, tables)
+				{
+					RangeVar   *rv = (RangeVar *) lfirst(lc);
+					Oid                     relid;
+
+					relid = RangeVarGetRelid(rv, AccessShareLock, false);
+					if (!pg_class_ownercheck(relid, GetUserId()))
+						aclcheck_error(ACLCHECK_NOT_OWNER,
+						get_relkind_objtype(get_rel_relkind(relid)), rv->relname);
+					CheckSubscriptionRelkind(get_rel_relkind(relid),
+											rv->schemaname, rv->relname);
+					table_state = copy_data ? SUBREL_STATE_INIT : SUBREL_STATE_READY;
+					AddSubscriptionRelState(subid, relid, table_state,
+										InvalidXLogRecPtr);
+				}
 
 			/*
 			 * If requested, create permanent slot for the subscription. We
@@ -501,6 +554,87 @@ CreateSubscription(CreateSubscriptionStmt *stmt, bool isTopLevel)
 	InvokeObjectPostCreateHook(SubscriptionRelationId, subid, 0);
 
 	return myself;
+}
+
+static void
+AlterSubscription_drop_table(Subscription *sub, List *tables)
+{
+	ListCell   *lc;
+
+
+	Assert(list_length(tables) > 0);
+
+	foreach(lc, tables)
+	{
+		RangeVar   *rv = (RangeVar *) lfirst(lc);
+		Oid                     relid;
+
+		relid = RangeVarGetRelid(rv, NoLock, false);
+		RemoveSubscriptionRel(sub->oid, relid);
+
+		logicalrep_worker_stop_at_commit(sub->oid, relid);
+	}
+}
+
+static void
+AlterSubscription_add_table(Subscription *sub, List *tables, bool copy_data)
+{
+	char       *err;
+	List       *pubrel_names;
+	ListCell   *lc;
+	List       *pubrels = NIL;
+
+
+	Assert(list_length(tables) > 0);
+
+	/* Load the library providing us libpq calls. */
+	load_file("libpqwalreceiver", false);
+
+	/* Try to connect to the publisher. */
+	wrconn = walrcv_connect(sub->conninfo, true, sub->name, &err);
+	if (!wrconn)
+		ereport(ERROR,
+				(errmsg("could not connect to the publisher: %s", err)));
+
+	/* Get the table list from publisher. */
+	pubrel_names = fetch_table_list(wrconn, sub->publications);
+	/* Get oids of rels in command */
+	foreach(lc, pubrel_names)
+	{
+		RangeVar   *rv = (RangeVar *) lfirst(lc);
+		Oid         		relid;
+
+		relid = RangeVarGetRelid(rv, NoLock, true);
+		pubrels = lappend_oid(pubrels, relid);
+	}
+
+	/* We are done with the remote side, close connection. */
+	walrcv_disconnect(wrconn);
+
+	foreach(lc, tables)
+	{
+		RangeVar   *rv = (RangeVar *) lfirst(lc);
+		Oid                     relid;
+		char		table_state;
+
+
+		relid = RangeVarGetRelid(rv, AccessShareLock, false);
+		if (!pg_class_ownercheck(relid, GetUserId()))
+		aclcheck_error(ACLCHECK_NOT_OWNER,
+			get_relkind_objtype(get_rel_relkind(relid)), rv->relname);
+		CheckSubscriptionRelkind(get_rel_relkind(relid),
+								rv->schemaname, rv->relname);
+		if (!list_member_oid(pubrels, relid))
+			ereport(ERROR,
+				(errcode(ERRCODE_UNDEFINED_OBJECT),
+					 errmsg("table \"%s.%s\" not preset in publication",
+							get_namespace_name(get_rel_namespace(relid)),
+							get_rel_name(relid))));
+		table_state = copy_data ? SUBREL_STATE_INIT : SUBREL_STATE_READY;
+		AddSubscriptionRelState(sub->oid, relid,
+						table_state,
+						InvalidXLogRecPtr);
+	}
 }
 
 static void
@@ -724,6 +858,7 @@ AlterSubscription(AlterSubscriptionStmt *stmt)
 			/* Load the library providing us libpq calls. */
 			load_file("libpqwalreceiver", false);
 			/* Check the connection info string. */
+
 			walrcv_check_conninfo(stmt->conninfo);
 
 			values[Anum_pg_subscription_subconninfo - 1] =
@@ -773,6 +908,12 @@ AlterSubscription(AlterSubscriptionStmt *stmt)
 					ereport(ERROR,
 							(errcode(ERRCODE_SYNTAX_ERROR),
 							 errmsg("ALTER SUBSCRIPTION ... REFRESH is not allowed for disabled subscriptions")));
+				if (!sub->alltables)
+						ereport(ERROR,
+							(errcode(ERRCODE_SYNTAX_ERROR),
+							 errmsg("ALTER SUBSCRIPTION ... REFRESH is not allowed for FOR TABLE subscriptions"),
+							 errhint("Use ALTER SUBSCRIPTION ADD/DROP TABLE ...")));
+
 
 				parse_subscription_options(stmt->options, NULL, NULL, NULL,
 										   NULL, NULL, NULL, &copy_data,
@@ -782,7 +923,51 @@ AlterSubscription(AlterSubscriptionStmt *stmt)
 
 				break;
 			}
+		case ALTER_SUBSCRIPTION_ADD_TABLE:
+			{
+				bool		copy_data;
 
+				if (!sub->enabled)
+					ereport(ERROR,
+							(errcode(ERRCODE_SYNTAX_ERROR),
+							 errmsg("ALTER SUBSCRIPTION ... ADD TABLE is not allowed for disabled subscriptions")));
+
+				if (sub->alltables)
+					ereport(ERROR,
+						(errcode(ERRCODE_SYNTAX_ERROR),
+							errmsg("ALTER SUBSCRIPTION ... ADD TABLE is not allowed for FOR ALL TABLES subscriptions"),
+							errhint("Use ALTER SUBSCRIPTION ... REFRESH PUBLICATION")));
+
+				parse_subscription_options(stmt->options, NULL, NULL, NULL,
+										   NULL, NULL, NULL, &copy_data,
+										   NULL, NULL);
+
+				AlterSubscription_add_table(sub, stmt->tables, copy_data);
+
+				break;
+			}
+		case ALTER_SUBSCRIPTION_DROP_TABLE:
+			{
+
+				if (!sub->enabled)
+					ereport(ERROR,
+							(errcode(ERRCODE_SYNTAX_ERROR),
+							 errmsg("ALTER SUBSCRIPTION ... DROP TABLE is not allowed for disabled subscriptions")));
+
+				if (sub->alltables)
+					ereport(ERROR,
+						(errcode(ERRCODE_SYNTAX_ERROR),
+							errmsg("ALTER SUBSCRIPTION ... DROP TABLE is not allowed for FOR ALL TABLES subscriptions"),
+							errhint("Use ALTER SUBSCRIPTION ... REFRESH PUBLICATION")));
+
+				parse_subscription_options(stmt->options, NULL, NULL, NULL,
+										   NULL, NULL, NULL, NULL,
+										   NULL, NULL);
+
+				AlterSubscription_drop_table(sub, stmt->tables);
+
+				break;
+			}
 		default:
 			elog(ERROR, "unrecognized ALTER SUBSCRIPTION kind %d",
 				 stmt->kind);

@@ -47,6 +47,7 @@ CATALOG(pg_subscription,6100,SubscriptionRelationId) BKI_SHARED_RELATION BKI_ROW
 
 	bool		subenabled;		/* True if the subscription is enabled (the
 								 * worker should be running) */
+	bool        suballtables;
 
 #ifdef CATALOG_VARLEN			/* variable-length fields start here */
 	/* Connection string to the publisher */
@@ -77,6 +78,7 @@ typedef struct Subscription
 	char	   *slotname;		/* Name of the replication slot */
 	char	   *synccommit;		/* Synchronous commit setting for worker */
 	List	   *publications;	/* List of publication names to subscribe to */
+	bool	    alltables;
 } Subscription;
 
 extern Subscription *GetSubscription(Oid subid, bool missing_ok);

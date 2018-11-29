@@ -405,6 +405,7 @@ static Node *makeRecursiveViewSelect(char *relname, List *aliases, Node *query);
 %type <node>	group_by_item empty_grouping_set rollup_clause cube_clause
 %type <node>	grouping_sets_clause
 %type <node>	opt_publication_for_tables publication_for_tables
+%type <node>	opt_subscription_for_tables subscription_for_tables
 %type <value>	publication_name_item
 
 %type <list>	opt_fdw_options fdw_options
@@ -9565,7 +9566,7 @@ AlterPublicationStmt:
  *****************************************************************************/
 
 CreateSubscriptionStmt:
-			CREATE SUBSCRIPTION name CONNECTION Sconst PUBLICATION publication_name_list opt_definition
+			CREATE SUBSCRIPTION name CONNECTION Sconst PUBLICATION publication_name_list opt_definition opt_subscription_for_tables
 				{
 					CreateSubscriptionStmt *n =
 						makeNode(CreateSubscriptionStmt);
@@ -9573,7 +9574,31 @@ CreateSubscriptionStmt:
 					n->conninfo = $5;
 					n->publication = $7;
 					n->options = $8;
+					if ($9 != NULL)
+					{
+						/* FOR TABLE */
+						if (IsA($9, List))
+							n->tables = (List *)$9;
+						/* FOR ALL TABLES */
+						else
+							n->for_all_tables = true;
+					}
 					$$ = (Node *)n;
+				}
+		;
+opt_subscription_for_tables:
+			subscription_for_tables					{ $$ = $1; }
+			| /* EMPTY */							{ $$ = NULL; }
+		;
+
+subscription_for_tables:
+			FOR TABLE relation_expr_list
+				{
+					$$ = (Node *) $3;
+				}
+			| FOR ALL TABLES
+				{
+					$$ = (Node *) makeInteger(true);
 				}
 		;
 
@@ -9653,6 +9678,27 @@ AlterSubscriptionStmt:
 					n->subname = $3;
 					n->options = list_make1(makeDefElem("enabled",
 											(Node *)makeInteger(false), @1));
+					$$ = (Node *)n;
+				}
+			| ALTER SUBSCRIPTION name ADD_P TABLE relation_expr_list opt_definition
+				{
+					AlterSubscriptionStmt *n =
+						makeNode(AlterSubscriptionStmt);
+					n->kind = ALTER_SUBSCRIPTION_ADD_TABLE;
+					n->subname = $3;
+					n->tables = $6;
+					n->options = $7;
+					n->tableAction = DEFELEM_ADD;
+					$$ = (Node *)n;
+				}
+			| ALTER SUBSCRIPTION name DROP TABLE relation_expr_list
+				{
+					AlterSubscriptionStmt *n =
+						makeNode(AlterSubscriptionStmt);
+					n->kind = ALTER_SUBSCRIPTION_DROP_TABLE;
+					n->subname = $3;
+					n->tables = $6;
+					n->tableAction = DEFELEM_DROP;
 					$$ = (Node *)n;
 				}
 		;
