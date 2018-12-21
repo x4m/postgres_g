@@ -117,8 +117,8 @@ sub mkvcbuild
 	}
 
 	our @pgcommonallfiles = qw(
-	  base64.c config_info.c controldata_utils.c exec.c file_perm.c ip.c
-	  keywords.c kwlookup.c link-canary.c md5.c
+	  base64.c config_info.c controldata_utils.c exec.c file_perm.c
+	  guc-file.c ip.c keywords.c kwlookup.c link-canary.c md5.c
 	  pg_lzcompress.c pgfnames.c psprintf.c relpath.c rmtree.c
 	  saslprep.c scram-common.c string.c unicode_norm.c username.c
 	  wait_error.c);
@@ -147,6 +147,7 @@ sub mkvcbuild
 
 	$libpgcommon = $solution->AddProject('libpgcommon', 'lib', 'misc');
 	$libpgcommon->AddDefine('FRONTEND');
+	$libpgcommon->AddFiles('src/common', 'guc-file.l');
 	$libpgcommon->AddFiles('src/common', @pgcommonfrontendfiles);
 
 	$libpgfeutils = $solution->AddProject('libpgfeutils', 'lib', 'misc');
@@ -163,6 +164,7 @@ sub mkvcbuild
 	$postgres->ReplaceFile('src/backend/port/pg_shmem.c',
 		'src/backend/port/win32_shmem.c');
 	$postgres->AddFiles('src/port',   @pgportfiles);
+	$postgres->AddFiles('src/common', 'guc-file.l');
 	$postgres->AddFiles('src/common', @pgcommonbkndfiles);
 	$postgres->AddDir('src/timezone');
 
@@ -172,7 +174,6 @@ sub mkvcbuild
 	$postgres->AddFiles('src/backend/parser', 'scan.l', 'gram.y');
 	$postgres->AddFiles('src/backend/bootstrap', 'bootscanner.l',
 		'bootparse.y');
-	$postgres->AddFiles('src/backend/utils/misc', 'guc-file.l');
 	$postgres->AddFiles(
 		'src/backend/replication', 'repl_scanner.l',
 		'repl_gram.y',             'syncrep_scanner.l',
