@@ -4005,7 +4005,7 @@ getSubscriptions(Archive *fout)
 	if (dopt->no_subscriptions || fout->remoteVersion < 100000)
 		return;
 
-	if (!is_superuser(fout))
+	if (!is_superuser(fout) && fout->remoteVersion < 120000)
 	{
 		int			n;
 
@@ -4024,17 +4024,32 @@ getSubscriptions(Archive *fout)
 	query = createPQExpBuffer();
 
 	resetPQExpBuffer(query);
-
+	if (!is_superuser(fout) && fout->remoteVersion < 120000)
+	{
+		appendPQExpBuffer(query,
+				"SELECT s.tableoid, s.oid, s.subname,"
+				"(%s s.subowner) AS rolname, "
+				" s.subconninfo, s.subslotname, s.subsynccommit, "
+				" s.subpublications "
+				"FROM pg_subscription s "
+				"WHERE s.subdbid = (SELECT oid FROM pg_database"
+				"                   WHERE datname = current_database())",
+				username_subquery);
+	}
+	else
+	{
+		appendPQExpBuffer(query,
+				"SELECT s.tableoid, s.oid, s.subname,"
+				"(%s s.subowner) AS rolname, "
+				" us.subconninfo, s.subslotname, s.subsynccommit, "
+				" s.subpublications "
+				"FROM pg_subscription s join pg_user_subscription us ON (s.oid=us.oid) "
+				"WHERE s.subdbid = (SELECT oid FROM pg_database"
+				"                   WHERE datname = current_database())",
+				username_subquery);
+	}
 	/* Get the subscriptions in current database. */
-	appendPQExpBuffer(query,
-					  "SELECT s.tableoid, s.oid, s.subname,"
-					  "(%s s.subowner) AS rolname, "
-					  " s.subconninfo, s.subslotname, s.subsynccommit, "
-					  " s.subpublications "
-					  "FROM pg_subscription s "
-					  "WHERE s.subdbid = (SELECT oid FROM pg_database"
-					  "                   WHERE datname = current_database())",
-					  username_subquery);
+
 	res = ExecuteSqlQuery(fout, query->data, PGRES_TUPLES_OK);
 
 	ntups = PQntuples(res);

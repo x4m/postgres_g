@@ -3474,6 +3474,7 @@ typedef struct CreateSubscriptionStmt
 	char	   *conninfo;		/* Connection string to publisher */
 	List	   *publication;	/* One or more publication to subscribe to */
 	List	   *options;		/* List of DefElem nodes */
+	List	   *tables;			/* Optional list of tables to add */
 } CreateSubscriptionStmt;
 
 typedef enum AlterSubscriptionType
@@ -3482,7 +3483,10 @@ typedef enum AlterSubscriptionType
 	ALTER_SUBSCRIPTION_CONNECTION,
 	ALTER_SUBSCRIPTION_PUBLICATION,
 	ALTER_SUBSCRIPTION_REFRESH,
-	ALTER_SUBSCRIPTION_ENABLED
+	ALTER_SUBSCRIPTION_ENABLED,
+	ALTER_SUBSCRIPTION_DROP_TABLE,
+	ALTER_SUBSCRIPTION_ADD_TABLE,
+	ALTER_SUBSCRIPTION_SET_TABLE
 } AlterSubscriptionType;
 
 typedef struct AlterSubscriptionStmt
@@ -3493,6 +3497,9 @@ typedef struct AlterSubscriptionStmt
 	char	   *conninfo;		/* Connection string to publisher */
 	List	   *publication;	/* One or more publication to subscribe to */
 	List	   *options;		/* List of DefElem nodes */
+	/* parameters used for ALTER PUBLICATION ... ADD/DROP TABLE */
+	List	   *tables;			/* List of tables to add/drop */
+	DefElemAction tableAction;	/* What action to perform with the tables */
 } AlterSubscriptionStmt;
 
 typedef struct DropSubscriptionStmt
