@@ -126,6 +126,14 @@ InitBufferPool(void)
 
 			buf->buf_id = i;
 
+			buf->id_of_prev = i - 1;
+			buf->id_of_next = i + 1;
+			if (buf->id_of_next == NBuffers) 
+				buf->id_of_next = -1;
+
+			buf->beforeMid = (buf->buf_id < NBuffers * 5 / 8);
+			buf->inLiveZone = (buf->buf_id < NBuffers * 7 / 8);			
+
 			/*
 			 * Initially link all the buffers together as unused. Subsequent
 			 * management of this list is done by freelist.c.
