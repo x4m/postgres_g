@@ -50,6 +50,7 @@
 #include "commands/defrem.h"
 #include "commands/extension.h"
 #include "commands/schemacmds.h"
+#include "common/guc-file.h"
 #include "funcapi.h"
 #include "mb/pg_wchar.h"
 #include "miscadmin.h"
