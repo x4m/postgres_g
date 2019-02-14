@@ -33,7 +33,12 @@ SELECT obj_description(s.oid, 'pg_subscription') FROM pg_subscription s;
 -- fail - name already exists
 CREATE SUBSCRIPTION testsub CONNECTION 'dbname=doesnotexist' PUBLICATION testpub WITH (connect = false);
 
--- fail - must be superuser
+-- fail - permission
+SET SESSION AUTHORIZATION 'regress_subscription_user2';
+CREATE SUBSCRIPTION testsub2 CONNECTION 'dbname=doesnotexist' PUBLICATION foo WITH (connect = false);
+SET SESSION AUTHORIZATION 'regress_subscription_user';
+GRANT CREATE ON DATABASE regression TO regress_subscription_user2;
+-- fail - nonsuperuser must provide a password in the connection string
 SET SESSION AUTHORIZATION 'regress_subscription_user2';
 CREATE SUBSCRIPTION testsub2 CONNECTION 'dbname=doesnotexist' PUBLICATION foo WITH (connect = false);
 SET SESSION AUTHORIZATION 'regress_subscription_user';
@@ -118,6 +123,7 @@ DROP SUBSCRIPTION IF EXISTS testsub;
 DROP SUBSCRIPTION testsub;  -- fail
 
 RESET SESSION AUTHORIZATION;
+REVOKE CREATE ON DATABASE regression FROM regress_subscription_user2;
 DROP ROLE regress_subscription_user;
 DROP ROLE regress_subscription_user2;
 DROP ROLE regress_subscription_user_dummy;
