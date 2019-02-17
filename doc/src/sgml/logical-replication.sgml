@@ -522,7 +522,8 @@
   </para>
 
   <para>
-   To create a subscription, the user must be a superuser.
+   To add tables to a subscription, the user must have ownership rights on the
+   table.
   </para>
 
   <para>

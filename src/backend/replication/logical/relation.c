@@ -78,6 +78,30 @@ logicalrep_relmap_invalidate_cb(Datum arg, Oid reloid)
 }
 
 /*
+ * Relcache invalidation callback for all relation map cache.
+ */
+void
+logicalrep_relmap_invalidate_cb2(Datum arg, int cacheid, uint32 hashvalue)
+{
+	LogicalRepRelMapEntry *entry;
+
+	/* invalidate all cache entries */
+	HASH_SEQ_STATUS status;
+
+	if (LogicalRepRelMap == NULL)
+		return;
+	hash_seq_init(&status, LogicalRepRelMap);
+
+	while ((entry = (LogicalRepRelMapEntry *) hash_seq_search(&status)) != NULL)
+	{
+		entry->localreloid = InvalidOid;
+		entry->state = SUBREL_STATE_UNKNOWN;
+	}
+}
+
+
+
+/*
  * Initialize the relation map cache.
  */
 static void
