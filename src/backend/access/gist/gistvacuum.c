@@ -16,10 +16,196 @@
 
 #include "access/genam.h"
 #include "access/gist_private.h"
+#include "access/transam.h"
 #include "commands/vacuum.h"
 #include "miscadmin.h"
+#include "nodes/bitmapset.h"
 #include "storage/indexfsm.h"
 #include "storage/lmgr.h"
+
+/* Lowest level of radix tree is represented by bitmap */
+typedef struct
+{
+	char data[256/8];
+} BlockSetLevel4Data;
+
+typedef BlockSetLevel4Data *BlockSetLevel4;
+
+/* statically typed inner level chunks points to ground level */
+typedef struct
+{
+	/* null references denote empty subtree */
+	BlockSetLevel4 next[256];
+} BlockSetLevel3Data;
+
+typedef BlockSetLevel3Data *BlockSetLevel3;
+
+/* inner level points to another inner level */
+typedef struct
+{
+	BlockSetLevel3 next[256];
+} BlockSetLevel2Data;
+
+typedef BlockSetLevel2Data *BlockSetLevel2;
+
+/* Radix tree root */
+typedef struct
+{
+	BlockSetLevel2 next[256];
+} BlockSetData;
+
+typedef BlockSetData *BlockSet;
+
+/* multiplex block number into indexes of radix tree */
+#define BLOCKSET_SPLIT_BLKNO				\
+	int i1, i2, i3, i4, byte_no, byte_mask;	\
+	i4 = blkno % 256;						\
+	blkno /= 256;							\
+	i3 = blkno % 256;						\
+	blkno /= 256;							\
+	i2 = blkno % 256;						\
+	blkno /= 256;							\
+	i1 = blkno;								\
+	byte_no = i4 / 8;						\
+	byte_mask = 1 << (i4 % 8)				\
+
+/* indicate presence of block number in set */
+static
+BlockSet blockset_set(BlockSet bs, BlockNumber blkno)
+{
+	BLOCKSET_SPLIT_BLKNO;
+	if (bs == NULL)
+	{
+		bs = palloc0(sizeof(BlockSetData));
+	}
+	BlockSetLevel2 bs2 = bs->next[i1];
+	if (bs2 == NULL)
+	{
+		bs2 = palloc0(sizeof(BlockSetLevel2Data));
+		bs->next[i1] = bs2;
+	}
+	BlockSetLevel3 bs3 = bs2->next[i2];
+	if (bs3 == NULL)
+	{
+		bs3 = palloc0(sizeof(BlockSetLevel3Data));
+		bs2->next[i2] = bs3;
+	}
+	BlockSetLevel4 bs4 = bs3->next[i3];
+	if (bs4 == NULL)
+	{
+		bs4 = palloc0(sizeof(BlockSetLevel4Data));
+		bs3->next[i3] = bs4;
+	}
+	bs4->data[byte_no] = byte_mask | bs4->data[byte_no];
+	return bs;
+}
+
+/* Test presence of block in set */
+static
+bool blockset_get(BlockNumber blkno, BlockSet bs)
+{
+	BLOCKSET_SPLIT_BLKNO;
+	if (bs == NULL)
+		return false;
+	BlockSetLevel2 bs2 = bs->next[i1];
+	if (bs2 == NULL)
+		return false;
+	BlockSetLevel3 bs3 = bs2->next[i2];
+	if (bs3 == NULL)
+		return false;
+	BlockSetLevel4 bs4 = bs3->next[i3];
+	if (bs4 == NULL)
+		return false;
+	return (bs4->data[byte_no] & byte_mask);
+}
+
+/* 
+ * Find nearest block number in set no less than blkno
+ * Return InvalidBlockNumber if nothing to return
+ * If given InvalidBlockNumber - returns minimal element in set
+ */
+static
+BlockNumber blockset_next(BlockSet bs, BlockNumber blkno)
+{
+	if (blkno == InvalidBlockNumber)
+		blkno = 0; /* equvalent to ++, left for clear code */
+	else
+		blkno++;
+
+	BLOCKSET_SPLIT_BLKNO;
+
+	if (bs == NULL)
+		return InvalidBlockNumber;
+	for (; i1 < 256; i1++)
+	{
+		BlockSetLevel2 bs2 = bs->next[i1];
+		if (!bs2)
+			continue;
+		for (; i2 < 256; i2++)
+		{
+			BlockSetLevel3 bs3 = bs2->next[i2];
+			if (!bs3)
+				continue;
+			for (; i3 < 256; i3++)
+			{
+				BlockSetLevel4 bs4 = bs3->next[i3];
+				if (!bs4)
+					continue;
+				for (; byte_no < 256 / 8; byte_no++)
+				{
+					if (!bs4->data[byte_no])
+						continue;
+					while (byte_mask <= 0x70)
+					{
+						if ((byte_mask & bs4->data[byte_no]) == byte_mask)
+						{
+							i4 = byte_no * 8;
+							while (byte_mask >>= 1) i4++;
+							return i4 + 256 * (i3 + 256 * (i2 + 256 * i1));
+						}
+						byte_mask <<= 1;
+					}
+					byte_mask = 1;
+				}
+				byte_no = 0;
+			}
+			i3 = 0;
+		}
+		i2 = 0;
+	}
+	return InvalidBlockNumber;
+}
+
+/* free anything palloced */
+static
+void blockset_free(BlockSet bs)
+{
+	BlockNumber blkno = 0;
+	BLOCKSET_SPLIT_BLKNO;
+	if (bs == NULL)
+		return;
+	for (; i1 < 256; i1++)
+	{
+		BlockSetLevel2 bs2 = bs->next[i1];
+		if (!bs2)
+			continue;
+		for (; i2 < 256; i2++)
+		{
+			BlockSetLevel3 bs3 = bs2->next[i2];
+			if (!bs3)
+				continue;
+			for (; i3 < 256; i3++)
+			{
+				BlockSetLevel4 bs4 = bs3->next[i3];
+				if (bs4)
+					pfree(bs4);
+			}
+			pfree(bs3);
+		}
+		pfree(bs2);
+	}
+	pfree(bs);
+}
 
 /* Working state needed by gistbulkdelete */
 typedef struct
@@ -30,6 +216,10 @@ typedef struct
 	void	   *callback_state;
 	GistNSN		startNSN;
 	BlockNumber totFreePages;	/* true total # of free pages */
+	BlockNumber emptyPages;
+
+	BlockSet	internalPagesMap;
+	BlockSet	emptyLeafPagesMap;
 } GistVacState;
 
 static void gistvacuumscan(IndexVacuumInfo *info, IndexBulkDeleteResult *stats,
@@ -49,6 +239,7 @@ gistbulkdelete(IndexVacuumInfo *info, IndexBulkDeleteResult *stats,
 		stats = (IndexBulkDeleteResult *) palloc0(sizeof(IndexBulkDeleteResult));
 
 	gistvacuumscan(info, stats, callback, callback_state);
+
 
 	return stats;
 }
@@ -103,6 +294,11 @@ gistvacuumcleanup(IndexVacuumInfo *info, IndexBulkDeleteResult *stats)
  * while the index is being expanded, leaving an all-zeros page behind.
  *
  * The caller is responsible for initially allocating/zeroing a stats struct.
+ * 
+ * Bulk deletion of all index entries pointing to a set of heap tuples and
+ * check invalid tuples left after upgrade.
+ * The set of target tuples is specified via a callback routine that tells
+ * whether any given heap tuple (identified by ItemPointer) is being deleted.
  */
 static void
 gistvacuumscan(IndexVacuumInfo *info, IndexBulkDeleteResult *stats,
@@ -132,6 +328,9 @@ gistvacuumscan(IndexVacuumInfo *info, IndexBulkDeleteResult *stats,
 	else
 		vstate.startNSN = gistGetFakeLSN(rel);
 	vstate.totFreePages = 0;
+	vstate.emptyPages = 0;
+	vstate.internalPagesMap = NULL;
+	vstate.emptyLeafPagesMap = NULL;
 
 	/*
 	 * The outer loop iterates over all index pages, in physical order (we
@@ -171,6 +370,7 @@ gistvacuumscan(IndexVacuumInfo *info, IndexBulkDeleteResult *stats,
 		/* Quit if we've scanned the whole relation */
 		if (blkno >= num_pages)
 			break;
+
 		/* Iterate over pages, then loop back to recheck length */
 		for (; blkno < num_pages; blkno++)
 			gistvacuumpage(&vstate, blkno, blkno);
@@ -194,6 +394,127 @@ gistvacuumscan(IndexVacuumInfo *info, IndexBulkDeleteResult *stats,
 	/* update statistics */
 	stats->num_pages = num_pages;
 	stats->pages_free = vstate.totFreePages;
+
+	/* rescan all inner pages to find those that has empty child pages */
+	if (vstate.emptyPages > 0)
+	{
+		BlockNumber			x;
+
+		x = InvalidBlockNumber;
+		while (vstate.emptyPages > 0 &&
+			   (x = blockset_next(vstate.internalPagesMap, x)) != InvalidBlockNumber)
+		{
+			Buffer		buffer;
+			Page		page;
+			OffsetNumber off,
+				maxoff;
+			IndexTuple  idxtuple;
+			ItemId	    iid;
+			OffsetNumber todelete[MaxOffsetNumber];
+			Buffer		buftodelete[MaxOffsetNumber];
+			int			ntodelete = 0;
+
+			/* FIXME: 'x' is signed, so this will not work with indexes larger than 2^31 blocks */
+			blkno = (BlockNumber) x;
+
+			buffer = ReadBufferExtended(rel, MAIN_FORKNUM, blkno, RBM_NORMAL,
+										info->strategy);
+
+			LockBuffer(buffer, GIST_EXCLUSIVE);
+			page = (Page) BufferGetPage(buffer);
+			if (PageIsNew(page) || GistPageIsDeleted(page) || GistPageIsLeaf(page))
+			{
+				UnlockReleaseBuffer(buffer);
+				continue;
+			}
+
+			maxoff = PageGetMaxOffsetNumber(page);
+			/* Check that leafs are still empty and decide what to delete */
+			for (off = FirstOffsetNumber; off <= maxoff; off = OffsetNumberNext(off))
+			{
+				Buffer		leafBuffer;
+				Page		leafPage;
+				BlockNumber leafBlockNo;
+
+				iid = PageGetItemId(page, off);
+				idxtuple = (IndexTuple) PageGetItem(page, iid);
+				/* if this page was not empty in previous scan - we do not consider it */
+				leafBlockNo = ItemPointerGetBlockNumber(&(idxtuple->t_tid));
+				if (!blockset_get(leafBlockNo, vstate.emptyLeafPagesMap))
+					continue;
+
+				leafBuffer = ReadBufferExtended(rel, MAIN_FORKNUM, leafBlockNo,
+												RBM_NORMAL, info->strategy);
+				LockBuffer(leafBuffer, GIST_EXCLUSIVE);
+				gistcheckpage(rel, leafBuffer);
+				leafPage = (Page) BufferGetPage(leafBuffer);
+				if (!GistPageIsLeaf(leafPage))
+				{
+					UnlockReleaseBuffer(leafBuffer);
+					continue;
+				}
+
+				if (PageGetMaxOffsetNumber(leafPage) == InvalidOffsetNumber /* Nothing left to split */
+					&& !(GistFollowRight(leafPage) || GistPageGetNSN(page) < GistPageGetNSN(leafPage)) /* No follow-right */
+					&& ntodelete < maxoff-1) /* We must keep at least one leaf page per each */
+				{
+					buftodelete[ntodelete] = leafBuffer;
+					todelete[ntodelete++] = off;
+				}
+				else
+					UnlockReleaseBuffer(leafBuffer);
+			}
+
+			if (ntodelete)
+			{
+				/*
+				 * Like in _bt_unlink_halfdead_page we need an upper bound on xid
+				 * that could hold downlinks to this page. We use
+				 * ReadNewTransactionId() to instead of GetCurrentTransactionId
+				 * since we are in a VACUUM.
+				 */
+				TransactionId txid = ReadNewTransactionId();
+				int			i;
+
+				START_CRIT_SECTION();
+
+				/* Mark pages as deleted dropping references from internal pages */
+				for (i = 0; i < ntodelete; i++)
+				{
+					Page		leafPage = (Page) BufferGetPage(buftodelete[i]);
+					XLogRecPtr	recptr;
+
+					/* Remember xid of last transaction that could see this page */
+					GistPageSetDeleteXid(leafPage,txid);
+
+					GistPageSetDeleted(leafPage);
+					MarkBufferDirty(buftodelete[i]);
+					stats->pages_deleted++;
+					vstate.emptyPages--;
+
+					MarkBufferDirty(buffer);
+					/* Offsets are changed as long as we delete tuples from internal page */
+					PageIndexTupleDelete(page, todelete[i] - i);
+
+					if (RelationNeedsWAL(rel))
+						recptr 	= gistXLogSetDeleted(rel->rd_node, buftodelete[i],
+													 txid, buffer, todelete[i] - i);
+					else
+						recptr = gistGetFakeLSN(rel);
+					PageSetLSN(page, recptr);
+					PageSetLSN(leafPage, recptr);
+
+					UnlockReleaseBuffer(buftodelete[i]);
+				}
+				END_CRIT_SECTION();
+			}
+
+			UnlockReleaseBuffer(buffer);
+		}
+	}
+
+	blockset_free(vstate.emptyLeafPagesMap);
+	blockset_free(vstate.internalPagesMap);
 }
 
 /*
@@ -246,6 +567,7 @@ restart:
 	{
 		OffsetNumber todelete[MaxOffsetNumber];
 		int			ntodelete = 0;
+		int			nremain;
 		GISTPageOpaque opaque = GistPageGetOpaque(page);
 		OffsetNumber maxoff = PageGetMaxOffsetNumber(page);
 
@@ -319,10 +641,19 @@ restart:
 			maxoff = PageGetMaxOffsetNumber(page);
 		}
 
-		stats->num_index_tuples += maxoff - FirstOffsetNumber + 1;
+		nremain = maxoff - FirstOffsetNumber + 1;
+		if (nremain == 0)
+		{
+			vstate->emptyLeafPagesMap = blockset_set(vstate->emptyLeafPagesMap, blkno);
+			vstate->emptyPages++;
+		}
+		else
+			stats->num_index_tuples += nremain;
 	}
 	else
 	{
+		vstate->internalPagesMap = blockset_set(vstate->internalPagesMap, blkno);
+
 		/*
 		 * On an internal page, check for "invalid tuples", left behind by an
 		 * incomplete page split on PostgreSQL 9.0 or below.  These are not
