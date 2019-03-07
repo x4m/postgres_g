@@ -55,7 +55,7 @@ typedef struct BlockSetData
 
 /* multiplex block number into indexes of radix tree */
 #define BLOCKSET_SPLIT_BLKNO				\
-	int i1, i2, i3, i4, byte_no, byte_mask;	\
+	uint32_t i1, i2, i3, i4, byte_no, byte_mask;	\
 	i4 = blkno % 256;						\
 	blkno /= 256;							\
 	i3 = blkno % 256;						\
@@ -149,7 +149,7 @@ BlockNumber blockset_next(BlockSet bs, BlockNumber blkno)
 				{
 					if (!bs4->data[byte_no])
 						continue;
-					while (byte_mask <= 0x70)
+					while (byte_mask < 256)
 					{
 						if ((byte_mask & bs4->data[byte_no]) == byte_mask)
 						{

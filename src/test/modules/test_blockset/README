@@ -1,0 +1,8 @@
+test_blockset overview
+=========================
+
+test_blockset is a test harness module for testing block set data structure.
+There are two main tests:
+1. Test of comliance with Bitmapset on numbers avaiable to Bitmapset
+2. Test of numbers that can exceed INT32_MAX but are just shifted on one bit
+from numbers kept in Bitmapset

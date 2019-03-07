@@ -1,0 +1,7 @@
+CREATE EXTENSION test_blockset;
+SELECT test_blockset();
+ test_blockset 
+---------------
+ 
+(1 row)
+
