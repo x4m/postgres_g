@@ -16,10 +16,14 @@
 
 #include "access/genam.h"
 #include "access/gist_private.h"
+#include "access/transam.h"
 #include "commands/vacuum.h"
+#include "lib/blockset.h"
 #include "miscadmin.h"
+#include "nodes/bitmapset.h"
 #include "storage/indexfsm.h"
 #include "storage/lmgr.h"
+
 
 /* Working state needed by gistbulkdelete */
 typedef struct
@@ -30,6 +34,10 @@ typedef struct
 	void	   *callback_state;
 	GistNSN		startNSN;
 	BlockNumber totFreePages;	/* true total # of free pages */
+	BlockNumber emptyPages;
+
+	BlockSet	internalPagesMap;
+	BlockSet	emptyLeafPagesMap;
 } GistVacState;
 
 static void gistvacuumscan(IndexVacuumInfo *info, IndexBulkDeleteResult *stats,
@@ -49,6 +57,7 @@ gistbulkdelete(IndexVacuumInfo *info, IndexBulkDeleteResult *stats,
 		stats = (IndexBulkDeleteResult *) palloc0(sizeof(IndexBulkDeleteResult));
 
 	gistvacuumscan(info, stats, callback, callback_state);
+
 
 	return stats;
 }
@@ -103,6 +112,11 @@ gistvacuumcleanup(IndexVacuumInfo *info, IndexBulkDeleteResult *stats)
  * while the index is being expanded, leaving an all-zeros page behind.
  *
  * The caller is responsible for initially allocating/zeroing a stats struct.
+ * 
+ * Bulk deletion of all index entries pointing to a set of heap tuples and
+ * check invalid tuples left after upgrade.
+ * The set of target tuples is specified via a callback routine that tells
+ * whether any given heap tuple (identified by ItemPointer) is being deleted.
  */
 static void
 gistvacuumscan(IndexVacuumInfo *info, IndexBulkDeleteResult *stats,
@@ -132,6 +146,9 @@ gistvacuumscan(IndexVacuumInfo *info, IndexBulkDeleteResult *stats,
 	else
 		vstate.startNSN = gistGetFakeLSN(rel);
 	vstate.totFreePages = 0;
+	vstate.emptyPages = 0;
+	vstate.internalPagesMap = NULL;
+	vstate.emptyLeafPagesMap = NULL;
 
 	/*
 	 * The outer loop iterates over all index pages, in physical order (we
@@ -171,6 +188,7 @@ gistvacuumscan(IndexVacuumInfo *info, IndexBulkDeleteResult *stats,
 		/* Quit if we've scanned the whole relation */
 		if (blkno >= num_pages)
 			break;
+
 		/* Iterate over pages, then loop back to recheck length */
 		for (; blkno < num_pages; blkno++)
 			gistvacuumpage(&vstate, blkno, blkno);
@@ -194,6 +212,194 @@ gistvacuumscan(IndexVacuumInfo *info, IndexBulkDeleteResult *stats,
 	/* update statistics */
 	stats->num_pages = num_pages;
 	stats->pages_free = vstate.totFreePages;
+
+	/* rescan all inner pages to find those that has empty child pages */
+	if (vstate.emptyPages > 0)
+	{
+		BlockNumber			x;
+
+		x = InvalidBlockNumber;
+		while (vstate.emptyPages > 0 &&
+			   (x = blockset_next(vstate.internalPagesMap, x)) != InvalidBlockNumber)
+		{
+			Buffer		buffer;
+			Page		page;
+			OffsetNumber off,
+				maxoff;
+			IndexTuple  idxtuple;
+			ItemId	    iid;
+			OffsetNumber todelete[MaxOffsetNumber];
+			Buffer		buftodelete[MaxOffsetNumber];
+			int			ntodelete = 0;
+
+			blkno = (BlockNumber) x;
+
+			buffer = ReadBufferExtended(rel, MAIN_FORKNUM, blkno, RBM_NORMAL,
+										info->strategy);
+
+			LockBuffer(buffer, GIST_EXCLUSIVE);
+			page = (Page) BufferGetPage(buffer);
+			if (PageIsNew(page) || GistPageIsDeleted(page) || GistPageIsLeaf(page))
+			{
+				UnlockReleaseBuffer(buffer);
+				continue;
+			}
+
+			maxoff = PageGetMaxOffsetNumber(page);
+			/* Check that leafs are still empty and decide what to delete */
+			for (off = FirstOffsetNumber; off <= maxoff && ntodelete < maxoff-1; off = OffsetNumberNext(off))
+			{
+				Buffer		leafBuffer;
+				Page		leafPage;
+				BlockNumber leafBlockNo;
+
+				iid = PageGetItemId(page, off);
+				idxtuple = (IndexTuple) PageGetItem(page, iid);
+				/* if this page was not empty in previous scan - we do not consider it */
+				leafBlockNo = ItemPointerGetBlockNumber(&(idxtuple->t_tid));
+				if (!blockset_get(leafBlockNo, vstate.emptyLeafPagesMap))
+					continue;
+
+				leafBuffer = ReadBufferExtended(rel, MAIN_FORKNUM, leafBlockNo,
+												RBM_NORMAL, info->strategy);
+
+				buftodelete[ntodelete] = leafBuffer;
+				todelete[ntodelete++] = off;
+
+				LockBuffer(leafBuffer, GIST_EXCLUSIVE);
+				gistcheckpage(rel, leafBuffer);
+				leafPage = (Page) BufferGetPage(leafBuffer);
+				if (!GistPageIsLeaf(leafPage))
+				{
+					UnlockReleaseBuffer(leafBuffer);
+					continue;
+				}
+
+				if (PageGetMaxOffsetNumber(leafPage) == InvalidOffsetNumber /* Nothing left to split */
+					&& !(GistFollowRight(leafPage) || GistPageGetNSN(page) < GistPageGetNSN(leafPage)) /* No follow-right */
+					&& ntodelete < maxoff-1) /* We must keep at least one leaf page per each */
+				{
+					buftodelete[ntodelete] = leafBuffer;
+					todelete[ntodelete++] = off;
+				}
+				else
+					UnlockReleaseBuffer(leafBuffer);
+			}
+
+			/*
+			 * We will have to relock internal page in case of deletes:
+			 * we cannot lock child while holding parent lock without risk
+			 * of a deadlock
+			 */
+			LockBuffer(buffer, GIST_UNLOCK);
+
+			if (ntodelete)
+			{
+				TransactionId txid;
+				int			i;
+
+				for (i = 0; i < ntodelete; i++)
+				{
+					Buffer	leafBuffer = buftodelete[i];
+					Page	leafPage;
+					LockBuffer(leafBuffer, GIST_EXCLUSIVE);
+					gistcheckpage(rel, leafBuffer);
+					leafPage = (Page) BufferGetPage(leafBuffer);
+					if (!GistPageIsLeaf(leafPage) /* not a leaf anymore */ 
+						|| PageGetMaxOffsetNumber(leafPage) != InvalidOffsetNumber /* Page is not empry */
+						|| (GistFollowRight(leafPage) || GistPageGetNSN(page) < GistPageGetNSN(leafPage)) /* No follow-right */
+						)
+					{
+						UnlockReleaseBuffer(leafBuffer);
+						buftodelete[i] = InvalidBuffer;
+						todelete[i] = InvalidOffsetNumber;
+					}
+				}
+
+				LockBuffer(buffer, GIST_EXCLUSIVE);
+				page = (Page) BufferGetPage(buffer);
+
+				for (i = 0; i < ntodelete; i++)
+				{
+					Buffer	leafBuffer = buftodelete[i];
+					bool	inconsistent = false;
+					if (todelete[i] == InvalidOffsetNumber)
+						continue;
+
+					if (PageIsNew(page) || GistPageIsDeleted(page) || GistPageIsLeaf(page)
+						|| PageGetMaxOffsetNumber(page) < todelete[i])
+						inconsistent = true;
+
+					if (!inconsistent)
+					{
+						iid = PageGetItemId(page, todelete[i]);
+						idxtuple = (IndexTuple) PageGetItem(page, iid);
+						if (todelete[i] != ItemPointerGetBlockNumber(&(idxtuple->t_tid)))
+							inconsistent = true;
+					}
+
+					if (inconsistent)
+					{
+						UnlockReleaseBuffer(leafBuffer);
+						buftodelete[i] = InvalidBuffer;
+						todelete[i] = InvalidOffsetNumber;
+					}
+				}
+
+				/*
+				 * Like in _bt_unlink_halfdead_page we need an upper bound on xid
+				 * that could hold downlinks to this page. We use
+				 * ReadNewTransactionId() to instead of GetCurrentTransactionId
+				 * since we are in a VACUUM.
+				 */
+				txid = ReadNewTransactionId();
+
+				START_CRIT_SECTION();
+
+				/* Mark pages as deleted dropping references from internal pages */
+				for (i = 0; i < ntodelete; i++)
+				{
+					Page		leafPage;
+					XLogRecPtr	recptr;
+
+					if (todelete[i] == InvalidOffsetNumber)
+						continue;
+
+					leafPage = (Page) BufferGetPage(buftodelete[i]);
+
+					/* Remember xid of last transaction that could see this page */
+					GistPageSetDeleteXid(leafPage,txid);
+
+					GistPageSetDeleted(leafPage);
+					MarkBufferDirty(buftodelete[i]);
+					stats->pages_deleted++;
+					vstate.emptyPages--;
+
+					MarkBufferDirty(buffer);
+					/* Offsets are changed as long as we delete tuples from internal page */
+					PageIndexTupleDelete(page, todelete[i] - i);
+
+					if (RelationNeedsWAL(rel))
+						recptr 	= gistXLogSetDeleted(rel->rd_node, buftodelete[i],
+													 txid, buffer, todelete[i] - i);
+					else
+						recptr = gistGetFakeLSN(rel);
+					PageSetLSN(page, recptr);
+					PageSetLSN(leafPage, recptr);
+
+					UnlockReleaseBuffer(buftodelete[i]);
+				}
+				END_CRIT_SECTION();
+
+				LockBuffer(buffer, GIST_UNLOCK);
+			}
+
+			ReleaseBuffer(buffer);
+		}
+	}
+
+	blockset_free(vstate.emptyLeafPagesMap);
+	blockset_free(vstate.internalPagesMap);
 }
 
 /*
@@ -246,6 +452,7 @@ restart:
 	{
 		OffsetNumber todelete[MaxOffsetNumber];
 		int			ntodelete = 0;
+		int			nremain;
 		GISTPageOpaque opaque = GistPageGetOpaque(page);
 		OffsetNumber maxoff = PageGetMaxOffsetNumber(page);
 
@@ -319,10 +526,19 @@ restart:
 			maxoff = PageGetMaxOffsetNumber(page);
 		}
 
-		stats->num_index_tuples += maxoff - FirstOffsetNumber + 1;
+		nremain = maxoff - FirstOffsetNumber + 1;
+		if (nremain == 0)
+		{
+			vstate->emptyLeafPagesMap = blockset_set(vstate->emptyLeafPagesMap, blkno);
+			vstate->emptyPages++;
+		}
+		else
+			stats->num_index_tuples += nremain;
 	}
 	else
 	{
+		vstate->internalPagesMap = blockset_set(vstate->internalPagesMap, blkno);
+
 		/*
 		 * On an internal page, check for "invalid tuples", left behind by an
 		 * incomplete page split on PostgreSQL 9.0 or below.  These are not
