@@ -474,7 +474,7 @@ gistvacuum_recycle_pages(GistBulkDeleteResult *stats)
 		Buffer		buffer;
 		Page		page;
 		OffsetNumber off,
-			maxoff;
+					maxoff;
 		IndexTuple  idxtuple;
 		ItemId	    iid;
 		OffsetNumber todelete[MaxOffsetNumber];
@@ -488,6 +488,8 @@ gistvacuum_recycle_pages(GistBulkDeleteResult *stats)
 		page = (Page) BufferGetPage(buffer);
 		if (PageIsNew(page) || GistPageIsDeleted(page) || GistPageIsLeaf(page))
 		{
+			/* HEIKKI: This page was an internal page earlier, but now it's something else.
+			 * Shouldn't happen... */
 			UnlockReleaseBuffer(buffer);
 			continue;
 		}
@@ -498,11 +500,12 @@ gistvacuum_recycle_pages(GistBulkDeleteResult *stats)
 			 off <= maxoff && ntodelete < maxoff-1;
 			 off = OffsetNumberNext(off))
 		{
-			Buffer		leafBuffer;
 			BlockNumber leafBlockNo;
+			Buffer		leafBuffer;
 
 			iid = PageGetItemId(page, off);
 			idxtuple = (IndexTuple) PageGetItem(page, iid);
+
 			/* if this page was not empty in previous scan - we do not consider it */
 			leafBlockNo = ItemPointerGetBlockNumber(&(idxtuple->t_tid));
 			if (!blockset_get(leafBlockNo, stats->emptyLeafPagesMap))
