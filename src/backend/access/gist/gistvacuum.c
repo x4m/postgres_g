@@ -28,7 +28,6 @@ typedef struct
 	IndexBulkDeleteResult stats;
 
 	IndexVacuumInfo *info;
-	BlockNumber numEmptyPages;
 	BlockSet	internalPagesMap;
 	BlockSet	emptyLeafPagesMap;
 } GistBulkDeleteResult;
@@ -141,7 +140,6 @@ gistdeletepage(GistBulkDeleteResult *stats,
 	GistPageSetDeleted(leafPage);
 	MarkBufferDirty(leafBuffer);
 	stats->stats.pages_deleted++;
-	stats->numEmptyPages--;
 
 	MarkBufferDirty(buffer);
 	/* Offsets are changed as long as we delete tuples from internal page */
@@ -405,7 +403,6 @@ restart:
 		if (nremain == 0)
 		{
 			stats->emptyLeafPagesMap = blockset_set(stats->emptyLeafPagesMap, blkno);
-			stats->numEmptyPages++;
 		}
 		else
 			stats->stats.num_index_tuples += nremain;
@@ -461,12 +458,18 @@ gistvacuum_recycle_pages(GistBulkDeleteResult *stats)
 {
 	IndexVacuumInfo *info = stats->info;
 	Relation	rel = info->index;
-	BlockNumber blkno;
+	BlockNumber	blkno;
+
+	/* quick exit if no empty pages */
+	/* HEIKKI: I'm assuming the blockset is always NULL if it's empty. That's true
+	 * for the current usage. But add comments, and maybe a blockset_isempty() macro
+	 * for clarity */
+	if (stats->emptyLeafPagesMap == NULL)
+		return;
 
 	/* rescan all inner pages to find those that have empty child pages */
 	blkno = InvalidBlockNumber;
-	while (stats->numEmptyPages > 0 &&
-		   (blkno = blockset_next(stats->internalPagesMap, blkno)) != InvalidBlockNumber)
+	while ((blkno = blockset_next(stats->internalPagesMap, blkno)) != InvalidBlockNumber)
 	{
 		Buffer		buffer;
 		Page		page;
@@ -491,7 +494,9 @@ gistvacuum_recycle_pages(GistBulkDeleteResult *stats)
 
 		maxoff = PageGetMaxOffsetNumber(page);
 		/* Check that leafs are still empty and decide what to delete */
-		for (off = FirstOffsetNumber; off <= maxoff && ntodelete < maxoff-1; off = OffsetNumberNext(off))
+		for (off = FirstOffsetNumber;
+			 off <= maxoff && ntodelete < maxoff-1;
+			 off = OffsetNumberNext(off))
 		{
 			Buffer		leafBuffer;
 			BlockNumber leafBlockNo;
