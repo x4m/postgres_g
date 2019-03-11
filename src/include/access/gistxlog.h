@@ -17,8 +17,6 @@
 #include "access/xlogreader.h"
 #include "lib/stringinfo.h"
 
-/* XLog stuff */
-
 #define XLOG_GIST_PAGE_UPDATE		0x00
 #define XLOG_GIST_DELETE			0x10 /* delete leaf index tuples for a page */
  /* #define XLOG_GIST_NEW_ROOT			 0x20 */	/* not used anymore */
@@ -78,10 +76,14 @@ typedef struct gistxlogPageSplit
 	 */
 } gistxlogPageSplit;
 
+/*
+ * Backup Blk 0: page that was deleted.
+ * Backup Blk 1: parent page, containing the downlink to the deleted page.
+ */
 typedef struct gistxlogPageDelete
 {
-   TransactionId deleteXid; /* last Xid which could see page in scan */
-   OffsetNumber downlinkOffset; /* Offset of the downlink referencing this page */
+	TransactionId deleteXid;	/* last Xid which could see page in scan */
+	OffsetNumber downlinkOffset; /* Offset of downlink referencing this page */
 } gistxlogPageDelete;
 
 extern void gist_redo(XLogReaderState *record);

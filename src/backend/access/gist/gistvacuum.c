@@ -20,10 +20,8 @@
 #include "commands/vacuum.h"
 #include "lib/blockset.h"
 #include "miscadmin.h"
-#include "nodes/bitmapset.h"
 #include "storage/indexfsm.h"
 #include "storage/lmgr.h"
-
 
 /* Working state needed by gistbulkdelete */
 typedef struct
@@ -57,7 +55,6 @@ gistbulkdelete(IndexVacuumInfo *info, IndexBulkDeleteResult *stats,
 		stats = (IndexBulkDeleteResult *) palloc0(sizeof(IndexBulkDeleteResult));
 
 	gistvacuumscan(info, stats, callback, callback_state);
-
 
 	return stats;
 }
@@ -163,7 +160,7 @@ gistdeletepage(GistVacState *vstate,
  * while the index is being expanded, leaving an all-zeros page behind.
  *
  * The caller is responsible for initially allocating/zeroing a stats struct.
- * 
+ *
  * Bulk deletion of all index entries pointing to a set of heap tuples and
  * check invalid tuples left after upgrade.
  * The set of target tuples is specified via a callback routine that tells
@@ -264,7 +261,7 @@ gistvacuumscan(IndexVacuumInfo *info, IndexBulkDeleteResult *stats,
 	stats->num_pages = num_pages;
 	stats->pages_free = vstate.totFreePages;
 
-	/* rescan all inner pages to find those that has empty child pages */
+	/* rescan all inner pages to find those that have empty child pages */
 	if (vstate.emptyPages > 0)
 	{
 		BlockNumber			x;

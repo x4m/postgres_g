@@ -415,9 +415,9 @@ extern SplitedPageLayout *gistSplit(Relation r, Page page, IndexTuple *itup,
 		  int len, GISTSTATE *giststate);
 
 /* gistxlog.c */
-extern XLogRecPtr gistXLogSetDeleted(RelFileNode node, Buffer buffer,
-					TransactionId xid, Buffer internalPageBuffer,
-					OffsetNumber internalPageOffset);
+extern XLogRecPtr gistXLogPageDelete(Buffer buffer,
+				   TransactionId xid, Buffer parentBuffer,
+				   OffsetNumber downlinkOffset);
 
 extern XLogRecPtr gistXLogUpdate(Buffer buffer,
 			   OffsetNumber *todelete, int ntodelete,

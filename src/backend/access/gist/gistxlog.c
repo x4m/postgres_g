@@ -64,39 +64,6 @@ gistRedoClearFollowRight(XLogReaderState *record, uint8 block_id)
 		UnlockReleaseBuffer(buffer);
 }
 
-static void
-gistRedoPageSetDeleted(XLogReaderState *record)
-{
-	XLogRecPtr	lsn = record->EndRecPtr;
-	gistxlogPageDelete *xldata = (gistxlogPageDelete *) XLogRecGetData(record);
-	Buffer		buffer;
-	Page		page;
-
-	if (XLogReadBufferForRedo(record, 0, &buffer) == BLK_NEEDS_REDO)
-	{
-		page = (Page) BufferGetPage(buffer);
-
-		GistPageSetDeleteXid(page, xldata->deleteXid);
-		GistPageSetDeleted(page);
-
-		PageSetLSN(page, lsn);
-		MarkBufferDirty(buffer);
-	}
-	if (BufferIsValid(buffer))
-		UnlockReleaseBuffer(buffer);
-
-	if (XLogReadBufferForRedo(record, 1, &buffer) == BLK_NEEDS_REDO)
-	{
-		page = (Page) BufferGetPage(buffer);
-
-		PageIndexTupleDelete(page, xldata->downlinkOffset);
-
-		PageSetLSN(page, lsn);
-		MarkBufferDirty(buffer);
-	}
-	if (BufferIsValid(buffer))
-		UnlockReleaseBuffer(buffer);
-}
 /*
  * redo any page update (except page split)
  */
@@ -542,6 +509,43 @@ gistRedoCreateIndex(XLogReaderState *record)
 	UnlockReleaseBuffer(buffer);
 }
 
+/* redo page deletion */
+static void
+gistRedoPageDelete(XLogReaderState *record)
+{
+	XLogRecPtr	lsn = record->EndRecPtr;
+	gistxlogPageDelete *xldata = (gistxlogPageDelete *) XLogRecGetData(record);
+	Buffer		buffer;
+	Page		page;
+
+	/* FIXME: Are we locking the pages in correct order, for hot standby? */
+
+	if (XLogReadBufferForRedo(record, 0, &buffer) == BLK_NEEDS_REDO)
+	{
+		page = (Page) BufferGetPage(buffer);
+
+		GistPageSetDeleteXid(page, xldata->deleteXid);
+		GistPageSetDeleted(page);
+
+		PageSetLSN(page, lsn);
+		MarkBufferDirty(buffer);
+	}
+	if (BufferIsValid(buffer))
+		UnlockReleaseBuffer(buffer);
+
+	if (XLogReadBufferForRedo(record, 1, &buffer) == BLK_NEEDS_REDO)
+	{
+		page = (Page) BufferGetPage(buffer);
+
+		PageIndexTupleDelete(page, xldata->downlinkOffset);
+
+		PageSetLSN(page, lsn);
+		MarkBufferDirty(buffer);
+	}
+	if (BufferIsValid(buffer))
+		UnlockReleaseBuffer(buffer);
+}
+
 void
 gist_redo(XLogReaderState *record)
 {
@@ -570,7 +574,7 @@ gist_redo(XLogReaderState *record)
 			gistRedoCreateIndex(record);
 			break;
 		case XLOG_GIST_PAGE_DELETE:
-			gistRedoPageSetDeleted(record);
+			gistRedoPageDelete(record);
 			break;
 		default:
 			elog(PANIC, "gist_redo: unknown op code %u", info);
@@ -691,25 +695,27 @@ gistXLogSplit(bool page_is_leaf,
 }
 
 /*
- * Write XLOG record describing a page delete. This also includes removal of
- * downlink from internal page.
+ * Write XLOG record describing a page deletion. This also includes removal of
+ * downlink from the parent page.
  */
 XLogRecPtr
-gistXLogSetDeleted(RelFileNode node, Buffer buffer, TransactionId xid,
-					Buffer internalPageBuffer, OffsetNumber internalPageOffset) {
+gistXLogPageDelete(Buffer buffer, TransactionId xid,
+				   Buffer parentBuffer, OffsetNumber downlinkOffset)
+{
 	gistxlogPageDelete xlrec;
 	XLogRecPtr	recptr;
 
 	xlrec.deleteXid = xid;
-	xlrec.downlinkOffset = internalPageOffset;
+	xlrec.downlinkOffset = downlinkOffset;
 
 	XLogBeginInsert();
 	XLogRegisterData((char *) &xlrec, sizeof(gistxlogPageDelete));
 
 	XLogRegisterBuffer(0, buffer, REGBUF_STANDARD);
-	XLogRegisterBuffer(1, internalPageBuffer, REGBUF_STANDARD);
-	/* new tuples */
+	XLogRegisterBuffer(1, parentBuffer, REGBUF_STANDARD);
+
 	recptr = XLogInsert(RM_GIST_ID, XLOG_GIST_PAGE_DELETE);
+
 	return recptr;
 }
 
