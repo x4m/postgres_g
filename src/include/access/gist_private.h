@@ -93,6 +93,7 @@ typedef struct GISTSTATE
 	FmgrInfo	equalFn[INDEX_MAX_KEYS];
 	FmgrInfo	distanceFn[INDEX_MAX_KEYS];
 	FmgrInfo	fetchFn[INDEX_MAX_KEYS];
+	FmgrInfo	buildSortFn[INDEX_MAX_KEYS];
 
 	/* Collations to pass to the support functions */
 	Oid			supportCollation[INDEX_MAX_KEYS];

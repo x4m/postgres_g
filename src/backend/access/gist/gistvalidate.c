@@ -118,6 +118,7 @@ gistvalidate(Oid opclassoid)
 			case GIST_COMPRESS_PROC:
 			case GIST_DECOMPRESS_PROC:
 			case GIST_FETCH_PROC:
+			case GIST_BUILDSORT_PROC:
 				ok = check_amproc_signature(procform->amproc, INTERNALOID, true,
 											1, 1, INTERNALOID);
 				break;
@@ -259,7 +260,8 @@ gistvalidate(Oid opclassoid)
 			(opclassgroup->functionset & (((uint64) 1) << i)) != 0)
 			continue;			/* got it */
 		if (i == GIST_DISTANCE_PROC || i == GIST_FETCH_PROC ||
-			i == GIST_COMPRESS_PROC || i == GIST_DECOMPRESS_PROC)
+			i == GIST_COMPRESS_PROC || i == GIST_DECOMPRESS_PROC ||
+			i == GIST_BUILDSORT_PROC)
 			continue;			/* optional methods */
 		ereport(INFO,
 				(errcode(ERRCODE_INVALID_OBJECT_DEFINITION),
