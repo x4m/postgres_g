@@ -731,16 +731,22 @@ pglz_decompress(const char *source, int32 slen, char *dest,
 
 				/*
 				 * Now we copy the bytes specified by the tag from OUTPUT to
-				 * OUTPUT. It is dangerous and platform dependent to use
-				 * memcpy() here, because the copied areas could overlap
-				 * extremely!
+				 * OUTPUT. It is dangerous to use direct memcpy() here, because
+				 * the copied areas could overlap. To handle this overlap
+				 * appropriatley we break copied region into non-overlapping
+				 * regions.
 				 */
 				len = Min(len, destend - dp);
-				while (len--)
+				while (off <= len)
 				{
-					*dp = dp[-off];
-					dp++;
+					memcpy(dp, dp - off, off);
+					len -= off;
+					dp += off;
+					off *= 2;
 				}
+				if (len)
+					memcpy(dp, dp - off, len);
+				dp += len;
 			}
 			else
 			{
