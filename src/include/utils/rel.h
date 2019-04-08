@@ -273,6 +273,8 @@ typedef struct StdRdOptions
 	AutoVacOpts autovacuum;		/* autovacuum-related options */
 	bool		user_catalog_table; /* use as an additional catalog relation */
 	int			parallel_workers;	/* max number of parallel workers */
+	bool		vacuum_index_cleanup;	/* AB: this relopt will appeat later, we preserve it's place */
+	bool		vacuum_truncate;	/* enables vacuum to truncate a relation */
 } StdRdOptions;
 
 #define HEAP_MIN_FILLFACTOR			10
