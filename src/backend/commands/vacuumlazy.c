@@ -156,7 +156,7 @@ static void lazy_cleanup_index(Relation indrel,
 				   LVRelStats *vacrelstats);
 static int lazy_vacuum_page(Relation onerel, BlockNumber blkno, Buffer buffer,
 				 int tupindex, LVRelStats *vacrelstats, Buffer *vmbuffer);
-static bool should_attempt_truncation(LVRelStats *vacrelstats);
+static bool should_attempt_truncation(Relation rel, LVRelStats *vacrelstats);
 static void lazy_truncate_heap(Relation onerel, LVRelStats *vacrelstats);
 static BlockNumber count_nondeletable_pages(Relation onerel,
 						 LVRelStats *vacrelstats);
@@ -279,7 +279,7 @@ lazy_vacuum_rel(Relation onerel, int options, VacuumParams *params,
 	/*
 	 * Optionally truncate the relation.
 	 */
-	if (should_attempt_truncation(vacrelstats))
+	if (should_attempt_truncation(onerel, vacrelstats))
 		lazy_truncate_heap(onerel, vacrelstats);
 
 	/* Report that we are now doing final cleanup */
@@ -607,7 +607,7 @@ lazy_scan_heap(Relation onerel, int options, LVRelStats *vacrelstats,
 
 		/* see note above about forcing scanning of last page */
 #define FORCE_CHECK_PAGE() \
-		(blkno == nblocks - 1 && should_attempt_truncation(vacrelstats))
+		(blkno == nblocks - 1 && should_attempt_truncation(onerel, vacrelstats))
 
 		pgstat_progress_update_param(PROGRESS_VACUUM_HEAP_BLKS_SCANNED, blkno);
 
@@ -1702,9 +1702,13 @@ lazy_cleanup_index(Relation indrel,
  * careful to depend only on fields that lazy_scan_heap updates on-the-fly.
  */
 static bool
-should_attempt_truncation(LVRelStats *vacrelstats)
+should_attempt_truncation(Relation rel, LVRelStats *vacrelstats)
 {
 	BlockNumber possibly_freeable;
+
+	if (rel->rd_options != NULL &&
+		((StdRdOptions *) rel->rd_options)->vacuum_truncate == false)
+		return false;
 
 	possibly_freeable = vacrelstats->rel_pages - vacrelstats->nonempty_pages;
 	if (possibly_freeable > 0 &&

@@ -88,6 +88,11 @@
  * Setting parallel_workers is safe, since it acts the same as
  * max_parallel_workers_per_gather which is a USERSET parameter that doesn't
  * affect existing plans or queries.
+ *
+ * vacuum_truncate can be set at ShareUpdateExclusiveLock because it
+ * is only used during VACUUM, which uses a ShareUpdateExclusiveLock,
+ * so the VACUUM will not be affected by in-flight changes. Changing its
+ * value has no affect until the next VACUUM, so no need for stronger lock.
  */
 
 static relopt_bool boolRelOpts[] =
@@ -136,6 +141,15 @@ static relopt_bool boolRelOpts[] =
 			AccessExclusiveLock
 		},
 		false
+	},
+	{
+		{
+			"vacuum_truncate",
+			"Enables vacuum to truncate empty pages at the end of this table",
+			RELOPT_KIND_HEAP | RELOPT_KIND_TOAST,
+			ShareUpdateExclusiveLock
+		},
+		true
 	},
 	/* list terminator */
 	{{NULL}}
@@ -1358,7 +1372,9 @@ default_reloptions(Datum reloptions, bool validate, relopt_kind kind)
 		{"user_catalog_table", RELOPT_TYPE_BOOL,
 		offsetof(StdRdOptions, user_catalog_table)},
 		{"parallel_workers", RELOPT_TYPE_INT,
-		offsetof(StdRdOptions, parallel_workers)}
+		offsetof(StdRdOptions, parallel_workers)},
+		{"vacuum_truncate", RELOPT_TYPE_BOOL,
+		offsetof(StdRdOptions, vacuum_truncate)}
 	};
 
 	options = parseRelOptions(reloptions, validate, kind, &numoptions);
