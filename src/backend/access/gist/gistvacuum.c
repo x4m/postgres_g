@@ -368,9 +368,9 @@ restart:
 			{
 				XLogRecPtr	recptr;
 
-				recptr = gistXLogUpdate(buffer,
+				recptr = gistXLogDelete(buffer,
 										todelete, ntodelete,
-										NULL, 0, InvalidBuffer);
+										rel->rd_node);
 				PageSetLSN(page, recptr);
 			}
 			else

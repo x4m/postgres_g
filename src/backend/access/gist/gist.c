@@ -35,7 +35,7 @@ static bool gistinserttuples(GISTInsertState *state, GISTInsertStack *stack,
 				 GISTSTATE *giststate,
 				 IndexTuple *tuples, int ntup, OffsetNumber oldoffnum,
 				 Buffer leftchild, Buffer rightchild,
-				 bool unlockbuf, bool unlockleftchild);
+				 bool unlockbuf, bool unlockleftchild, int ndeltup, OffsetNumber skipoffnum);
 static void gistfinishsplit(GISTInsertState *state, GISTInsertStack *stack,
 				GISTSTATE *giststate, List *splitinfo, bool releasebuf);
 static void gistprunepage(Relation rel, Page page, Buffer buffer,
@@ -221,7 +221,9 @@ gistplacetopage(Relation rel, Size freespace, GISTSTATE *giststate,
 				List **splitinfo,
 				bool markfollowright,
 				Relation heapRel,
-				bool is_build)
+				bool is_build,
+				int ndeltup,
+				OffsetNumber skipoffnum)
 {
 	BlockNumber blkno = BufferGetBlockNumber(buffer);
 	Page		page = BufferGetPage(buffer);
@@ -254,7 +256,7 @@ gistplacetopage(Relation rel, Size freespace, GISTSTATE *giststate,
 	 * one-element todelete array; in the split case, it's handled implicitly
 	 * because the tuple vector passed to gistSplit won't include this tuple.
 	 */
-	is_split = gistnospace(page, itup, ntup, oldoffnum, freespace);
+	is_split = gistnospace(page, itup, ntup, oldoffnum, freespace, ndeltup);
 
 	/*
 	 * If leaf page is full, try at first to delete dead tuples. And then
@@ -263,7 +265,7 @@ gistplacetopage(Relation rel, Size freespace, GISTSTATE *giststate,
 	if (is_split && GistPageIsLeaf(page) && GistPageHasGarbage(page))
 	{
 		gistprunepage(rel, page, buffer, heapRel);
-		is_split = gistnospace(page, itup, ntup, oldoffnum, freespace);
+		is_split = gistnospace(page, itup, ntup, oldoffnum, freespace, ndeltup);
 	}
 
 	if (is_split)
@@ -286,17 +288,38 @@ gistplacetopage(Relation rel, Size freespace, GISTSTATE *giststate,
 		 * remove the old version from the vector.
 		 */
 		itvec = gistextractpage(page, &tlen);
-		if (OffsetNumberIsValid(oldoffnum))
+
+		if (OffsetNumberIsValid(skipoffnum))
 		{
-			/* on inner page we should remove old tuple */
+			IndexTuple skiptuple = itvec[skipoffnum - FirstOffsetNumber];
+			int newskipgroupsize = GistTupleGetSkipCount(skiptuple) + ntup - ndeltup;
+
+			Assert(GistTupleIsSkip(skiptuple));
+			Assert(skipoffnum + newskipgroupsize <= PageGetMaxOffsetNumber(page) + ntup - ndeltup);
+			GistTupleSetSkipCount(skiptuple, newskipgroupsize);
+		}
+
+		if (OffsetNumberIsValid(oldoffnum) && ndeltup)
+		{
+			/* on inner page we should remove old tuples */
 			int			pos = oldoffnum - FirstOffsetNumber;
 
-			tlen--;
+			tlen -= ndeltup;
 			if (pos != tlen)
-				memmove(itvec + pos, itvec + pos + 1, sizeof(IndexTuple) * (tlen - pos));
+				memmove(itvec + pos, itvec + pos + ndeltup, sizeof(IndexTuple) * (tlen - pos));
 		}
-		itvec = gistjoinvector(itvec, &tlen, itup, ntup);
-		dist = gistSplit(rel, page, itvec, tlen, giststate);
+
+		itvec = gistjoinvector(itvec, &tlen, itup, ntup, oldoffnum);
+
+		if (GistTupleIsSkip(*itvec))
+		{
+			dist = gistSplitBySkipgroup(rel, page, itvec, tlen, giststate);
+		}
+		if (dist == NULL)
+		{
+			gistfiltervector(itvec, &tlen);
+			dist = gistSplit(rel, page, itvec, tlen, giststate);
+		}
 
 		/*
 		 * Check that split didn't produce too many pages.
@@ -366,7 +389,7 @@ gistplacetopage(Relation rel, Size freespace, GISTSTATE *giststate,
 		if (is_rootsplit)
 		{
 			IndexTuple *downlinks;
-			int			ndownlinks = 0;
+			int			ndownlinks = 1;
 			int			i;
 
 			rootpg.buffer = buffer;
@@ -377,8 +400,11 @@ gistplacetopage(Relation rel, Size freespace, GISTSTATE *giststate,
 			for (ptr = dist; ptr; ptr = ptr->next)
 				ndownlinks++;
 			downlinks = palloc(sizeof(IndexTuple) * ndownlinks);
-			for (i = 0, ptr = dist; ptr; ptr = ptr->next)
+			for (i = 1, ptr = dist; ptr; ptr = ptr->next)
 				downlinks[i++] = ptr->itup;
+			downlinks[0] = gistunion(rel,downlinks + 1, ndownlinks - 1, giststate);
+			GistTupleMakeSkip(downlinks[0]);
+			GistTupleSetSkipCount(downlinks[0], ndownlinks - 1);
 
 			rootpg.block.blkno = GIST_ROOT_BLKNO;
 			rootpg.block.num = ndownlinks;
@@ -526,26 +552,37 @@ gistplacetopage(Relation rel, Size freespace, GISTSTATE *giststate,
 		 */
 		START_CRIT_SECTION();
 
+		if (OffsetNumberIsValid(skipoffnum))
+		{
+			IndexTuple skiptuple = (IndexTuple) PageGetItem(page, PageGetItemId(page, skipoffnum));
+			int newskipgroupsize = GistTupleGetSkipCount(skiptuple) + ntup - ndeltup;
+
+			Assert(GistTupleIsSkip(skiptuple));
+			Assert(skipoffnum + newskipgroupsize <= PageGetMaxOffsetNumber(page) + ntup - ndeltup);
+			GistTupleSetSkipCount(skiptuple, newskipgroupsize);
+		}
+
 		/*
 		 * Delete old tuple if any, then insert new tuple(s) if any.  If
 		 * possible, use the fast path of PageIndexTupleOverwrite.
 		 */
 		if (OffsetNumberIsValid(oldoffnum))
 		{
-			if (ntup == 1)
+			int noverwrite = Min(ntup,ndeltup);
+			for (i = 0; i < noverwrite; i++)
 			{
-				/* One-for-one replacement, so use PageIndexTupleOverwrite */
-				if (!PageIndexTupleOverwrite(page, oldoffnum, (Item) *itup,
-											 IndexTupleSize(*itup)))
+				if (!PageIndexTupleOverwrite(page, oldoffnum + i, (Item) itup[i],
+											 IndexTupleSize(itup[i])))
 					elog(ERROR, "failed to add item to index page in \"%s\"",
 						 RelationGetRelationName(rel));
 			}
-			else
+
+			for (i = noverwrite; i < ndeltup; i++)
 			{
-				/* Delete old, then append new tuple(s) to page */
-				PageIndexTupleDelete(page, oldoffnum);
-				gistfillbuffer(page, itup, ntup, InvalidOffsetNumber);
+				PageIndexTupleDelete(page, oldoffnum + i);
 			}
+
+			gistfillbuffer(page, itup + noverwrite, ntup - noverwrite, oldoffnum + noverwrite);
 		}
 		else
 		{
@@ -565,17 +602,18 @@ gistplacetopage(Relation rel, Size freespace, GISTSTATE *giststate,
 			if (RelationNeedsWAL(rel))
 			{
 				OffsetNumber ndeloffs = 0,
-							deloffs[1];
+							deloffs[BLCKSZ /sizeof(ItemIdData)];
 
 				if (OffsetNumberIsValid(oldoffnum))
 				{
-					deloffs[0] = oldoffnum;
-					ndeloffs = 1;
+					for (i = 0; i < ndeltup; i++)
+						deloffs[i] = oldoffnum + i;
+					ndeloffs = ndeltup;
 				}
 
 				recptr = gistXLogUpdate(buffer,
 										deloffs, ndeloffs, itup, ntup,
-										leftchildbuf);
+										leftchildbuf, skipoffnum);
 			}
 			else
 				recptr = gistGetFakeLSN(rel);
@@ -710,6 +748,7 @@ gistdoinsert(Relation r, IndexTuple itup, Size freespace,
 
 		if (!GistPageIsLeaf(stack->page))
 		{
+			OffsetNumber skipoffnum;
 			/*
 			 * This is an internal page so continue to walk down the tree.
 			 * Find the child node that has the minimum insertion penalty.
@@ -722,9 +761,71 @@ gistdoinsert(Relation r, IndexTuple itup, Size freespace,
 			/* currently, internal pages are never deleted */
 			Assert(!GistPageIsDeleted(stack->page));
 
-			downlinkoffnum = gistchoose(state.r, stack->page, itup, giststate);
+			downlinkoffnum = gistchoose(state.r, stack->page, itup, giststate, &skipoffnum);
+
+			if (OffsetNumberIsValid(skipoffnum))
+			{
+				iid = PageGetItemId(stack->page, skipoffnum);
+				idxtuple = (IndexTuple) PageGetItem(stack->page, iid);
+				Assert(GistTupleIsSkip(idxtuple));
+
+				/*
+				 * Check that the key representing the target child node is
+				 * consistent with the key we're inserting. Update it if it's not.
+				 */
+				newtup = gistgetadjusted(state.r, idxtuple, itup, giststate);
+				if (newtup)
+				{
+					/*
+					 * Swap shared lock for an exclusive one. Beware, the page may
+					 * change while we unlock/lock the page...
+					 */
+					if (!xlocked)
+					{
+						LockBuffer(stack->buffer, GIST_UNLOCK);
+						LockBuffer(stack->buffer, GIST_EXCLUSIVE);
+						xlocked = true;
+						stack->page = (Page) BufferGetPage(stack->buffer);
+
+						if (PageGetLSN(stack->page) != stack->lsn)
+						{
+							/* the page was changed while we unlocked it, retry */
+							continue;
+						}
+					}
+
+					/*
+					 * Update the tuple.
+					 *
+					 * We still hold the lock after gistinserttuple(), but it
+					 * might have to split the page to make the updated tuple fit.
+					 * In that case the updated tuple might migrate to the other
+					 * half of the split, so we have to go back to the parent and
+					 * descend back to the half that's a better fit for the new
+					 * tuple.
+					 */
+					if (gistinserttuple(&state, stack, giststate, newtup,
+										skipoffnum))
+					{
+						/*
+						 * If this was a root split, the root page continues to be
+						 * the parent and the updated tuple went to one of the
+						 * child pages, so we just need to retry from the root
+						 * page.
+						 */
+						if (stack->blkno != GIST_ROOT_BLKNO)
+						{
+							UnlockReleaseBuffer(stack->buffer);
+							xlocked = false;
+							state.stack = stack = stack->parent;
+						}
+						continue;
+					}
+				}
+			}
 			iid = PageGetItemId(stack->page, downlinkoffnum);
 			idxtuple = (IndexTuple) PageGetItem(stack->page, iid);
+			Assert(!GistTupleIsSkip(idxtuple));
 			childblkno = ItemPointerGetBlockNumber(&(idxtuple->t_tid));
 
 			/*
@@ -790,6 +891,7 @@ gistdoinsert(Relation r, IndexTuple itup, Size freespace,
 					continue;
 				}
 			}
+
 			LockBuffer(stack->buffer, GIST_UNLOCK);
 			xlocked = false;
 
@@ -798,6 +900,7 @@ gistdoinsert(Relation r, IndexTuple itup, Size freespace,
 			item->blkno = childblkno;
 			item->parent = stack;
 			item->downlinkoffnum = downlinkoffnum;
+			item->skipoffnum = skipoffnum;
 			state.stack = stack = item;
 		}
 		else
@@ -1023,10 +1126,18 @@ gistFindCorrectParent(Relation r, GISTInsertStack *child)
 		while (true)
 		{
 			maxoff = PageGetMaxOffsetNumber(parent->page);
+			child->skipoffnum = InvalidOffsetNumber;
 			for (i = FirstOffsetNumber; i <= maxoff; i = OffsetNumberNext(i))
 			{
 				iid = PageGetItemId(parent->page, i);
 				idxtuple = (IndexTuple) PageGetItem(parent->page, iid);
+
+				if (GistTupleIsSkip(idxtuple))
+				{
+					child->skipoffnum = i;
+					continue;
+				}
+
 				if (ItemPointerGetBlockNumber(&(idxtuple->t_tid)) == child->blkno)
 				{
 					/* yes!!, found */
@@ -1034,6 +1145,7 @@ gistFindCorrectParent(Relation r, GISTInsertStack *child)
 					return;
 				}
 			}
+			child->skipoffnum = InvalidOffsetNumber;
 
 			parent->blkno = GistPageGetOpaque(parent->page)->rightlink;
 			UnlockReleaseBuffer(parent->buffer);
@@ -1214,7 +1326,7 @@ gistinserttuple(GISTInsertState *state, GISTInsertStack *stack,
 				GISTSTATE *giststate, IndexTuple tuple, OffsetNumber oldoffnum)
 {
 	return gistinserttuples(state, stack, giststate, &tuple, 1, oldoffnum,
-							InvalidBuffer, InvalidBuffer, false, false);
+							InvalidBuffer, InvalidBuffer, false, false, 1, InvalidOffsetNumber);
 }
 
 /* ----------------
@@ -1248,7 +1360,7 @@ gistinserttuples(GISTInsertState *state, GISTInsertStack *stack,
 				 GISTSTATE *giststate,
 				 IndexTuple *tuples, int ntup, OffsetNumber oldoffnum,
 				 Buffer leftchild, Buffer rightchild,
-				 bool unlockbuf, bool unlockleftchild)
+				 bool unlockbuf, bool unlockleftchild, int ndeltup, OffsetNumber skipoffnum)
 {
 	List	   *splitinfo;
 	bool		is_split;
@@ -1268,8 +1380,9 @@ gistinserttuples(GISTInsertState *state, GISTInsertStack *stack,
 							   &splitinfo,
 							   true,
 							   state->heapRel,
-							   state->is_build);
-
+							   state->is_build,
+							   ndeltup,
+							   skipoffnum);
 	/*
 	 * Before recursing up in case the page was split, release locks on the
 	 * child pages. We don't need to keep them locked when updating the
@@ -1294,6 +1407,85 @@ gistinserttuples(GISTInsertState *state, GISTInsertStack *stack,
 	return is_split;
 }
 
+inline void
+gistcheckskippage(Page page)
+{
+	OffsetNumber i,
+				maxoff;
+	int skiplast = 0;
+	bool wasskip = false;
+	Assert(false);
+
+	maxoff = PageGetMaxOffsetNumber(page);
+	for (i = FirstOffsetNumber; i <= maxoff; i = OffsetNumberNext(i))
+	{
+		IndexTuple tup = (IndexTuple) PageGetItem(page, PageGetItemId(page, i));
+
+		if (GistTupleIsSkip(tup))
+		{
+			if (skiplast)
+			{
+				elog(NOTICE, "GS: at % d expecting %d more tuples but have skipgroup %d",i, skiplast,GistTupleGetSkipCount(tup));
+			}
+			Assert(skiplast == 0);
+			skiplast = GistTupleGetSkipCount(tup);
+			wasskip = true;
+		}
+		else
+		{
+			if (!wasskip)
+				continue;
+			if (skiplast<=0)
+			{
+				elog(NOTICE, "GS: fail at %d expecting more skips", i);
+			}
+			Assert(skiplast>0);
+			skiplast--;
+		}
+	}
+}
+
+static void
+gisttestskipgroup(GISTInsertState *state, GISTInsertStack *stack,
+				 GISTSTATE *giststate, OffsetNumber skipoffnum)
+{
+	Page		page = BufferGetPage(stack->buffer);
+	IndexTuple	skiptuple = (IndexTuple) PageGetItem(page, PageGetItemId(page, skipoffnum));
+	int			skipsize;
+
+	Assert(!GistPageIsLeaf(page));
+	Assert(GistTupleIsSkip(skiptuple));
+	skipsize = GistTupleGetSkipCount(skiptuple);
+	Assert((skipsize > 0) && (skipsize < BLCKSZ / sizeof(ItemIdData)));
+	if (skipsize > GIST_SKIPGROUP_THRESHOLD)
+	{
+		IndexTuple* itvec = gistextractrange(page, skipoffnum+1, skipsize);
+		SplitedPageLayout *ptr;
+		SplitedPageLayout *dist = gistSplit(state->r, page, itvec, skipsize, giststate);
+		int totalsize = 0;
+		for (ptr = dist; ptr; ptr = ptr->next)
+		{
+			char	   *data;
+			int i;
+			itvec[totalsize++] = ptr->itup;
+			GistTupleMakeSkip(ptr->itup);
+			GistTupleSetSkipCount(ptr->itup, ptr->block.num);
+			data = (char *) (ptr->list);
+
+			for (i = 0; i < ptr->block.num; i++)
+			{
+				IndexTuple	thistup = (IndexTuple) data;
+
+				itvec[totalsize++] = thistup;
+
+				data += IndexTupleSize(thistup);
+			}
+		}
+		gistinserttuples(state, stack, giststate, itvec, totalsize, skipoffnum,
+							InvalidBuffer, InvalidBuffer, false, false, skipsize + 1, InvalidOffsetNumber);
+	}
+}
+
 /*
  * Finish an incomplete split by inserting/updating the downlinks in parent
  * page. 'splitinfo' contains all the child pages involved in the split,
@@ -1312,6 +1504,7 @@ gistfinishsplit(GISTInsertState *state, GISTInsertStack *stack,
 	GISTPageSplitInfo *right;
 	GISTPageSplitInfo *left;
 	IndexTuple	tuples[2];
+	bool		lastmomentsplit;
 
 	/* A split always contains at least two halves */
 	Assert(list_length(splitinfo) >= 2);
@@ -1345,8 +1538,8 @@ gistfinishsplit(GISTInsertState *state, GISTInsertStack *stack,
 
 		if (gistinserttuples(state, stack->parent, giststate,
 							 &right->downlink, 1,
-							 InvalidOffsetNumber,
-							 left->buf, right->buf, false, false))
+							 stack->downlinkoffnum,
+							 left->buf, right->buf, false, false, 0, stack->skipoffnum))
 		{
 			/*
 			 * If the parent page was split, need to relocate the original
@@ -1368,13 +1561,19 @@ gistfinishsplit(GISTInsertState *state, GISTInsertStack *stack,
 	 */
 	tuples[0] = left->downlink;
 	tuples[1] = right->downlink;
-	gistinserttuples(state, stack->parent, giststate,
+	lastmomentsplit = gistinserttuples(state, stack->parent, giststate,
 					 tuples, 2,
 					 stack->downlinkoffnum,
 					 left->buf, right->buf,
-					 true,		/* Unlock parent */
-					 unlockbuf	/* Unlock stack->buffer if caller wants that */
+					 false,		/* Unlock parent */
+					 unlockbuf,	/* Unlock stack->buffer if caller wants that */
+					 1,
+					 stack->skipoffnum
 		);
+	if (OffsetNumberIsValid(stack->skipoffnum) && !lastmomentsplit)
+		gisttestskipgroup(state,stack->parent, giststate, stack->skipoffnum);
+
+	LockBuffer(stack->parent->buffer, GIST_UNLOCK);
 	Assert(left->buf == stack->buffer);
 }
 
@@ -1448,6 +1647,121 @@ gistSplit(Relation r,
 				   *subres;
 
 		resptr = subres = gistSplit(r, page, lvectup, v.splitVector.spl_nleft, giststate);
+
+		/* install on list's tail */
+		while (resptr->next)
+			resptr = resptr->next;
+
+		resptr->next = res;
+		res = subres;
+	}
+	else
+	{
+		ROTATEDIST(res);
+		res->block.num = v.splitVector.spl_nleft;
+		res->list = gistfillitupvec(lvectup, v.splitVector.spl_nleft, &(res->lenlist));
+		res->itup = gistFormTuple(giststate, r, v.spl_lattr, v.spl_lisnull, false);
+	}
+
+	return res;
+}
+
+SplitedPageLayout *
+gistSplitBySkipgroup(Relation r,
+		  Page page,
+		  IndexTuple *itup,		/* contains compressed entry */
+		  int len,
+		  GISTSTATE *giststate)
+{
+	IndexTuple *lvectup,
+			   *rvectup,
+			   *skiptuples;
+	OffsetNumber *skipoffsets;
+	GistSplitVector v;
+	int			i, o, p;
+	int 		skipcount = 0;
+	SplitedPageLayout *res = NULL;
+
+	/* this should never recurse very deeply, but better safe than sorry */
+	check_stack_depth();
+
+	skiptuples = (IndexTuple *) palloc(sizeof(IndexTuple) * len);
+	skipoffsets = (OffsetNumber *) palloc(sizeof(OffsetNumber) * len);
+	for (i = 0; i < len; i++)
+	{
+		if (GistTupleIsSkip(itup[i]))
+		{
+			skipoffsets[skipcount] = i;
+			skiptuples[skipcount++] = itup[i];
+		}
+	}
+
+	/*
+	 * If a single skipgroup doesn't fit on a page, no amount of splitting will
+	 * help.
+	 */
+	if (skipcount <= 1)
+		return NULL;
+
+	memset(v.spl_lisnull, true, sizeof(bool) * giststate->leafTupdesc->natts);
+	memset(v.spl_risnull, true, sizeof(bool) * giststate->leafTupdesc->natts);
+	gistSplitByKey(r, page, skiptuples, skipcount, giststate, &v, 0);
+
+	/* form left and right vector */
+	lvectup = (IndexTuple *) palloc(sizeof(IndexTuple) * (len + 1));
+	rvectup = (IndexTuple *) palloc(sizeof(IndexTuple) * (len + 1));
+
+	o = 0;
+	for (i = 0; i < v.splitVector.spl_nleft; i++)
+	{
+		int index = skipoffsets[v.splitVector.spl_left[i] - 1];
+		Assert(GistTupleIsSkip(itup[index]));
+		int skipsize = GistTupleGetSkipCount(itup[index]);
+		for (p = 0; p <= skipsize; p++)
+		{
+			Assert(p==0 || !GistTupleIsSkip(itup[index + p]));
+			lvectup[o++] = itup[index + p];
+		}
+	}
+	v.splitVector.spl_nleft = o;
+
+	o = 0;
+	for (i = 0; i < v.splitVector.spl_nright; i++)
+	{
+		int index = skipoffsets[v.splitVector.spl_right[i] - 1];
+		Assert(GistTupleIsSkip(itup[index]));
+		int skipsize = GistTupleGetSkipCount(itup[index]);
+		for (p = 0; p <= skipsize; p++)
+		{
+			Assert(p==0 || !GistTupleIsSkip(itup[index + p]));
+			rvectup[o++] = itup[index + p];
+		}
+	}
+	v.splitVector.spl_nright = o;
+
+	/* finalize splitting (may need another split) */
+	if (!gistfitpage(rvectup, v.splitVector.spl_nright))
+	{
+		res = gistSplitBySkipgroup(r, page, rvectup, v.splitVector.spl_nright, giststate);
+		if (res == NULL)
+			return NULL;
+	}
+	else
+	{
+		ROTATEDIST(res);
+		res->block.num = v.splitVector.spl_nright;
+		res->list = gistfillitupvec(rvectup, v.splitVector.spl_nright, &(res->lenlist));
+		res->itup = gistFormTuple(giststate, r, v.spl_rattr, v.spl_risnull, false);
+	}
+
+	if (!gistfitpage(lvectup, v.splitVector.spl_nleft))
+	{
+		SplitedPageLayout *resptr,
+				   *subres;
+
+		resptr = subres = gistSplitBySkipgroup(r, page, lvectup, v.splitVector.spl_nleft, giststate);
+		if (subres == NULL)
+			return NULL;
 
 		/* install on list's tail */
 		while (resptr->next)

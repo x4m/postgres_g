@@ -424,6 +424,15 @@ gistScanPage(IndexScanDesc scan, GISTSearchItem *pageItem, double *myDistances,
 
 		/* Ignore tuple if it doesn't match */
 		if (!match)
+		{
+			if (GistTupleIsSkip(it))
+			{
+				i += GistTupleGetSkipCount(it);
+			}
+			continue;
+		}
+
+		if (GistTupleIsSkip(it))
 			continue;
 
 		if (tbm && GistPageIsLeaf(page))
