@@ -273,8 +273,11 @@ heap_tuple_untoast_attr_slice(struct varlena *attr,
 		if (!VARATT_EXTERNAL_IS_COMPRESSED(toast_pointer))
 			return toast_fetch_datum_slice(attr, sliceoffset, slicelength);
 
-		/* fetch it back (compressed marker will get set automatically) */
-		preslice = toast_fetch_datum(attr);
+		/*
+		 * Be sure to get enough compressed slice
+		 * and compressed marker will get set automatically
+		 */
+		preslice = toast_fetch_datum_slice(attr, 0, sliceoffset + slicelength + 1);
 	}
 	else if (VARATT_IS_EXTERNAL_INDIRECT(attr))
 	{
@@ -2031,7 +2034,8 @@ toast_fetch_datum(struct varlena *attr)
  *	Reconstruct a segment of a Datum from the chunks saved
  *	in the toast relation
  *
- *	Note that this function only supports non-compressed external datums.
+ *	Note that this function supports non-compressed external datums
+ *	and compressed external datum slices at the start of the object.
  * ----------
  */
 static struct varlena *
@@ -2072,10 +2076,9 @@ toast_fetch_datum_slice(struct varlena *attr, int32 sliceoffset, int32 length)
 	VARATT_EXTERNAL_GET_POINTER(toast_pointer, attr);
 
 	/*
-	 * It's nonsense to fetch slices of a compressed datum -- this isn't lo_*
-	 * we can't return a compressed datum which is meaningful to toast later
+	 * It's meaningful to fetch slices at the start of a compressed datum.
 	 */
-	Assert(!VARATT_EXTERNAL_IS_COMPRESSED(toast_pointer));
+	Assert(!VARATT_EXTERNAL_IS_COMPRESSED(toast_pointer) || 0 == sliceoffset);
 
 	attrsize = toast_pointer.va_extsize;
 	totalchunks = ((attrsize - 1) / TOAST_MAX_CHUNK_SIZE) + 1;
@@ -2091,7 +2094,11 @@ toast_fetch_datum_slice(struct varlena *attr, int32 sliceoffset, int32 length)
 
 	result = (struct varlena *) palloc(length + VARHDRSZ);
 
-	SET_VARSIZE(result, length + VARHDRSZ);
+	if (VARATT_EXTERNAL_IS_COMPRESSED(toast_pointer)) {
+		SET_VARSIZE_COMPRESSED(result, length + VARHDRSZ);
+	} else {
+		SET_VARSIZE(result, length + VARHDRSZ);
+	}
 
 	if (length == 0)
 		return result;			/* Can save a lot of work at this point! */
