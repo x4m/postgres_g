@@ -925,7 +925,8 @@ gistoptions(Datum reloptions, bool validate)
 {
 	static const relopt_parse_elt tab[] = {
 		{"fillfactor", RELOPT_TYPE_INT, offsetof(GiSTOptions, fillfactor)},
-		{"buffering", RELOPT_TYPE_ENUM, offsetof(GiSTOptions, buffering_mode)}
+		{"buffering", RELOPT_TYPE_ENUM, offsetof(GiSTOptions, buffering_mode)},
+		{"fast_build_sort_function", RELOPT_TYPE_STRING, offsetof(GiSTOptions, buildSortFunctionOffset)}
 	};
 
 	return (bytea *) build_reloptions(reloptions, validate,

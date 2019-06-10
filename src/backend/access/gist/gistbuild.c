@@ -22,8 +22,10 @@
 #include "access/tableam.h"
 #include "access/xloginsert.h"
 #include "catalog/index.h"
+#include "catalog/pg_type.h"
 #include "miscadmin.h"
 #include "optimizer/optimizer.h"
+#include "parser/parse_func.h"
 #include "storage/bufmgr.h"
 #include "storage/smgr.h"
 #include "utils/memutils.h"
@@ -306,6 +308,8 @@ gistbuild(Relation heap, Relation index, IndexInfo *indexInfo)
 	Oid			SortSupportFnOids[INDEX_MAX_KEYS];
 	bool		hasallsortsupports = true;
 	int			keyscount = IndexRelationGetNumberOfKeyAttributes(index);
+	Oid			firstsortduncoid;
+	bool		havefirstsortfn = false;
 
 	buildstate.indexrel = index;
 	buildstate.heaprel = heap;
@@ -323,6 +327,16 @@ gistbuild(Relation heap, Relation index, IndexInfo *indexInfo)
 		else
 			buildstate.bufferingMode = GIST_BUFFERING_AUTO;
 
+		if (options->vl_len_ > offsetof(GiSTOptions, buildSortFunctionOffset) &&
+			options->buildSortFunctionOffset > 0)
+		{
+			char	*sortFuncName = (char *) options + options->buildSortFunctionOffset;
+			Oid		 argList[1] = {INTERNALOID};
+			List	*namelist = stringToQualifiedNameList(sortFuncName);
+			firstsortduncoid = LookupFuncName(namelist, 1, argList, false);
+			havefirstsortfn = true;
+		}
+
 		fillfactor = options->fillfactor;
 	}
 	else
@@ -339,6 +353,11 @@ gistbuild(Relation heap, Relation index, IndexInfo *indexInfo)
 
 	for (i = 0; i < keyscount; i++)
 	{
+		if (i == 0 && havefirstsortfn)
+		{
+			SortSupportFnOids[i] = firstsortduncoid;
+			continue;
+		}
 		SortSupportFnOids[i] = index_getprocid(index, i + 1, GIST_SORTSUPPORT_PROC);
 		if (!OidIsValid(SortSupportFnOids[i]))
 		{
@@ -446,6 +465,43 @@ gistbuild(Relation heap, Relation index, IndexInfo *indexInfo)
 }
 
 /*
+<<<<<<< HEAD
+=======
+ * Validator for "buffering" reloption on GiST indexes. Allows "on", "off"
+ * and "auto" values.
+ */
+void
+gistValidateBufferingOption(const char *value)
+{
+	if (value == NULL ||
+		(strcmp(value, "on") != 0 &&
+		 strcmp(value, "off") != 0 &&
+		 strcmp(value, "auto") != 0))
+	{
+		ereport(ERROR,
+				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+				 errmsg("invalid value for \"buffering\" option"),
+				 errdetail("Valid values are \"on\", \"off\", and \"auto\".")));
+	}
+}
+
+/*
+ * Validator for "fast_build_sort_function" reloption on GiST indexes. Allows function name
+ */
+void
+gistValidateBuildFuncOption(const char *value)
+{
+	Oid		 argList[1] = {INTERNALOID};
+	List	*namelist;
+	if (value == NULL)
+		return;
+	namelist = stringToQualifiedNameList(value);
+	/* LookupFuncName will fail if function is not existent */
+	LookupFuncName(namelist, 1, argList, false);
+}
+
+/*
+>>>>>>> function relopt for gist build
  * Attempt to switch to buffering mode.
  *
  * If there is not enough memory for buffering build, sets bufferingMode
