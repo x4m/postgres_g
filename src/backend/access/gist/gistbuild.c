@@ -22,12 +22,15 @@
 #include "access/tableam.h"
 #include "access/xloginsert.h"
 #include "catalog/index.h"
+#include "catalog/pg_type.h"
 #include "miscadmin.h"
 #include "optimizer/optimizer.h"
+#include "parser/parse_func.h"
 #include "storage/bufmgr.h"
 #include "storage/smgr.h"
 #include "utils/memutils.h"
 #include "utils/rel.h"
+#include "utils/regproc.h"
 
 /* Step of index tuples for check whether to switch to buffering build mode */
 #define BUFFERING_MODE_SWITCH_CHECK_STEP 256
@@ -74,6 +77,7 @@ typedef struct
 	HTAB	   *parentMap;
 
 	GistBufferingMode bufferingMode;
+	FmgrInfo	sortFn;
 } GISTBuildState;
 
 /* prototypes for private functions */
@@ -125,6 +129,7 @@ gistbuild(Relation heap, Relation index, IndexInfo *indexInfo)
 
 	buildstate.indexrel = index;
 	buildstate.heaprel = heap;
+	buildstate.sortFn.fn_oid = InvalidOid;
 	if (index->rd_options)
 	{
 		/* Get buffering mode from the options string */
@@ -137,6 +142,16 @@ gistbuild(Relation heap, Relation index, IndexInfo *indexInfo)
 			buildstate.bufferingMode = GIST_BUFFERING_DISABLED;
 		else
 			buildstate.bufferingMode = GIST_BUFFERING_AUTO;
+
+		if (options->vl_len_ > offsetof(GiSTOptions, buildSortFunctionOffset) &&
+			options->bufferingModeOffset > 0)
+		{
+			char	*sortFuncName = (char *) options + options->buildSortFunctionOffset;
+			Oid		 argList[1] = {INTERNALOID};
+			List	*namelist = stringToQualifiedNameList(sortFuncName);
+			Oid sortFuncOid = LookupFuncName(namelist, 1, argList, false);
+			fmgr_info(sortFuncOid, &buildstate.sortFn);
+		}
 
 		fillfactor = options->fillfactor;
 	}
@@ -253,6 +268,21 @@ gistValidateBufferingOption(const char *value)
 				 errmsg("invalid value for \"buffering\" option"),
 				 errdetail("Valid values are \"on\", \"off\", and \"auto\".")));
 	}
+}
+
+/*
+ * Validator for "fast_build_sort_function" reloption on GiST indexes. Allows function name
+ */
+void
+gistValidateBuildFuncOption(const char *value)
+{
+	Oid		 argList[1] = {INTERNALOID};
+	List	*namelist;
+	if (value == NULL)
+		return;
+	namelist = stringToQualifiedNameList(value);
+	/* LookupFuncName will fail if function is not existent */
+	LookupFuncName(namelist, 1, argList, false);
 }
 
 /*

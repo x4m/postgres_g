@@ -386,6 +386,7 @@ typedef struct GiSTOptions
 	int32		vl_len_;		/* varlena header (do not touch directly!) */
 	int			fillfactor;		/* page fill factor in percent (0..100) */
 	int			bufferingModeOffset;	/* use buffering build? */
+	int			buildSortFunctionOffset;	/* used buffering sort function */
 } GiSTOptions;
 
 /* gist.c */
@@ -531,6 +532,7 @@ extern void gistSplitByKey(Relation r, Page page, IndexTuple *itup,
 extern IndexBuildResult *gistbuild(Relation heap, Relation index,
 								   struct IndexInfo *indexInfo);
 extern void gistValidateBufferingOption(const char *value);
+extern void gistValidateBuildFuncOption(const char *value);
 
 /* gistbuildbuffers.c */
 extern GISTBuildBuffers *gistInitBuildBuffers(int pagesPerBuffer, int levelStep,

@@ -452,6 +452,18 @@ static relopt_string stringRelOpts[] =
 	},
 	{
 		{
+			"fast_build_sort_function",
+			"Function for presorting data instead of usual penalty\\split inserts",
+			RELOPT_KIND_GIST,
+			AccessExclusiveLock
+		},
+		0,
+		true,
+		gistValidateBuildFuncOption,
+		NULL
+	},
+	{
+		{
 			"check_option",
 			"View has WITH CHECK OPTION defined (local or cascaded).",
 			RELOPT_KIND_VIEW,
