@@ -225,6 +225,7 @@ extern XLogRecPtr TransactionIdGetCommitLSN(TransactionId xid);
 extern FullTransactionId GetNewTransactionId(bool isSubXact);
 extern void AdvanceNextFullTransactionIdPastXid(TransactionId xid);
 extern FullTransactionId ReadNextFullTransactionId(void);
+extern FullTransactionId FullTransactionIdFromRecentXid(TransactionId xid);
 extern void SetTransactionIdLimit(TransactionId oldest_datfrozenxid,
 								  Oid oldest_datoid);
 extern void AdvanceOldestClogXid(TransactionId oldest_datfrozenxid);

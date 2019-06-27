@@ -16,6 +16,7 @@
 #ifndef GIST_H
 #define GIST_H
 
+#include "access/transam.h"
 #include "access/xlog.h"
 #include "access/xlogdefs.h"
 #include "storage/block.h"
@@ -158,9 +159,37 @@ typedef struct GISTENTRY
 #define GistPageGetNSN(page) ( PageXLogRecPtrGet(GistPageGetOpaque(page)->nsn))
 #define GistPageSetNSN(page, val) ( PageXLogRecPtrSet(GistPageGetOpaque(page)->nsn, val))
 
-/* For deleted pages we store last xid which could see the page in scan */
-#define GistPageGetDeleteXid(page) ( ((PageHeader) (page))->pd_prune_xid )
-#define GistPageSetDeleteXid(page, val) ( ((PageHeader) (page))->pd_prune_xid = val)
+
+/*
+ * On a deleted page, we store this struct. A deleted page doesn't contain any
+ * tuples, so we don't use the normal page layout with line pointers. Instead,
+ * this struct is stored right after the standard page header. pd_lower points
+ * to the end of this struct. If we add fields to this struct in the future, we
+ * can distinguish the old and new formats by pd_lower.
+ */
+typedef struct GISTDeletedPageContents
+{
+	/* last xid which could see the page in a scan */
+	FullTransactionId deleteXid;
+} GISTDeletedPageContents;
+
+static inline FullTransactionId
+GistPageGetDeleteXid(Page page)
+{
+	Assert(GistPageIsDeleted(page));
+	Assert(((PageHeader) page)->pd_lower == MAXALIGN(SizeOfPageHeaderData) + sizeof(GISTDeletedPageContents));
+
+	return ((GISTDeletedPageContents *) PageGetContents(page))->deleteXid;
+}
+
+static inline void
+GistPageSetDeleteXid(Page page, FullTransactionId deletexid)
+{
+	Assert(PageIsEmpty(page));
+	((PageHeader) page)->pd_lower = MAXALIGN(SizeOfPageHeaderData) + sizeof(GISTDeletedPageContents);
+
+	((GISTDeletedPageContents *) PageGetContents(page))->deleteXid = deletexid;
+}
 
 /*
  * Vector of GISTENTRY structs; user-defined methods union and picksplit

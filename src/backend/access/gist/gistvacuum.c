@@ -595,7 +595,7 @@ gistdeletepage(IndexVacuumInfo *info, GistBulkDeleteResult *stats,
 	ItemId		iid;
 	IndexTuple	idxtuple;
 	XLogRecPtr	recptr;
-	TransactionId txid;
+	FullTransactionId txid;
 
 	/*
 	 * Check that the leaf is still empty and deletable.
@@ -648,7 +648,7 @@ gistdeletepage(IndexVacuumInfo *info, GistBulkDeleteResult *stats,
 	 * currently in progress must have ended.  (That's much more conservative
 	 * than needed, but let's keep it safe and simple.)
 	 */
-	txid = ReadNewTransactionId();
+	txid = ReadNextFullTransactionId();
 
 	START_CRIT_SECTION();
 

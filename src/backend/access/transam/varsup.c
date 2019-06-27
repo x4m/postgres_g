@@ -301,6 +301,45 @@ AdvanceNextFullTransactionIdPastXid(TransactionId xid)
 }
 
 /*
+ * Extend a 32-bit TransactionId into a 64-bit FullTransactionId.
+ *
+ * This assumes that the xid is "recent", not older than 2 billion XIDs
+ * from the next xid.
+ */
+FullTransactionId
+FullTransactionIdFromRecentXid(TransactionId xid)
+{
+	FullTransactionId nextxid_full;
+	uint32		nextxid_epoch;
+	TransactionId nextxid_xid;
+	uint32		xid_epoch;
+
+	if (TransactionIdIsNormal(xid))
+	{
+		/*
+		 * Compute the epoch of the target xid from the next XID's epoch.
+		 * This assumes that the target XID is within the 2 billion XID
+		 * horizon from the next XID.
+		 */
+		nextxid_full = ReadNextFullTransactionId();
+		nextxid_epoch = EpochFromFullTransactionId(nextxid_full);
+		nextxid_xid = XidFromFullTransactionId(nextxid_full);
+
+		if (xid > nextxid_xid)
+			xid_epoch = nextxid_epoch - 1;
+		else
+			xid_epoch = nextxid_epoch;
+	}
+	else
+	{
+		/* Use epoch 0 for special XIDs. */
+		xid_epoch = 0;
+	}
+
+	return FullTransactionIdFromEpochAndXid(xid_epoch, xid);
+}
+
+/*
  * Advance the cluster-wide value for the oldest valid clog entry.
  *
  * We must acquire CLogTruncationLock to advance the oldestClogXid. It's not
