@@ -2,7 +2,7 @@ MODULE_big = fulleq
 OBJS = fulleq.o	
 DOCS = README.fulleq
 REGRESS = fulleq
-DATA_built = fulleq--2.0.sql fulleq--unpackaged--2.0.sql
+DATA = fulleq--2.0.sql fulleq--unpackaged--2.0.sql
 EXTENSION=fulleq
 
 ARGTYPE = bool bytea char name int8 int2 int4 text \
@@ -22,7 +22,7 @@ include $(top_builddir)/src/Makefile.global
 include $(top_srcdir)/contrib/contrib-global.mk
 endif
 
-all: fulleq--2.0.sql fulleq--unpackaged--2.0.sql
+#all: fulleq--2.0.sql fulleq--unpackaged--2.0.sql
 
 fulleq--2.0.sql:	fulleq.sql.in
 	echo '\echo Use "CREATE EXTENSION fulleq" to load this file. \quit' > $@
