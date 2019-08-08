@@ -55,6 +55,8 @@ typedef struct AttStatsSlot
 	/* Remaining fields are private to get_attstatsslot/free_attstatsslot */
 	void	   *values_arr;		/* palloc'd values array, if any */
 	void	   *numbers_arr;	/* palloc'd numbers array, if any */
+
+	bool		incache;		/* do not free because struct is cached */
 } AttStatsSlot;
 
 /* Hook for plugins to get control in get_attavgwidth() */
@@ -172,6 +174,8 @@ extern Oid	getBaseTypeAndTypmod(Oid typid, int32 *typmod);
 extern int32 get_typavgwidth(Oid typid, int32 typmod);
 extern int32 get_attavgwidth(Oid relid, AttrNumber attnum);
 extern bool get_attstatsslot(AttStatsSlot *sslot, HeapTuple statstuple,
+				 int reqkind, Oid reqop, int flags);
+extern AttStatsSlot* fill_attstatsslot(AttStatsSlot *sslots, HeapTuple statstuple,
 				 int reqkind, Oid reqop, int flags);
 extern void free_attstatsslot(AttStatsSlot *sslot);
 extern char *get_namespace_name(Oid nspid);

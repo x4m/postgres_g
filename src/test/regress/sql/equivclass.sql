@@ -254,3 +254,20 @@ revoke select on ec0 from regress_user_ectest;
 revoke select on ec1 from regress_user_ectest;
 
 drop user regress_user_ectest;
+
+-- Test that broken ECs are processed correctly during self join removal.
+-- Disable merge joins so that we don't get an error about missing commutator.
+-- Test both orientations of the join clause, because only one of them breaks
+-- the EC.
+set enable_mergejoin to off;
+
+explain (costs off)
+  select * from ec0 m join ec0 n on m.ff = n.ff
+  join ec1 p on m.ff + n.ff = p.f1;
+
+explain (costs off)
+  select * from ec0 m join ec0 n on m.ff = n.ff
+  join ec1 p on p.f1::int8 = (m.ff + n.ff)::int8alias1;
+
+reset enable_mergejoin;
+

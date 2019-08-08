@@ -203,11 +203,22 @@ PlannedStmt *
 planner(Query *parse, int cursorOptions, ParamListInfo boundParams)
 {
 	PlannedStmt *result;
+	instr_time	planstart,
+				planduration;
+
+	INSTR_TIME_SET_CURRENT(planstart);
 
 	if (planner_hook)
 		result = (*planner_hook) (parse, cursorOptions, boundParams);
 	else
 		result = standard_planner(parse, cursorOptions, boundParams);
+
+	INSTR_TIME_SET_CURRENT(planduration);
+	INSTR_TIME_SUBTRACT(planduration, planstart);
+
+	/* Record time spent on hooks and standard_planner() */
+	result->planDuration = planduration;
+
 	return result;
 }
 
@@ -1417,7 +1428,8 @@ inheritance_planner(PlannerInfo *root)
 
 		/* Make a dummy path, cf set_dummy_rel_pathlist() */
 		dummy_path = (Path *) create_append_path(final_rel, NIL,
-												 NULL, 0, NIL);
+												 NULL, 0, NIL,
+												 false, NIL);
 
 		/* These lists must be nonempty to make a valid ModifyTable node */
 		subpaths = list_make1(dummy_path);
@@ -3432,7 +3444,8 @@ get_number_of_groups(PlannerInfo *root,
 					double		numGroups = estimate_num_groups(root,
 																groupExprs,
 																path_rows,
-																&gset);
+																&gset,
+																NULL, 0);
 
 					gs->numGroups = numGroups;
 					rollup->numGroups += numGroups;
@@ -3457,7 +3470,8 @@ get_number_of_groups(PlannerInfo *root,
 					double		numGroups = estimate_num_groups(root,
 																groupExprs,
 																path_rows,
-																&gset);
+																&gset,
+																NULL, 0);
 
 					gs->numGroups = numGroups;
 					gd->dNumHashGroups += numGroups;
@@ -3473,7 +3487,8 @@ get_number_of_groups(PlannerInfo *root,
 												 parse->targetList);
 
 			dNumGroups = estimate_num_groups(root, groupExprs, path_rows,
-											 NULL);
+											 NULL,
+											 NULL, 0);
 		}
 	}
 	else if (parse->groupingSets)
@@ -3638,6 +3653,8 @@ create_grouping_paths(PlannerInfo *root,
 								   paths,
 								   NULL,
 								   0,
+								   NIL,
+								   false,
 								   NIL);
 			path->pathtarget = target;
 		}
@@ -3802,19 +3819,36 @@ create_grouping_paths(PlannerInfo *root,
 			foreach(lc, input_rel->partial_pathlist)
 			{
 				Path	   *path = (Path *) lfirst(lc);
+				List	   *group_pathkeys = root->group_pathkeys,
+						   *group_clauses = parse->groupClause;
 				bool		is_sorted;
+				int			n_preordered_groups;
 
-				is_sorted = pathkeys_contained_in(root->group_pathkeys,
-												  path->pathkeys);
+
+				n_preordered_groups =
+					group_keys_reorder_by_pathkeys(path->pathkeys,
+												   &group_pathkeys,
+												   &group_clauses);
+
+				is_sorted = (n_preordered_groups ==
+							 list_length(group_pathkeys));
+
 				if (path == cheapest_partial_path || is_sorted)
 				{
 					/* Sort the cheapest partial path, if it isn't already */
 					if (!is_sorted)
+					{
+						get_cheapest_group_keys_order(root,
+													  path->rows,
+													  &group_pathkeys,
+													  &group_clauses,
+													  n_preordered_groups);
 						path = (Path *) create_sort_path(root,
 														 grouped_rel,
 														 path,
-														 root->group_pathkeys,
+														 group_pathkeys,
 														 -1.0);
+					}
 
 					if (parse->hasAggs)
 						add_partial_path(grouped_rel, (Path *)
@@ -3822,9 +3856,9 @@ create_grouping_paths(PlannerInfo *root,
 														 grouped_rel,
 														 path,
 														 partial_grouping_target,
-														 parse->groupClause ? AGG_SORTED : AGG_PLAIN,
+														 group_clauses ? AGG_SORTED : AGG_PLAIN,
 														 AGGSPLIT_INITIAL_SERIAL,
-														 parse->groupClause,
+														 group_clauses,
 														 NIL,
 														 &agg_partial_costs,
 														 dNumPartialGroups));
@@ -3834,7 +3868,7 @@ create_grouping_paths(PlannerInfo *root,
 														   grouped_rel,
 														   path,
 														   partial_grouping_target,
-														   parse->groupClause,
+														   group_clauses,
 														   NIL,
 														   dNumPartialGroups));
 				}
@@ -3883,18 +3917,45 @@ create_grouping_paths(PlannerInfo *root,
 		{
 			Path	   *path = (Path *) lfirst(lc);
 			bool		is_sorted;
+			List	   *group_pathkeys = root->group_pathkeys,
+					   *group_clauses = parse->groupClause;
+			int			n_preordered_groups = 0;
 
-			is_sorted = pathkeys_contained_in(root->group_pathkeys,
-											  path->pathkeys);
+			if (parse->groupingSets)
+			{
+				/*
+				 * prevent group pathkey rreordering, just check the same
+				 * order paths pathkeys and group pathkeys
+				 */
+				is_sorted = pathkeys_contained_in(group_pathkeys,
+												  path->pathkeys);
+			}
+			else
+			{
+				n_preordered_groups =
+						group_keys_reorder_by_pathkeys(path->pathkeys,
+													   &group_pathkeys,
+													   &group_clauses);
+				is_sorted = (n_preordered_groups == list_length(group_pathkeys));
+			}
+
 			if (path == cheapest_path || is_sorted)
 			{
 				/* Sort the cheapest-total path if it isn't already sorted */
 				if (!is_sorted)
+				{
+					if (!parse->groupingSets)
+						get_cheapest_group_keys_order(root,
+													  path->rows,
+													  &group_pathkeys,
+													  &group_clauses,
+													  n_preordered_groups);
 					path = (Path *) create_sort_path(root,
 													 grouped_rel,
 													 path,
-													 root->group_pathkeys,
+													 group_pathkeys,
 													 -1.0);
+				}
 
 				/* Now decide what to stick atop it */
 				if (parse->groupingSets)
@@ -3914,9 +3975,9 @@ create_grouping_paths(PlannerInfo *root,
 											 grouped_rel,
 											 path,
 											 target,
-											 parse->groupClause ? AGG_SORTED : AGG_PLAIN,
+											 group_clauses ? AGG_SORTED : AGG_PLAIN,
 											 AGGSPLIT_SIMPLE,
-											 parse->groupClause,
+											 group_clauses,
 											 (List *) parse->havingQual,
 											 agg_costs,
 											 dNumGroups));
@@ -3932,7 +3993,7 @@ create_grouping_paths(PlannerInfo *root,
 											   grouped_rel,
 											   path,
 											   target,
-											   parse->groupClause,
+											   group_clauses,
 											   (List *) parse->havingQual,
 											   dNumGroups));
 				}
@@ -4787,7 +4848,8 @@ create_distinct_paths(PlannerInfo *root,
 												parse->targetList);
 		numDistinctRows = estimate_num_groups(root, distinctExprs,
 											  cheapest_input_path->rows,
-											  NULL);
+											  NULL,
+											  NULL, 0);
 	}
 
 	/*

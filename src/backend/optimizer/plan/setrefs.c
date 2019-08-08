@@ -1574,7 +1574,7 @@ fix_scan_expr_mutator(Node *node, fix_scan_expr_context *context)
 	}
 	fix_expr_common(context->root, node);
 	return expression_tree_mutator(node, fix_scan_expr_mutator,
-								   (void *) context);
+								   (void *) context, 0);
 }
 
 static bool
@@ -1853,7 +1853,7 @@ convert_combining_aggrefs(Node *node, void *context)
 		return (Node *) parent_agg;
 	}
 	return expression_tree_mutator(node, convert_combining_aggrefs,
-								   (void *) context);
+								   (void *) context, 0);
 }
 
 /*
@@ -2209,6 +2209,10 @@ fix_join_expr_mutator(Node *node, fix_join_expr_context *context)
 	{
 		Var		   *var = (Var *) node;
 
+		/* join_references_mutator already checks this node */
+		if (var->varno == OUTER_VAR)
+			return (Node*)copyObject(var);
+
 		/* Look for the var in the input tlists, first in the outer */
 		if (context->outer_itlist)
 		{
@@ -2223,6 +2227,9 @@ fix_join_expr_mutator(Node *node, fix_join_expr_context *context)
 		/* then in the inner. */
 		if (context->inner_itlist)
 		{
+			if (var->varno == INNER_VAR)
+				return (Node*)copyObject(var);
+
 			newvar = search_indexed_tlist_for_var(var,
 												  context->inner_itlist,
 												  INNER_VAR,
@@ -2292,7 +2299,7 @@ fix_join_expr_mutator(Node *node, fix_join_expr_context *context)
 	fix_expr_common(context->root, node);
 	return expression_tree_mutator(node,
 								   fix_join_expr_mutator,
-								   (void *) context);
+								   (void *) context, 0);
 }
 
 /*
@@ -2413,7 +2420,7 @@ fix_upper_expr_mutator(Node *node, fix_upper_expr_context *context)
 	fix_expr_common(context->root, node);
 	return expression_tree_mutator(node,
 								   fix_upper_expr_mutator,
-								   (void *) context);
+								   (void *) context, 0);
 }
 
 /*

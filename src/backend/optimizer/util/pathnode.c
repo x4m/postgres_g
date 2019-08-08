@@ -1201,7 +1201,8 @@ create_tidscan_path(PlannerInfo *root, RelOptInfo *rel, List *tidquals,
  */
 AppendPath *
 create_append_path(RelOptInfo *rel, List *subpaths, Relids required_outer,
-				   int parallel_workers, List *partitioned_rels)
+				   int parallel_workers, List *partitioned_rels,
+				   bool pull_tlist, List *pathkeys)
 {
 	AppendPath *pathnode = makeNode(AppendPath);
 	ListCell   *l;
@@ -1214,9 +1215,11 @@ create_append_path(RelOptInfo *rel, List *subpaths, Relids required_outer,
 	pathnode->path.parallel_aware = false;
 	pathnode->path.parallel_safe = rel->consider_parallel;
 	pathnode->path.parallel_workers = parallel_workers;
-	pathnode->path.pathkeys = NIL;	/* result is always considered unsorted */
+	pathnode->path.pathkeys = pathkeys;	/* !=NIL in case of append OR index
+										   scans */
 	pathnode->partitioned_rels = list_copy(partitioned_rels);
 	pathnode->subpaths = subpaths;
+	pathnode->pull_tlist = pull_tlist;
 
 	/*
 	 * We don't bother with inventing a cost_append(), but just do it here.
@@ -1484,7 +1487,8 @@ create_unique_path(PlannerInfo *root, RelOptInfo *rel, Path *subpath,
 	if (rel->rtekind == RTE_RELATION && sjinfo->semi_can_btree &&
 		relation_has_unique_index_for(root, rel, NIL,
 									  sjinfo->semi_rhs_exprs,
-									  sjinfo->semi_operators))
+									  sjinfo->semi_operators,
+									  NULL /*index_info*/))
 	{
 		pathnode->umethod = UNIQUE_PATH_NOOP;
 		pathnode->path.rows = rel->rows;
@@ -1543,7 +1547,7 @@ create_unique_path(PlannerInfo *root, RelOptInfo *rel, Path *subpath,
 	pathnode->path.rows = estimate_num_groups(root,
 											  sjinfo->semi_rhs_exprs,
 											  rel->rows,
-											  NULL);
+											  NULL, NULL, 0);
 	numCols = list_length(sjinfo->semi_rhs_exprs);
 
 	if (sjinfo->semi_can_btree)
@@ -3465,6 +3469,7 @@ reparameterize_path(PlannerInfo *root, Path *path,
 				return (Path *)
 					create_append_path(rel, childpaths,
 									   required_outer,
+									   apath->pull_tlist, apath->path.pathkeys,
 									   apath->path.parallel_workers,
 									   apath->partitioned_rels);
 			}

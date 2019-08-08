@@ -14,6 +14,8 @@ OBJS = check.o controldata.o dump.o exec.o file.o function.o info.o \
 override CPPFLAGS := -DDLSUFFIX=\"$(DLSUFFIX)\" -I$(srcdir) -I$(libpq_srcdir) $(CPPFLAGS)
 LDFLAGS_INTERNAL += -L$(top_builddir)/src/fe_utils -lpgfeutils $(libpq_pgport)
 
+EXTRA_INSTALL += contrib/online_analyze contrib/plantuner contrib/mchar
+
 ifdef NO_TEMP_INSTALL
 	tbindir=$(abs_top_builddir)/tmp_install/$(bindir)
 	tlibdir=$(abs_top_builddir)/tmp_install/$(libdir)

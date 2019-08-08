@@ -1152,6 +1152,25 @@ repairDependencyLoop(DumpableObject **loop,
 		return;
 	}
 
+	/* Indirect loop between index and its generated type.
+	 * Originally types were generated only for tables,
+	 * but for better estimation of multicolumn join selectivity
+	 * types are also generated for compound indexes.
+	 * But indexes and tables are assigned difference priorities
+	 * DO_INDEX=28, DO_TABLE=18 which are on different sides of
+     * DO_PRE_DATA_BOUNDARY=26. The trick with introducing DO_DUMMY_TYPE=19
+	 * done in selectDumpableType doesn't work for types generated for indexes
+	 * and we got cyclic dependency here. So we have to explicitly break such loop
+	 * here to avoid circular constrains warning
+	 */
+	if (nLoop >= 2 &&
+		loop[0]->objType == DO_DUMMY_TYPE &&
+		loop[1]->objType == DO_INDEX)
+	{
+		removeObjectDependency(loop[0], loop[1]->dumpId);
+		return;
+	}
+
 	/* Indirect loop involving domain and CHECK constraint */
 	if (nLoop > 2)
 	{

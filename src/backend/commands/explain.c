@@ -358,20 +358,13 @@ ExplainOneQuery(Query *query, int cursorOptions,
 	else
 	{
 		PlannedStmt *plan;
-		instr_time	planstart,
-					planduration;
-
-		INSTR_TIME_SET_CURRENT(planstart);
 
 		/* plan the query */
 		plan = pg_plan_query(query, cursorOptions, params);
 
-		INSTR_TIME_SET_CURRENT(planduration);
-		INSTR_TIME_SUBTRACT(planduration, planstart);
-
 		/* run it (if needed) and produce output */
 		ExplainOnePlan(plan, into, es, queryString, params, queryEnv,
-					   &planduration);
+					   &plan->planDuration);
 	}
 }
 

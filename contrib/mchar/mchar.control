@@ -1,0 +1,6 @@
+# mchar extension
+comment = 'SQL Server text type'
+default_version = '2.0'
+module_pathname = '$libdir/mchar'
+relocatable = true
+

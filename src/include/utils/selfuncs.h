@@ -76,6 +76,7 @@ typedef struct VariableStatData
 	int32		atttypmod;		/* actual typmod (after stripping relabel) */
 	bool		isunique;		/* matches unique index or DISTINCT clause */
 	bool		acl_ok;			/* result of ACL check on table or column */
+	AttStatsSlot	*sslots;
 } VariableStatData;
 
 #define ReleaseVariableStats(vardata)  \
@@ -173,6 +174,9 @@ extern double histogram_selectivity(VariableStatData *vardata, FmgrInfo *opproc,
 					  Datum constval, bool varonleft,
 					  int min_hist_size, int n_skip,
 					  int *hist_size);
+double prefix_record_histogram_selectivity(VariableStatData *vardata,
+									Datum constvalLeft, Datum constvalRight,
+									int record_cmp_prefix, int *n_bins);
 
 extern Pattern_Prefix_Status pattern_fixed_prefix(Const *patt,
 					 Pattern_Type ptype,
@@ -204,7 +208,8 @@ extern void mergejoinscansel(PlannerInfo *root, Node *clause,
 				 Selectivity *rightstart, Selectivity *rightend);
 
 extern double estimate_num_groups(PlannerInfo *root, List *groupExprs,
-					double input_rows, List **pgset);
+					double input_rows, List **pgset,
+					List **cache_varinfos, int prevNExprs);
 
 extern Selectivity estimate_hash_bucketsize(PlannerInfo *root, Node *hashkey,
 						 double nbuckets);
@@ -221,5 +226,23 @@ extern Selectivity scalararraysel_containment(PlannerInfo *root,
 						   Node *leftop, Node *rightop,
 						   Oid elemtype, bool isEquality, bool useOr,
 						   int varRelid);
+extern Selectivity
+eqjoin_selectivity(PlannerInfo *root, Oid operator,
+				   VariableStatData* vardata1,
+				   VariableStatData* vardata2,
+				   SpecialJoinInfo *sjinfo,
+				   int record_cmp_prefix);
+
+extern Selectivity
+eqconst_selectivity(Oid operator,
+					VariableStatData *vardata,
+					Datum constval, bool constisnull,
+					bool varonleft, bool negate,
+					int record_cmp_prefix);
+extern Selectivity ineq_histogram_selectivity(PlannerInfo *root,
+											  VariableStatData *vardata,
+											  FmgrInfo *opproc, bool isgt,
+											  Datum constval, Oid consttype,
+											  int record_cmp_prefix);
 
 #endif							/* SELFUNCS_H */

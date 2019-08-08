@@ -3940,6 +3940,9 @@ binary_upgrade_set_type_oids_by_type_oid(Archive *fout,
 	PGresult   *upgrade_res;
 	Oid			pg_type_array_oid;
 
+	if (pg_type_oid == InvalidOid)
+		return;
+
 	appendPQExpBufferStr(upgrade_buffer, "\n-- For binary upgrade, must preserve pg_type oid\n");
 	appendPQExpBuffer(upgrade_buffer,
 					  "SELECT pg_catalog.binary_upgrade_set_next_pg_type_oid('%u'::pg_catalog.oid);\n\n",
@@ -17297,6 +17300,17 @@ addBoundaryDependencies(DumpableObject **dobjs, int numObjs,
 		 */
 		switch (dobj->objType)
 		{
+			case DO_DUMMY_TYPE:
+			{
+					TypeInfo *tyinfo = (TypeInfo *) dobj;
+					if (tyinfo->isArray)
+						/* If it's an array, take its element type */
+						tyinfo = findTypeByOid(tyinfo->typelem);
+
+					if (OidIsValid(tyinfo->typrelid) &&
+						tyinfo->typrelkind == RELKIND_INDEX)
+						break;
+			}
 			case DO_NAMESPACE:
 			case DO_EXTENSION:
 			case DO_TYPE:
@@ -17313,7 +17327,6 @@ addBoundaryDependencies(DumpableObject **dobjs, int numObjs,
 			case DO_ATTRDEF:
 			case DO_PROCLANG:
 			case DO_CAST:
-			case DO_DUMMY_TYPE:
 			case DO_TSPARSER:
 			case DO_TSDICT:
 			case DO_TSTEMPLATE:

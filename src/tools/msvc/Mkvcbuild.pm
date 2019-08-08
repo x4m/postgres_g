@@ -35,8 +35,8 @@ my $contrib_defines = { 'refint' => 'REFINT_VERBOSE' };
 my @contrib_uselibpq = ('dblink', 'oid2name', 'postgres_fdw', 'vacuumlo');
 my @contrib_uselibpgport   = ('oid2name', 'pg_standby', 'vacuumlo');
 my @contrib_uselibpgcommon = ('oid2name', 'pg_standby', 'vacuumlo');
-my $contrib_extralibs      = undef;
-my $contrib_extraincludes = { 'dblink' => ['src/backend'] };
+my $contrib_extralibs      = {'mchar' => ['$(ICU46_LIB)\icuin.lib', '$(ICU46_LIB)\icuuc.lib']};
+my $contrib_extraincludes = { 'dblink' => ['src/backend'], 'mchar' => ['$(ICU46_INCLUDE)'] };
 my $contrib_extrasource = {
 	'cube' => [ 'contrib/cube/cubescan.l', 'contrib/cube/cubeparse.y' ],
 	'seg'  => [ 'contrib/seg/segscan.l',   'contrib/seg/segparse.y' ], };
@@ -63,6 +63,7 @@ my $frontend_extralibs = {
 	'initdb'     => ['ws2_32.lib'],
 	'pg_restore' => ['ws2_32.lib'],
 	'pgbench'    => ['ws2_32.lib'],
+	'mchar'		 => ['$(ICU46_LIB)\icuin.lib', '$(ICU46_LIB)\icuuc.lib'],
 	'psql'       => ['ws2_32.lib'] };
 my $frontend_extraincludes = {
 	'initdb' => ['src/timezone'],
@@ -455,6 +456,7 @@ sub mkvcbuild
 	$pgcrypto->AddLibrary('ws2_32.lib');
 	my $mf = Project::read_file('contrib/pgcrypto/Makefile');
 	GenerateContribSqlFiles('pgcrypto', $mf);
+	GenerateFulleqSql();
 
 	foreach my $subdir ('contrib', 'src/test/modules')
 	{
@@ -985,6 +987,59 @@ sub GenerateContribSqlFiles
 			}
 		}
 	}
+}
+
+sub GenerateFulleqSql
+{
+	my @argtypes = ('bool', 'bytea', 'char', 'name', 'int8', 'int2', 'int4',
+					'text', 'oid', 'xid', 'cid', 'oidvector', 'float4',
+					'float8', 'abstime', 'reltime', 'macaddr', 'inet', 'cidr',
+					'varchar', 'date', 'time', 'timestamp', 'timestamptz',
+					'interval', 'timetz');
+
+	#form extension script
+	my $i;
+	open($i, '<', "contrib/fulleq/fulleq.sql.in") ||
+		croak "Could not read contrib/fulleq/fulleq.sql.in";
+	my $template = do { local $/; <$i> };
+	close($i);
+
+	my $o;
+	open($o, '>', "contrib/fulleq/fulleq--2.0.sql") ||
+		croak "Could not write to contrib/fulleq/fulleq--2.0.sql";
+	print $o "\\echo Use \"CREATE EXTENSION fulleq\" to load this file. \\quit\n";
+	foreach my $argtype (@argtypes)
+	{
+		my $newtype = $template;
+		$newtype =~ s/ARGTYPE/$argtype/g;
+		print $o $newtype;
+	}
+	close($o);
+
+	#form migration script
+	$template = undef;
+	open($i, '<', "contrib/fulleq/fulleq-unpackaged.sql.in") ||
+		croak "Could not read contrib/fulleq/fulleq-unpackaged.sql.in";
+	$template = do { local $/; <$i> };
+	close($i);
+
+	open($o, '>', "contrib/fulleq/fulleq--unpackaged--2.0.sql") ||
+		croak "Could not write to contrib/fulleq/fulleq--2.0.sql";
+
+	print $o "\\echo Use \"CREATE EXTENSION fulleq FROM unpackaged\" to load this file. \\quit\n";
+	print $o "DROP OPERATOR CLASS IF EXISTS int2vector_fill_ops USING hash;\n";
+	print $o "DROP OPERATOR FAMILY IF EXISTS int2vector_fill_ops USING hash;\n";
+	print $o "DROP FUNCTION IF EXISTS fullhash_int2vector(int2vector);\n";
+	print $o "DROP OPERATOR IF EXISTS == (int2vector, int2vector);\n";
+	print $o "DROP FUNCTION IF EXISTS isfulleq_int2vector(int2vector, int2vector);\n";
+
+	foreach my $argtype (@argtypes)
+	{
+		my $newtype = $template;
+		$newtype =~ s/ARGTYPE/$argtype/g;
+		print $o $newtype;
+	}
+	close($o);
 }
 
 sub AdjustContribProj

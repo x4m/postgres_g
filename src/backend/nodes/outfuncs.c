@@ -1862,6 +1862,7 @@ _outAppendPath(StringInfo str, const AppendPath *node)
 
 	WRITE_NODE_FIELD(partitioned_rels);
 	WRITE_NODE_FIELD(subpaths);
+	WRITE_BOOL_FIELD(pull_tlist);
 }
 
 static void
