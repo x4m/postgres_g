@@ -1570,6 +1570,8 @@ str_tolower(const char *buff, size_t nbytes, Oid collid)
 			}
 			mylocale = pg_newlocale_from_collation(collid);
 		}
+		else if (global_locale.provider == COLLPROVIDER_ICU)
+			mylocale = &global_locale;
 
 #ifdef USE_ICU
 		if (mylocale && mylocale->provider == COLLPROVIDER_ICU)
@@ -1693,6 +1695,8 @@ str_toupper(const char *buff, size_t nbytes, Oid collid)
 			}
 			mylocale = pg_newlocale_from_collation(collid);
 		}
+		else if (global_locale.provider == COLLPROVIDER_ICU)
+			mylocale = &global_locale;
 
 #ifdef USE_ICU
 		if (mylocale && mylocale->provider == COLLPROVIDER_ICU)
@@ -1817,6 +1821,8 @@ str_initcap(const char *buff, size_t nbytes, Oid collid)
 			}
 			mylocale = pg_newlocale_from_collation(collid);
 		}
+		else if (global_locale.provider == COLLPROVIDER_ICU)
+			mylocale = &global_locale;
 
 #ifdef USE_ICU
 		if (mylocale && mylocale->provider == COLLPROVIDER_ICU)
