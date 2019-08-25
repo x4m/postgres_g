@@ -630,6 +630,8 @@ static int	comparetup_index_btree(const SortTuple *a, const SortTuple *b,
 								   Tuplesortstate *state);
 static int	comparetup_index_hash(const SortTuple *a, const SortTuple *b,
 								  Tuplesortstate *state);
+static int	comparetup_index_gist(const SortTuple *a, const SortTuple *b,
+								  Tuplesortstate *state);
 static void copytup_index(Tuplesortstate *state, SortTuple *stup, void *tup);
 static void writetup_index(Tuplesortstate *state, int tapenum,
 						   SortTuple *stup);
@@ -1089,6 +1091,43 @@ tuplesort_begin_index_hash(Relation heapRel,
 	state->high_mask = high_mask;
 	state->low_mask = low_mask;
 	state->max_buckets = max_buckets;
+
+	MemoryContextSwitchTo(oldcontext);
+
+	return state;
+}
+
+Tuplesortstate *
+tuplesort_begin_index_gist(Relation heapRel,
+						   Relation indexRel,
+						   SortSupport ssup,
+						   int workMem,
+						   SortCoordinate coordinate,
+						   bool randomAccess)
+{
+	Tuplesortstate *state = tuplesort_begin_common(workMem, coordinate,
+												   randomAccess);
+	MemoryContext oldcontext;
+
+	oldcontext = MemoryContextSwitchTo(state->sortcontext);
+
+#ifdef TRACE_SORT
+	if (trace_sort)
+		elog(LOG,
+			 "begin index sort: workMem = %d, randomAccess = %c",
+			 workMem, randomAccess ? 't' : 'f');
+#endif
+
+	state->nKeys = 1;			/* Only one sort column, the hash code */
+
+	state->comparetup = comparetup_index_gist;
+	state->copytup = copytup_index;
+	state->writetup = writetup_index;
+	state->readtup = readtup_index;
+	state->sortKeys = ssup;
+
+	state->heapRel = heapRel;
+	state->indexRel = indexRel;
 
 	MemoryContextSwitchTo(oldcontext);
 
@@ -4117,6 +4156,49 @@ comparetup_index_hash(const SortTuple *a, const SortTuple *b,
 	tuple1 = (IndexTuple) a->tuple;
 	tuple2 = (IndexTuple) b->tuple;
 
+	{
+		BlockNumber blk1 = ItemPointerGetBlockNumber(&tuple1->t_tid);
+		BlockNumber blk2 = ItemPointerGetBlockNumber(&tuple2->t_tid);
+
+		if (blk1 != blk2)
+			return (blk1 < blk2) ? -1 : 1;
+	}
+	{
+		OffsetNumber pos1 = ItemPointerGetOffsetNumber(&tuple1->t_tid);
+		OffsetNumber pos2 = ItemPointerGetOffsetNumber(&tuple2->t_tid);
+
+		if (pos1 != pos2)
+			return (pos1 < pos2) ? -1 : 1;
+	}
+
+	/* ItemPointer values should never be equal */
+	Assert(false);
+
+	return 0;
+}
+
+static int
+comparetup_index_gist(const SortTuple *a, const SortTuple *b,
+					  Tuplesortstate *state)
+{
+	SortSupport sortKey = state->sortKeys;
+	IndexTuple	tuple1;
+	IndexTuple	tuple2;
+	int32		compare;
+
+
+	/* Compare the leading sort key */
+	compare = ApplySortComparator(a->datum1, a->isnull1,
+								  b->datum1, b->isnull1,
+								  sortKey);
+	if (compare != 0)
+		return compare;
+
+	tuple1 = (IndexTuple) a->tuple;
+	tuple2 = (IndexTuple) b->tuple;
+	/*
+	 * If key values are equal, we sort on ItemPointer.
+	 */
 	{
 		BlockNumber blk1 = ItemPointerGetBlockNumber(&tuple1->t_tid);
 		BlockNumber blk2 = ItemPointerGetBlockNumber(&tuple2->t_tid);

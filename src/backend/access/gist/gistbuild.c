@@ -31,6 +31,7 @@
 #include "utils/memutils.h"
 #include "utils/rel.h"
 #include "utils/regproc.h"
+#include "utils/tuplesort.h"
 
 /* Step of index tuples for check whether to switch to buffering build mode */
 #define BUFFERING_MODE_SWITCH_CHECK_STEP 256
@@ -56,6 +57,15 @@ typedef enum
 	GIST_BUFFERING_ACTIVE		/* in buffering build mode */
 } GistBufferingMode;
 
+/*
+ * Status record for spooling/sorting phase.
+ */
+typedef struct
+{
+	Tuplesortstate *sortstate;	/* state data for tuplesort.c */
+	Relation	index;
+} GSpool;
+
 /* Working state for gistbuild and its callback */
 typedef struct
 {
@@ -77,7 +87,7 @@ typedef struct
 	HTAB	   *parentMap;
 
 	GistBufferingMode bufferingMode;
-	FmgrInfo	sortFn;
+	GSpool *spool;
 } GISTBuildState;
 
 /* prototypes for private functions */
@@ -111,6 +121,65 @@ static void gistMemorizeParent(GISTBuildState *buildstate, BlockNumber child,
 static void gistMemorizeAllDownlinks(GISTBuildState *buildstate, Buffer parent);
 static BlockNumber gistGetParent(GISTBuildState *buildstate, BlockNumber child);
 
+static GSpool *
+gist_spoolinit(Relation heap, Relation index, SortSupport ssup);
+static void
+gist_spool(GSpool *gspool, ItemPointer self, Datum *values, bool *isnull);
+static void
+gist_indexsortbuild(GISTBuildState *state);
+
+/*
+ * create and initialize a spool structure
+ */
+static GSpool *
+gist_spoolinit(Relation heap, Relation index, SortSupport ssup)
+{
+	GSpool	   *gspool = (GSpool *) palloc0(sizeof(GSpool));
+
+	gspool->index = index;
+
+	/*
+	 * We size the sort area as maintenance_work_mem rather than work_mem to
+	 * speed index creation.  This should be OK since a single backend can't
+	 * run multiple index creations in parallel.
+	 */
+	gspool->sortstate = tuplesort_begin_index_gist(heap,
+												   index,
+												   ssup,
+												   maintenance_work_mem,
+												   NULL,
+												   false);
+
+	return gspool;
+}
+
+/*
+ * given a spool loaded by successive calls to _h_spool,
+ * create an entire index.
+ */
+static void
+gist_indexsortbuild(GISTBuildState *state)
+{
+	GSpool *gspool = state->spool;
+	IndexTuple	itup;
+
+	tuplesort_performsort(gspool->sortstate);
+
+	while ((itup = tuplesort_getindextuple(gspool->sortstate, true)) != NULL)
+	{
+	}
+}
+
+/*
+ * spool an index entry into the sort file.
+ */
+static void
+gist_spool(GSpool *gspool, ItemPointer self, Datum *values, bool *isnull)
+{
+	tuplesort_putindextuplevalues(gspool->sortstate, gspool->index,
+								  self, values, isnull);
+}
+
 /*
  * Main entry point to GiST index build. Initially calls insert over and over,
  * but switches to more efficient buffering build algorithm after a certain
@@ -129,7 +198,7 @@ gistbuild(Relation heap, Relation index, IndexInfo *indexInfo)
 
 	buildstate.indexrel = index;
 	buildstate.heaprel = heap;
-	buildstate.sortFn.fn_oid = InvalidOid;
+	buildstate.spool = NULL;
 	if (index->rd_options)
 	{
 		/* Get buffering mode from the options string */
@@ -150,7 +219,10 @@ gistbuild(Relation heap, Relation index, IndexInfo *indexInfo)
 			Oid		 argList[1] = {INTERNALOID};
 			List	*namelist = stringToQualifiedNameList(sortFuncName);
 			Oid sortFuncOid = LookupFuncName(namelist, 1, argList, false);
-			fmgr_info(sortFuncOid, &buildstate.sortFn);
+			SortSupport sort = palloc0(sizeof(SortSupportData));
+			OidFunctionCall1(sortFuncOid, PointerGetDatum(sort));
+			buildstate.bufferingMode = GIST_BUFFERING_DISABLED;
+			buildstate.spool = gist_spoolinit(heap, index, sort);
 		}
 
 		fillfactor = options->fillfactor;
@@ -221,6 +293,12 @@ gistbuild(Relation heap, Relation index, IndexInfo *indexInfo)
 		elog(DEBUG1, "all tuples processed, emptying buffers");
 		gistEmptyAllBuffers(&buildstate);
 		gistFreeBuildBuffers(buildstate.gfbb);
+	}
+
+	if (buildstate.spool)
+	{
+		gist_indexsortbuild(&buildstate);
+		tuplesort_end(buildstate.spool->sortstate);
 	}
 
 	/* okay, all heap tuples are indexed */
@@ -505,7 +583,12 @@ gistBuildCallback(Relation index,
 	itup = gistFormTuple(buildstate->giststate, index, values, isnull, true);
 	itup->t_tid = htup->t_self;
 
-	if (buildstate->bufferingMode == GIST_BUFFERING_ACTIVE)
+	if(buildstate->spool)
+	{
+		if (tupleIsAlive)
+			gist_spool(buildstate->spool, itup, values, isnull);
+	}
+	else if (buildstate->bufferingMode == GIST_BUFFERING_ACTIVE)
 	{
 		/* We have buffers, so use them. */
 		gistBufferingBuildInsert(buildstate, itup);
