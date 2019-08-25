@@ -31,6 +31,11 @@ static bool gist_box_leaf_consistent(BOX *key, BOX *query,
 									 StrategyNumber strategy);
 static bool rtree_internal_consistent(BOX *key, BOX *query,
 									  StrategyNumber strategy);
+static int64 part_bits32_by2(uint32 x);
+static int64 interleave_bits32(uint32 x, uint32 y);
+static inline uint64 point_zorder_internal(Point *p);
+static int gist_bbox_fastcmp(Datum x, Datum y, SortSupport ssup);
+
 
 /* Minimum accepted ratio of split */
 #define LIMIT_RATIO 0.3
@@ -1532,6 +1537,8 @@ gist_poly_distance(PG_FUNCTION_ARGS)
 	PG_RETURN_FLOAT8(distance);
 }
 
+/* Z-order routines */
+/* Interleave 32 bits with zeroes */
 static int64
 part_bits32_by2(uint32 x)
 {
@@ -1546,12 +1553,14 @@ part_bits32_by2(uint32 x)
 	return n;
 }
 
+/* Compute Z-order for integers */
 static int64
 interleave_bits32(uint32 x, uint32 y)
 {
 	return part_bits32_by2(x) | (part_bits32_by2(y) << 1);
 }
 
+/* Compute Z-oder for point */
 static inline uint64
 point_zorder_internal(Point *p)
 {
@@ -1559,16 +1568,20 @@ point_zorder_internal(Point *p)
 		float f;
 		uint32 i;
 	} a,b;
+	if (isnan(a.f))
+		a.i = INT32_MAX;
+	if (isnan(b.f))
+		b.i = INT32_MAX;
 	a.f = p->x;
 	b.f = p->y;
 	return interleave_bits32(a.i, b.i);
 }
 
 static int
-gist_point_fastcmp(Datum x, Datum y, SortSupport ssup)
+gist_bbox_fastcmp(Datum x, Datum y, SortSupport ssup)
 {
-	Point	*p1 = DatumGetPointP(x);
-	Point	*p2 = DatumGetPointP(y);
+	Point	*p1 = &(DatumGetBoxP(x)->low);
+	Point	*p2 = &(DatumGetBoxP(y)->low);
 	uint64	 z1 = point_zorder_internal(p1);
 	uint64	 z2 = point_zorder_internal(p2);
 
@@ -1580,6 +1593,6 @@ gist_point_sortsupport(PG_FUNCTION_ARGS)
 {
 	SortSupport ssup = (SortSupport) PG_GETARG_POINTER(0);
 
-	ssup->comparator = gist_point_fastcmp;
+	ssup->comparator = gist_bbox_fastcmp;
 	PG_RETURN_VOID();
 }
