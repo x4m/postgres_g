@@ -149,8 +149,35 @@ gist_spoolinit(Relation heap, Relation index, SortSupport ssup)
 												   maintenance_work_mem,
 												   NULL,
 												   false);
+	elog(NOTICE, "sortstate %p", gspool->sortstate);
 
 	return gspool;
+}
+
+static void
+gist_indexsortbuild_flush(Relation rel, Page page, BlockNumber blockno, bool isNew)
+{
+	OffsetNumber i,
+				maxoff;
+	Page newpage;
+	elog(NOTICE, "gist_indexsortbuild_flush");
+
+	Buffer buffer = ReadBuffer(rel, isNew ? P_NEW : blockno);
+	GISTInitBuffer(buffer, GistPageIsLeaf(page) ? F_LEAF : 0);
+	Assert(BufferGetBlockNumber(buffer) == blockno);
+
+	LockBuffer(buffer, GIST_EXCLUSIVE);
+	newpage = BufferGetPage(buffer);
+
+	maxoff = PageGetMaxOffsetNumber(page);
+	for (i = FirstOffsetNumber; i <= maxoff; i = OffsetNumberNext(i))
+	{
+		ItemId itemid = PageGetItemId(page, i);
+		IndexTuple tuple = (IndexTuple) PageGetItem(page, itemid);
+		gistfillbuffer(newpage,	&tuple,
+						1, InvalidOffsetNumber);
+	}
+	UnlockReleaseBuffer(buffer);
 }
 
 /*
@@ -161,13 +188,79 @@ static void
 gist_indexsortbuild(GISTBuildState *state)
 {
 	GSpool *gspool = state->spool;
-	IndexTuple	itup;
+	BlockNumber level_start = GIST_ROOT_BLKNO + 1;
+	BlockNumber level_end = level_start;
+	BlockNumber prev_level_start;
+	IndexTuple	itup;	
+	Page page = palloc(BLCKSZ);
+	gistinitpage(page, F_LEAF);
 
 	tuplesort_performsort(gspool->sortstate);
 
 	while ((itup = tuplesort_getindextuple(gspool->sortstate, true)) != NULL)
 	{
+		elog(NOTICE, "iterate %i",IndexTupleSize(itup));
+		if (PageGetFreeSpace(page) >= IndexTupleSize(itup) + sizeof(ItemIdData))
+		{
+			gistfillbuffer(page, &itup, 1, InvalidOffsetNumber);
+		}
+		else
+		{
+			gist_indexsortbuild_flush(state->indexrel, page, level_end, true);
+			level_end++;
+			gistinitpage(page, F_LEAF);
+			gistfillbuffer(page, &itup, 1, InvalidOffsetNumber);
+		}
 	}
+
+	do
+	{
+		if (level_start == level_end)
+		{
+			gist_indexsortbuild_flush(state->indexrel, page, GIST_ROOT_BLKNO,
+										false);
+			return;
+		}
+
+		gist_indexsortbuild_flush(state->indexrel, page, level_end, true);
+		level_end++;
+		gistinitpage(page, 0);
+		
+		prev_level_start = level_start;
+		level_start = level_end;
+
+		for (BlockNumber i = prev_level_start; i < level_start; i++)
+		{
+			Buffer lower_buffer = ReadBuffer(state->indexrel, i);
+			Page lower_page;
+			IndexTuple union_tuple;
+			MemoryContext oldCtx = MemoryContextSwitchTo(state->giststate->tempCxt);
+			int vect_len;
+			LockBuffer(lower_buffer, GIST_SHARE);
+			lower_page = BufferGetPage(lower_buffer);
+
+			IndexTuple *itvec = gistextractpage(lower_page, &vect_len);
+			union_tuple = gistunion(state->indexrel, itvec, vect_len,
+									state->giststate);
+			ItemPointerSetBlockNumber(&(union_tuple->t_tid), i);
+
+			if (PageGetFreeSpace(page) >= IndexTupleSize(union_tuple) + sizeof(ItemIdData))
+			{
+				gistfillbuffer(page, &union_tuple, 1, InvalidOffsetNumber);
+			}
+			else
+			{
+				gist_indexsortbuild_flush(state->indexrel, page, level_end, true);
+				level_end++;
+				gistinitpage(page, 0);
+				gistfillbuffer(page, &union_tuple, 1, InvalidOffsetNumber);
+			}
+
+			UnlockReleaseBuffer(lower_buffer);
+			MemoryContextSwitchTo(oldCtx);
+			MemoryContextReset(state->giststate->tempCxt);
+		}
+	} while (true);
 }
 
 /*
@@ -176,6 +269,7 @@ gist_indexsortbuild(GISTBuildState *state)
 static void
 gist_spool(GSpool *gspool, ItemPointer self, Datum *values, bool *isnull)
 {
+	elog(NOTICE, "gist_spool");
 	tuplesort_putindextuplevalues(gspool->sortstate, gspool->index,
 								  self, values, isnull);
 }
@@ -586,7 +680,7 @@ gistBuildCallback(Relation index,
 	if(buildstate->spool)
 	{
 		if (tupleIsAlive)
-			gist_spool(buildstate->spool, itup, values, isnull);
+			gist_spool(buildstate->spool, (ItemPointer)itup, values, isnull);
 	}
 	else if (buildstate->bufferingMode == GIST_BUFFERING_ACTIVE)
 	{

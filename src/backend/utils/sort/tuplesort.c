@@ -1118,7 +1118,7 @@ tuplesort_begin_index_gist(Relation heapRel,
 			 workMem, randomAccess ? 't' : 'f');
 #endif
 
-	state->nKeys = 1;			/* Only one sort column, the hash code */
+	state->nKeys = 1;			/* Only one sort column, the gist attribute */
 
 	state->comparetup = comparetup_index_gist;
 	state->copytup = copytup_index;
