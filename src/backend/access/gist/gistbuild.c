@@ -149,7 +149,6 @@ gist_spoolinit(Relation heap, Relation index, SortSupport ssup)
 												   maintenance_work_mem,
 												   NULL,
 												   false);
-	elog(NOTICE, "sortstate %p", gspool->sortstate);
 
 	return gspool;
 }
@@ -160,7 +159,6 @@ gist_indexsortbuild_flush(Relation rel, Page page, BlockNumber blockno, bool isN
 	OffsetNumber i,
 				maxoff;
 	Page newpage;
-	elog(NOTICE, "gist_indexsortbuild_flush");
 
 	Buffer buffer = ReadBuffer(rel, isNew ? P_NEW : blockno);
 	GISTInitBuffer(buffer, GistPageIsLeaf(page) ? F_LEAF : 0);
@@ -199,7 +197,6 @@ gist_indexsortbuild(GISTBuildState *state)
 
 	while ((itup = tuplesort_getindextuple(gspool->sortstate, true)) != NULL)
 	{
-		elog(NOTICE, "iterate %i",IndexTupleSize(itup));
 		if (PageGetFreeSpace(page) >= IndexTupleSize(itup) + sizeof(ItemIdData))
 		{
 			gistfillbuffer(page, &itup, 1, InvalidOffsetNumber);
@@ -269,7 +266,6 @@ gist_indexsortbuild(GISTBuildState *state)
 static void
 gist_spool(GSpool *gspool, ItemPointer self, Datum *values, bool *isnull)
 {
-	elog(NOTICE, "gist_spool");
 	tuplesort_putindextuplevalues(gspool->sortstate, gspool->index,
 								  self, values, isnull);
 }
