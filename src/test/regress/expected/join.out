@@ -4275,13 +4275,11 @@ explain (costs off)
 select p.* from
   (parent p left join child c on (p.k = c.k)) join parent x on p.k = x.k
   where p.k = 1 and p.k = 2;
-                   QUERY PLAN                   
-------------------------------------------------
+        QUERY PLAN        
+--------------------------
  Result
    One-Time Filter: false
-   ->  Index Scan using parent_pkey on parent x
-         Index Cond: (k = 1)
-(4 rows)
+(2 rows)
 
 -- bug 5255: this is not optimizable by join removal
 begin;
