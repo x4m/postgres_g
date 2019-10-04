@@ -229,6 +229,9 @@ SET random_page_cost = 1.2;
 CREATE INDEX fdeps_ab_idx ON functional_dependencies (a, b);
 CREATE INDEX fdeps_abc_idx ON functional_dependencies (a, b, c);
 
+-- test that index types were created
+SELECT reltype > 0 FROM pg_class where relname in ('fdeps_ab_idx', 'fdeps_abc_idx');
+
 -- random data (no functional dependencies)
 INSERT INTO functional_dependencies (a, b, c, filler1)
      SELECT mod(i, 23), mod(i, 29), mod(i, 31), i FROM generate_series(1,5000) s(i);
@@ -280,6 +283,9 @@ EXPLAIN (COSTS OFF)
 
 -- check change of column type doesn't break it
 ALTER TABLE functional_dependencies ALTER COLUMN c TYPE numeric;
+
+-- test that index types were created after ALTER TABLE
+SELECT reltype > 0 FROM pg_class where relname in ('fdeps_ab_idx', 'fdeps_abc_idx');
 
 EXPLAIN (COSTS OFF)
  SELECT * FROM functional_dependencies WHERE a = 1 AND b = '1' AND c = 1;

@@ -65,7 +65,8 @@ extern TidPath *create_tidscan_path(PlannerInfo *root, RelOptInfo *rel,
 					List *tidquals, Relids required_outer);
 extern AppendPath *create_append_path(RelOptInfo *rel, List *subpaths,
 				   Relids required_outer, int parallel_workers,
-				   List *partitioned_rels);
+				   List *partitioned_rels,
+				   bool pull_tlist, List *pathkeys);
 extern MergeAppendPath *create_merge_append_path(PlannerInfo *root,
 						 RelOptInfo *rel,
 						 List *subpaths,
@@ -263,6 +264,11 @@ extern RelOptInfo *build_join_rel(PlannerInfo *root,
 			   RelOptInfo *inner_rel,
 			   SpecialJoinInfo *sjinfo,
 			   List **restrictlist_ptr);
+
+extern List *build_joinrel_restrictlist(PlannerInfo *root,
+						   Relids joinrelids,
+						   RelOptInfo *outer_rel,
+						   RelOptInfo *inner_rel);
 extern Relids min_join_parameterization(PlannerInfo *root,
 						  Relids joinrelids,
 						  RelOptInfo *outer_rel,

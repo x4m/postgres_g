@@ -15,11 +15,12 @@
 #define RELATION_H
 
 #include "access/sdir.h"
+#include "catalog/pg_statistic.h"
 #include "lib/stringinfo.h"
 #include "nodes/params.h"
 #include "nodes/parsenodes.h"
 #include "storage/block.h"
-
+#include "utils/lsyscache.h"
 
 /*
  * Relids
@@ -450,8 +451,10 @@ typedef struct PlannerInfo
  * populate these fields, for base rels; but someday they might be used for
  * join rels too:
  *
- *		unique_for_rels - list of Relid sets, each one being a set of other
- *					rels for which this one has been proven unique
+ *		unique_for_rels - list of (Relids, UniqueIndexInfo*) lists, where Relids
+ * 					is a set of other rels for which this one has been proven
+ *					unique, and UniqueIndexInfo* stores information about the
+ * 					index that makes it unique,	if any.
  *		non_unique_for_rels - list of Relid sets, each one being a set of
  *					other rels for which we have tried and failed to prove
  *					this one unique
@@ -676,6 +679,10 @@ typedef struct IndexOptInfo
 	bool		amcanparallel;	/* does AM support parallel scan? */
 	/* Rather than include amapi.h here, we declare amcostestimate like this */
 	void		(*amcostestimate) ();	/* AM's cost estimator */
+
+	/* cache for per-tuple index statistic. That stats could be large and it
+	 * will be expensive to uncomress it every time */
+	AttStatsSlot	sslots[STATISTIC_NUM_SLOTS + 1];
 } IndexOptInfo;
 
 /*
@@ -1181,6 +1188,11 @@ typedef struct AppendPath
 	/* RT indexes of non-leaf tables in a partition tree */
 	List	   *partitioned_rels;
 	List	   *subpaths;		/* list of component Paths */
+	bool		pull_tlist;		/* if = true, create_append_plan()
+									should get targetlist from any
+									subpath - they are the same,
+									because the only place - append
+									index scan for range OR */
 } AppendPath;
 
 #define IS_DUMMY_APPEND(p) \

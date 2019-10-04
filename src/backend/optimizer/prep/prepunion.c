@@ -361,7 +361,7 @@ recurse_set_operations(Node *setOp, PlannerInfo *root,
 				*pNumGroups = estimate_num_groups(subroot,
 												  get_tlist_exprs(subquery->targetList, false),
 												  subpath->rows,
-												  NULL);
+												  NULL, NULL, 0);
 		}
 
 		return (Path *) path;
@@ -579,7 +579,8 @@ generate_union_path(SetOperationStmt *op, PlannerInfo *root,
 	/*
 	 * Append the child results together.
 	 */
-	path = (Path *) create_append_path(result_rel, pathlist, NULL, 0, NIL);
+	path = (Path *) create_append_path(result_rel, pathlist, NULL, 0, NIL,
+									   false, NIL);
 
 	/* We have to manually jam the right tlist into the path; ick */
 	path->pathtarget = create_pathtarget(root, tlist);
@@ -691,7 +692,8 @@ generate_nonunion_path(SetOperationStmt *op, PlannerInfo *root,
 	/*
 	 * Append the child results together.
 	 */
-	path = (Path *) create_append_path(result_rel, pathlist, NULL, 0, NIL);
+	path = (Path *) create_append_path(result_rel, pathlist, NULL, 0, NIL,
+									   false, NIL);
 
 	/* We have to manually jam the right tlist into the path; ick */
 	path->pathtarget = create_pathtarget(root, tlist);
@@ -1932,7 +1934,7 @@ adjust_appendrel_attrs_mutator(Node *node,
 
 		j = (JoinExpr *) expression_tree_mutator(node,
 												 adjust_appendrel_attrs_mutator,
-												 (void *) context);
+												 (void *) context, 0);
 		/* now fix JoinExpr's rtindex (probably never happens) */
 		if (j->rtindex == appinfo->parent_relid)
 			j->rtindex = appinfo->child_relid;
@@ -1945,7 +1947,7 @@ adjust_appendrel_attrs_mutator(Node *node,
 
 		phv = (PlaceHolderVar *) expression_tree_mutator(node,
 														 adjust_appendrel_attrs_mutator,
-														 (void *) context);
+														 (void *) context, 0);
 		/* now fix PlaceHolderVar's relid sets */
 		if (phv->phlevelsup == 0)
 			phv->phrels = adjust_relid_set(phv->phrels,
@@ -2026,7 +2028,7 @@ adjust_appendrel_attrs_mutator(Node *node,
 	Assert(!IsA(node, Query));
 
 	return expression_tree_mutator(node, adjust_appendrel_attrs_mutator,
-								   (void *) context);
+								   (void *) context, 0);
 }
 
 /*

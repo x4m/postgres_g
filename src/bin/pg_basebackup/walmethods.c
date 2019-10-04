@@ -77,6 +77,8 @@ dir_open_for_write(const char *pathname, const char *temp_suffix, size_t pad_to_
 #ifdef HAVE_LIBZ
 	gzFile		gzfp = NULL;
 #endif
+	mode_t		mode = (useumask == 1) ?
+		(S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH) : (S_IRUSR | S_IWUSR);
 
 	snprintf(tmppath, sizeof(tmppath), "%s/%s%s%s",
 			 dir_data->basedir, pathname,
@@ -89,7 +91,7 @@ dir_open_for_write(const char *pathname, const char *temp_suffix, size_t pad_to_
 	 * does not do any system calls to fsync() to make changes permanent on
 	 * disk.
 	 */
-	fd = open(tmppath, O_WRONLY | O_CREAT | PG_BINARY, S_IRUSR | S_IWUSR);
+	fd = open(tmppath, O_WRONLY | O_CREAT | PG_BINARY, mode);
 	if (fd < 0)
 		return NULL;
 
@@ -532,6 +534,8 @@ tar_open_for_write(const char *pathname, const char *temp_suffix, size_t pad_to_
 {
 	int			save_errno;
 	static char tmppath[MAXPGPATH];
+	mode_t		mode = (useumask == 1) ?
+		(S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH) : (S_IRUSR | S_IWUSR);
 
 	tar_clear_error();
 
@@ -541,7 +545,7 @@ tar_open_for_write(const char *pathname, const char *temp_suffix, size_t pad_to_
 		 * We open the tar file only when we first try to write to it.
 		 */
 		tar_data->fd = open(tar_data->tarfilename,
-							O_WRONLY | O_CREAT | PG_BINARY, S_IRUSR | S_IWUSR);
+							O_WRONLY | O_CREAT | PG_BINARY, mode);
 		if (tar_data->fd < 0)
 			return NULL;
 

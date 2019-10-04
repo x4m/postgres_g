@@ -320,6 +320,9 @@ extractRemainingColumns(List *common_colnames,
 		}
 	}
 
+	list_free(*res_colnames);
+	list_free(*res_colvars);
+
 	*res_colnames = new_colnames;
 	*res_colvars = new_colvars;
 }
@@ -1264,6 +1267,7 @@ transformFromClauseItem(ParseState *pstate, Node *n,
 										  &r_namespace);
 
 		/* Remove the left-side RTEs from the namespace list again */
+
 		pstate->p_namespace = list_truncate(pstate->p_namespace,
 											sv_namespace_length);
 

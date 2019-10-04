@@ -723,6 +723,9 @@ set_plain_rel_pathlist(PlannerInfo *root, RelOptInfo *rel, RangeTblEntry *rte)
 	/* Consider index scans */
 	create_index_paths(root, rel);
 
+	/* Consider index scans with rewrited quals */
+	keybased_rewrite_index_paths(root, rel);
+
 	/* Consider TID scans */
 	create_tidscan_paths(root, rel);
 }
@@ -1448,7 +1451,8 @@ add_paths_to_append_rel(PlannerInfo *root, RelOptInfo *rel,
 	 */
 	if (subpaths_valid)
 		add_path(rel, (Path *) create_append_path(rel, subpaths, NULL, 0,
-												  partitioned_rels));
+												  partitioned_rels,
+												  false, NIL));
 
 	/*
 	 * Consider an append of partial unordered, unparameterized partial paths.
@@ -1475,7 +1479,8 @@ add_paths_to_append_rel(PlannerInfo *root, RelOptInfo *rel,
 
 		/* Generate a partial append path. */
 		appendpath = create_append_path(rel, partial_subpaths, NULL,
-										parallel_workers, partitioned_rels);
+										parallel_workers, partitioned_rels,
+										false, NIL);
 		add_partial_path(rel, (Path *) appendpath);
 	}
 
@@ -1529,7 +1534,8 @@ add_paths_to_append_rel(PlannerInfo *root, RelOptInfo *rel,
 		if (subpaths_valid)
 			add_path(rel, (Path *)
 					 create_append_path(rel, subpaths, required_outer, 0,
-										partitioned_rels));
+										partitioned_rels,
+										false, NIL));
 	}
 }
 
@@ -1770,7 +1776,8 @@ set_dummy_rel_pathlist(RelOptInfo *rel)
 	/* Set up the dummy path */
 	add_path(rel, (Path *) create_append_path(rel, NIL,
 											  rel->lateral_relids,
-											  0, NIL));
+											  0, NIL,
+											  false, NIL));
 
 	/*
 	 * We set the cheapest-path fields immediately, just in case they were

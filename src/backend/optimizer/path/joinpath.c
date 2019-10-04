@@ -152,7 +152,8 @@ add_paths_to_joinrel(PlannerInfo *root,
 													innerrel,
 													JOIN_INNER,
 													restrictlist,
-													false);
+													false,
+													NULL /*index_info*/);
 			break;
 		default:
 			extra.inner_unique = innerrel_is_unique(root,
@@ -160,7 +161,8 @@ add_paths_to_joinrel(PlannerInfo *root,
 													innerrel,
 													jointype,
 													restrictlist,
-													false);
+													false,
+													NULL /*index_info*/);
 			break;
 	}
 

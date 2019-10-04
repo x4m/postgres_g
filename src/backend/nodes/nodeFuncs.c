@@ -2409,21 +2409,40 @@ range_table_walker(List *rtable,
 Node *
 expression_tree_mutator(Node *node,
 						Node *(*mutator) (),
-						void *context)
+						void *context,
+						int flags)
 {
 	/*
 	 * The mutator has already decided not to modify the current node, but we
 	 * must call the mutator for any sub-nodes.
 	 */
 
-#define FLATCOPY(newnode, node, nodetype)  \
-	( (newnode) = (nodetype *) palloc(sizeof(nodetype)), \
-	  memcpy((newnode), (node), sizeof(nodetype)) )
+#define FLATCOPY(newnode, node, nodetype, flags)  \
+	do { \
+		if ((flags) & QTW_DONT_COPY_DEFAULT) \
+		{ \
+			(newnode) = (node); \
+		} \
+		else \
+		{ \
+			(newnode) = (nodetype *) palloc(sizeof(nodetype)); \
+			memcpy((newnode), (node), sizeof(nodetype)); \
+		} \
+	} while(0)
 
-#define CHECKFLATCOPY(newnode, node, nodetype)	\
-	( AssertMacro(IsA((node), nodetype)), \
-	  (newnode) = (nodetype *) palloc(sizeof(nodetype)), \
-	  memcpy((newnode), (node), sizeof(nodetype)) )
+#define CHECKFLATCOPY(newnode, node, nodetype, flags)	\
+	do { \
+		AssertMacro(IsA((node), nodetype)); \
+		if ((flags) & QTW_DONT_COPY_DEFAULT) \
+		{ \
+			(newnode) = (node); \
+		} \
+		else \
+		{ \
+			(newnode) = (nodetype *) palloc(sizeof(nodetype)); \
+			memcpy((newnode), (node), sizeof(nodetype)); \
+		} \
+	} while(0)
 
 #define MUTATE(newfield, oldfield, fieldtype)  \
 		( (newfield) = (fieldtype) mutator((Node *) (oldfield), context) )
@@ -2446,7 +2465,7 @@ expression_tree_mutator(Node *node,
 				Var		   *var = (Var *) node;
 				Var		   *newnode;
 
-				FLATCOPY(newnode, var, Var);
+				FLATCOPY(newnode, var, Var, flags);
 				return (Node *) newnode;
 			}
 			break;
@@ -2455,7 +2474,7 @@ expression_tree_mutator(Node *node,
 				Const	   *oldnode = (Const *) node;
 				Const	   *newnode;
 
-				FLATCOPY(newnode, oldnode, Const);
+				FLATCOPY(newnode, oldnode, Const, flags);
 				/* XXX we don't bother with datumCopy; should we? */
 				return (Node *) newnode;
 			}
@@ -2475,7 +2494,7 @@ expression_tree_mutator(Node *node,
 				WithCheckOption *wco = (WithCheckOption *) node;
 				WithCheckOption *newnode;
 
-				FLATCOPY(newnode, wco, WithCheckOption);
+				FLATCOPY(newnode, wco, WithCheckOption, flags);
 				MUTATE(newnode->qual, wco->qual, Node *);
 				return (Node *) newnode;
 			}
@@ -2484,7 +2503,7 @@ expression_tree_mutator(Node *node,
 				Aggref	   *aggref = (Aggref *) node;
 				Aggref	   *newnode;
 
-				FLATCOPY(newnode, aggref, Aggref);
+				FLATCOPY(newnode, aggref, Aggref, flags);
 				/* assume mutation doesn't change types of arguments */
 				newnode->aggargtypes = list_copy(aggref->aggargtypes);
 				MUTATE(newnode->aggdirectargs, aggref->aggdirectargs, List *);
@@ -2500,7 +2519,7 @@ expression_tree_mutator(Node *node,
 				GroupingFunc *grouping = (GroupingFunc *) node;
 				GroupingFunc *newnode;
 
-				FLATCOPY(newnode, grouping, GroupingFunc);
+				FLATCOPY(newnode, grouping, GroupingFunc, flags);
 				MUTATE(newnode->args, grouping->args, List *);
 
 				/*
@@ -2523,7 +2542,7 @@ expression_tree_mutator(Node *node,
 				WindowFunc *wfunc = (WindowFunc *) node;
 				WindowFunc *newnode;
 
-				FLATCOPY(newnode, wfunc, WindowFunc);
+				FLATCOPY(newnode, wfunc, WindowFunc, flags);
 				MUTATE(newnode->args, wfunc->args, List *);
 				MUTATE(newnode->aggfilter, wfunc->aggfilter, Expr *);
 				return (Node *) newnode;
@@ -2534,7 +2553,7 @@ expression_tree_mutator(Node *node,
 				ArrayRef   *arrayref = (ArrayRef *) node;
 				ArrayRef   *newnode;
 
-				FLATCOPY(newnode, arrayref, ArrayRef);
+				FLATCOPY(newnode, arrayref, ArrayRef, flags);
 				MUTATE(newnode->refupperindexpr, arrayref->refupperindexpr,
 					   List *);
 				MUTATE(newnode->reflowerindexpr, arrayref->reflowerindexpr,
@@ -2551,7 +2570,7 @@ expression_tree_mutator(Node *node,
 				FuncExpr   *expr = (FuncExpr *) node;
 				FuncExpr   *newnode;
 
-				FLATCOPY(newnode, expr, FuncExpr);
+				FLATCOPY(newnode, expr, FuncExpr, flags);
 				MUTATE(newnode->args, expr->args, List *);
 				return (Node *) newnode;
 			}
@@ -2561,7 +2580,7 @@ expression_tree_mutator(Node *node,
 				NamedArgExpr *nexpr = (NamedArgExpr *) node;
 				NamedArgExpr *newnode;
 
-				FLATCOPY(newnode, nexpr, NamedArgExpr);
+				FLATCOPY(newnode, nexpr, NamedArgExpr, flags);
 				MUTATE(newnode->arg, nexpr->arg, Expr *);
 				return (Node *) newnode;
 			}
@@ -2571,7 +2590,7 @@ expression_tree_mutator(Node *node,
 				OpExpr	   *expr = (OpExpr *) node;
 				OpExpr	   *newnode;
 
-				FLATCOPY(newnode, expr, OpExpr);
+				FLATCOPY(newnode, expr, OpExpr, flags & ~QTW_DONT_COPY_DEFAULT);
 				MUTATE(newnode->args, expr->args, List *);
 				return (Node *) newnode;
 			}
@@ -2581,7 +2600,7 @@ expression_tree_mutator(Node *node,
 				DistinctExpr *expr = (DistinctExpr *) node;
 				DistinctExpr *newnode;
 
-				FLATCOPY(newnode, expr, DistinctExpr);
+				FLATCOPY(newnode, expr, DistinctExpr, flags);
 				MUTATE(newnode->args, expr->args, List *);
 				return (Node *) newnode;
 			}
@@ -2591,7 +2610,7 @@ expression_tree_mutator(Node *node,
 				NullIfExpr *expr = (NullIfExpr *) node;
 				NullIfExpr *newnode;
 
-				FLATCOPY(newnode, expr, NullIfExpr);
+				FLATCOPY(newnode, expr, NullIfExpr, flags);
 				MUTATE(newnode->args, expr->args, List *);
 				return (Node *) newnode;
 			}
@@ -2601,7 +2620,7 @@ expression_tree_mutator(Node *node,
 				ScalarArrayOpExpr *expr = (ScalarArrayOpExpr *) node;
 				ScalarArrayOpExpr *newnode;
 
-				FLATCOPY(newnode, expr, ScalarArrayOpExpr);
+				FLATCOPY(newnode, expr, ScalarArrayOpExpr, flags);
 				MUTATE(newnode->args, expr->args, List *);
 				return (Node *) newnode;
 			}
@@ -2611,7 +2630,7 @@ expression_tree_mutator(Node *node,
 				BoolExpr   *expr = (BoolExpr *) node;
 				BoolExpr   *newnode;
 
-				FLATCOPY(newnode, expr, BoolExpr);
+				FLATCOPY(newnode, expr, BoolExpr, flags);
 				MUTATE(newnode->args, expr->args, List *);
 				return (Node *) newnode;
 			}
@@ -2621,7 +2640,7 @@ expression_tree_mutator(Node *node,
 				SubLink    *sublink = (SubLink *) node;
 				SubLink    *newnode;
 
-				FLATCOPY(newnode, sublink, SubLink);
+				FLATCOPY(newnode, sublink, SubLink, flags);
 				MUTATE(newnode->testexpr, sublink->testexpr, Node *);
 
 				/*
@@ -2637,7 +2656,7 @@ expression_tree_mutator(Node *node,
 				SubPlan    *subplan = (SubPlan *) node;
 				SubPlan    *newnode;
 
-				FLATCOPY(newnode, subplan, SubPlan);
+				FLATCOPY(newnode, subplan, SubPlan, flags);
 				/* transform testexpr */
 				MUTATE(newnode->testexpr, subplan->testexpr, Node *);
 				/* transform args list (params to be passed to subplan) */
@@ -2651,7 +2670,7 @@ expression_tree_mutator(Node *node,
 				AlternativeSubPlan *asplan = (AlternativeSubPlan *) node;
 				AlternativeSubPlan *newnode;
 
-				FLATCOPY(newnode, asplan, AlternativeSubPlan);
+				FLATCOPY(newnode, asplan, AlternativeSubPlan, flags);
 				MUTATE(newnode->subplans, asplan->subplans, List *);
 				return (Node *) newnode;
 			}
@@ -2661,7 +2680,7 @@ expression_tree_mutator(Node *node,
 				FieldSelect *fselect = (FieldSelect *) node;
 				FieldSelect *newnode;
 
-				FLATCOPY(newnode, fselect, FieldSelect);
+				FLATCOPY(newnode, fselect, FieldSelect, flags);
 				MUTATE(newnode->arg, fselect->arg, Expr *);
 				return (Node *) newnode;
 			}
@@ -2671,7 +2690,7 @@ expression_tree_mutator(Node *node,
 				FieldStore *fstore = (FieldStore *) node;
 				FieldStore *newnode;
 
-				FLATCOPY(newnode, fstore, FieldStore);
+				FLATCOPY(newnode, fstore, FieldStore, flags);
 				MUTATE(newnode->arg, fstore->arg, Expr *);
 				MUTATE(newnode->newvals, fstore->newvals, List *);
 				newnode->fieldnums = list_copy(fstore->fieldnums);
@@ -2683,7 +2702,7 @@ expression_tree_mutator(Node *node,
 				RelabelType *relabel = (RelabelType *) node;
 				RelabelType *newnode;
 
-				FLATCOPY(newnode, relabel, RelabelType);
+				FLATCOPY(newnode, relabel, RelabelType, flags);
 				MUTATE(newnode->arg, relabel->arg, Expr *);
 				return (Node *) newnode;
 			}
@@ -2693,7 +2712,7 @@ expression_tree_mutator(Node *node,
 				CoerceViaIO *iocoerce = (CoerceViaIO *) node;
 				CoerceViaIO *newnode;
 
-				FLATCOPY(newnode, iocoerce, CoerceViaIO);
+				FLATCOPY(newnode, iocoerce, CoerceViaIO, flags);
 				MUTATE(newnode->arg, iocoerce->arg, Expr *);
 				return (Node *) newnode;
 			}
@@ -2703,7 +2722,7 @@ expression_tree_mutator(Node *node,
 				ArrayCoerceExpr *acoerce = (ArrayCoerceExpr *) node;
 				ArrayCoerceExpr *newnode;
 
-				FLATCOPY(newnode, acoerce, ArrayCoerceExpr);
+				FLATCOPY(newnode, acoerce, ArrayCoerceExpr, flags);
 				MUTATE(newnode->arg, acoerce->arg, Expr *);
 				return (Node *) newnode;
 			}
@@ -2713,7 +2732,7 @@ expression_tree_mutator(Node *node,
 				ConvertRowtypeExpr *convexpr = (ConvertRowtypeExpr *) node;
 				ConvertRowtypeExpr *newnode;
 
-				FLATCOPY(newnode, convexpr, ConvertRowtypeExpr);
+				FLATCOPY(newnode, convexpr, ConvertRowtypeExpr, flags);
 				MUTATE(newnode->arg, convexpr->arg, Expr *);
 				return (Node *) newnode;
 			}
@@ -2723,7 +2742,7 @@ expression_tree_mutator(Node *node,
 				CollateExpr *collate = (CollateExpr *) node;
 				CollateExpr *newnode;
 
-				FLATCOPY(newnode, collate, CollateExpr);
+				FLATCOPY(newnode, collate, CollateExpr, flags);
 				MUTATE(newnode->arg, collate->arg, Expr *);
 				return (Node *) newnode;
 			}
@@ -2733,7 +2752,7 @@ expression_tree_mutator(Node *node,
 				CaseExpr   *caseexpr = (CaseExpr *) node;
 				CaseExpr   *newnode;
 
-				FLATCOPY(newnode, caseexpr, CaseExpr);
+				FLATCOPY(newnode, caseexpr, CaseExpr, flags);
 				MUTATE(newnode->arg, caseexpr->arg, Expr *);
 				MUTATE(newnode->args, caseexpr->args, List *);
 				MUTATE(newnode->defresult, caseexpr->defresult, Expr *);
@@ -2745,7 +2764,7 @@ expression_tree_mutator(Node *node,
 				CaseWhen   *casewhen = (CaseWhen *) node;
 				CaseWhen   *newnode;
 
-				FLATCOPY(newnode, casewhen, CaseWhen);
+				FLATCOPY(newnode, casewhen, CaseWhen, flags);
 				MUTATE(newnode->expr, casewhen->expr, Expr *);
 				MUTATE(newnode->result, casewhen->result, Expr *);
 				return (Node *) newnode;
@@ -2756,7 +2775,7 @@ expression_tree_mutator(Node *node,
 				ArrayExpr  *arrayexpr = (ArrayExpr *) node;
 				ArrayExpr  *newnode;
 
-				FLATCOPY(newnode, arrayexpr, ArrayExpr);
+				FLATCOPY(newnode, arrayexpr, ArrayExpr, flags);
 				MUTATE(newnode->elements, arrayexpr->elements, List *);
 				return (Node *) newnode;
 			}
@@ -2766,7 +2785,7 @@ expression_tree_mutator(Node *node,
 				RowExpr    *rowexpr = (RowExpr *) node;
 				RowExpr    *newnode;
 
-				FLATCOPY(newnode, rowexpr, RowExpr);
+				FLATCOPY(newnode, rowexpr, RowExpr, flags);
 				MUTATE(newnode->args, rowexpr->args, List *);
 				/* Assume colnames needn't be duplicated */
 				return (Node *) newnode;
@@ -2777,7 +2796,7 @@ expression_tree_mutator(Node *node,
 				RowCompareExpr *rcexpr = (RowCompareExpr *) node;
 				RowCompareExpr *newnode;
 
-				FLATCOPY(newnode, rcexpr, RowCompareExpr);
+				FLATCOPY(newnode, rcexpr, RowCompareExpr, flags);
 				MUTATE(newnode->largs, rcexpr->largs, List *);
 				MUTATE(newnode->rargs, rcexpr->rargs, List *);
 				return (Node *) newnode;
@@ -2788,7 +2807,7 @@ expression_tree_mutator(Node *node,
 				CoalesceExpr *coalesceexpr = (CoalesceExpr *) node;
 				CoalesceExpr *newnode;
 
-				FLATCOPY(newnode, coalesceexpr, CoalesceExpr);
+				FLATCOPY(newnode, coalesceexpr, CoalesceExpr, flags);
 				MUTATE(newnode->args, coalesceexpr->args, List *);
 				return (Node *) newnode;
 			}
@@ -2798,7 +2817,7 @@ expression_tree_mutator(Node *node,
 				MinMaxExpr *minmaxexpr = (MinMaxExpr *) node;
 				MinMaxExpr *newnode;
 
-				FLATCOPY(newnode, minmaxexpr, MinMaxExpr);
+				FLATCOPY(newnode, minmaxexpr, MinMaxExpr, flags);
 				MUTATE(newnode->args, minmaxexpr->args, List *);
 				return (Node *) newnode;
 			}
@@ -2808,7 +2827,7 @@ expression_tree_mutator(Node *node,
 				XmlExpr    *xexpr = (XmlExpr *) node;
 				XmlExpr    *newnode;
 
-				FLATCOPY(newnode, xexpr, XmlExpr);
+				FLATCOPY(newnode, xexpr, XmlExpr, flags);
 				MUTATE(newnode->named_args, xexpr->named_args, List *);
 				/* assume mutator does not care about arg_names */
 				MUTATE(newnode->args, xexpr->args, List *);
@@ -2820,7 +2839,7 @@ expression_tree_mutator(Node *node,
 				NullTest   *ntest = (NullTest *) node;
 				NullTest   *newnode;
 
-				FLATCOPY(newnode, ntest, NullTest);
+				FLATCOPY(newnode, ntest, NullTest, flags);
 				MUTATE(newnode->arg, ntest->arg, Expr *);
 				return (Node *) newnode;
 			}
@@ -2830,7 +2849,7 @@ expression_tree_mutator(Node *node,
 				BooleanTest *btest = (BooleanTest *) node;
 				BooleanTest *newnode;
 
-				FLATCOPY(newnode, btest, BooleanTest);
+				FLATCOPY(newnode, btest, BooleanTest, flags);
 				MUTATE(newnode->arg, btest->arg, Expr *);
 				return (Node *) newnode;
 			}
@@ -2840,7 +2859,7 @@ expression_tree_mutator(Node *node,
 				CoerceToDomain *ctest = (CoerceToDomain *) node;
 				CoerceToDomain *newnode;
 
-				FLATCOPY(newnode, ctest, CoerceToDomain);
+				FLATCOPY(newnode, ctest, CoerceToDomain, flags);
 				MUTATE(newnode->arg, ctest->arg, Expr *);
 				return (Node *) newnode;
 			}
@@ -2850,7 +2869,7 @@ expression_tree_mutator(Node *node,
 				TargetEntry *targetentry = (TargetEntry *) node;
 				TargetEntry *newnode;
 
-				FLATCOPY(newnode, targetentry, TargetEntry);
+				FLATCOPY(newnode, targetentry, TargetEntry, flags & ~QTW_DONT_COPY_DEFAULT);
 				MUTATE(newnode->expr, targetentry->expr, Expr *);
 				return (Node *) newnode;
 			}
@@ -2863,7 +2882,7 @@ expression_tree_mutator(Node *node,
 				WindowClause *wc = (WindowClause *) node;
 				WindowClause *newnode;
 
-				FLATCOPY(newnode, wc, WindowClause);
+				FLATCOPY(newnode, wc, WindowClause, flags);
 				MUTATE(newnode->partitionClause, wc->partitionClause, List *);
 				MUTATE(newnode->orderClause, wc->orderClause, List *);
 				MUTATE(newnode->startOffset, wc->startOffset, Node *);
@@ -2876,7 +2895,7 @@ expression_tree_mutator(Node *node,
 				CommonTableExpr *cte = (CommonTableExpr *) node;
 				CommonTableExpr *newnode;
 
-				FLATCOPY(newnode, cte, CommonTableExpr);
+				FLATCOPY(newnode, cte, CommonTableExpr, flags);
 
 				/*
 				 * Also invoke the mutator on the CTE's Query node, so it can
@@ -2911,7 +2930,7 @@ expression_tree_mutator(Node *node,
 				FromExpr   *from = (FromExpr *) node;
 				FromExpr   *newnode;
 
-				FLATCOPY(newnode, from, FromExpr);
+				FLATCOPY(newnode, from, FromExpr, flags);
 				MUTATE(newnode->fromlist, from->fromlist, List *);
 				MUTATE(newnode->quals, from->quals, Node *);
 				return (Node *) newnode;
@@ -2922,7 +2941,7 @@ expression_tree_mutator(Node *node,
 				OnConflictExpr *oc = (OnConflictExpr *) node;
 				OnConflictExpr *newnode;
 
-				FLATCOPY(newnode, oc, OnConflictExpr);
+				FLATCOPY(newnode, oc, OnConflictExpr, flags);
 				MUTATE(newnode->arbiterElems, oc->arbiterElems, List *);
 				MUTATE(newnode->arbiterWhere, oc->arbiterWhere, Node *);
 				MUTATE(newnode->onConflictSet, oc->onConflictSet, List *);
@@ -2937,7 +2956,7 @@ expression_tree_mutator(Node *node,
 				JoinExpr   *join = (JoinExpr *) node;
 				JoinExpr   *newnode;
 
-				FLATCOPY(newnode, join, JoinExpr);
+				FLATCOPY(newnode, join, JoinExpr, flags);
 				MUTATE(newnode->larg, join->larg, Node *);
 				MUTATE(newnode->rarg, join->rarg, Node *);
 				MUTATE(newnode->quals, join->quals, Node *);
@@ -2950,7 +2969,7 @@ expression_tree_mutator(Node *node,
 				SetOperationStmt *setop = (SetOperationStmt *) node;
 				SetOperationStmt *newnode;
 
-				FLATCOPY(newnode, setop, SetOperationStmt);
+				FLATCOPY(newnode, setop, SetOperationStmt, flags);
 				MUTATE(newnode->larg, setop->larg, Node *);
 				MUTATE(newnode->rarg, setop->rarg, Node *);
 				/* We do not mutate groupClauses by default */
@@ -2962,7 +2981,7 @@ expression_tree_mutator(Node *node,
 				PlaceHolderVar *phv = (PlaceHolderVar *) node;
 				PlaceHolderVar *newnode;
 
-				FLATCOPY(newnode, phv, PlaceHolderVar);
+				FLATCOPY(newnode, phv, PlaceHolderVar, flags);
 				MUTATE(newnode->phexpr, phv->phexpr, Expr *);
 				/* Assume we need not copy the relids bitmapset */
 				return (Node *) newnode;
@@ -2973,7 +2992,7 @@ expression_tree_mutator(Node *node,
 				InferenceElem *inferenceelemdexpr = (InferenceElem *) node;
 				InferenceElem *newnode;
 
-				FLATCOPY(newnode, inferenceelemdexpr, InferenceElem);
+				FLATCOPY(newnode, inferenceelemdexpr, InferenceElem, flags);
 				MUTATE(newnode->expr, newnode->expr, Node *);
 				return (Node *) newnode;
 			}
@@ -2983,7 +3002,7 @@ expression_tree_mutator(Node *node,
 				AppendRelInfo *appinfo = (AppendRelInfo *) node;
 				AppendRelInfo *newnode;
 
-				FLATCOPY(newnode, appinfo, AppendRelInfo);
+				FLATCOPY(newnode, appinfo, AppendRelInfo, flags);
 				MUTATE(newnode->translated_vars, appinfo->translated_vars, List *);
 				return (Node *) newnode;
 			}
@@ -2993,7 +3012,7 @@ expression_tree_mutator(Node *node,
 				PlaceHolderInfo *phinfo = (PlaceHolderInfo *) node;
 				PlaceHolderInfo *newnode;
 
-				FLATCOPY(newnode, phinfo, PlaceHolderInfo);
+				FLATCOPY(newnode, phinfo, PlaceHolderInfo, flags);
 				MUTATE(newnode->ph_var, phinfo->ph_var, PlaceHolderVar *);
 				/* Assume we need not copy the relids bitmapsets */
 				return (Node *) newnode;
@@ -3004,7 +3023,7 @@ expression_tree_mutator(Node *node,
 				RangeTblFunction *rtfunc = (RangeTblFunction *) node;
 				RangeTblFunction *newnode;
 
-				FLATCOPY(newnode, rtfunc, RangeTblFunction);
+				FLATCOPY(newnode, rtfunc, RangeTblFunction, flags);
 				MUTATE(newnode->funcexpr, rtfunc->funcexpr, Node *);
 				/* Assume we need not copy the coldef info lists */
 				return (Node *) newnode;
@@ -3015,7 +3034,7 @@ expression_tree_mutator(Node *node,
 				TableSampleClause *tsc = (TableSampleClause *) node;
 				TableSampleClause *newnode;
 
-				FLATCOPY(newnode, tsc, TableSampleClause);
+				FLATCOPY(newnode, tsc, TableSampleClause, flags);
 				MUTATE(newnode->args, tsc->args, List *);
 				MUTATE(newnode->repeatable, tsc->repeatable, Expr *);
 				return (Node *) newnode;
@@ -3026,7 +3045,7 @@ expression_tree_mutator(Node *node,
 				TableFunc  *tf = (TableFunc *) node;
 				TableFunc  *newnode;
 
-				FLATCOPY(newnode, tf, TableFunc);
+				FLATCOPY(newnode, tf, TableFunc, flags);
 				MUTATE(newnode->ns_uris, tf->ns_uris, List *);
 				MUTATE(newnode->docexpr, tf->docexpr, Node *);
 				MUTATE(newnode->rowexpr, tf->rowexpr, Node *);
@@ -3076,7 +3095,7 @@ query_tree_mutator(Query *query,
 	{
 		Query	   *newquery;
 
-		FLATCOPY(newquery, query, Query);
+		FLATCOPY(newquery, query, Query, flags);
 		query = newquery;
 	}
 
@@ -3117,7 +3136,7 @@ range_table_mutator(List *rtable,
 		RangeTblEntry *rte = (RangeTblEntry *) lfirst(rt);
 		RangeTblEntry *newrte;
 
-		FLATCOPY(newrte, rte, RangeTblEntry);
+		FLATCOPY(newrte, rte, RangeTblEntry, flags);
 		switch (rte->rtekind)
 		{
 			case RTE_RELATION:
@@ -3132,7 +3151,7 @@ range_table_mutator(List *rtable,
 			case RTE_SUBQUERY:
 				if (!(flags & QTW_IGNORE_RT_SUBQUERIES))
 				{
-					CHECKFLATCOPY(newrte->subquery, rte->subquery, Query);
+					CHECKFLATCOPY(newrte->subquery, rte->subquery, Query, flags);
 					MUTATE(newrte->subquery, newrte->subquery, Query *);
 				}
 				else

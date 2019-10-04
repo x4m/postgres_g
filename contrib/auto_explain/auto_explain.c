@@ -17,6 +17,7 @@
 #include "access/parallel.h"
 #include "commands/explain.h"
 #include "executor/instrument.h"
+#include "optimizer/planner.h"
 #include "utils/guc.h"
 
 PG_MODULE_MAGIC;
@@ -334,6 +335,7 @@ explain_ExecutorEnd(QueryDesc *queryDesc)
 		if (msec >= auto_explain_log_min_duration)
 		{
 			ExplainState *es = NewExplainState();
+			instr_time planduration = queryDesc->plannedstmt->planDuration;
 
 			es->analyze = (queryDesc->instrument_options && auto_explain_log_analyze);
 			es->verbose = auto_explain_log_verbose;
@@ -367,8 +369,9 @@ explain_ExecutorEnd(QueryDesc *queryDesc)
 			 * often result in duplication.
 			 */
 			ereport(LOG,
-					(errmsg("duration: %.3f ms  plan:\n%s",
-							msec, es->str->data),
+					(errmsg("duration: %.3f ms planning: %.3f ms plan:\n%s",
+							msec, 1000 * INSTR_TIME_GET_DOUBLE(planduration),
+							es->str->data),
 					 errhidestmt(true)));
 
 			pfree(es->str->data);

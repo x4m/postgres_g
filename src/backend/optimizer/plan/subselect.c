@@ -709,7 +709,7 @@ convert_testexpr_mutator(Node *node,
 	}
 	return expression_tree_mutator(node,
 								   convert_testexpr_mutator,
-								   (void *) context);
+								   (void *) context, 0);
 }
 
 /*
@@ -1619,7 +1619,7 @@ replace_correlation_vars_mutator(Node *node, PlannerInfo *root)
 	}
 	return expression_tree_mutator(node,
 								   replace_correlation_vars_mutator,
-								   (void *) root);
+								   (void *) root, 0);
 }
 
 /*
@@ -1761,7 +1761,7 @@ process_sublinks_mutator(Node *node, process_sublinks_context *context)
 
 	return expression_tree_mutator(node,
 								   process_sublinks_mutator,
-								   (void *) &locContext);
+								   (void *) &locContext, 0);
 }
 
 /*

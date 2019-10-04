@@ -939,7 +939,7 @@ advance_transition_function(AggState *aggstate,
 								   pertrans->transtypeByVal,
 								   pertrans->transtypeLen);
 		}
-		if (!pergroupstate->transValueIsNull)
+		if (!(pergroupstate->noTransValue || pergroupstate->transValueIsNull))
 		{
 			if (DatumIsReadWriteExpandedObject(pergroupstate->transValue,
 											   false,
@@ -1292,7 +1292,7 @@ advance_combine_function(AggState *aggstate,
 								   pertrans->transtypeByVal,
 								   pertrans->transtypeLen);
 		}
-		if (!pergroupstate->transValueIsNull)
+		if (!(pergroupstate->noTransValue || pergroupstate->transValueIsNull))
 		{
 			if (DatumIsReadWriteExpandedObject(pergroupstate->transValue,
 											   false,

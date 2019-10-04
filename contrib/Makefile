@@ -49,7 +49,12 @@ SUBDIRS = \
 		tsm_system_rows \
 		tsm_system_time \
 		unaccent	\
-		vacuumlo
+		vacuumlo	\
+		mchar       	\
+		fulleq          \
+		fasttrun	\
+		online_analyze	\
+		plantuner
 
 ifeq ($(with_openssl),yes)
 SUBDIRS += sslinfo
