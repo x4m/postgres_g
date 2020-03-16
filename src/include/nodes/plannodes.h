@@ -20,6 +20,7 @@
 #include "nodes/bitmapset.h"
 #include "nodes/lockoptions.h"
 #include "nodes/primnodes.h"
+#include "portability/instr_time.h"
 
 
 /* ----------------------------------------------------------------
@@ -95,6 +96,8 @@ typedef struct PlannedStmt
 	List	   *paramExecTypes; /* type OIDs for PARAM_EXEC Params */
 
 	Node	   *utilityStmt;	/* non-null if this is utility stmt */
+
+	instr_time	planDuration;	/* time spent on planning */
 
 	/* statement location in source string (copied from Query) */
 	int			stmt_location;	/* start location, or -1 if unknown */

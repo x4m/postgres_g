@@ -670,6 +670,7 @@ extern OprInfo *findOprByOid(Oid oid);
 extern CollInfo *findCollationByOid(Oid oid);
 extern NamespaceInfo *findNamespaceByOid(Oid oid);
 extern ExtensionInfo *findExtensionByOid(Oid oid);
+extern IndxInfo *findIndexByOid(Oid oid);
 
 extern void setExtensionMembership(ExtensionMemberId *extmems, int nextmems);
 extern ExtensionInfo *findOwningExtension(CatalogId catalogId);
@@ -698,7 +699,8 @@ extern ConvInfo *getConversions(Archive *fout, int *numConversions);
 extern TableInfo *getTables(Archive *fout, int *numTables);
 extern void getOwnedSeqs(Archive *fout, TableInfo tblinfo[], int numTables);
 extern InhInfo *getInherits(Archive *fout, int *numInherits);
-extern void getIndexes(Archive *fout, TableInfo tblinfo[], int numTables);
+extern IndxInfo *getIndexes(Archive *fout, TableInfo tblinfo[], int numTables,
+						int *numIndexes);
 extern void getExtendedStatistics(Archive *fout);
 extern void getConstraints(Archive *fout, TableInfo tblinfo[], int numTables);
 extern RuleInfo *getRules(Archive *fout, int *numRules);

@@ -14,6 +14,7 @@
 #ifndef PLANMAIN_H
 #define PLANMAIN_H
 
+#include "optimizer/paths.h"
 #include "nodes/plannodes.h"
 #include "nodes/relation.h"
 
@@ -58,6 +59,9 @@ extern Plan *change_plan_targetlist(Plan *subplan, List *tlist,
 extern Plan *materialize_finished_plan(Plan *subplan);
 extern bool is_projection_capable_path(Path *path);
 extern bool is_projection_capable_plan(Plan *plan);
+
+extern Node * fix_indexqual_operand(Node *node, IndexOptInfo *index, int
+									indexcol);
 
 /* External use of these functions is deprecated: */
 extern Sort *make_sort_from_sortclauses(List *sortcls, Plan *lefttree);
@@ -105,13 +109,18 @@ extern void match_foreign_keys_to_quals(PlannerInfo *root);
 /*
  * prototypes for plan/analyzejoins.c
  */
-extern List *remove_useless_joins(PlannerInfo *root, List *joinlist);
+extern List *remove_useless_left_joins(PlannerInfo *root, List *joinlist);
 extern void reduce_unique_semijoins(PlannerInfo *root);
 extern bool query_supports_distinctness(Query *query);
 extern bool query_is_distinct_for(Query *query, List *colnos, List *opids);
+
 extern bool innerrel_is_unique(PlannerInfo *root,
 				   Relids joinrelids, Relids outerrelids, RelOptInfo *innerrel,
-				   JoinType jointype, List *restrictlist, bool force_cache);
+				   JoinType jointype, List *restrictlist, bool force_cache,
+				   UniqueIndexInfo **index_info);
+
+extern void remove_useless_self_joins(PlannerInfo *root, List **jointree,
+									  List *tlist);
 
 /*
  * prototypes for plan/setrefs.c

@@ -729,6 +729,9 @@ set_plain_rel_pathlist(PlannerInfo *root, RelOptInfo *rel, RangeTblEntry *rte)
 	/* Consider index scans */
 	create_index_paths(root, rel);
 
+	/* Consider index scans with rewrited quals */
+	keybased_rewrite_index_paths(root, rel);
+
 	/* Consider TID scans */
 	create_tidscan_paths(root, rel);
 }
@@ -1601,7 +1604,8 @@ add_paths_to_append_rel(PlannerInfo *root, RelOptInfo *rel,
 	if (subpaths_valid)
 		add_path(rel, (Path *) create_append_path(root, rel, subpaths, NIL,
 												  NULL, 0, false,
-												  partitioned_rels, -1));
+												  partitioned_rels, -1,
+												  false, NIL));
 
 	/*
 	 * Consider an append of unordered, unparameterized partial paths.  Make
@@ -1644,7 +1648,8 @@ add_paths_to_append_rel(PlannerInfo *root, RelOptInfo *rel,
 		appendpath = create_append_path(root, rel, NIL, partial_subpaths,
 										NULL, parallel_workers,
 										enable_parallel_append,
-										partitioned_rels, -1);
+										partitioned_rels, -1,
+										false, NIL);
 
 		/*
 		 * Make sure any subsequent partial paths use the same row count
@@ -1693,7 +1698,8 @@ add_paths_to_append_rel(PlannerInfo *root, RelOptInfo *rel,
 		appendpath = create_append_path(root, rel, pa_nonpartial_subpaths,
 										pa_partial_subpaths,
 										NULL, parallel_workers, true,
-										partitioned_rels, partial_rows);
+										partitioned_rels, partial_rows,
+										false, NIL);
 		add_partial_path(rel, (Path *) appendpath);
 	}
 
@@ -1755,7 +1761,8 @@ add_paths_to_append_rel(PlannerInfo *root, RelOptInfo *rel,
 			add_path(rel, (Path *)
 					 create_append_path(root, rel, subpaths, NIL,
 										required_outer, 0, false,
-										partitioned_rels, -1));
+										partitioned_rels, -1,
+										false, NIL));
 	}
 }
 
@@ -2024,7 +2031,8 @@ set_dummy_rel_pathlist(RelOptInfo *rel)
 	/* Set up the dummy path */
 	add_path(rel, (Path *) create_append_path(NULL, rel, NIL, NIL,
 											  rel->lateral_relids,
-											  0, false, NIL, -1));
+											  0, false, NIL, -1,
+											  false, NIL));
 
 	/*
 	 * We set the cheapest-path fields immediately, just in case they were

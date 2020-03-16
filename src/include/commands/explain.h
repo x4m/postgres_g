@@ -45,6 +45,7 @@ typedef struct ExplainState
 	List	   *rtable_names;	/* alias names for RTEs */
 	List	   *deparse_cxt;	/* context list for deparsing expressions */
 	Bitmapset  *printed_subplans;	/* ids of SubPlans we've printed */
+	uint64		es_processed;	/* sum of queryDesc->estate->es_processed */
 } ExplainState;
 
 /* Hook for plugins to get control in ExplainOneQuery() */
@@ -63,7 +64,8 @@ extern PGDLLIMPORT explain_get_index_name_hook_type explain_get_index_name_hook;
 
 
 extern void ExplainQuery(ParseState *pstate, ExplainStmt *stmt, const char *queryString,
-			 ParamListInfo params, QueryEnvironment *queryEnv, DestReceiver *dest);
+			 ParamListInfo params, QueryEnvironment *queryEnv, DestReceiver *dest,
+			 uint64 *processed);
 
 extern ExplainState *NewExplainState(void);
 

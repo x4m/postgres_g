@@ -1928,8 +1928,8 @@ USING (name);
 ------+----+----
  bb   | 12 | 13
  cc   | 22 | 23
- dd   |    | 33
  ee   | 42 |   
+ dd   |    | 33
 (4 rows)
 
 -- Cases with non-nullable expressions in subquery results;
@@ -1963,8 +1963,8 @@ NATURAL FULL JOIN
 ------+------+------+------+------
  bb   |   12 |    2 |   13 |    3
  cc   |   22 |    2 |   23 |    3
- dd   |      |      |   33 |    3
  ee   |   42 |    2 |      |     
+ dd   |      |      |   33 |    3
 (4 rows)
 
 SELECT * FROM
@@ -4187,18 +4187,20 @@ select d.* from d left join (select * from b group by b.id, b.c_id) s
 explain (costs off)
 select d.* from d left join (select distinct * from b) s
   on d.a = s.id;
-              QUERY PLAN              
---------------------------------------
- Merge Right Join
-   Merge Cond: (b.id = d.a)
-   ->  Unique
-         ->  Sort
-               Sort Key: b.id, b.c_id
-               ->  Seq Scan on b
+                 QUERY PLAN                  
+---------------------------------------------
+ Merge Left Join
+   Merge Cond: (d.a = s.id)
    ->  Sort
          Sort Key: d.a
          ->  Seq Scan on d
-(9 rows)
+   ->  Sort
+         Sort Key: s.id
+         ->  Subquery Scan on s
+               ->  HashAggregate
+                     Group Key: b.id, b.c_id
+                     ->  Seq Scan on b
+(11 rows)
 
 -- check join removal works when uniqueness of the join condition is enforced
 -- by a UNION
@@ -4427,6 +4429,226 @@ select * from
 ----+----+----+----
 (0 rows)
 
+--
+-- test that semi- or inner self-joins on a unique column are removed
+--
+-- enable only nestloop to get more predictable plans
+set enable_hashjoin to off;
+set enable_mergejoin to off;
+create table sj (a int unique, b int);
+insert into sj values (1, null), (null, 2), (2, 1);
+analyze sj;
+select p.* from sj p, sj q where q.a = p.a and q.b = q.a - 1;
+ a | b 
+---+---
+ 2 | 1
+(1 row)
+
+explain (costs off)
+select p.* from sj p, sj q where q.a = p.a and q.b = q.a - 1;
+                  QUERY PLAN                   
+-----------------------------------------------
+ Seq Scan on sj q
+   Filter: ((a IS NOT NULL) AND (b = (a - 1)))
+(2 rows)
+
+explain (costs off)
+select * from sj p
+where exists (select * from sj q
+				where q.a = p.a and q.b < 10);
+                QUERY PLAN                
+------------------------------------------
+ Seq Scan on sj q
+   Filter: ((a IS NOT NULL) AND (b < 10))
+(2 rows)
+
+-- Double self-join removal.
+-- Use a condition on "b + 1", not on "b", for the second join, so that
+-- the equivalence class is different from the first one, and we can
+-- test the non-ec code path.
+explain (costs off)
+select * from sj t1 join sj t2 on t1.a = t2.a and t1.b = t2.b
+	join sj t3 on t2.a = t3.a and t2.b + 1 = t3.b + 1;
+                                QUERY PLAN                                 
+---------------------------------------------------------------------------
+ Seq Scan on sj t3
+   Filter: ((a IS NOT NULL) AND (b IS NOT NULL) AND ((b + 1) IS NOT NULL))
+(2 rows)
+
+-- subselect that references the removed relation
+explain (costs off)
+select t1.a, (select a from sj where a = t2.a and a = t1.a)
+from sj t1, sj t2
+where t1.a = t2.a;
+                QUERY PLAN                
+------------------------------------------
+ Seq Scan on sj t2
+   Filter: (a IS NOT NULL)
+   SubPlan 1
+     ->  Result
+           One-Time Filter: (t2.a = t2.a)
+           ->  Seq Scan on sj
+                 Filter: (a = t2.a)
+(7 rows)
+
+-- self-join under outer join
+explain (costs off)
+select * from sj x join sj y on x.a = y.a
+left join int8_tbl z on x.a = z.q1;
+             QUERY PLAN             
+------------------------------------
+ Nested Loop Left Join
+   Join Filter: (y.a = z.q1)
+   ->  Seq Scan on sj y
+         Filter: (a IS NOT NULL)
+   ->  Materialize
+         ->  Seq Scan on int8_tbl z
+(6 rows)
+
+explain (costs off)
+select * from sj x join sj y on x.a = y.a
+left join int8_tbl z on y.a = z.q1;
+             QUERY PLAN             
+------------------------------------
+ Nested Loop Left Join
+   Join Filter: (y.a = z.q1)
+   ->  Seq Scan on sj y
+         Filter: (a IS NOT NULL)
+   ->  Materialize
+         ->  Seq Scan on int8_tbl z
+(6 rows)
+
+-- Test that placeholders are updated correctly after join removal
+explain (costs off)
+select * from (values (1)) x
+left join (select coalesce(y.q1, 1) from int8_tbl y
+	right join sj j1 inner join sj j2 on j1.a = j2.a
+	on true) z
+on true;
+                QUERY PLAN                
+------------------------------------------
+ Nested Loop Left Join
+   ->  Result
+   ->  Nested Loop Left Join
+         ->  Seq Scan on sj j2
+               Filter: (a IS NOT NULL)
+         ->  Materialize
+               ->  Seq Scan on int8_tbl y
+(7 rows)
+
+-- update lateral references and range table entry reference 
+explain (verbose, costs off)
+select 1 from (select x.* from sj x, sj y where x.a = y.a) q,
+  lateral generate_series(1, q.a) gs(i);
+                      QUERY PLAN                      
+------------------------------------------------------
+ Nested Loop
+   Output: 1
+   ->  Seq Scan on public.sj y
+         Output: y.a, y.b
+         Filter: (y.a IS NOT NULL)
+   ->  Function Scan on pg_catalog.generate_series gs
+         Output: gs.i
+         Function Call: generate_series(1, y.a)
+(8 rows)
+
+explain (verbose, costs off)
+select 1 from (select y.* from sj x, sj y where x.a = y.a) q,
+  lateral generate_series(1, q.a) gs(i);
+                      QUERY PLAN                      
+------------------------------------------------------
+ Nested Loop
+   Output: 1
+   ->  Seq Scan on public.sj y
+         Output: y.a, y.b
+         Filter: (y.a IS NOT NULL)
+   ->  Function Scan on pg_catalog.generate_series gs
+         Output: gs.i
+         Function Call: generate_series(1, y.a)
+(8 rows)
+
+-- Test that a non-EC-derived join clause is processed correctly. Use an
+-- outer join so that we can't form an EC.
+explain (costs off) select * from sj p join sj q on p.a = q.a
+  left join sj r on p.a + q.a = r.a;
+             QUERY PLAN             
+------------------------------------
+ Nested Loop Left Join
+   Join Filter: ((q.a + q.a) = r.a)
+   ->  Seq Scan on sj q
+         Filter: (a IS NOT NULL)
+   ->  Materialize
+         ->  Seq Scan on sj r
+(6 rows)
+
+-- Check that attr_needed is updated correctly after self-join removal. In
+-- this test, k1.b is required at either j1 or j2. If this info is lost,
+-- join targetlist for (k1, k2) will not contain k1.b. Use index scan for
+-- k1 so that we don't get 'b' from physical tlist used for seqscan. Also
+-- disable reordering of joins because this test depends on a particular
+-- join tree.
+create table sk (a int, b int);
+create index sk_a_idx on sk(a);
+set join_collapse_limit to 1;
+set enable_seqscan to off;
+explain (costs off) select 1 from
+	(sk k1 join sk k2 on k1.a = k2.a)
+	join (sj j1 join sj j2 on j1.a = j2.a) on j1.b = k1.b;
+                     QUERY PLAN                      
+-----------------------------------------------------
+ Nested Loop
+   Join Filter: (k1.b = j2.b)
+   ->  Nested Loop
+         ->  Index Scan using sk_a_idx on sk k1
+         ->  Index Only Scan using sk_a_idx on sk k2
+               Index Cond: (a = k1.a)
+   ->  Materialize
+         ->  Index Scan using sj_a_key on sj j2
+               Index Cond: (a IS NOT NULL)
+(9 rows)
+
+explain (costs off) select 1 from
+	(sk k1 join sk k2 on k1.a = k2.a)
+	join (sj j1 join sj j2 on j1.a = j2.a) on j2.b = k1.b;
+                     QUERY PLAN                      
+-----------------------------------------------------
+ Nested Loop
+   Join Filter: (k1.b = j2.b)
+   ->  Nested Loop
+         ->  Index Scan using sk_a_idx on sk k1
+         ->  Index Only Scan using sk_a_idx on sk k2
+               Index Cond: (a = k1.a)
+   ->  Materialize
+         ->  Index Scan using sj_a_key on sj j2
+               Index Cond: (a IS NOT NULL)
+(9 rows)
+
+reset join_collapse_limit;
+reset enable_seqscan;
+-- If index conditions are different for each side, we won't select the same
+-- row on both sides, so the join can't be removed.
+create table sl(a int, b int);
+create unique index sl_ab on sl(a, b);
+explain (costs off)
+select * from sl t1, sl t2
+where t1.a = t2.a and t1.b = 1 and t2.b = 2;
+                  QUERY PLAN                  
+----------------------------------------------
+ Nested Loop
+   Join Filter: (t1.a = t2.a)
+   ->  Bitmap Heap Scan on sl t1
+         Recheck Cond: (b = 1)
+         ->  Bitmap Index Scan on sl_ab
+               Index Cond: (b = 1)
+   ->  Materialize
+         ->  Bitmap Heap Scan on sl t2
+               Recheck Cond: (b = 2)
+               ->  Bitmap Index Scan on sl_ab
+                     Index Cond: (b = 2)
+(11 rows)
+
+reset enable_hashjoin;
+reset enable_mergejoin;
 --
 -- Test hints given on incorrect column references are useful
 --
@@ -4835,15 +5057,15 @@ select * from
   lateral (values(x.q1,y.q1,y.q2)) v(xq1,yq1,yq2);
         q1        |        q2         |        q1        |        q2         |       xq1        |       yq1        |        yq2        
 ------------------+-------------------+------------------+-------------------+------------------+------------------+-------------------
-              123 |               456 |                  |                   |              123 |                  |                  
-              123 |  4567890123456789 | 4567890123456789 | -4567890123456789 |              123 | 4567890123456789 | -4567890123456789
-              123 |  4567890123456789 | 4567890123456789 |  4567890123456789 |              123 | 4567890123456789 |  4567890123456789
-              123 |  4567890123456789 | 4567890123456789 |               123 |              123 | 4567890123456789 |               123
- 4567890123456789 |               123 |              123 |  4567890123456789 | 4567890123456789 |              123 |  4567890123456789
  4567890123456789 |               123 |              123 |               456 | 4567890123456789 |              123 |               456
- 4567890123456789 |  4567890123456789 | 4567890123456789 | -4567890123456789 | 4567890123456789 | 4567890123456789 | -4567890123456789
- 4567890123456789 |  4567890123456789 | 4567890123456789 |  4567890123456789 | 4567890123456789 | 4567890123456789 |  4567890123456789
+ 4567890123456789 |               123 |              123 |  4567890123456789 | 4567890123456789 |              123 |  4567890123456789
  4567890123456789 |  4567890123456789 | 4567890123456789 |               123 | 4567890123456789 | 4567890123456789 |               123
+              123 |  4567890123456789 | 4567890123456789 |               123 |              123 | 4567890123456789 |               123
+ 4567890123456789 |  4567890123456789 | 4567890123456789 |  4567890123456789 | 4567890123456789 | 4567890123456789 |  4567890123456789
+              123 |  4567890123456789 | 4567890123456789 |  4567890123456789 |              123 | 4567890123456789 |  4567890123456789
+ 4567890123456789 |  4567890123456789 | 4567890123456789 | -4567890123456789 | 4567890123456789 | 4567890123456789 | -4567890123456789
+              123 |  4567890123456789 | 4567890123456789 | -4567890123456789 |              123 | 4567890123456789 | -4567890123456789
+              123 |               456 |                  |                   |              123 |                  |                  
  4567890123456789 | -4567890123456789 |                  |                   | 4567890123456789 |                  |                  
 (10 rows)
 
@@ -4852,15 +5074,15 @@ select * from
   lateral (select x.q1,y.q1,y.q2) v(xq1,yq1,yq2);
         q1        |        q2         |        q1        |        q2         |       xq1        |       yq1        |        yq2        
 ------------------+-------------------+------------------+-------------------+------------------+------------------+-------------------
-              123 |               456 |                  |                   |              123 |                  |                  
-              123 |  4567890123456789 | 4567890123456789 | -4567890123456789 |              123 | 4567890123456789 | -4567890123456789
-              123 |  4567890123456789 | 4567890123456789 |  4567890123456789 |              123 | 4567890123456789 |  4567890123456789
-              123 |  4567890123456789 | 4567890123456789 |               123 |              123 | 4567890123456789 |               123
- 4567890123456789 |               123 |              123 |  4567890123456789 | 4567890123456789 |              123 |  4567890123456789
  4567890123456789 |               123 |              123 |               456 | 4567890123456789 |              123 |               456
- 4567890123456789 |  4567890123456789 | 4567890123456789 | -4567890123456789 | 4567890123456789 | 4567890123456789 | -4567890123456789
- 4567890123456789 |  4567890123456789 | 4567890123456789 |  4567890123456789 | 4567890123456789 | 4567890123456789 |  4567890123456789
+ 4567890123456789 |               123 |              123 |  4567890123456789 | 4567890123456789 |              123 |  4567890123456789
  4567890123456789 |  4567890123456789 | 4567890123456789 |               123 | 4567890123456789 | 4567890123456789 |               123
+              123 |  4567890123456789 | 4567890123456789 |               123 |              123 | 4567890123456789 |               123
+ 4567890123456789 |  4567890123456789 | 4567890123456789 |  4567890123456789 | 4567890123456789 | 4567890123456789 |  4567890123456789
+              123 |  4567890123456789 | 4567890123456789 |  4567890123456789 |              123 | 4567890123456789 |  4567890123456789
+ 4567890123456789 |  4567890123456789 | 4567890123456789 | -4567890123456789 | 4567890123456789 | 4567890123456789 | -4567890123456789
+              123 |  4567890123456789 | 4567890123456789 | -4567890123456789 |              123 | 4567890123456789 | -4567890123456789
+              123 |               456 |                  |                   |              123 |                  |                  
  4567890123456789 | -4567890123456789 |                  |                   | 4567890123456789 |                  |                  
 (10 rows)
 
@@ -4887,24 +5109,24 @@ select v.* from
   lateral (select x.q1,y.q1 union all select x.q2,y.q2) v(vx,vy);
         vx         |        vy         
 -------------------+-------------------
-               123 |                  
-               456 |                  
-               123 |  4567890123456789
-  4567890123456789 | -4567890123456789
-               123 |  4567890123456789
-  4567890123456789 |  4567890123456789
-               123 |  4567890123456789
-  4567890123456789 |               123
-  4567890123456789 |               123
-               123 |  4567890123456789
   4567890123456789 |               123
                123 |               456
-  4567890123456789 |  4567890123456789
-  4567890123456789 | -4567890123456789
-  4567890123456789 |  4567890123456789
-  4567890123456789 |  4567890123456789
+  4567890123456789 |               123
+               123 |  4567890123456789
   4567890123456789 |  4567890123456789
   4567890123456789 |               123
+               123 |  4567890123456789
+  4567890123456789 |               123
+  4567890123456789 |  4567890123456789
+  4567890123456789 |  4567890123456789
+               123 |  4567890123456789
+  4567890123456789 |  4567890123456789
+  4567890123456789 |  4567890123456789
+  4567890123456789 | -4567890123456789
+               123 |  4567890123456789
+  4567890123456789 | -4567890123456789
+               123 |                  
+               456 |                  
   4567890123456789 |                  
  -4567890123456789 |                  
 (20 rows)
@@ -5234,15 +5456,15 @@ select * from
          Hash Cond: (d.q1 = c.q2)
          ->  Nested Loop
                Output: a.q1, a.q2, b.q1, d.q1, (COALESCE(b.q2, '42'::bigint)), (COALESCE((COALESCE(b.q2, '42'::bigint)), d.q2))
-               ->  Hash Left Join
+               ->  Hash Right Join
                      Output: a.q1, a.q2, b.q1, (COALESCE(b.q2, '42'::bigint))
-                     Hash Cond: (a.q2 = b.q1)
-                     ->  Seq Scan on public.int8_tbl a
-                           Output: a.q1, a.q2
+                     Hash Cond: (b.q1 = a.q2)
+                     ->  Seq Scan on public.int8_tbl b
+                           Output: b.q1, COALESCE(b.q2, '42'::bigint)
                      ->  Hash
-                           Output: b.q1, (COALESCE(b.q2, '42'::bigint))
-                           ->  Seq Scan on public.int8_tbl b
-                                 Output: b.q1, COALESCE(b.q2, '42'::bigint)
+                           Output: a.q1, a.q2
+                           ->  Seq Scan on public.int8_tbl a
+                                 Output: a.q1, a.q2
                ->  Seq Scan on public.int8_tbl d
                      Output: d.q1, COALESCE((COALESCE(b.q2, '42'::bigint)), d.q2)
          ->  Hash
@@ -5783,44 +6005,39 @@ select * from j1 natural join j2;
 explain (verbose, costs off)
 select * from j1
 inner join (select distinct id from j3) j3 on j1.id = j3.id;
-               QUERY PLAN                
------------------------------------------
+            QUERY PLAN             
+-----------------------------------
  Nested Loop
    Output: j1.id, j3.id
    Inner Unique: true
    Join Filter: (j1.id = j3.id)
-   ->  Unique
+   ->  HashAggregate
          Output: j3.id
-         ->  Sort
+         Group Key: j3.id
+         ->  Seq Scan on public.j3
                Output: j3.id
-               Sort Key: j3.id
-               ->  Seq Scan on public.j3
-                     Output: j3.id
    ->  Seq Scan on public.j1
          Output: j1.id
-(13 rows)
+(11 rows)
 
 -- ensure group by clause allows the inner to become unique
 explain (verbose, costs off)
 select * from j1
 inner join (select id from j3 group by id) j3 on j1.id = j3.id;
-               QUERY PLAN                
------------------------------------------
+            QUERY PLAN             
+-----------------------------------
  Nested Loop
    Output: j1.id, j3.id
    Inner Unique: true
    Join Filter: (j1.id = j3.id)
-   ->  Group
+   ->  HashAggregate
          Output: j3.id
          Group Key: j3.id
-         ->  Sort
+         ->  Seq Scan on public.j3
                Output: j3.id
-               Sort Key: j3.id
-               ->  Seq Scan on public.j3
-                     Output: j3.id
    ->  Seq Scan on public.j1
          Output: j1.id
-(14 rows)
+(11 rows)
 
 drop table j1;
 drop table j2;
@@ -5900,6 +6117,8 @@ left join j2 on j1.id1 = j2.id1 where j1.id2 = 1;
          Output: j2.id1, j2.id2
 (8 rows)
 
+-- !!!FIXME this test doesn't break if I set skip_mark_restore to true.
+-- Also should avoid unique self join removal by using two different relations.
 -- validate logic in merge joins which skips mark and restore.
 -- it should only do this if all quals which were used to detect the unique
 -- are present as join quals, and not plain quals.
@@ -5911,14 +6130,11 @@ create index j1_id1_idx on j1 (id1) where id1 % 1000 = 1;
 explain (costs off) select * from j1 j1
 inner join j1 j2 on j1.id1 = j2.id1 and j1.id2 = j2.id2
 where j1.id1 % 1000 = 1 and j2.id1 % 1000 = 1;
-                 QUERY PLAN                 
---------------------------------------------
- Merge Join
-   Merge Cond: (j1.id1 = j2.id1)
-   Join Filter: (j1.id2 = j2.id2)
-   ->  Index Scan using j1_id1_idx on j1
-   ->  Index Scan using j1_id1_idx on j1 j2
-(5 rows)
+                                 QUERY PLAN                                 
+----------------------------------------------------------------------------
+ Seq Scan on j1 j2
+   Filter: ((id1 IS NOT NULL) AND (id2 IS NOT NULL) AND ((id1 % 1000) = 1))
+(2 rows)
 
 select * from j1 j1
 inner join j1 j2 on j1.id1 = j2.id1 and j1.id2 = j2.id2

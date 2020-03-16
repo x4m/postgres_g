@@ -23,6 +23,8 @@ ifdef MAX_CONNECTIONS
 MAXCONNOPT += --max-connections=$(MAX_CONNECTIONS)
 endif
 
+EXTRA_INSTALL += contrib/online_analyze contrib/plantuner contrib/mchar
+
 # stuff to pass into build of pg_regress
 EXTRADEFS = '-DHOST_TUPLE="$(host_tuple)"' \
 	'-DSHELLPROG="$(SHELL)"' \

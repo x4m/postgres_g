@@ -2575,7 +2575,7 @@ estimate_expression_value(PlannerInfo *root, Node *node)
  */
 #define ece_generic_processing(node) \
 	expression_tree_mutator((Node *) (node), eval_const_expressions_mutator, \
-							(void *) context)
+							(void *) context, 0)
 
 /*
  * Check whether all arguments of the given node were reduced to Consts.
@@ -2703,7 +2703,7 @@ eval_const_expressions_mutator(Node *node,
 				args = (List *)
 					expression_tree_mutator((Node *) args,
 											eval_const_expressions_mutator,
-											(void *) context);
+											(void *) context, 0);
 				/* ... and the filter expression, which isn't */
 				aggfilter = (Expr *)
 					eval_const_expressions_mutator((Node *) expr->aggfilter,
@@ -2847,7 +2847,7 @@ eval_const_expressions_mutator(Node *node,
 				 */
 				args = (List *) expression_tree_mutator((Node *) expr->args,
 														eval_const_expressions_mutator,
-														(void *) context);
+														(void *) context, 0);
 
 				/*
 				 * We must do our own check for NULLs because DistinctExpr has
@@ -4141,7 +4141,7 @@ simplify_function(Oid funcid, Oid result_type, int32 result_typmod,
 		args = expand_function_arguments(args, result_type, func_tuple);
 		args = (List *) expression_tree_mutator((Node *) args,
 												eval_const_expressions_mutator,
-												(void *) context);
+												(void *) context, 0);
 		/* Argument processing done, give it back to the caller */
 		*args_p = args;
 	}
@@ -4899,7 +4899,7 @@ substitute_actual_parameters_mutator(Node *node,
 		return list_nth(context->args, param->paramid - 1);
 	}
 	return expression_tree_mutator(node, substitute_actual_parameters_mutator,
-								   (void *) context);
+								   (void *) context, 0);
 }
 
 /*
@@ -5363,7 +5363,7 @@ substitute_actual_srf_parameters_mutator(Node *node,
 	}
 	return expression_tree_mutator(node,
 								   substitute_actual_srf_parameters_mutator,
-								   (void *) context);
+								   (void *) context, 0);
 }
 
 /*

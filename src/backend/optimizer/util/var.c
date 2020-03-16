@@ -779,7 +779,7 @@ flatten_join_alias_vars_mutator(Node *node,
 
 		phv = (PlaceHolderVar *) expression_tree_mutator(node,
 														 flatten_join_alias_vars_mutator,
-														 (void *) context);
+														 (void *) context, 0);
 		/* now fix PlaceHolderVar's relid sets */
 		if (phv->phlevelsup == context->sublevels_up)
 		{
@@ -815,7 +815,7 @@ flatten_join_alias_vars_mutator(Node *node,
 	Assert(!IsA(node, MinMaxAggInfo));
 
 	return expression_tree_mutator(node, flatten_join_alias_vars_mutator,
-								   (void *) context);
+								   (void *) context, 0);
 }
 
 /*

@@ -1112,7 +1112,7 @@ replace_rte_variables(Node *node, int target_varno, int sublevels_up,
 	result = query_or_expression_tree_mutator(node,
 											  replace_rte_variables_mutator,
 											  (void *) &context,
-											  0);
+											  QTW_DONT_COPY_DEFAULT);
 
 	if (context.inserted_sublink)
 	{
@@ -1182,14 +1182,15 @@ replace_rte_variables_mutator(Node *node,
 		newnode = query_tree_mutator((Query *) node,
 									 replace_rte_variables_mutator,
 									 (void *) context,
-									 0);
+									 QTW_DONT_COPY_DEFAULT);
 		newnode->hasSubLinks |= context->inserted_sublink;
 		context->inserted_sublink = save_inserted_sublink;
 		context->sublevels_up--;
 		return (Node *) newnode;
 	}
-	return expression_tree_mutator(node, replace_rte_variables_mutator,
-								   (void *) context);
+
+	return  expression_tree_mutator(node, replace_rte_variables_mutator,
+									(void *) context, QTW_DONT_COPY_DEFAULT);
 }
 
 
@@ -1344,7 +1345,7 @@ map_variable_attnos_mutator(Node *node,
 		return (Node *) newnode;
 	}
 	return expression_tree_mutator(node, map_variable_attnos_mutator,
-								   (void *) context);
+								   (void *) context, 0);
 }
 
 Node *

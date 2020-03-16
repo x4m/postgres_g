@@ -54,6 +54,7 @@ static DumpableObject **oprinfoindex;
 static DumpableObject **collinfoindex;
 static DumpableObject **nspinfoindex;
 static DumpableObject **extinfoindex;
+static DumpableObject **idxinfoindex;
 static int	numTables;
 static int	numTypes;
 static int	numFuncs;
@@ -61,6 +62,7 @@ static int	numOperators;
 static int	numCollations;
 static int	numNamespaces;
 static int	numExtensions;
+static int	numIndexes;
 
 /* This is an array of object identities, not actual DumpableObjects */
 static ExtensionMemberId *extmembers;
@@ -77,9 +79,8 @@ static int	ExtensionMemberIdCompare(const void *p1, const void *p2);
 static void findParentsByOid(TableInfo *self,
 				 InhInfo *inhinfo, int numInherits);
 static int	strInArray(const char *pattern, char **arr, int arr_size);
-static IndxInfo *findIndexByOid(Oid oid, DumpableObject **idxinfoindex,
-			   int numIndexes);
-
+static IndxInfo *findTableIndexByOid(Oid oid,
+				DumpableObject **idxinfoTableIndex, int numTableIndexes);
 
 /*
  * getSchemaData
@@ -96,6 +97,7 @@ getSchemaData(Archive *fout, int *numTablesPtr)
 	NamespaceInfo *nspinfo;
 	ExtensionInfo *extinfo;
 	InhInfo    *inhinfo;
+	IndxInfo   *idxinfo;
 	int			numAggregates;
 	int			numInherits;
 	int			numRules;
@@ -258,7 +260,8 @@ getSchemaData(Archive *fout, int *numTablesPtr)
 
 	if (g_verbose)
 		write_msg(NULL, "reading indexes\n");
-	getIndexes(fout, tblinfo, numTables);
+	idxinfo = getIndexes(fout, tblinfo, numTables, &numIndexes);
+	idxinfoindex = buildIndexArray(idxinfo, numIndexes, sizeof(IndxInfo));
 
 	if (g_verbose)
 		write_msg(NULL, "flagging indexes in partitioned tables\n");
@@ -414,7 +417,7 @@ flagInhIndexes(Archive *fout, TableInfo tblinfo[], int numTables)
 			if (index->parentidx == 0)
 				continue;
 
-			parentidx = findIndexByOid(index->parentidx,
+			parentidx = findTableIndexByOid(index->parentidx,
 									   parentIndexArray[parenttbl->dobj.dumpId],
 									   parenttbl->numIndexes);
 			if (parentidx == NULL)
@@ -936,15 +939,26 @@ findExtensionByOid(Oid oid)
 
 /*
  * findIndexByOid
- *		find the entry of the index with the given oid
- *
- * This one's signature is different from the previous ones because we lack a
- * global array of all indexes, so caller must pass their array as argument.
+ *	  find the entry (in idxinfo) of the index with the given oid
+ *	  returns NULL if not found
  */
-static IndxInfo *
-findIndexByOid(Oid oid, DumpableObject **idxinfoindex, int numIndexes)
+IndxInfo *
+findIndexByOid(Oid oid)
 {
 	return (IndxInfo *) findObjectByOid(oid, idxinfoindex, numIndexes);
+}
+
+/*
+ * findTableIndexByOid
+ *		find the entry of the index with the given oid
+ *
+ * This one's signature is different from the previous ones because we use
+ * it to find an index of specific table who passes its index array as argument.
+ */
+static IndxInfo *
+findTableIndexByOid(Oid oid, DumpableObject **tbl_idxinfoindex, int tblNumIndexes)
+{
+	return (IndxInfo *) findObjectByOid(oid, tbl_idxinfoindex, tblNumIndexes);
 }
 
 /*

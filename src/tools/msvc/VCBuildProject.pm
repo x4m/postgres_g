@@ -49,8 +49,8 @@ EOF
 		'Release',
 		{
 			defs     => "",
-			wholeopt => 0,
-			opt      => 3,
+			wholeopt => 1,
+			opt      => 2,
 			strpool  => 'true',
 			runtime  => 2
 		});

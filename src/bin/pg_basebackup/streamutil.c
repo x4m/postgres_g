@@ -49,6 +49,7 @@ char	   *dbhost = NULL;
 char	   *dbuser = NULL;
 char	   *dbport = NULL;
 char	   *dbname = NULL;
+int			useumask = 0;	/* 0=auto, -1=never, 1=always */
 int			dbgetpassword = 0;	/* 0=auto, -1=never, 1=always */
 static bool have_password = false;
 static char password[100];

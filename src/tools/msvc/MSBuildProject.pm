@@ -91,7 +91,7 @@ EOF
 		'Release',
 		{
 			defs    => "",
-			opt     => 'Full',
+			opt     => 'MaxSpeed',
 			strpool => 'true',
 			runtime => 'MultiThreadedDLL'
 		});

@@ -962,6 +962,8 @@ typedef struct PlanState
 	 * descriptor, without encoding knowledge about all executor nodes.
 	 */
 	TupleDesc	scandesc;
+
+	bool		guaranteed_empty;
 } PlanState;
 
 /* ----------------

@@ -1805,7 +1805,6 @@ addRangeTableEntryForJoin(ParseState *pstate,
 {
 	RangeTblEntry *rte = makeNode(RangeTblEntry);
 	Alias	   *eref;
-	int			numaliases;
 
 	Assert(pstate != NULL);
 
@@ -1826,13 +1825,31 @@ addRangeTableEntryForJoin(ParseState *pstate,
 	rte->joinaliasvars = aliasvars;
 	rte->alias = alias;
 
-	eref = alias ? copyObject(alias) : makeAlias("unnamed_join", NIL);
-	numaliases = list_length(eref->colnames);
-
 	/* fill in any unspecified alias columns */
-	if (numaliases < list_length(colnames))
-		eref->colnames = list_concat(eref->colnames,
-									 list_copy_tail(colnames, numaliases));
+	if (alias)
+	{
+		int	numaliases;
+
+		eref = copyObject(alias);
+
+		numaliases = list_length(eref->colnames);
+
+		if (numaliases == 0)
+		{
+			eref->colnames = colnames;
+		}
+		else if (numaliases > 0 && numaliases < list_length(colnames))
+		{
+			eref->colnames = list_concat(eref->colnames,
+										 list_copy_tail(colnames, numaliases));
+			list_free(colnames);
+		}
+	}
+	else
+	{
+		eref = makeAlias("unnamed_join", NIL);
+		eref->colnames = colnames;
+	}
 
 	rte->eref = eref;
 
@@ -2408,8 +2425,11 @@ expandRTE(RangeTblEntry *rte, int rtindex, int sublevels_up,
 					{
 						char	   *label = strVal(lfirst(colname));
 
-						*colnames = lappend(*colnames,
-											makeString(pstrdup(label)));
+						/*
+						 * Assume label is already pstrdup'ed somewhere, so
+						 * don't duplicate it again
+						 */
+						*colnames = lappend(*colnames, makeString(label));
 					}
 
 					if (colvars)

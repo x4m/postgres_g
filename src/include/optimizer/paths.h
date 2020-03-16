@@ -71,9 +71,23 @@ extern void debug_print_rel(PlannerInfo *root, RelOptInfo *rel);
  *	  routines to generate index paths
  */
 extern void create_index_paths(PlannerInfo *root, RelOptInfo *rel);
+extern List *generate_bitmap_or_paths(PlannerInfo *root, RelOptInfo *rel,
+									  List *clauses, List *other_clauses);
+
+/*
+ * UniqueIndexInfo describes a unique index and its corresponding clauses
+ * that guarantee the uniqueness of a relation.
+ */
+typedef struct UniqueIndexInfo
+{
+	IndexOptInfo *index;
+	List *clauses;
+} UniqueIndexInfo;
+
 extern bool relation_has_unique_index_for(PlannerInfo *root, RelOptInfo *rel,
 							  List *restrictlist,
-							  List *exprlist, List *oprlist);
+							  List *exprlist, List *oprlist,
+							  UniqueIndexInfo **info);
 extern bool indexcol_is_bool_constant_for_query(IndexOptInfo *index,
 									int indexcol);
 extern bool match_index_to_operand(Node *operand, int indexcol,
@@ -190,6 +204,14 @@ typedef enum
 
 extern PathKeysComparison compare_pathkeys(List *keys1, List *keys2);
 extern bool pathkeys_contained_in(List *keys1, List *keys2);
+extern int group_keys_reorder_by_pathkeys(List *pathkeys,
+										  List **group_pathkeys,
+										  List **group_clauses);
+extern void get_cheapest_group_keys_order(PlannerInfo *root,
+										  double nrows,
+										  List **group_pathkeys,
+										  List **group_clauses,
+										  int	n_preordered);
 extern Path *get_cheapest_path_for_pathkeys(List *paths, List *pathkeys,
 							   Relids required_outer,
 							   CostSelector cost_criterion,
@@ -227,6 +249,7 @@ extern List *select_outer_pathkeys_for_merge(PlannerInfo *root,
 extern List *make_inner_pathkeys_for_merge(PlannerInfo *root,
 							  List *mergeclauses,
 							  List *outer_pathkeys);
+extern int pathkeys_useful_for_ordering(PlannerInfo *root, List *pathkeys);
 extern List *trim_mergeclauses_for_inner_pathkeys(PlannerInfo *root,
 									 List *mergeclauses,
 									 List *pathkeys);
@@ -234,6 +257,7 @@ extern List *truncate_useless_pathkeys(PlannerInfo *root,
 						  RelOptInfo *rel,
 						  List *pathkeys);
 extern bool has_useful_pathkeys(PlannerInfo *root, RelOptInfo *rel);
+extern void keybased_rewrite_index_paths(PlannerInfo *root, RelOptInfo *rel);
 extern PathKey *make_canonical_pathkey(PlannerInfo *root,
 					   EquivalenceClass *eclass, Oid opfamily,
 					   int strategy, bool nulls_first);

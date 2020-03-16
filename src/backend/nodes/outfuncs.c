@@ -1943,6 +1943,7 @@ _outAppendPath(StringInfo str, const AppendPath *node)
 	WRITE_NODE_FIELD(partitioned_rels);
 	WRITE_NODE_FIELD(subpaths);
 	WRITE_INT_FIELD(first_partial_path);
+	WRITE_BOOL_FIELD(pull_tlist);
 }
 
 static void

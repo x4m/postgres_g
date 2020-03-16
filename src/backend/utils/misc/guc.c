@@ -118,6 +118,7 @@ extern char *default_tablespace;
 extern char *temp_tablespaces;
 extern bool ignore_checksum_failure;
 extern bool synchronize_seqscans;
+extern bool enable_self_join_removal;
 
 #ifdef TRACE_SYNCSCAN
 extern bool trace_syncscan;
@@ -974,6 +975,16 @@ static struct config_bool ConfigureNamesBool[] =
 		NULL, NULL, NULL
 	},
 	{
+		{"enable_self_join_removal", PGC_USERSET, QUERY_TUNING_METHOD,
+			gettext_noop("Enable removal of unique self-joins."),
+			NULL,
+			GUC_NO_SHOW_ALL | GUC_NOT_IN_SAMPLE
+		},
+		&enable_self_join_removal,
+		true,
+		NULL, NULL, NULL
+	},
+	{
 		{"geqo", PGC_USERSET, QUERY_TUNING_GEQO,
 			gettext_noop("Enables genetic query optimization."),
 			gettext_noop("This algorithm attempts to do planning without "
@@ -1812,7 +1823,6 @@ static struct config_bool ConfigureNamesBool[] =
 		 */
 		NULL, NULL, NULL
 	},
-
 	{
 		{"jit_tuple_deforming", PGC_USERSET, DEVELOPER_OPTIONS,
 			gettext_noop("Allow JIT compilation of tuple deforming."),

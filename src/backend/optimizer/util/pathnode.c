@@ -1221,7 +1221,8 @@ create_append_path(PlannerInfo *root,
 				   List *subpaths, List *partial_subpaths,
 				   Relids required_outer,
 				   int parallel_workers, bool parallel_aware,
-				   List *partitioned_rels, double rows)
+				   List *partitioned_rels, double rows,
+				   bool pull_tlist, List *pathkeys)
 {
 	AppendPath *pathnode = makeNode(AppendPath);
 	ListCell   *l;
@@ -1253,8 +1254,10 @@ create_append_path(PlannerInfo *root,
 	pathnode->path.parallel_aware = parallel_aware;
 	pathnode->path.parallel_safe = rel->consider_parallel;
 	pathnode->path.parallel_workers = parallel_workers;
-	pathnode->path.pathkeys = NIL;	/* result is always considered unsorted */
+	pathnode->path.pathkeys = pathkeys;	/* !=NIL in case of append OR index
+										   scans */
 	pathnode->partitioned_rels = list_copy(partitioned_rels);
+	pathnode->pull_tlist = pull_tlist;
 
 	/*
 	 * For parallel append, non-partial paths are sorted by descending total
@@ -1585,7 +1588,8 @@ create_unique_path(PlannerInfo *root, RelOptInfo *rel, Path *subpath,
 	if (rel->rtekind == RTE_RELATION && sjinfo->semi_can_btree &&
 		relation_has_unique_index_for(root, rel, NIL,
 									  sjinfo->semi_rhs_exprs,
-									  sjinfo->semi_operators))
+									  sjinfo->semi_operators,
+									  NULL /*index_info*/))
 	{
 		pathnode->umethod = UNIQUE_PATH_NOOP;
 		pathnode->path.rows = rel->rows;
@@ -3614,7 +3618,8 @@ reparameterize_path(PlannerInfo *root, Path *path,
 									   apath->path.parallel_workers,
 									   apath->path.parallel_aware,
 									   apath->partitioned_rels,
-									   -1);
+									   -1,
+									   apath->pull_tlist, apath->path.pathkeys);
 			}
 		default:
 			break;

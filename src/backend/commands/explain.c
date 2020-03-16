@@ -143,7 +143,7 @@ static void escape_yaml(StringInfo buf, const char *str);
 void
 ExplainQuery(ParseState *pstate, ExplainStmt *stmt, const char *queryString,
 			 ParamListInfo params, QueryEnvironment *queryEnv,
-			 DestReceiver *dest)
+			 DestReceiver *dest, uint64 *processed)
 {
 	ExplainState *es = NewExplainState();
 	TupOutputState *tstate;
@@ -151,6 +151,9 @@ ExplainQuery(ParseState *pstate, ExplainStmt *stmt, const char *queryString,
 	ListCell   *lc;
 	bool		timing_set = false;
 	bool		summary_set = false;
+
+	if (processed)
+		*processed = 0;
 
 	/* Parse options list. */
 	foreach(lc, stmt->options)
@@ -275,6 +278,9 @@ ExplainQuery(ParseState *pstate, ExplainStmt *stmt, const char *queryString,
 	end_tup_output(tstate);
 
 	pfree(es->str->data);
+
+	if (processed)
+		*processed = es->es_processed;
 }
 
 /*
@@ -357,20 +363,13 @@ ExplainOneQuery(Query *query, int cursorOptions,
 	else
 	{
 		PlannedStmt *plan;
-		instr_time	planstart,
-					planduration;
-
-		INSTR_TIME_SET_CURRENT(planstart);
 
 		/* plan the query */
 		plan = pg_plan_query(query, cursorOptions, params);
 
-		INSTR_TIME_SET_CURRENT(planduration);
-		INSTR_TIME_SUBTRACT(planduration, planstart);
-
 		/* run it (if needed) and produce output */
 		ExplainOnePlan(plan, into, es, queryString, params, queryEnv,
-					   &planduration);
+					   &plan->planDuration);
 	}
 }
 
@@ -572,6 +571,8 @@ ExplainOnePlan(PlannedStmt *plannedstmt, IntoClause *into, ExplainState *es,
 	 * total execution time (although it should be pretty minimal).
 	 */
 	INSTR_TIME_SET_CURRENT(starttime);
+
+	es->es_processed += queryDesc->estate->es_processed;
 
 	ExecutorEnd(queryDesc);
 

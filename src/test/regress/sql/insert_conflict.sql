@@ -566,6 +566,14 @@ create table parted_conflict_1 (drp text, c int, a int, b text);
 alter table parted_conflict_1 drop column drp;
 create unique index on parted_conflict (a, b);
 alter table parted_conflict attach partition parted_conflict_1 for values from (0) to (1000);
+
+-- test that index types were created after ALTER TABLE
+select p.reltype > 0
+from pg_index i
+join pg_inherits inh on inh.inhparent = i.indexrelid
+join pg_class p on p.oid = inh.inhrelid
+where i.indrelid = 'parted_conflict'::regclass::oid;
+
 truncate parted_conflict;
 insert into parted_conflict values (50, 'cincuenta', 1);
 insert into parted_conflict values (50, 'cincuenta', 2)

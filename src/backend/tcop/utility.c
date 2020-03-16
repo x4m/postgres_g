@@ -672,8 +672,15 @@ standard_ProcessUtility(PlannedStmt *pstmt,
 			break;
 
 		case T_ExplainStmt:
-			ExplainQuery(pstate, (ExplainStmt *) parsetree, queryString, params,
-						 queryEnv, dest);
+			{
+				uint64		processed;
+
+				ExplainQuery(pstate, (ExplainStmt *) parsetree, queryString, params,
+							 queryEnv, dest, &processed);
+				if (completionTag)
+					snprintf(completionTag, COMPLETION_TAG_BUFSIZE,
+							 "EXPLAIN " UINT64_FORMAT, processed);
+			}
 			break;
 
 		case T_AlterSystemStmt:

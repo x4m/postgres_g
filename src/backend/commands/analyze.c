@@ -35,8 +35,11 @@
 #include "commands/vacuum.h"
 #include "executor/executor.h"
 #include "foreign/fdwapi.h"
+#include "funcapi.h"
 #include "miscadmin.h"
 #include "nodes/nodeFuncs.h"
+#include "nodes/makefuncs.h"
+#include "nodes/pg_list.h"
 #include "parser/parse_oper.h"
 #include "parser/parse_relation.h"
 #include "pgstat.h"
@@ -61,6 +64,7 @@
 #include "utils/syscache.h"
 #include "utils/timestamp.h"
 #include "utils/tqual.h"
+#include "utils/typcache.h"
 
 
 /* Per-index data for ANALYZE */
@@ -70,6 +74,7 @@ typedef struct AnlIndexData
 	double		tupleFract;		/* fraction of rows for partial index */
 	VacAttrStats **vacattrstats;	/* index attrs to analyze */
 	int			attr_cnt;
+	bool        multicolumn;    /* Collect compound row statistic for multicolumn index */
 } AnlIndexData;
 
 
@@ -514,6 +519,21 @@ do_analyze_rel(Relation onerel, int options, VacuumParams *params,
 				}
 				thisdata->attr_cnt = tcnt;
 			}
+			else if (indexInfo->ii_NumIndexAttrs > 1 && va_cols == NIL &&
+					 Irel[ind]->rd_rel->reltype != InvalidOid)
+			{
+				/* Collect statistic for multicolumn index for better predicting selectivity of multicolumn joins */
+				RowExpr* row = makeNode(RowExpr);
+				row->row_typeid = Irel[ind]->rd_rel->reltype;
+				row->row_format = COERCE_EXPLICIT_CAST;
+				row->location = -1;
+				row->colnames = NULL;
+				thisdata->vacattrstats = (VacAttrStats **)palloc(sizeof(VacAttrStats *));
+				thisdata->vacattrstats[0] = examine_attribute(Irel[ind], 1, (Node*)row);
+				thisdata->vacattrstats[0]->tupDesc = lookup_type_cache(row->row_typeid, TYPECACHE_TUPDESC)->tupDesc;
+				thisdata->attr_cnt = 1;
+				thisdata->multicolumn = true;
+			}
 		}
 	}
 
@@ -837,28 +857,41 @@ compute_index_stats(Relation onerel, double totalrows,
 							   values,
 							   isnull);
 
-				/*
-				 * Save just the columns we care about.  We copy the values
-				 * into ind_context from the estate's per-tuple context.
-				 */
-				for (i = 0; i < attr_cnt; i++)
+				if (thisdata->multicolumn)
 				{
-					VacAttrStats *stats = thisdata->vacattrstats[i];
-					int			attnum = stats->attr->attnum;
-
-					if (isnull[attnum - 1])
-					{
-						exprvals[tcnt] = (Datum) 0;
-						exprnulls[tcnt] = true;
-					}
-					else
-					{
-						exprvals[tcnt] = datumCopy(values[attnum - 1],
-												   stats->attrtype->typbyval,
-												   stats->attrtype->typlen);
-						exprnulls[tcnt] = false;
-					}
+					/* For multicolumn index construct compound value */
+					VacAttrStats *stats = thisdata->vacattrstats[0];
+					exprvals[tcnt] = HeapTupleGetDatum(heap_form_tuple(stats->tupDesc,
+																	   values,
+																	   isnull));
+					exprnulls[tcnt] = false;
 					tcnt++;
+				}
+				else
+				{
+					/*
+					 * Save just the columns we care about.  We copy the values
+					 * into ind_context from the estate's per-tuple context.
+					 */
+					for (i = 0; i < attr_cnt; i++)
+					{
+						VacAttrStats *stats = thisdata->vacattrstats[i];
+						int			attnum = stats->attr->attnum;
+
+						if (isnull[attnum - 1])
+						{
+							exprvals[tcnt] = (Datum) 0;
+							exprnulls[tcnt] = true;
+						}
+						else
+						{
+							exprvals[tcnt] = datumCopy(values[attnum - 1],
+													   stats->attrtype->typbyval,
+													   stats->attrtype->typlen);
+							exprnulls[tcnt] = false;
+						}
+						tcnt++;
+					}
 				}
 			}
 		}
@@ -2658,6 +2691,7 @@ compute_scalar_stats(VacAttrStatsP stats,
 		 * histogram won't collapse to empty or a singleton.)
 		 */
 		num_hist = ndistinct - num_mcv;
+
 		if (num_hist > num_bins)
 			num_hist = num_bins + 1;
 		if (num_hist >= 2)

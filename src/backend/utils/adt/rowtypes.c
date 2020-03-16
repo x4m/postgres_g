@@ -26,7 +26,6 @@
 #include "utils/lsyscache.h"
 #include "utils/typcache.h"
 
-
 /*
  * structure to cache metadata needed for record I/O
  */
@@ -785,6 +784,9 @@ record_cmp(FunctionCallInfo fcinfo)
 {
 	HeapTupleHeader record1 = PG_GETARG_HEAPTUPLEHEADER(0);
 	HeapTupleHeader record2 = PG_GETARG_HEAPTUPLEHEADER(1);
+	int				record_cmp_prefix =
+							(PG_NARGS() == 3 && PG_GETARG_INT32(2) > 0) ?
+									PG_GETARG_INT32(2) : INT_MAX;
 	int			result = 0;
 	Oid			tupType1;
 	Oid			tupType2;
@@ -868,6 +870,9 @@ record_cmp(FunctionCallInfo fcinfo)
 	values2 = (Datum *) palloc(ncolumns2 * sizeof(Datum));
 	nulls2 = (bool *) palloc(ncolumns2 * sizeof(bool));
 	heap_deform_tuple(&tuple2, tupdesc2, values2, nulls2);
+
+	ncolumns1 = Min(ncolumns1, record_cmp_prefix);
+	ncolumns2 = Min(ncolumns2, record_cmp_prefix);
 
 	/*
 	 * Scan corresponding columns, allowing for dropped columns in different
@@ -1027,6 +1032,9 @@ record_eq(PG_FUNCTION_ARGS)
 {
 	HeapTupleHeader record1 = PG_GETARG_HEAPTUPLEHEADER(0);
 	HeapTupleHeader record2 = PG_GETARG_HEAPTUPLEHEADER(1);
+	int				record_cmp_prefix =
+							(PG_NARGS() == 3 && PG_GETARG_INT32(2) > 0) ?
+									PG_GETARG_INT32(2) : INT_MAX;
 	bool		result = true;
 	Oid			tupType1;
 	Oid			tupType2;
@@ -1110,6 +1118,9 @@ record_eq(PG_FUNCTION_ARGS)
 	values2 = (Datum *) palloc(ncolumns2 * sizeof(Datum));
 	nulls2 = (bool *) palloc(ncolumns2 * sizeof(bool));
 	heap_deform_tuple(&tuple2, tupdesc2, values2, nulls2);
+
+	ncolumns1 = Min(ncolumns1, record_cmp_prefix);
+	ncolumns2 = Min(ncolumns2, record_cmp_prefix);
 
 	/*
 	 * Scan corresponding columns, allowing for dropped columns in different

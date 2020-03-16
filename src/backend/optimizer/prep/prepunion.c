@@ -656,7 +656,7 @@ generate_union_paths(SetOperationStmt *op, PlannerInfo *root,
 	 * Append the child results together.
 	 */
 	path = (Path *) create_append_path(root, result_rel, pathlist, NIL,
-									   NULL, 0, false, NIL, -1);
+									   NULL, 0, false, NIL, -1, false, NIL);
 
 	/*
 	 * For UNION ALL, we just need the Append path.  For UNION, need to add
@@ -712,7 +712,7 @@ generate_union_paths(SetOperationStmt *op, PlannerInfo *root,
 		ppath = (Path *)
 			create_append_path(root, result_rel, NIL, partial_pathlist,
 							   NULL, parallel_workers, enable_parallel_append,
-							   NIL, -1);
+							   NIL, -1, false, NIL);
 		ppath = (Path *)
 			create_gather_path(root, result_rel, ppath,
 							   result_rel->reltarget, NULL, NULL);
@@ -822,7 +822,7 @@ generate_nonunion_paths(SetOperationStmt *op, PlannerInfo *root,
 	 * Append the child results together.
 	 */
 	path = (Path *) create_append_path(root, result_rel, pathlist, NIL,
-									   NULL, 0, false, NIL, -1);
+									   NULL, 0, false, NIL, -1, false, NIL);
 
 	/* Identify the grouping semantics */
 	groupList = generate_setop_grouplist(op, tlist);
@@ -2238,7 +2238,7 @@ adjust_appendrel_attrs_mutator(Node *node,
 
 		j = (JoinExpr *) expression_tree_mutator(node,
 												 adjust_appendrel_attrs_mutator,
-												 (void *) context);
+												 (void *) context, 0);
 		/* now fix JoinExpr's rtindex (probably never happens) */
 		for (cnt = 0; cnt < nappinfos; cnt++)
 		{
@@ -2259,7 +2259,7 @@ adjust_appendrel_attrs_mutator(Node *node,
 
 		phv = (PlaceHolderVar *) expression_tree_mutator(node,
 														 adjust_appendrel_attrs_mutator,
-														 (void *) context);
+														 (void *) context, 0);
 		/* now fix PlaceHolderVar's relid sets */
 		if (phv->phlevelsup == 0)
 			phv->phrels = adjust_child_relids(phv->phrels, context->nappinfos,
@@ -2341,7 +2341,7 @@ adjust_appendrel_attrs_mutator(Node *node,
 	Assert(!IsA(node, Query));
 
 	return expression_tree_mutator(node, adjust_appendrel_attrs_mutator,
-								   (void *) context);
+								   (void *) context, 0);
 }
 
 /*

@@ -81,6 +81,11 @@ if [ "$1" = '--install' ]; then
 
 	"$MAKE" -s -C ../.. install DESTDIR="$temp_install"
 
+	# installing EXTRA_INSTALL dependencies
+	for extra in ${EXTRA_INSTALL}; do
+		$MAKE -s -C ../../../${extra} DESTDIR="$temp_install" install
+	done
+
 	# platform-specific magic to find the shared libraries; see pg_regress.c
 	LD_LIBRARY_PATH=$libdir:$LD_LIBRARY_PATH
 	export LD_LIBRARY_PATH

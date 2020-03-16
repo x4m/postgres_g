@@ -1523,11 +1523,22 @@ selectDumpableType(TypeInfo *tyinfo, Archive *fout)
 	if (OidIsValid(tyinfo->typrelid) &&
 		tyinfo->typrelkind != RELKIND_COMPOSITE_TYPE)
 	{
-		TableInfo  *tytable = findTableByOid(tyinfo->typrelid);
+		DumpableObject *parentRel;
 
 		tyinfo->dobj.objType = DO_DUMMY_TYPE;
-		if (tytable != NULL)
-			tyinfo->dobj.dump = tytable->dobj.dump;
+
+		/* Get associated relation */
+		if (tyinfo->typrelkind == RELKIND_INDEX)
+			parentRel = (DumpableObject *) findIndexByOid(tyinfo->typrelid);
+		else
+			parentRel = (DumpableObject *) findTableByOid(tyinfo->typrelid);
+
+		/*
+		 * If associated relation found, dump based on if the
+		 * contents of the associated relation are being dumped.
+		 */
+		if (parentRel != NULL)
+			tyinfo->dobj.dump = parentRel->dump;
 		else
 			tyinfo->dobj.dump = DUMP_COMPONENT_NONE;
 		return;
@@ -4247,6 +4258,9 @@ binary_upgrade_set_type_oids_by_type_oid(Archive *fout,
 	PGresult   *res;
 	Oid			pg_type_array_oid;
 
+	if (pg_type_oid == InvalidOid)
+		return;
+
 	appendPQExpBufferStr(upgrade_buffer, "\n-- For binary upgrade, must preserve pg_type oid\n");
 	appendPQExpBuffer(upgrade_buffer,
 					  "SELECT pg_catalog.binary_upgrade_set_next_pg_type_oid('%u'::pg_catalog.oid);\n\n",
@@ -6745,8 +6759,8 @@ getInherits(Archive *fout, int *numInherits)
  * Note: index data is not returned directly to the caller, but it
  * does get entered into the DumpableObject tables.
  */
-void
-getIndexes(Archive *fout, TableInfo tblinfo[], int numTables)
+IndxInfo *
+getIndexes(Archive *fout, TableInfo tblinfo[], int numTables, int *numIndexes)
 {
 	int			i,
 				j;
@@ -6777,6 +6791,9 @@ getIndexes(Archive *fout, TableInfo tblinfo[], int numTables)
 				i_indstatcols,
 				i_indstatvals;
 	int			ntups;
+	Size		off = 0;
+
+	*numIndexes = 0;
 
 	for (i = 0; i < numTables; i++)
 	{
@@ -7022,6 +7039,7 @@ getIndexes(Archive *fout, TableInfo tblinfo[], int numTables)
 			(IndxInfo *) pg_malloc(ntups * sizeof(IndxInfo));
 		constrinfo = (ConstraintInfo *) pg_malloc(ntups * sizeof(ConstraintInfo));
 		tbinfo->numIndexes = ntups;
+		*numIndexes += ntups;
 
 		for (j = 0; j < ntups; j++)
 		{
@@ -7091,6 +7109,27 @@ getIndexes(Archive *fout, TableInfo tblinfo[], int numTables)
 	}
 
 	destroyPQExpBuffer(query);
+
+	/*
+	 * A second pass to form an array of all index infos.
+	 * Now that we know the total number of indexes after the first pass,
+	 * we can allocate all needed memory in one call instead of using realloc.
+	 */
+	indxinfo = (IndxInfo *) pg_malloc(*numIndexes * sizeof(IndxInfo));
+
+	for (i = 0; i < numTables; i++)
+	{
+		TableInfo  *tbinfo = &tblinfo[i];
+		int			copynum = tbinfo->numIndexes;
+
+		if (copynum < 1)
+			continue;
+
+		memcpy(indxinfo + off, tbinfo->indexes, copynum * sizeof(IndxInfo));
+		off += copynum;
+	}
+
+	return indxinfo;
 }
 
 /*
@@ -16291,8 +16330,13 @@ dumpIndex(Archive *fout, IndxInfo *indxinfo)
 		int			nstatvals;
 
 		if (dopt->binary_upgrade)
+		{
 			binary_upgrade_set_pg_class_oids(fout, q,
 											 indxinfo->dobj.catId.oid, true);
+			if (indxinfo->indnkeyattrs > 1)
+				binary_upgrade_set_type_oids_by_rel_oid(fout, q,
+														indxinfo->dobj.catId.oid);
+		}
 
 		/* Plain secondary index */
 		appendPQExpBuffer(q, "%s;\n", indxinfo->indexdef);
@@ -18048,6 +18092,27 @@ addBoundaryDependencies(DumpableObject **dobjs, int numObjs,
 		 */
 		switch (dobj->objType)
 		{
+			case DO_DUMMY_TYPE:
+			{
+				/*
+				 * In Vanilla, dummy types were only created for tables.
+				 * In Postgres Pro for improving join selectivity estimation
+				 * we also create two types for each composite index:
+				 *   1) a type for attributes of the index
+				 *   2) a type which is an array containing elements of type (1)
+				 * These types depend on indexes, so adding preDataBound -> type
+				 * dependency would create a loop; don't do that.
+				 */
+				TypeInfo *tyinfo = (TypeInfo *) dobj;
+				if (tyinfo->isArray)
+					/* If it's an array, take its element type */
+					tyinfo = findTypeByOid(tyinfo->typelem);
+
+				if (OidIsValid(tyinfo->typrelid) &&
+					(tyinfo->typrelkind == RELKIND_INDEX ||
+					tyinfo->typrelkind == RELKIND_PARTITIONED_INDEX))
+					break;
+			}
 			case DO_NAMESPACE:
 			case DO_EXTENSION:
 			case DO_TYPE:
@@ -18064,7 +18129,6 @@ addBoundaryDependencies(DumpableObject **dobjs, int numObjs,
 			case DO_ATTRDEF:
 			case DO_PROCLANG:
 			case DO_CAST:
-			case DO_DUMMY_TYPE:
 			case DO_TSPARSER:
 			case DO_TSDICT:
 			case DO_TSTEMPLATE:

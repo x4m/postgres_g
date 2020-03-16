@@ -110,6 +110,8 @@ extern void cost_sort(Path *path, PlannerInfo *root,
 		  List *pathkeys, Cost input_cost, double tuples, int width,
 		  Cost comparison_cost, int sort_mem,
 		  double limit_tuples);
+extern Cost cost_sort_estimate(PlannerInfo *root, List *pathkeys,
+							   int nPresortedKeys, double tuples);
 extern void cost_append(AppendPath *path);
 extern void cost_merge_append(Path *path, PlannerInfo *root,
 				  List *pathkeys, int n_streams,
@@ -166,6 +168,7 @@ extern void cost_gather(GatherPath *path, PlannerInfo *root,
 extern void cost_subplan(PlannerInfo *root, SubPlan *subplan, Plan *plan);
 extern void cost_qual_eval(QualCost *cost, List *quals, PlannerInfo *root);
 extern void cost_qual_eval_node(QualCost *cost, Node *qual, PlannerInfo *root);
+extern void cost_qual_eval_node_index(QualCost *cost, Node *qual, PlannerInfo *root);
 extern void compute_semi_anti_join_factors(PlannerInfo *root,
 							   RelOptInfo *joinrel,
 							   RelOptInfo *outerrel,

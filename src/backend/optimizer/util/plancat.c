@@ -421,6 +421,8 @@ get_relation_info(PlannerInfo *root, Oid relationObjectId, bool inhparent,
 
 			index_close(indexRelation, NoLock);
 
+			memset(info->sslots, 0, sizeof(info->sslots));
+
 			indexinfos = lcons(info, indexinfos);
 		}
 

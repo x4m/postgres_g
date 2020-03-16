@@ -943,36 +943,34 @@ SET max_parallel_workers_per_gather TO 2;
 -- is not partial agg safe.
 EXPLAIN (COSTS OFF)
 SELECT a, sum(b), array_agg(distinct c), count(*) FROM pagg_tab_ml GROUP BY a HAVING avg(b) < 3 ORDER BY 1, 2, 3;
-                                               QUERY PLAN                                               
---------------------------------------------------------------------------------------------------------
+                                          QUERY PLAN                                           
+-----------------------------------------------------------------------------------------------
  Sort
-   Sort Key: pagg_tab_ml_p2_s1.a, (sum(pagg_tab_ml_p2_s1.b)), (array_agg(DISTINCT pagg_tab_ml_p2_s1.c))
-   ->  Gather
-         Workers Planned: 2
-         ->  Parallel Append
-               ->  GroupAggregate
-                     Group Key: pagg_tab_ml_p2_s1.a
-                     Filter: (avg(pagg_tab_ml_p2_s1.b) < '3'::numeric)
-                     ->  Sort
-                           Sort Key: pagg_tab_ml_p2_s1.a
-                           ->  Append
-                                 ->  Seq Scan on pagg_tab_ml_p2_s1
-                                 ->  Seq Scan on pagg_tab_ml_p2_s2
-               ->  GroupAggregate
-                     Group Key: pagg_tab_ml_p3_s1.a
-                     Filter: (avg(pagg_tab_ml_p3_s1.b) < '3'::numeric)
-                     ->  Sort
-                           Sort Key: pagg_tab_ml_p3_s1.a
-                           ->  Append
-                                 ->  Seq Scan on pagg_tab_ml_p3_s1
-                                 ->  Seq Scan on pagg_tab_ml_p3_s2
-               ->  GroupAggregate
-                     Group Key: pagg_tab_ml_p1.a
-                     Filter: (avg(pagg_tab_ml_p1.b) < '3'::numeric)
-                     ->  Sort
-                           Sort Key: pagg_tab_ml_p1.a
-                           ->  Seq Scan on pagg_tab_ml_p1
-(27 rows)
+   Sort Key: pagg_tab_ml_p1.a, (sum(pagg_tab_ml_p1.b)), (array_agg(DISTINCT pagg_tab_ml_p1.c))
+   ->  Append
+         ->  GroupAggregate
+               Group Key: pagg_tab_ml_p1.a
+               Filter: (avg(pagg_tab_ml_p1.b) < '3'::numeric)
+               ->  Sort
+                     Sort Key: pagg_tab_ml_p1.a
+                     ->  Seq Scan on pagg_tab_ml_p1
+         ->  GroupAggregate
+               Group Key: pagg_tab_ml_p2_s1.a
+               Filter: (avg(pagg_tab_ml_p2_s1.b) < '3'::numeric)
+               ->  Sort
+                     Sort Key: pagg_tab_ml_p2_s1.a
+                     ->  Append
+                           ->  Seq Scan on pagg_tab_ml_p2_s1
+                           ->  Seq Scan on pagg_tab_ml_p2_s2
+         ->  GroupAggregate
+               Group Key: pagg_tab_ml_p3_s1.a
+               Filter: (avg(pagg_tab_ml_p3_s1.b) < '3'::numeric)
+               ->  Sort
+                     Sort Key: pagg_tab_ml_p3_s1.a
+                     ->  Append
+                           ->  Seq Scan on pagg_tab_ml_p3_s1
+                           ->  Seq Scan on pagg_tab_ml_p3_s2
+(25 rows)
 
 SELECT a, sum(b), array_agg(distinct c), count(*) FROM pagg_tab_ml GROUP BY a HAVING avg(b) < 3 ORDER BY 1, 2, 3;
  a  | sum  |  array_agg  | count 
@@ -991,34 +989,32 @@ SELECT a, sum(b), array_agg(distinct c), count(*) FROM pagg_tab_ml GROUP BY a HA
 -- Without ORDER BY clause, to test Gather at top-most path
 EXPLAIN (COSTS OFF)
 SELECT a, sum(b), array_agg(distinct c), count(*) FROM pagg_tab_ml GROUP BY a HAVING avg(b) < 3;
-                           QUERY PLAN                            
------------------------------------------------------------------
- Gather
-   Workers Planned: 2
-   ->  Parallel Append
-         ->  GroupAggregate
-               Group Key: pagg_tab_ml_p2_s1.a
-               Filter: (avg(pagg_tab_ml_p2_s1.b) < '3'::numeric)
-               ->  Sort
-                     Sort Key: pagg_tab_ml_p2_s1.a
-                     ->  Append
-                           ->  Seq Scan on pagg_tab_ml_p2_s1
-                           ->  Seq Scan on pagg_tab_ml_p2_s2
-         ->  GroupAggregate
-               Group Key: pagg_tab_ml_p3_s1.a
-               Filter: (avg(pagg_tab_ml_p3_s1.b) < '3'::numeric)
-               ->  Sort
-                     Sort Key: pagg_tab_ml_p3_s1.a
-                     ->  Append
-                           ->  Seq Scan on pagg_tab_ml_p3_s1
-                           ->  Seq Scan on pagg_tab_ml_p3_s2
-         ->  GroupAggregate
-               Group Key: pagg_tab_ml_p1.a
-               Filter: (avg(pagg_tab_ml_p1.b) < '3'::numeric)
-               ->  Sort
-                     Sort Key: pagg_tab_ml_p1.a
-                     ->  Seq Scan on pagg_tab_ml_p1
-(25 rows)
+                        QUERY PLAN                         
+-----------------------------------------------------------
+ Append
+   ->  GroupAggregate
+         Group Key: pagg_tab_ml_p1.a
+         Filter: (avg(pagg_tab_ml_p1.b) < '3'::numeric)
+         ->  Sort
+               Sort Key: pagg_tab_ml_p1.a
+               ->  Seq Scan on pagg_tab_ml_p1
+   ->  GroupAggregate
+         Group Key: pagg_tab_ml_p2_s1.a
+         Filter: (avg(pagg_tab_ml_p2_s1.b) < '3'::numeric)
+         ->  Sort
+               Sort Key: pagg_tab_ml_p2_s1.a
+               ->  Append
+                     ->  Seq Scan on pagg_tab_ml_p2_s1
+                     ->  Seq Scan on pagg_tab_ml_p2_s2
+   ->  GroupAggregate
+         Group Key: pagg_tab_ml_p3_s1.a
+         Filter: (avg(pagg_tab_ml_p3_s1.b) < '3'::numeric)
+         ->  Sort
+               Sort Key: pagg_tab_ml_p3_s1.a
+               ->  Append
+                     ->  Seq Scan on pagg_tab_ml_p3_s1
+                     ->  Seq Scan on pagg_tab_ml_p3_s2
+(23 rows)
 
 -- Full aggregation at level 1 as GROUP BY clause matches with PARTITION KEY
 -- for level 1 only. For subpartitions, GROUP BY clause does not match with
@@ -1184,20 +1180,18 @@ SELECT a, sum(b), count(*) FROM pagg_tab_ml GROUP BY a HAVING avg(b) < 3 ORDER B
                            ->  Partial HashAggregate
                                  Group Key: pagg_tab_ml_p1.a
                                  ->  Parallel Seq Scan on pagg_tab_ml_p1
-         ->  Finalize GroupAggregate
+         ->  Finalize HashAggregate
                Group Key: pagg_tab_ml_p2_s1.a
                Filter: (avg(pagg_tab_ml_p2_s1.b) < '3'::numeric)
-               ->  Gather Merge
+               ->  Gather
                      Workers Planned: 2
-                     ->  Sort
-                           Sort Key: pagg_tab_ml_p2_s1.a
-                           ->  Parallel Append
-                                 ->  Partial HashAggregate
-                                       Group Key: pagg_tab_ml_p2_s1.a
-                                       ->  Parallel Seq Scan on pagg_tab_ml_p2_s1
-                                 ->  Partial HashAggregate
-                                       Group Key: pagg_tab_ml_p2_s2.a
-                                       ->  Parallel Seq Scan on pagg_tab_ml_p2_s2
+                     ->  Parallel Append
+                           ->  Partial HashAggregate
+                                 Group Key: pagg_tab_ml_p2_s1.a
+                                 ->  Parallel Seq Scan on pagg_tab_ml_p2_s1
+                           ->  Partial HashAggregate
+                                 Group Key: pagg_tab_ml_p2_s2.a
+                                 ->  Parallel Seq Scan on pagg_tab_ml_p2_s2
          ->  Finalize GroupAggregate
                Group Key: pagg_tab_ml_p3_s1.a
                Filter: (avg(pagg_tab_ml_p3_s1.b) < '3'::numeric)
@@ -1212,7 +1206,7 @@ SELECT a, sum(b), count(*) FROM pagg_tab_ml GROUP BY a HAVING avg(b) < 3 ORDER B
                                  ->  Partial HashAggregate
                                        Group Key: pagg_tab_ml_p3_s2.a
                                        ->  Parallel Seq Scan on pagg_tab_ml_p3_s2
-(41 rows)
+(39 rows)
 
 SELECT a, sum(b), count(*) FROM pagg_tab_ml GROUP BY a HAVING avg(b) < 3 ORDER BY 1, 2, 3;
  a  | sum  | count 
@@ -1378,24 +1372,22 @@ SELECT y, sum(x), avg(x), count(*) FROM pagg_tab_para GROUP BY y HAVING avg(x) <
 --------------------------------------------------------------------------------------
  Sort
    Sort Key: pagg_tab_para_p1.y, (sum(pagg_tab_para_p1.x)), (avg(pagg_tab_para_p1.x))
-   ->  Finalize GroupAggregate
+   ->  Finalize HashAggregate
          Group Key: pagg_tab_para_p1.y
          Filter: (avg(pagg_tab_para_p1.x) < '12'::numeric)
-         ->  Gather Merge
+         ->  Gather
                Workers Planned: 2
-               ->  Sort
-                     Sort Key: pagg_tab_para_p1.y
-                     ->  Parallel Append
-                           ->  Partial HashAggregate
-                                 Group Key: pagg_tab_para_p1.y
-                                 ->  Parallel Seq Scan on pagg_tab_para_p1
-                           ->  Partial HashAggregate
-                                 Group Key: pagg_tab_para_p2.y
-                                 ->  Parallel Seq Scan on pagg_tab_para_p2
-                           ->  Partial HashAggregate
-                                 Group Key: pagg_tab_para_p3.y
-                                 ->  Parallel Seq Scan on pagg_tab_para_p3
-(19 rows)
+               ->  Parallel Append
+                     ->  Partial HashAggregate
+                           Group Key: pagg_tab_para_p1.y
+                           ->  Parallel Seq Scan on pagg_tab_para_p1
+                     ->  Partial HashAggregate
+                           Group Key: pagg_tab_para_p2.y
+                           ->  Parallel Seq Scan on pagg_tab_para_p2
+                     ->  Partial HashAggregate
+                           Group Key: pagg_tab_para_p3.y
+                           ->  Parallel Seq Scan on pagg_tab_para_p3
+(17 rows)
 
 SELECT y, sum(x), avg(x), count(*) FROM pagg_tab_para GROUP BY y HAVING avg(x) < 12 ORDER BY 1, 2, 3;
  y  |  sum  |         avg         | count 

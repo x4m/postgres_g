@@ -24,7 +24,11 @@
 #define QTW_IGNORE_RANGE_TABLE		0x08	/* skip rangetable entirely */
 #define QTW_EXAMINE_RTES			0x10	/* examine RTEs */
 #define QTW_DONT_COPY_QUERY			0x20	/* do not copy top Query */
+<<<<<<< ours
 #define QTW_EXAMINE_SORTGROUP		0x80	/* include SortGroupNode lists */
+=======
+#define QTW_DONT_COPY_DEFAULT		0x00	/* only custom mutator will copy */
+>>>>>>> theirs
 
 /* callback function for check_functions_in_node */
 typedef bool (*check_function_callback) (Oid func_id, void *context);
@@ -54,7 +58,7 @@ extern bool check_functions_in_node(Node *node, check_function_callback checker,
 extern bool expression_tree_walker(Node *node, bool (*walker) (),
 								   void *context);
 extern Node *expression_tree_mutator(Node *node, Node *(*mutator) (),
-									 void *context);
+									 void *context, int flags);
 
 extern bool query_tree_walker(Query *query, bool (*walker) (),
 							  void *context, int flags);
