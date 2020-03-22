@@ -170,9 +170,12 @@ typedef struct Port
 	int			keepalives_count;
 	int			tcp_user_timeout;
 
+	char*       compression_algorithms; /* Compression algorithms supported by client */
+
 	/*
 	 * GSSAPI structures.
 	 */
+
 #if defined(ENABLE_GSS) || defined(ENABLE_SSPI)
 
 	/*

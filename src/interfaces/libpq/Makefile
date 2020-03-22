@@ -45,6 +45,16 @@ OBJS = \
 	pqexpbuffer.o \
 	fe-auth.o
 
+ifeq ($(with_zstd),yes)
+LIBS += -lzstd
+SHLIB_LINK += -lzstd
+endif
+
+ifeq ($(with_zlib),yes)
+LIBS += -lz
+SHLIB_LINK += -lz
+endif
+
 ifeq ($(with_openssl),yes)
 OBJS += \
 	fe-secure-common.o \
