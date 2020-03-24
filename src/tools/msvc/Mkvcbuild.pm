@@ -110,6 +110,7 @@ sub mkvcbuild
 	}
 
 	our @pgcommonallfiles = qw(
+		archive.c
 	  base64.c config_info.c controldata_utils.c exec.c ip.c keywords.c
 	  md5.c pg_lzcompress.c pgfnames.c psprintf.c relpath.c rmtree.c
 	  saslprep.c scram-common.c string.c unicode_norm.c username.c
