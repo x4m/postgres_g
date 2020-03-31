@@ -316,19 +316,4 @@ extern bool InArchiveRecovery;
 extern bool StandbyMode;
 extern char *recoveryRestoreCommand;
 
-/*
- * Prototypes for functions in xlogarchive.c
- */
-extern void ExecuteRecoveryCommand(const char *command, const char *commandName,
-								   bool failOnerror);
-extern void KeepFileRestoredFromArchive(const char *path, const char *xlogfname);
-extern void XLogArchiveNotify(const char *xlog);
-extern void XLogArchiveNotifySeg(XLogSegNo segno);
-extern void XLogArchiveForceDone(const char *xlog);
-extern bool XLogArchiveCheckDone(const char *xlog);
-extern bool XLogArchiveIsBusy(const char *xlog);
-extern bool XLogArchiveIsReady(const char *xlog);
-extern bool XLogArchiveIsReadyOrDone(const char *xlog);
-extern void XLogArchiveCleanup(const char *xlog);
-
 #endif							/* XLOG_INTERNAL_H */
