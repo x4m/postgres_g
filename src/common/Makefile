@@ -52,13 +52,10 @@ OBJS_COMMON = \
 	config_info.o \
 	controldata_utils.o \
 	d2s.o \
-	encnames.o \
 	exec.o \
 	f2s.o \
 	file_perm.o \
-	hashfn.o \
 	ip.o \
-	jsonapi.o \
 	keywords.o \
 	kwlookup.o \
 	link-canary.o \
@@ -74,8 +71,7 @@ OBJS_COMMON = \
 	stringinfo.o \
 	unicode_norm.o \
 	username.o \
-	wait_error.o \
-	wchar.o
+	wait_error.o
 
 ifeq ($(with_openssl),yes)
 OBJS_COMMON += sha2_openssl.o
@@ -85,8 +81,13 @@ endif
 
 # A few files are currently only built for frontend, not server
 # (Mkvcbuild.pm has a copy of this list, too)
-OBJS_FRONTEND = $(OBJS_COMMON) fe_memutils.o file_utils.o \
-	logging.o restricted_token.o
+OBJS_FRONTEND = \
+	$(OBJS_COMMON) \
+	fe_archive.o \
+	fe_memutils.o \
+	file_utils.o \
+	logging.o \
+	restricted_token.o
 
 # foo.o, foo_shlib.o, and foo_srv.o are all built from foo.c
 OBJS_SHLIB = $(OBJS_FRONTEND:%.o=%_shlib.o)
