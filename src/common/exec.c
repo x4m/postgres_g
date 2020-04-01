@@ -41,7 +41,6 @@
 
 static int	validate_exec(const char *path);
 static int	resolve_symlinks(char *path);
-static char *pipe_read_line(char *cmd, char *line, int maxsize);
 
 #ifdef WIN32
 static BOOL GetTokenUser(HANDLE hToken, PTOKEN_USER *ppTokenUser);
@@ -344,7 +343,7 @@ find_other_exec(const char *argv0, const char *target,
  * Executing a command in a pipe and reading the first line from it
  * is all we need.
  */
-static char *
+char *
 pipe_read_line(char *cmd, char *line, int maxsize)
 {
 #ifndef WIN32

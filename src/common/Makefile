@@ -51,7 +51,24 @@ else
 OBJS_COMMON += sha2.o
 endif
 
-OBJS_FRONTEND = $(OBJS_COMMON) fe_memutils.o file_utils.o restricted_token.o
+# A few files are currently only built for frontend, not server
+# (Mkvcbuild.pm has a copy of this list, too)
+OBJS_FRONTEND = \
+	$(OBJS_COMMON) \
+	fe_archive.o \
+	fe_memutils.o \
+	file_utils.o \
+	logging.o \
+	restricted_token.o
+
+# foo.o, foo_shlib.o, and foo_srv.o are all built from foo.c
+OBJS_SHLIB = $(OBJS_FRONTEND:%.o=%_shlib.o)
+OBJS_SRV = $(OBJS_COMMON:%.o=%_srv.o)
+
+# where to find gen_keywordlist.pl and subsidiary files
+TOOLSDIR = $(top_srcdir)/src/tools
+GEN_KEYWORDLIST = $(PERL) -I $(TOOLSDIR) $(TOOLSDIR)/gen_keywordlist.pl
+GEN_KEYWORDLIST_DEPS = $(TOOLSDIR)/gen_keywordlist.pl $(TOOLSDIR)/PerfectHash.pm
 
 OBJS_SRV = $(OBJS_COMMON:%.o=%_srv.o)
 
