@@ -110,6 +110,7 @@ CREATE EXTENSION <replaceable>module_name</replaceable>;
  &earthdistance;
  &file-fdw;
  &fuzzystrmatch;
+ &heapcheck;
  &hstore;
  &intagg;
  &intarray;

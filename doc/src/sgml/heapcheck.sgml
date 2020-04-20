@@ -1,0 +1,133 @@
+<!-- doc/src/sgml/heapcheck.sgml -->
+
+<sect1 id="heapcheck" xreflabel="heapcheck">
+ <title>heapcheck</title>
+
+ <indexterm zone="heapcheck">
+  <primary>heapcheck</primary>
+ </indexterm>
+
+ <para>
+  The <filename>heapcheck</filename> module provides a means for examining the
+  integrity of a table relation.
+ </para>
+
+ <sect2>
+  <title>Functions</title>
+
+  <variablelist>
+   <varlistentry>
+    <term>
+     <function>
+      heapcheck_relation(relation regclass,
+                         blkno OUT bigint,
+                         offnum OUT integer,
+                         lp_off OUT smallint,
+                         lp_flags OUT smallint,
+                         lp_len OUT smallint,
+                         attnum OUT integer,
+                         chunk OUT integer,
+                         msg OUT text)
+      returns record
+     </function>
+    </term>
+    <listitem>
+     <para>
+      Checks for "logical" corruption, where the page is valid but inconsistent
+      with the rest of the database cluster. This can happen due to faulty or
+      ill-conceived backup and restore tools, or bad storage, or user error, or
+      bugs in the server itself.  It checks xmin and xmax values against
+      relfrozenxid and relminmxid, and also validates TOAST pointers.
+     </para>
+
+     <para>
+      For each block in the relation where corruption is detected, for each
+      corruption detected, returns one row containing the following fields:
+     </para>
+     <variablelist>
+      <varlistentry>
+       <term>blkno</term>
+       <listitem>
+        <para>
+         The number of the block containing the corrupt page.
+        </para>
+       </listitem>
+      </varlistentry>
+      <varlistentry>
+       <term>offnum</term>
+       <listitem>
+        <para>
+         The OffsetNumber of the corrupt tuple.
+        </para>
+       </listitem>
+      </varlistentry>
+      <varlistentry>
+       <term>lp_off</term>
+       <listitem>
+        <para>
+         The offset into the page of the line pointer for the corrupt tuple.
+        </para>
+       </listitem>
+      </varlistentry>
+      <varlistentry>
+       <term>lp_flags</term>
+       <listitem>
+        <para>
+         The flags in the line pointer for the corrupt tuple.
+        </para>
+       </listitem>
+      </varlistentry>
+      <varlistentry>
+       <term>lp_len</term>
+       <listitem>
+        <para>
+         The length of the corrupt tuple as recorded in the line pointer.
+        </para>
+       </listitem>
+      </varlistentry>
+      <varlistentry>
+       <term>attnum</term>
+       <listitem>
+        <para>
+         The attribute number of the corrupt column in the tuple, if the corruption
+         is specific to a column and not the tuple as a whole.
+        </para>
+       </listitem>
+      </varlistentry>
+      <varlistentry>
+       <term>chunk</term>
+       <listitem>
+        <para>
+         The chunk number of the corrupt toasted attribute, if the corruption
+         is specific to a toasted value.
+        </para>
+       </listitem>
+      </varlistentry>
+      <varlistentry>
+       <term>msg</term>
+       <listitem>
+        <para>
+         A human readable message describing the corruption in the page.
+        </para>
+       </listitem>
+      </varlistentry>
+     </variablelist>
+    </listitem>
+   </varlistentry>
+  </variablelist>
+
+  <para>
+   By default, this function is executable only by superusers and members
+   of the <literal>pg_stat_scan_tables</literal> role.
+  </para>
+ </sect2>
+
+ <sect2>
+  <title>Author</title>
+
+  <para>
+   Mark Dilger <email>mark.dilger@enterprisedb.com</email>
+  </para>
+ </sect2>
+
+</sect1>

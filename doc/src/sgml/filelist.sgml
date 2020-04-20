@@ -122,6 +122,7 @@
 <!ENTITY earthdistance   SYSTEM "earthdistance.sgml">
 <!ENTITY file-fdw        SYSTEM "file-fdw.sgml">
 <!ENTITY fuzzystrmatch   SYSTEM "fuzzystrmatch.sgml">
+<!ENTITY heapcheck       SYSTEM "heapcheck.sgml">
 <!ENTITY hstore          SYSTEM "hstore.sgml">
 <!ENTITY intagg          SYSTEM "intagg.sgml">
 <!ENTITY intarray        SYSTEM "intarray.sgml">

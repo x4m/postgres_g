@@ -20,6 +20,7 @@ SUBDIRS = \
 		earthdistance	\
 		file_fdw	\
 		fuzzystrmatch	\
+		heapcheck \
 		hstore		\
 		intagg		\
 		intarray	\
