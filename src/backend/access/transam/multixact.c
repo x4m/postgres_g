@@ -1844,8 +1844,8 @@ MultiXactShmemSize(void)
 			 mul_size(sizeof(MultiXactId) * 2, MaxOldestSlot))
 
 	size = SHARED_MULTIXACT_STATE_SIZE;
-	size = add_size(size, SimpleLruShmemSize(NUM_MXACTOFFSET_BUFFERS, 0));
-	size = add_size(size, SimpleLruShmemSize(NUM_MXACTMEMBER_BUFFERS, 0));
+	size = add_size(size, SimpleLruShmemSize(multixact_offsets_slru_buffers, 0));
+	size = add_size(size, SimpleLruShmemSize(multixact_members_slru_buffers, 0));
 
 	return size;
 }
@@ -1861,11 +1861,11 @@ MultiXactShmemInit(void)
 	MultiXactMemberCtl->PagePrecedes = MultiXactMemberPagePrecedes;
 
 	SimpleLruInit(MultiXactOffsetCtl,
-				  "multixact_offset", NUM_MXACTOFFSET_BUFFERS, 0,
+				  "multixact_offset", multixact_offsets_slru_buffers, 0,
 				  MultiXactOffsetControlLock, "pg_multixact/offsets",
 				  LWTRANCHE_MXACTOFFSET_BUFFERS);
 	SimpleLruInit(MultiXactMemberCtl,
-				  "multixact_member", NUM_MXACTMEMBER_BUFFERS, 0,
+				  "multixact_member", multixact_members_slru_buffers, 0,
 				  MultiXactMemberControlLock, "pg_multixact/members",
 				  LWTRANCHE_MXACTMEMBER_BUFFERS);
 
