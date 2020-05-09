@@ -1746,6 +1746,37 @@ include_dir 'conf.d'
       </listitem>
      </varlistentry>
 
+    <varlistentry id="guc-multixact-offsets-slru-buffers" xreflabel="multixact_offsets_slru_buffers">
+      <term><varname>multixact_offsets_slru_buffers</varname> (<type>integer</type>)
+      <indexterm>
+       <primary><varname>multixact_offsets_slru_buffers</varname> configuration parameter</primary>
+      </indexterm>
+      </term>
+      <listitem>
+       <para>
+        Specifies the amount of memory to be used for MultiXact offsets. MultiXact offsets
+        are used to store informaion about offsets of multiple row lockers (caused by SELECT FOR UPDATE and others).
+        It defaults to 64 kilobytes (<literal>64KB</literal>).
+       </para>
+      </listitem>
+     </varlistentry>
+
+    <varlistentry id="guc-multixact-members-slru-buffers" xreflabel="multixact_members_slru_buffers">
+      <term><varname>multixact_members_slru_buffers</varname> (<type>integer</type>)
+      <indexterm>
+       <primary><varname>multixact_members_slru_buffers</varname> configuration parameter</primary>
+      </indexterm>
+      </term>
+      <listitem>
+       <para>
+        Specifies the amount of memory to be used for MultiXact members. MultiXact members
+        are used to store informaion about XIDs of multiple row lockers. Tipically <varname>multixact_members_slru_buffers</varname>
+        is twice more than <varname>multixact_offsets_slru_buffers</varname>.
+        It defaults to 128 kilobytes (<literal>128KB</literal>).
+       </para>
+      </listitem>
+     </varlistentry>
+
      <varlistentry id="guc-max-stack-depth" xreflabel="max_stack_depth">
       <term><varname>max_stack_depth</varname> (<type>integer</type>)
       <indexterm>
