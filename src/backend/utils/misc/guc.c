@@ -2271,6 +2271,28 @@ static struct config_int ConfigureNamesInt[] =
 	},
 
 	{
+		{"multixact_offsets_slru_buffers", PGC_POSTMASTER, RESOURCES_MEM,
+			gettext_noop("Sets the number of shared memory buffers used for MultiXact offsets SLRU."),
+			NULL,
+			GUC_UNIT_BLOCKS
+		},
+		&multixact_offsets_slru_buffers,
+		8, 2, INT_MAX / 2,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"multixact_members_slru_buffers", PGC_POSTMASTER, RESOURCES_MEM,
+			gettext_noop("Sets the number of shared memory buffers used for MultiXact members SLRU."),
+			NULL,
+			GUC_UNIT_BLOCKS
+		},
+		&multixact_members_slru_buffers,
+		16, 2, INT_MAX / 2,
+		NULL, NULL, NULL
+	},
+
+	{
 		{"temp_buffers", PGC_USERSET, RESOURCES_MEM,
 			gettext_noop("Sets the maximum number of temporary buffers used by each session."),
 			NULL,
