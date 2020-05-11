@@ -2274,6 +2274,16 @@ static struct config_int ConfigureNamesInt[] =
 	},
 
 	{
+		{"multixact_local_cache_entries", PGC_SUSET, RESOURCES_MEM,
+			gettext_noop("Sets the number cached MultiXact by backend."),
+			NULL
+		},
+		&multixact_local_cache_entries,
+		256, 2, INT_MAX / 2,
+		NULL, NULL, NULL
+	},
+
+	{
 		{"temp_buffers", PGC_USERSET, RESOURCES_MEM,
 			gettext_noop("Sets the maximum number of temporary buffers used by each session."),
 			NULL,
