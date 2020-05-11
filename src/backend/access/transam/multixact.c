@@ -1589,7 +1589,7 @@ mXactCachePut(MultiXactId multi, int nmembers, MultiXactMember *members)
 	qsort(entry->members, nmembers, sizeof(MultiXactMember), mxactMemberComparator);
 
 	dlist_push_head(&MXactCache, &entry->node);
-	if (MXactCacheMembers++ >= MAX_CACHE_ENTRIES)
+	if (MXactCacheMembers++ >= multixact_local_cache_entries)
 	{
 		dlist_node *node;
 		mXactCacheEnt *entry;
