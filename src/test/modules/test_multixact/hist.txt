@@ -1,0 +1,520 @@
+    1  apt-get install build-essential
+    2  sudo apt-get install build-essential
+    3  sudo apt-get install librealine-dev zlib1g-dev
+    4  sudo apt-get install libreadline-dev zlib1g-dev
+    5  apt-get install flex bison libxml2-dev
+    6  sudo apt-get install flex bison libxml2-dev
+    7  git clone https://github.com/greenplum-db/gpdb
+    8  sudo apt-get install git
+    9  git clone https://github.com/greenplum-db/gpdb
+   10  cd gpdb/
+   11  ./README.ubuntu.bash
+   12  sudo ./README.ubuntu.bash
+   13  cmake --version
+   14  gpdb_src/concourse/scripts/setup_gpadmin_user.bash
+   15  gpdb_src/concourse/scripts/setup_gpadmin_user.basDDDDh
+   16  ./gpdb_src/concourse/scripts/setup_gpadmin_user.bash
+   17  ./concourse/scripts/setup_gpadmin_user.bash
+   18  sudo ./concourse/scripts/setup_gpadmin_user.bash
+   19  vim ./concourse/scripts/setup_gpadmin_user.bash
+   20  sudo apt-get install vim
+   21  vim ./concourse/scripts/setup_gpadmin_user.bash
+   22  cd ..
+   23  ./gpdb_src/concourse/scripts/setup_gpadmin_user.bash
+   24  groupdel supergroup 
+   25  sudo groupdel supergroup
+   26  sudo ./gpdb_src/concourse/scripts/setup_gpadmin_user.bash
+   27  ssh 127.0.0.1
+   28  ssh-keygen
+   29  mkdir .ssh
+   30  touch ~/.ssh/authorized_keys
+   31  chmod 600 ~/.ssh/authorized_keys
+   32  ssh 127.0.0.1
+   33  cat ~/.ssh/id_rsa.pub >> ~/.ssh/authorized_keys
+   34  ssh-keygen
+   35  cat ~/.ssh/id_rsa.pub >> ~/.ssh/authorized_keys
+   36  chmod 600 ~/.ssh/authorized_keys
+   37  ssh 127.0.0.1
+   38  sudo bash -c 'cat >> /etc/sysctl.conf <<-EOF
+   39  kernel.shmmax = 500000000
+   40  kernel.shmmni = 4096
+   41  kernel.shmall = 4000000000
+   42  kernel.sem = 500 1024000 200 4096
+   43  kernel.sysrq = 1
+   44  kernel.core_uses_pid = 1
+   45  kernel.msgmnb = 65536
+   46  kernel.msgmax = 65536
+   47  kernel.msgmni = 2048
+   48  net.ipv4.tcp_syncookies = 1
+   49  net.ipv4.ip_forward = 0
+   50  net.ipv4.conf.default.accept_source_route = 0
+   51  net.ipv4.tcp_tw_recycle = 1
+   52  net.ipv4.tcp_max_syn_backlog = 4096
+   53  net.ipv4.conf.all.arp_filter = 1
+   54  net.ipv4.ip_local_port_range = 1025 65535
+   55  net.core.netdev_max_backlog = 10000
+   56  net.core.rmem_max = 2097152
+   57  net.core.wmem_max = 2097152
+   58  vm.overcommit_memory = 2
+   59  EOF'
+   60  sudo bash -c 'cat >> /etc/security/limits.conf <<-EOF
+   61  * soft nofile 65536
+   62  * hard nofile 65536
+   63  * soft nproc 131072
+   64  * hard nproc 131072
+   65  EOF'
+   66  sudo bash -c 'cat >> /etc/ld.so.conf <<-EOF
+   67  /usr/local/lib
+   68  EOF'
+   69  cd gpdb_src/
+   70  cd depends/
+   71  ./configure 
+   72  make -j8
+   73  make install_local
+   74  ls -l /usr/local/lib/
+   75  chmod -R 777 /usr/local
+   76  sudo chmod -R 777 /usr/local
+   77  make install_local
+   78  cd ..
+   79  ./configure --with-perl --with-python --with-libxml --with-gssapi --prefix=/usr/local/gpdb
+   80  sudo apt-get install libzstd
+   81  sudo apt-get install libzstd-dev
+   82  ./configure --with-perl --with-python --with-libxml --with-gssapi --prefix=/usr/local/gpdb
+   83  ./configure --with-perl --with-python --with-libxml --with-gssapi --without-zstd --prefix=/usr/local/gpdb
+   84  make
+   85  make -j12
+   86  make install
+   87  pkill firefox
+   88  pkill -9 firefox
+   89  htop
+   90  firefox
+   91  ulimit -n
+   92  ulimit -n 6553600
+   93  sudo ulimit -n 6553600
+   94  sudo su
+   95  vim /etc/security/limits.conf 
+   96  sudo vim /etc/security/limits.conf 
+   97  echo /proc/sys/fs/file-max 
+   98  cat /proc/sys/fs/file-max 
+   99  firefox
+  100  ulimit -nH
+  101  ulimit -Hn
+  102  ulimit -Hn 655360
+  103  sudo ulimit -Hn 655360
+  104  sudo su -c "sudo ulimit -Hn 655360"
+  105  which ulimit
+  106  ulimit 
+  107  sudo su -c "sudo ulimit -Hn 655360"
+  108  ulimit -Hn 655360
+  109  sudo ulimit -Hn 655360
+  110  where ulimit
+  111  session require pam_limits.so
+  112  sudo find / -name ulimit
+  113  sudo find /|grep ulimit ulimit
+  114  sudo find /|grep ulimit
+  115  sudo sysctl -p 
+  116  cd gpdb_src/
+  117  source /usr/local/gpdb/greenplum_path.sh
+  118  psl postgres
+  119  psql postgres
+  120  source gpAux/gpdemo/gpdemo-env.sh
+  121  psql postgres
+  122  source gpAux/gpdemo/gpdemo-env.sh
+  123  source ../gpAux/gpdemo/gpdemo-env.sh
+  124  source /usr/local/gpdb/greenplum_path.sh
+  125  psql postgres
+  126  make create-demo-cluster 
+  127  make destroy-demo-cluster 
+  128  sudo uptime
+  129  make create-demo-cluster 
+  130  psql postgres
+  131  source ../gpAux/gpdemo/gpdemo-env.sh
+  132  source gpAux/gpdemo/gpdemo-env.sh
+  133  psql postgres
+  134  htop
+  135  cd gpdb_src/
+  136  make destroy-demo-cluster 
+  137  ulimit -h
+  138  ulimit -n
+  139  ulimit -Hn
+  140  ulimit -Hn 65536
+  141  sudo ulimit -Hn 65536
+  142  vim /etc/security/limits.d/gpadmin-limits.conf 
+  143  su gpadmin 
+  144  sudo su gpadmin
+  145  chpasswd pgadmin
+  146  sudo chpasswd pgadmin
+  147  sudo passwd gpadmin 
+  148  su gpadmin 
+  149  make check
+  150  source /usr/local/gpdb/greenplum_path.sh
+  151  psql
+  152  source gpAux/gpdemo/gpdemo-env.sh
+  153  source ../gpAux/gpdemo/gpdemo-env.sh
+  154  sudo uptime
+  155  make create-demo-cluster 
+  156  psql
+  157  source gpAux/gpdemo/gpdemo-env.sh
+  158  psql postgres
+  159  gpinitsystem 
+  160  which gpinitsystem 
+  161  /usr/local/gpdb/bin/gpinitsystem -a -c clusterConfigFile -l /home/x4m/gpdb_src/gpAux/gpdemo/datadirs/gpAdminLogs -p clusterConfigPostgresAddonsFile -s x4m-VirtualBox -P 7001 -S /home/x4m/gpdb_src/gpAux/gpdemo/datadirs/standby ""
+  162  psql postgres
+  163  gpinitsystem --help
+  164  make
+  165  make install
+  166  gpstop
+  167  gpstart
+  168  psql
+  169  psql postgres
+  170  make 
+  171  make install
+  172  gpstop
+  173  gpstart
+  174  psql
+  175  psql postgres
+  176  make install
+  177  gpstop;gpstart;psql postgres
+  178  gpstop -ar;psql postgres
+  179  make install
+  180  gpstop -ar;psql postgres
+  181  make install
+  182  gpstop -ar;psql postgres
+  183  make install;gpstop -ar;psql postgres
+  184  less hist.txt 
+  185  cd gpdb_src/
+  186  source gpAux/gpdemo/gpdemo-env.sh
+  187  source /usr/local/gpdb/greenplum_path.sh
+  188  source ../gpAux/gpdemo/gpdemo-env.sh
+  189  psql
+  190  psql postgres
+  191  psql
+  192  source gpAux/gpdemo/gpdemo-env.sh
+  193  source /usr/local/gpdb/greenplum_path.sh
+  194  source ../gpAux/gpdemo/gpdemo-env.sh
+  195  psql
+  196  cd gpdb_src/
+  197  source gpAux/gpdemo/gpdemo-env.sh
+  198  source /usr/local/gpdb/greenplum_path.sh
+  199  source ../gpAux/gpdemo/gpdemo-env.sh
+  200  psql
+  201  psql postgres
+  202  psql 
+  203  psql postgres
+  204  git diff
+  205  cd gpdb_src/
+  206  sudo time
+  207  source ../gpAux/gpdemo/gpdemo-env.sh
+  208  source gpAux/gpdemo/gpdemo-env.sh
+  209  source /usr/local/gpdb/greenplum_path.sh
+  210  psql
+  211  psql postgres
+  212  gpstop -ar
+  213  psql postgres
+  214  history > >/hist
+  215  history > >/hist.txt
+  216  history > ~/hist.txt
+  217  source gpAux/gpdemo/gpdemo-env.sh
+  218  cd gpdb_src/
+  219  source /usr/local/gpdb/greenplum_path.sh
+  220  source gpAux/gpdemo/gpdemo-env.sh
+  221  psql postgres
+  222  make install
+  223  make check
+  224  make install;gpstop -ar;psql postgres
+  225  make
+  226  make install;gpstop -ar;psql postgres
+  227  git status
+  228  git remote
+  229  git remote -v
+  230  git remote add my https://github.com/x4m/gpdb
+  231  git diff
+  232  git checkout -b cluster
+  233  git commit -am "Allow CLUSTER on AO table"
+  234  git config --global user.email amborodin@acm.org
+  235  git config --global user.name "Andrey Borodin"
+  236  git commit -am "Allow CLUSTER on AO table"
+  237  git push -u my cluster
+  238  psql postgres
+  239  git diff
+  240  make install;gpstop -ar;psql postgres
+  241  cd gpdb_src/
+  242  make install;gpstop -ar;psql postgressource gpAux/gpdemo/gpdemo-env.sh
+  243  source /usr/local/gpdb/greenplum_path.sh
+  244  source ../gpAux/gpdemo/gpdemo-env.sh
+  245  psql postgres
+  246  source gpAux/gpdemo/gpdemo-env.sh
+  247  source /usr/local/gpdb/greenplum_path.sh
+  248  source ../gpAux/gpdemo/gpdemo-env.sh
+  249  psql postgres
+  250  gpstop -ar
+  251  gpstart
+  252  psql postgres
+  253  make install;gpstop -ar;psql postgressource gpAux/gpdemo/gpdemo-env.sh
+  254  psql
+  255  psql postgres
+  256  make install;gpstop -ar;psql postgressource gpAux/gpdemo/gpdemo-env.sh
+  257  make install;gpstop -ar;psql postgres
+  258  make
+  259  make install;gpstop -ar;psql postgres
+  260  make
+  261  make > /dev/null
+  262  make install;gpstop -ar;psql postgres
+  263  make install;gpstop -ar;psql postgres -c "cluster ao_table USING ao_table_id_idx;"
+  264  psql postgres
+  265  cd gpdb_src/
+  266  source gpAux/gpdemo/gpdemo-env.sh
+  267  source /usr/local/gpdb/greenplum_path.sh
+  268  source ../gpAux/gpdemo/gpdemo-env.sh
+  269  make install;gpstop -ar;psql postgres
+  270  make
+  271  make install;gpstop -ar;psql postgres
+  272  htop
+  273  make install;gpstop -ar;psql postgres
+  274  make
+  275  make install;gpstop -ar;psql postgres
+  276  gpstart
+  277  psql postgres
+  278  git status
+  279  git commit -am "Somehow it workd"
+  280  git push
+  281  make install;gpstop -ar;psql postgres
+  282  make
+  283  make install;gpstop -ar;psql postgres
+  284  git commit -am "AOCS works"
+  285  make install;gpstop -ar;psql postgres
+  286  make
+  287  make install;gpstop -ar;psql postgres
+  288  git diff
+  289  git  
+  290  git diff
+  291  git commit -am "Tidy up"
+  292  git push
+  293  make check
+  294  gpstop
+  295  make check
+  296  gpstart
+  297  make installcheck
+  298  git status
+  299  ls src/test/regress/results/cluster.out 
+  300  vim src/test/regress/results/cluster.out 
+  301  cp src/test/regress/results/cluster.out src/test/regress/expected/
+  302  git diff
+  303  q
+  304  git diff
+  305  git status
+  306  git checkout .
+  307  git diff
+  308  git commit -am "Ad expected test results"
+  309  git push
+  310  make check
+  311  make installcheck
+  312  git status
+  313  git checkout -b cluster_ao
+  314  git log
+  315  git rebase 2f8ed4f65f1c962cf4c98acfe7b4718013b45519 -i
+  316  git push -u my cluster_ao
+  317  cd gpdb_src/
+  318  source gpAux/gpdemo/gpdemo-env.sh
+  319  source /usr/local/gpdb/greenplum_path.sh
+  320  source ../gpAux/gpdemo/gpdemo-env.sh
+  321  gpstart
+  322  make installcheck
+  323  cd gpdb_src/
+  324  git diff
+  325  git commit -am "Rebase on master"
+  326  git push
+  327  git push --force
+  328  cd gpdb_src/
+  329  make
+  330  source gpAux/gpdemo/gpdemo-env.sh
+  331  source /usr/local/gpdb/greenplum_path.sh
+  332  psql
+  333  psql postgres
+  334  make install;gpstop -ar;psql postgres
+  335  git diff
+  336  git commit -am "Cleanup"
+  337  git push
+  338  make
+  339  make install;gpstop -ar;psql postgres
+  340  git diff
+  341  git commit -am "pfree temp tuples"
+  342  git push
+  343  git diff
+  344  git commit -am "Cleanup B-tree check code"
+  345  git push
+  346  make
+  347  git diff
+  348  git commit -a --amend
+  349  make install;gpstop -ar;psql postgres
+  350  git status
+  351  git push
+  352  git diff
+  353  git commit -am "Fix docs"
+  354  git push
+  355  git pull master
+  356  git pull
+  357  git rebase origin/master
+  358  git status
+  359  git diff
+  360  git commit -a --amend
+  361  git rebase origin/master
+  362  git pull origin master
+  363  git fetch origin master
+  364  git rebase origin master
+  365  git status
+  366  git reset
+  367  git status
+  368  git clean -f
+  369  git status
+  370  git checkout .
+  371  git status
+  372  git rebase origin master
+  373  git status
+  374  git push --force
+  375  git rebase origin master
+  376  git status
+  377  rm -rf src/backend/gporca
+  378  rm -rf src/test/gpkerberos
+  379  git rebase origin master
+  380  rm gpMgmt/bin/test/gpinitsystem_test.bash
+  381  rm gpMgmt/bin/test/suite.bash
+  382  git rebase origin master
+  383  make
+  384  make -j 12
+  385  git status
+  386  git checkout cluster_ao
+  387  git rebase origin master
+  388  git log
+  389  git checkout cluster_ao
+  390  git log
+  391  git rebase origin/master
+  392  make -j 12
+  393  make
+  394  make 0j16
+  395  make -j16
+  396  make
+  397  make clean
+  398  make -j16
+  399  cd gpdb_src/
+  400  make -j16
+  401  make install;gpstop -ar;psql postgres
+  402  source gpAux/gpdemo/gpdemo-env.sh
+  403  source /usr/local/gpdb/greenplum_path.sh
+  404  source ../gpAux/gpdemo/gpdemo-env.sh
+  405  make install;gpstop -ar;psql postgres
+  406  gpstart
+  407  make create-demo-cluster 
+  408  psql postgres
+  409  make installcheck
+  410  make install
+  411  make installcheck
+  412  make check
+  413  make
+  414  make test
+  415  source /usr/local/gpdb/greenplum_path.sh
+  416  make -s unittest-check
+  417  source gpAux/gpdemo/gpdemo-env.sh
+  418  make -C src/test/regress installcheck-small
+  419  git status
+  420  make -C src/test/regress installcheck-small
+  421  cd src/test/regress
+  422  ls
+  423  chmod +x pg_regress
+  424  cd ..
+  425  cd ../..
+  426  make installcheck
+  427  find .|grep gpdiff.pl
+  428  chmod +x src/test/regress/gpdiff.pl
+  429  make installcheck
+  430  ls /home/x4m/gpdb_src/src/test/regress/pg_regress
+  431  ls /home/x4m/gpdb_src/src/test/regress/pg_regress/
+  432  make -C src/test/regress installcheck-small
+  433  find .|grep gpdiff.pl
+  434  ls /home/x4m/gpdb_src/src/test/regress/pg_regress/
+  435  cd /home/x4m/gpdb_src/src/test/regress/pg_regress
+  436  find .|grep gpdiff.pl
+  437  cd src/test/
+  438  cp -r regress pg_regress
+  439  cd ../..
+  440  make
+  441  make -C src/test/regress installcheck-small
+  442  make installcheck
+  443  git status
+  444  cd /home/x4m/gpdb_src/src/test/regress
+  445  ls
+  446  chmod +x gpdiff.pl 
+  447  cd ../../..
+  448  make installcheck
+  449  /home/x4m/gpdb_src/src/test/regress/gpdiff.pl 
+  450  make installcheck
+  451  psql
+  452  psql postgres
+  453  cd gpdb_src/
+  454  make installcheck
+  455  source gpAux/gpdemo/gpdemo-env.sh
+  456  source /usr/local/gpdb/greenplum_path.sh
+  457  source ../gpAux/gpdemo/gpdemo-env.sh
+  458  make installcheck
+  459  make -C src/test/regress installcheck-small
+  460  make -s install
+  461  make installcheck
+  462  make -C gpAux/gpdemo cluster
+  463  make -C src/test/regress installcheck-small
+  464  make maintainer-clean
+  465  ls /home/x4m/gpdb_src/src/test/regress/gpdiff.pl 
+  466  ls /home/x4m/gpdb_src/src/test/regress/
+  467  cd /home/x4m/gpdb_src/src/test/regress/
+  468  git status
+  469  cd ..
+  470  rm -rf regress/
+  471  rm -rf pg_regress/
+  472  git status
+  473  git checkout .
+  474  make -j16
+  475  cd ..
+  476  make -j16
+  477  ./configure --with-perl --with-python --with-libxml --with-gssapi --without-zstd --prefix=/usr/local/gpdb
+  478  make -j16
+  479  make installcheck
+  480  make -s install
+  481  source /usr/local/gpdb/greenplum_path.sh
+  482  make -C gpAux/gpdemo cluster
+  483  make -C src/test/regress installcheck-small
+  484  vim /home/x4m/gpdb_src/src/test/regress/regression.diffs
+  485  psql postgrs
+  486  psql postgres
+  487  make install;gpstop -ar;psql postgres
+  488  make -C src/test/regress installcheck-small
+  489  git diff
+  490  git commit -am "Fix CI"
+  491  git push
+  492  git diff
+  493  make install;gpstop -ar;psql postgres
+  494  make -C src/test/regress installcheck-small
+  495  make -C src/test/regress installcheck
+  496  export T=debugexport T=debugexport T=debug
+  497  export T=debug
+  498  if [ "$T" = "debug" ]; then   ./configure       --prefix=${TRAVIS_BUILD_DIR}/gpsql       --enable-cassert       --enable-debug       --enable-debug-extensions       --with-perl       --with-python       --disable-orca       --with-openssl       --with-ldap       --with-libcurl       --with-libxml       --enable-mapreduce       --enable-orafce       $C;    make -s install;    source ${TRAVIS_BUILD_DIR}/gpsql/greenplum_path.sh;    make -s unittest-check;    make -C gpAux/gpdemo cluster;    source gpAux/gpdemo/gpdemo-env.sh;    make -C src/test/regress installcheck-small;  fi
+  499  ./configure --prefix=${TRAVIS_BUILD_DIR}/gpsql --enable-cassert --enable-debug --enable-debug-extensions --with-perl --with-python --disable-orca --with-openssl --with-libcurl --with-libxml --enable-mapreduce --enable-orafce debug
+  500  ./configure --prefix=/usr/local/gpdb --enable-cassert --enable-debug --enable-debug-extensions --with-perl --with-python --disable-orca --with-openssl --with-libcurl --with-libxml --enable-mapreduce --enable-orafce debug
+  501  ./configure --prefix=/usr/local/gpdb --enable-cassert --enable-debug --enable-debug-extensions --with-perl --with-python --disable-orca --with-openssl --with-libcurl --with-libxml --enable-mapreduce --enable-orafce
+  502  apt-get install zstd-dev
+  503  sudo apt-get install zstd-dev
+  504  ./configure --prefix=/usr/local/gpdb --enable-cassert --enable-debug --enable-debug-extensions --with-perl --with-python --disable-orca --with-openssl --with-libcurl --with-libxml --enable-mapreduce --enable-orafce --without-zstd
+  505  make -j8 install
+  506  make maintainer-clean
+  507  ./configure --prefix=/usr/local/gpdb --enable-cassert --enable-debug --enable-debug-extensions --with-perl --with-python --disable-orca --with-openssl --with-libcurl --with-libxml --enable-mapreduce --enable-orafce --without-zstd
+  508  make -j8 install
+  509  make destroy-demo-cluster 
+  510  make -C gpAux/gpdemo cluster
+  511  psql postgres
+  512  make install;gpstop -ar;psql postgres
+  513  psql postgres
+  514  make install;gpstop -ar;psql postgres
+  515  make -C src/test/regress installcheck-small
+  516  git diff
+  517  git commit -am "Do not swap stats of AO tables"
+  518  git push
+  519  history |less
+  520  history>/tmp/hist.txt
