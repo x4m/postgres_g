@@ -16,6 +16,7 @@ SUBDIRS = \
 		  test_ginpostinglist \
 		  test_integerset \
 		  test_misc \
+		  test_multixact \
 		  test_parser \
 		  test_pg_dump \
 		  test_predtest \
