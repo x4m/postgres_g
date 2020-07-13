@@ -8425,7 +8425,7 @@ heap_xlog_delete(XLogReaderState *record)
 			lp = PageGetItemId(page, xlrec->offnum);
 
 		if (PageGetMaxOffsetNumber(page) < xlrec->offnum || !ItemIdIsNormal(lp))
-			elog(PANIC, "invalid lp");
+			{} else{
 
 		htup = (HeapTupleHeader) PageGetItem(page, lp);
 
@@ -8450,7 +8450,7 @@ heap_xlog_delete(XLogReaderState *record)
 		htup->t_ctid = target_tid;
 		PageSetLSN(page, lsn);
 		MarkBufferDirty(buffer);
-	}
+	}}
 	if (BufferIsValid(buffer))
 		UnlockReleaseBuffer(buffer);
 }
@@ -8791,7 +8791,8 @@ heap_xlog_update(XLogReaderState *record, bool hot_update)
 			lp = PageGetItemId(page, offnum);
 
 		if (PageGetMaxOffsetNumber(page) < offnum || !ItemIdIsNormal(lp))
-			elog(PANIC, "invalid lp");
+			{}
+			else {
 
 		htup = (HeapTupleHeader) PageGetItem(page, lp);
 
@@ -8819,7 +8820,7 @@ heap_xlog_update(XLogReaderState *record, bool hot_update)
 
 		PageSetLSN(page, lsn);
 		MarkBufferDirty(obuffer);
-	}
+	}}
 
 	/*
 	 * Read the page the new tuple goes into, if different from old.
@@ -9002,7 +9003,7 @@ heap_xlog_confirm(XLogReaderState *record)
 			lp = PageGetItemId(page, offnum);
 
 		if (PageGetMaxOffsetNumber(page) < offnum || !ItemIdIsNormal(lp))
-			elog(PANIC, "invalid lp");
+			{} else {
 
 		htup = (HeapTupleHeader) PageGetItem(page, lp);
 
@@ -9013,7 +9014,7 @@ heap_xlog_confirm(XLogReaderState *record)
 
 		PageSetLSN(page, lsn);
 		MarkBufferDirty(buffer);
-	}
+	}}
 	if (BufferIsValid(buffer))
 		UnlockReleaseBuffer(buffer);
 }
@@ -9059,7 +9060,7 @@ heap_xlog_lock(XLogReaderState *record)
 			lp = PageGetItemId(page, offnum);
 
 		if (PageGetMaxOffsetNumber(page) < offnum || !ItemIdIsNormal(lp))
-			elog(PANIC, "invalid lp");
+			{} else{
 
 		htup = (HeapTupleHeader) PageGetItem(page, lp);
 
@@ -9084,7 +9085,7 @@ heap_xlog_lock(XLogReaderState *record)
 		HeapTupleHeaderSetCmax(htup, FirstCommandId, false);
 		PageSetLSN(page, lsn);
 		MarkBufferDirty(buffer);
-	}
+	}}
 	if (BufferIsValid(buffer))
 		UnlockReleaseBuffer(buffer);
 }
@@ -9132,7 +9133,7 @@ heap_xlog_lock_updated(XLogReaderState *record)
 			lp = PageGetItemId(page, offnum);
 
 		if (PageGetMaxOffsetNumber(page) < offnum || !ItemIdIsNormal(lp))
-			elog(PANIC, "invalid lp");
+			{} else {
 
 		htup = (HeapTupleHeader) PageGetItem(page, lp);
 
@@ -9144,7 +9145,7 @@ heap_xlog_lock_updated(XLogReaderState *record)
 
 		PageSetLSN(page, lsn);
 		MarkBufferDirty(buffer);
-	}
+	}}
 	if (BufferIsValid(buffer))
 		UnlockReleaseBuffer(buffer);
 }
@@ -9173,7 +9174,7 @@ heap_xlog_inplace(XLogReaderState *record)
 			lp = PageGetItemId(page, offnum);
 
 		if (PageGetMaxOffsetNumber(page) < offnum || !ItemIdIsNormal(lp))
-			elog(PANIC, "invalid lp");
+			{} else {
 
 		htup = (HeapTupleHeader) PageGetItem(page, lp);
 
@@ -9185,7 +9186,7 @@ heap_xlog_inplace(XLogReaderState *record)
 
 		PageSetLSN(page, lsn);
 		MarkBufferDirty(buffer);
-	}
+	}}
 	if (BufferIsValid(buffer))
 		UnlockReleaseBuffer(buffer);
 }

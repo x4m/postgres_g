@@ -194,6 +194,102 @@ allocate_recordbuf(XLogReaderState *state, uint32 reclength)
 	return true;
 }
 
+
+XLogRecPtr
+XLogFindNextRecordAfterContrecord(XLogReaderState *state, XLogRecPtr RecPtr)
+{
+	XLogReaderState saved_state = *state;
+	XLogRecPtr	tmpRecPtr;
+	XLogRecPtr	found = InvalidXLogRecPtr;
+	XLogPageHeader header;
+	char	   *errormsg;
+
+	Assert(!XLogRecPtrIsInvalid(RecPtr));
+
+	/*
+	 * skip over potential continuation data, keeping in mind that it may span
+	 * multiple pages
+	 */
+	tmpRecPtr = RecPtr;
+	while (true)
+	{
+		XLogRecPtr	targetPagePtr;
+		int			targetRecOff;
+		uint32		pageHeaderSize;
+		int			readLen;
+
+		/*
+		 * Compute targetRecOff. It should typically be equal or greater than
+		 * short page-header since a valid record can't start anywhere before
+		 * that, except when caller has explicitly specified the offset that
+		 * falls somewhere there or when we are skipping multi-page
+		 * continuation record. It doesn't matter though because
+		 * ReadPageInternal() is prepared to handle that and will read at
+		 * least short page-header worth of data
+		 */
+		targetRecOff = tmpRecPtr % XLOG_BLCKSZ;
+
+		/* scroll back to page boundary */
+		targetPagePtr = tmpRecPtr - targetRecOff;
+
+		/* Read the page containing the record */
+		readLen = ReadPageInternal(state, targetPagePtr, targetRecOff);
+		if (readLen < 0)
+			goto err;
+
+		header = (XLogPageHeader) state->readBuf;
+
+		pageHeaderSize = XLogPageHeaderSize(header);
+
+		/* make sure we have enough data for the page header */
+		readLen = ReadPageInternal(state, targetPagePtr, pageHeaderSize);
+		if (readLen < 0)
+			goto err;
+
+		/* skip over potential continuation data */
+		if (header->xlp_info & XLP_FIRST_IS_CONTRECORD)
+		{
+			/*
+			 * If the length of the remaining continuation data is more than
+			 * what can fit in this page, the continuation record crosses over
+			 * this page. Read the next page and try again. xlp_rem_len in the
+			 * next page header will contain the remaining length of the
+			 * continuation data
+			 *
+			 * Note that record headers are MAXALIGN'ed
+			 */
+			if (MAXALIGN(header->xlp_rem_len) >= (XLOG_BLCKSZ - pageHeaderSize))
+				tmpRecPtr = targetPagePtr + XLOG_BLCKSZ;
+			else
+			{
+				/*
+				 * The previous continuation record ends in this page. Set
+				 * tmpRecPtr to point to the first valid record
+				 */
+				tmpRecPtr = targetPagePtr + pageHeaderSize
+					+ MAXALIGN(header->xlp_rem_len);
+				break;
+			}
+		}
+		else
+		{
+			tmpRecPtr = targetPagePtr + pageHeaderSize;
+			break;
+		}
+	}
+
+	return tmpRecPtr;
+
+err:
+out:
+	/* Reset state to what we had before finding the record */
+	state->ReadRecPtr = saved_state.ReadRecPtr;
+	state->EndRecPtr = saved_state.EndRecPtr;
+	XLogReaderInvalReadState(state);
+
+	return found;
+}
+
 /*
  * Attempt to read an XLOG record.
  *
@@ -222,7 +318,9 @@ XLogReadRecord(XLogReaderState *state, XLogRecPtr RecPtr, char **errormsg)
 	uint32		pageHeaderSize;
 	bool		gotheader;
 	int			readOff;
+	zero_again:
 
+	//printf("XLogReadRecord at %X/%X\n", (uint32) (RecPtr >> 32), (uint32) RecPtr);
 	/*
 	 * randAccess indicates whether to verify the previous-record pointer of
 	 * the record we're reading.  We only do this if we're reading
@@ -277,13 +375,27 @@ XLogReadRecord(XLogReaderState *state, XLogRecPtr RecPtr, char **errormsg)
 							   targetPagePtr,
 							   Min(targetRecOff + SizeOfXLogRecord, XLOG_BLCKSZ));
 	if (readOff < 0)
+	{
+		printf("Got zero readOff\n");
 		goto err;
-
+	}
 	/*
 	 * ReadPageInternal always returns at least the page header, so we can
 	 * examine it now.
 	 */
 	pageHeaderSize = XLogPageHeaderSize((XLogPageHeader) state->readBuf);
+	XLogPageHeader ph = (XLogPageHeader) state->readBuf;
+	if ( // We are at the begining of the page
+		ph->xlp_magic == 0 &&
+		ph->xlp_info == 0 &&
+		ph->xlp_pageaddr == 0 &&
+		ph->xlp_rem_len == 0 &&
+		ph->xlp_tli == 0)
+		{
+			RecPtr = targetPagePtr + SizeOfXLogLongPHD + XLOG_BLCKSZ; // Skip this block and goto next
+			printf("Doing page jump 1 \n");
+			goto zero_again;
+		}
 	if (targetRecOff == 0)
 	{
 		/*
@@ -301,10 +413,14 @@ XLogReadRecord(XLogReaderState *state, XLogRecPtr RecPtr, char **errormsg)
 
 	if ((((XLogPageHeader) state->readBuf)->xlp_info & XLP_FIRST_IS_CONTRECORD) &&
 		targetRecOff == pageHeaderSize)
-	{
-		report_invalid_record(state, "contrecord is requested by %X/%X",
-							  (uint32) (RecPtr >> 32), (uint32) RecPtr);
-		goto err;
+	{		
+		RecPtr = XLogFindNextRecordAfterContrecord(state, RecPtr); // Skip this block and goto next
+			printf("Doing page jump 3\n");
+		goto zero_again;
+
+		//report_invalid_record(state, "contrecord is requested by %X/%X",
+		//					  (uint32) (RecPtr >> 32), (uint32) RecPtr);
+		//goto err;
 	}
 
 	/* ReadPageInternal has verified the page header */
@@ -334,7 +450,10 @@ XLogReadRecord(XLogReaderState *state, XLogRecPtr RecPtr, char **errormsg)
 	{
 		if (!ValidXLogRecordHeader(state, RecPtr, state->ReadRecPtr, record,
 								   randAccess))
-			goto err;
+			{
+				printf("ValidXLogRecordHeader fail \n");
+				goto err;
+			}
 		gotheader = true;
 	}
 	else
@@ -398,6 +517,17 @@ XLogReadRecord(XLogReaderState *state, XLogRecPtr RecPtr, char **errormsg)
 			pageHeader = (XLogPageHeader) state->readBuf;
 			if (!(pageHeader->xlp_info & XLP_FIRST_IS_CONTRECORD))
 			{
+				if (
+					pageHeader->xlp_magic == 0 &&
+					pageHeader->xlp_info == 0 &&
+					pageHeader->xlp_pageaddr == 0 &&
+					pageHeader->xlp_rem_len == 0 &&
+					pageHeader->xlp_tli == 0)
+					{
+						RecPtr = targetPagePtr + SizeOfXLogShortPHD; // Skip this block and goto next
+						printf("Doing page jump 2\n");
+						goto zero_again;
+					}
 				report_invalid_record(state,
 									  "there is no contrecord flag at %X/%X",
 									  (uint32) (RecPtr >> 32), (uint32) RecPtr);
@@ -527,16 +657,19 @@ ReadPageInternal(XLogReaderState *state, XLogRecPtr pageptr, int reqLen)
 	uint32		targetPageOff;
 	XLogSegNo	targetSegNo;
 	XLogPageHeader hdr;
+	//printf("ReadPageInternal\n");
 
 	Assert((pageptr % XLOG_BLCKSZ) == 0);
 
 	XLByteToSeg(pageptr, targetSegNo);
 	targetPageOff = (pageptr % XLogSegSize);
+	//printf("1\n");
 
 	/* check whether we have all the requested data already */
 	if (targetSegNo == state->readSegNo && targetPageOff == state->readOff &&
 		reqLen < state->readLen)
 		return state->readLen;
+		//printf("2\n");
 
 	/*
 	 * Data is not in our buffer.
@@ -552,21 +685,29 @@ ReadPageInternal(XLogReaderState *state, XLogRecPtr pageptr, int reqLen)
 	 */
 	if (targetSegNo != state->readSegNo && targetPageOff != 0)
 	{
+		//printf("3\n");
 		XLogRecPtr	targetSegmentPtr = pageptr - targetPageOff;
 
 		readLen = state->read_page(state, targetSegmentPtr, XLOG_BLCKSZ,
 								   state->currRecPtr,
 								   state->readBuf, &state->readPageTLI);
 		if (readLen < 0)
-			goto err;
+			{
+				printf("ReadPageInternal readLen fail\n");
+				goto err;
+			}
 
 		/* we can be sure to have enough WAL available, we scrolled back */
 		Assert(readLen == XLOG_BLCKSZ);
 
 		if (!XLogReaderValidatePageHeader(state, targetSegmentPtr,
 										  state->readBuf))
-			goto err;
+			{
+				printf("XLogReaderValidatePageHeader fail\n");
+				goto err;
+			}
 	}
+	//printf("4\n");
 
 	/*
 	 * First, read the requested data length, but at least a short page header
@@ -577,12 +718,15 @@ ReadPageInternal(XLogReaderState *state, XLogRecPtr pageptr, int reqLen)
 							   state->readBuf, &state->readPageTLI);
 	if (readLen < 0)
 		goto err;
+		//printf("5\n");
 
 	Assert(readLen <= XLOG_BLCKSZ);
 
 	/* Do we have enough data to check the header length? */
 	if (readLen <= SizeOfXLogShortPHD)
 		goto err;
+
+		//printf("6\n");
 
 	Assert(readLen >= reqLen);
 
@@ -598,11 +742,15 @@ ReadPageInternal(XLogReaderState *state, XLogRecPtr pageptr, int reqLen)
 			goto err;
 	}
 
+	//printf("7\n");
+
 	/*
 	 * Now that we know we have the full header, validate it.
 	 */
-	if (!XLogReaderValidatePageHeader(state, pageptr, (char *) hdr))
+	if (false && !XLogReaderValidatePageHeader(state, pageptr, (char *) hdr))
 		goto err;
+
+	//printf("8\n");
 
 	/* update read state information */
 	state->readSegNo = targetSegNo;
@@ -612,6 +760,7 @@ ReadPageInternal(XLogReaderState *state, XLogRecPtr pageptr, int reqLen)
 	return readLen;
 
 err:
+//printf("9\n");
 	XLogReaderInvalReadState(state);
 	return -1;
 }
