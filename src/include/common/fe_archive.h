@@ -13,9 +13,8 @@
 #ifndef FE_ARCHIVE_H
 #define FE_ARCHIVE_H
 
-extern int	RestoreArchivedFile(const char *path,
-								const char *xlogfname,
-								off_t expectedSize,
-								const char *restoreCommand);
+int
+RestoreArchivedFile(const char *path, const char *xlogfname,
+					off_t expectedSize, const char *restoreCommand);
 
 #endif							/* FE_ARCHIVE_H */

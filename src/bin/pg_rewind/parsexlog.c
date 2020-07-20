@@ -73,7 +73,7 @@ extractPageMap(const char *datadir, XLogRecPtr startpoint, int tliIndex,
 	private.datadir = datadir;
 	private.tliIndex = tliIndex;
 	private.restoreCommand = restoreCommand;
-	xlogreader = XLogReaderAllocate(WalSegSz, datadir, &SimpleXLogPageRead,
+	xlogreader = XLogReaderAllocate(&SimpleXLogPageRead,
 									&private);
 	if (xlogreader == NULL)
 		pg_fatal("out of memory\n");
@@ -179,7 +179,7 @@ findLastCheckpoint(const char *datadir, XLogRecPtr forkptr, int tliIndex,
 	private.datadir = datadir;
 	private.tliIndex = tliIndex;
 	private.restoreCommand = restoreCommand;
-	xlogreader = XLogReaderAllocate(WalSegSz, datadir, &SimpleXLogPageRead,
+	xlogreader = XLogReaderAllocate(&SimpleXLogPageRead,
 									&private);
 	if (xlogreader == NULL)
 		pg_fatal("out of memory\n");
@@ -299,9 +299,9 @@ SimpleXLogPageRead(XLogReaderState *xlogreader, XLogRecPtr targetPagePtr,
 			 * Since we have restore_command, then try to retrieve missing WAL
 			 * file from the archive.
 			 */
-			xlogreadfd = RestoreArchivedFile(xlogreader->segcxt.ws_dir,
+			xlogreadfd = RestoreArchivedFile(xlogfpath,
 											 xlogfname,
-											 WalSegSz,
+											 XLOG_SEG_SIZE,
 											 private->restoreCommand);
 
 			if (xlogreadfd < 0)

@@ -25,8 +25,6 @@
 #include "access/xlog_internal.h"
 #include "common/archive.h"
 #include "common/fe_archive.h"
-#include "common/logging.h"
-
 
 /*
  * RestoreArchivedFile

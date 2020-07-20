@@ -26,7 +26,6 @@
 #include "catalog/pg_control.h"
 #include "common/restricted_token.h"
 #include "common/string.h"
-#include "fe_utils/recovery_gen.h"
 #include "fetch.h"
 #include "file_ops.h"
 #include "filemap.h"
@@ -42,7 +41,6 @@ static void digestControlFile(ControlFileData *ControlFile, char *source,
 				  size_t size);
 static void updateControlFile(ControlFileData *ControlFile);
 static void syncTargetDirectory(const char *argv0);
-static void syncTargetDirectory(void);
 static void getRestoreCommand(const char *argv0);
 static void sanityChecks(void);
 static void findCommonAncestorTimeline(XLogRecPtr *recptr, int *tliIndex);
@@ -216,7 +214,7 @@ main(int argc, char **argv)
 	}
 #endif
 
-	get_restricted_token();
+	get_restricted_token(progname);
 
 	/* Set mask based on PGDATA permissions */
 	if (!GetDataDirectoryCreatePerm(datadir_target))
@@ -226,11 +224,9 @@ main(int argc, char **argv)
 		exit(1);
 	}
 
-	umask(pg_mode_mask);
+	umask((S_IRWXG | S_IRWXO));
 
 	getRestoreCommand(argv[0]);
-
-	atexit(disconnect_atexit);
 
 	/* Connect to remote server */
 	if (connstr_source)
