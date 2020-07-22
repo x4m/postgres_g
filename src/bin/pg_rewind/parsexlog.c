@@ -291,7 +291,7 @@ SimpleXLogPageRead(XLogReaderState *xlogreader, XLogRecPtr targetPagePtr,
 			 */
 			if (private->restoreCommand == NULL)
 			{
-				pg_log_error("could not open file \"%s\": %m", xlogfpath);
+				printf("could not open file \"%s\": %m", xlogfpath);
 				return -1;
 			}
 
@@ -307,7 +307,7 @@ SimpleXLogPageRead(XLogReaderState *xlogreader, XLogRecPtr targetPagePtr,
 			if (xlogreadfd < 0)
 				return -1;
 			else
-				pg_log_debug("using file \"%s\" restored from archive",
+				printf("using file \"%s\" restored from archive",
 							 xlogfpath);
 		}
 	}

@@ -52,7 +52,7 @@ RestoreArchivedFile(const char *path, const char *xlogfname,
 										 xlogfname, NULL);
 	if (xlogRestoreCmd == NULL)
 	{
-		pg_log_fatal("could not use restore_command with %%r alias");
+		printf(_("could not use restore_command with %%r alias\n"));
 		exit(1);
 	}
 
@@ -73,7 +73,7 @@ RestoreArchivedFile(const char *path, const char *xlogfname,
 		{
 			if (expectedSize > 0 && stat_buf.st_size != expectedSize)
 			{
-				pg_log_fatal("unexpected file size for \"%s\": %lu instead of %lu",
+				printf(_("unexpected file size for \"%s\": %lu instead of %lu\n"),
 							 xlogfname, (unsigned long) stat_buf.st_size,
 							 (unsigned long) expectedSize);
 				exit(1);
@@ -84,7 +84,7 @@ RestoreArchivedFile(const char *path, const char *xlogfname,
 
 				if (xlogfd < 0)
 				{
-					pg_log_fatal("could not open file \"%s\" restored from archive: %m",
+					printf(_("could not open file \"%s\" restored from archive: %m\n"),
 								 xlogpath);
 					exit(1);
 				}
@@ -96,7 +96,7 @@ RestoreArchivedFile(const char *path, const char *xlogfname,
 		{
 			if (errno != ENOENT)
 			{
-				pg_log_fatal("could not stat file \"%s\": %m",
+				printf(_("could not stat file \"%s\": %m\n"),
 							 xlogpath);
 				exit(1);
 			}
@@ -111,7 +111,7 @@ RestoreArchivedFile(const char *path, const char *xlogfname,
 	 */
 	if (wait_result_is_any_signal(rc, true))
 	{
-		pg_log_fatal("restore_command failed due to the signal: %s",
+		printf(_("restore_command failed due to the signal: %s\n"),
 					 wait_result_to_str(rc));
 		exit(1);
 	}
@@ -120,7 +120,7 @@ RestoreArchivedFile(const char *path, const char *xlogfname,
 	 * The file is not available, so just let the caller decide what to do
 	 * next.
 	 */
-	pg_log_error("could not restore file \"%s\" from archive",
+	printf(_("could not restore file \"%s\" from archive\n"),
 				 xlogfname);
 	return -1;
 }

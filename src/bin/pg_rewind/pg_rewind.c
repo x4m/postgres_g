@@ -219,7 +219,7 @@ main(int argc, char **argv)
 	/* Set mask based on PGDATA permissions */
 	if (!GetDataDirectoryCreatePerm(datadir_target))
 	{
-		pg_log_error("could not read permissions of directory \"%s\": %m",
+		fprintf(stderr,_("could not read permissions of directory \"%s\": %m"),
 					 datadir_target);
 		exit(1);
 	}
@@ -301,7 +301,7 @@ main(int argc, char **argv)
 
 	findLastCheckpoint(datadir_target, divergerec, lastcommontliIndex,
 					   &chkptrec, &chkpttli, &chkptredo, restore_command);
-	pg_log_info("rewinding from last common checkpoint at %X/%X on timeline %u",
+	printf(_("rewinding from last common checkpoint at %X/%X on timeline %u"),
 				(uint32) (chkptrec >> 32), (uint32) chkptrec,
 				chkpttli);
 
@@ -737,14 +737,14 @@ getRestoreCommand(const char *argv0)
 			strlcpy(full_path, progname, sizeof(full_path));
 
 		if (rc == -1)
-			pg_log_error("The program \"postgres\" is needed by %s but was not found in the\n"
+			fprintf(stderr,_("The program \"postgres\" is needed by %s but was not found in the\n"
 						 "same directory as \"%s\".\n"
-						 "Check your installation.",
+						 "Check your installation."),
 						 progname, full_path);
 		else
-			pg_log_error("The program \"postgres\" was found by \"%s\"\n"
+			fprintf(stderr,_("The program \"postgres\" was found by \"%s\"\n"
 						 "but was not the same version as %s.\n"
-						 "Check your installation.",
+						 "Check your installation."),
 						 full_path, progname);
 		exit(1);
 	}
@@ -767,7 +767,7 @@ getRestoreCommand(const char *argv0)
 
 	restore_command = pg_strdup(cmd_output);
 
-	pg_log_debug("using for rewind restore_command = \'%s\'",
+	printf(_("using for rewind restore_command = \'%s\'"),
 				 restore_command);
 }
 
