@@ -58,7 +58,6 @@ OBJS_FRONTEND = \
 	fe_archive.o \
 	fe_memutils.o \
 	file_utils.o \
-	logging.o \
 	restricted_token.o
 
 # foo.o, foo_shlib.o, and foo_srv.o are all built from foo.c

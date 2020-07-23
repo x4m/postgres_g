@@ -217,12 +217,13 @@ main(int argc, char **argv)
 	get_restricted_token(progname);
 
 	/* Set mask based on PGDATA permissions */
-	if (!GetDataDirectoryCreatePerm(datadir_target))
+	// This subsystem does not exist yet
+	/* if (!GetDataDirectoryCreatePerm(datadir_target))
 	{
 		fprintf(stderr,_("could not read permissions of directory \"%s\": %m"),
 					 datadir_target);
 		exit(1);
-	}
+	} */
 
 	umask((S_IRWXG | S_IRWXO));
 
@@ -700,6 +701,20 @@ updateControlFile(ControlFileData *ControlFile)
 	close_target_file();
 }
 
+static int
+__pg_strip_crlf(char *str);
+static int
+__pg_strip_crlf(char *str)
+{
+	int			len = strlen(str);
+
+	while (len > 0 && (str[len - 1] == '\n' ||
+					   str[len - 1] == '\r'))
+		str[--len] = '\0';
+
+	return len;
+}
+
 /*
  * Sync target data directory to ensure that modifications are safely on disk.
  *
@@ -760,7 +775,7 @@ getRestoreCommand(const char *argv0)
 	if (!pipe_read_line(postgres_cmd, cmd_output, sizeof(cmd_output)))
 		exit(1);
 
-	(void) pg_strip_crlf(cmd_output);
+	(void) __pg_strip_crlf(cmd_output);
 
 	if (strcmp(cmd_output, "") == 0)
 		pg_fatal("restore_command is not set on the target cluster");
