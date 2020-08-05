@@ -28,7 +28,6 @@
 #include "common/file_utils.h"
 #include "common/restricted_token.h"
 #include "common/string.h"
-#include "fe_utils/recovery_gen.h"
 #include "fetch.h"
 #include "file_ops.h"
 #include "filemap.h"
@@ -73,6 +72,26 @@ int			targetNentries;
 uint64		fetch_size;
 uint64		fetch_done;
 
+/*
+ * pg_strip_crlf -- Remove any trailing newline and carriage return
+ *
+ * Removes any trailing newline and carriage return characters (\r on
+ * Windows) in the input string, zero-terminating it.
+ *
+ * The passed in string must be zero-terminated.  This function returns
+ * the new length of the string.
+ */
+int
+pg_strip_crlf(char *str)
+{
+	int			len = strlen(str);
+
+	while (len > 0 && (str[len - 1] == '\n' ||
+					   str[len - 1] == '\r'))
+		str[--len] = '\0';
+
+	return len;
+}
 
 static void
 usage(const char *progname)
@@ -245,8 +264,6 @@ main(int argc, char **argv)
 	umask(pg_mode_mask);
 
 	getRestoreCommand(argv[0]);
-
-	atexit(disconnect_atexit);
 
 	/* Connect to remote server */
 	if (connstr_source)
@@ -890,11 +907,4 @@ ensureCleanShutdown(const char *argv0)
 		pg_log_error("postgres single-user mode of target instance failed");
 		pg_fatal("Command was: %s", cmd);
 	}
-}
-
-static void
-disconnect_atexit(void)
-{
-	if (conn != NULL)
-		PQfinish(conn);
 }

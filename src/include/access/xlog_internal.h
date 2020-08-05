@@ -319,9 +319,6 @@ extern char *recoveryRestoreCommand;
 /*
  * Prototypes for functions in xlogarchive.c
  */
-extern bool RestoreArchivedFile(char *path, const char *xlogfname,
-								const char *recovername, off_t expectedSize,
-								bool cleanupEnabled);
 extern void ExecuteRecoveryCommand(const char *command, const char *commandName,
 								   bool failOnerror);
 extern void KeepFileRestoredFromArchive(const char *path, const char *xlogfname);

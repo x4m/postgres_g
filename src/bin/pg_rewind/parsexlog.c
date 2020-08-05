@@ -303,11 +303,13 @@ SimpleXLogPageRead(XLogReaderState *xlogreader, XLogRecPtr targetPagePtr,
 				return -1;
 			}
 
+			
+
 			/*
 			 * Since we have restore_command, then try to retrieve missing WAL
 			 * file from the archive.
 			 */
-			xlogreadfd = RestoreArchivedFile(xlogreader->segcxt.ws_dir,
+			xlogreadfd = RestoreArchivedFile(private->datadir,
 											 xlogfname,
 											 WalSegSz,
 											 private->restoreCommand);
