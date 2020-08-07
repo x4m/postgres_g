@@ -228,26 +228,7 @@ sub run_pg_rewind
 	# Append the rewind-specific role to the connection string.
 	$standby_connstr = "$standby_connstr user=rewind_user";
 
-	if ($test_mode eq 'archive')
-	{
-		# pg_rewind is tested with --restore-target-wal by moving all
-		# WAL files to a secondary location.  Note that this leads to
-		# a failure in ensureCleanShutdown(), forcing to the use of
-		# --no-ensure-shutdown in this mode as the initial set of WAL
-		# files needed to ensure a clean restart is gone.  This could
-		# be improved by keeping around only a minimum set of WAL
-		# segments but that would just make the test more costly,
-		# without improving the coverage.  Hence, instead, stop
-		# gracefully the primary here.
-		$node_master->stop;
-	}
-	else
-	{
-		# Stop the master and be ready to perform the rewind.  The cluster
-		# needs recovery to finish once, and pg_rewind makes sure that it
-		# happens automatically.
-		$node_master->stop('immediate');
-	}
+	$node_master->stop;
 
 	# At this point, the rewind processing is ready to run.
 	# We now have a very simple scenario with a few diverged WAL record.
@@ -329,7 +310,6 @@ sub run_pg_rewind
 				"--source-pgdata=$standby_pgdata",
 				"--target-pgdata=$master_pgdata",
 				"--no-sync",
-				"--no-ensure-shutdown",
 				"--restore-target-wal"
 			],
 			'pg_rewind archive');

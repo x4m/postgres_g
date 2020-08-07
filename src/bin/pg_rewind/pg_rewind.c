@@ -164,7 +164,7 @@ main(int argc, char **argv)
 		}
 	}
 
-	while ((c = getopt_long(argc, argv, "cD:nNPR", long_options, &option_index)) != -1)
+	while ((c = getopt_long(argc, argv, "cD:nNP", long_options, &option_index)) != -1)
 	{
 		switch (c)
 		{
@@ -847,64 +847,4 @@ getRestoreCommand(const char *argv0)
 
 	pg_log_debug("using for rewind restore_command = \'%s\'",
 				 restore_command);
-}
-
-
-/*
- * Ensure clean shutdown of target instance by launching single-user mode
- * postgres to do crash recovery.
- */
-static void
-ensureCleanShutdown(const char *argv0)
-{
-	int			ret;
-#define MAXCMDLEN (2 * MAXPGPATH)
-	char		exec_path[MAXPGPATH];
-	char		cmd[MAXCMDLEN];
-
-	/* locate postgres binary */
-	if ((ret = find_other_exec(argv0, "postgres",
-							   PG_BACKEND_VERSIONSTR,
-							   exec_path)) < 0)
-	{
-		char		full_path[MAXPGPATH];
-
-		if (find_my_exec(argv0, full_path) < 0)
-			strlcpy(full_path, progname, sizeof(full_path));
-
-		if (ret == -1)
-			pg_fatal("The program \"%s\" is needed by %s but was\n"
-					 "not found in the same directory as \"%s\".\n"
-					 "Check your installation.",
-					 "postgres", progname, full_path);
-		else
-			pg_fatal("The program \"%s\" was found by \"%s\" but was\n"
-					 "not the same version as %s.\n"
-					 "Check your installation.",
-					 "postgres", full_path, progname);
-	}
-
-	pg_log_info("executing \"%s\" for target server to complete crash recovery",
-				exec_path);
-
-	/*
-	 * Skip processing if requested, but only after ensuring presence of
-	 * postgres.
-	 */
-	if (dry_run)
-		return;
-
-	/*
-	 * Finally run postgres in single-user mode.  There is no need to use
-	 * fsync here.  This makes the recovery faster, and the target data folder
-	 * is synced at the end anyway.
-	 */
-	snprintf(cmd, MAXCMDLEN, "\"%s\" --single -F -D \"%s\" template1 < \"%s\"",
-			 exec_path, datadir_target, DEVNULL);
-
-	if (system(cmd) != 0)
-	{
-		pg_log_error("postgres single-user mode of target instance failed");
-		pg_fatal("Command was: %s", cmd);
-	}
 }
