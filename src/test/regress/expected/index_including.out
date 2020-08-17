@@ -356,7 +356,6 @@ CREATE INDEX on tbl USING brin(c1, c2) INCLUDE (c3, c4);
 ERROR:  access method "brin" does not support included columns
 CREATE INDEX on tbl USING gist(c3) INCLUDE (c1, c4);
 CREATE INDEX on tbl USING spgist(c3) INCLUDE (c4);
-ERROR:  access method "spgist" does not support included columns
 CREATE INDEX on tbl USING gin(c1, c2) INCLUDE (c3, c4);
 ERROR:  access method "gin" does not support included columns
 CREATE INDEX on tbl USING hash(c1, c2) INCLUDE (c3, c4);

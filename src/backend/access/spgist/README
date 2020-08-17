@@ -73,8 +73,8 @@ Leaf tuple consists of:
     Example:
         radix tree - the rest of string (postfix)
         quad and k-d tree - the point itself
-
   ItemPointer to the heap
+  optional included colums values
 
 
 NULLS HANDLING
