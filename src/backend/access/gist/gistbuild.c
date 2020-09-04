@@ -86,6 +86,7 @@ typedef struct
 
 	GistBufferingMode bufferingMode;
 	GSpool *spool;
+	BlockNumber next_block;
 } GISTBuildState;
 
 /* prototypes for private functions */
@@ -158,8 +159,6 @@ gist_spoolinit(Relation heap, Relation index, SortSupport ssup)
 static void
 gist_indexsortbuild_flush(Relation rel, Page page, BlockNumber blockno, bool isNew)
 {
-	OffsetNumber i,
-				maxoff;
 	Page newpage;
 
 	Buffer buffer = ReadBuffer(rel, isNew ? P_NEW : blockno);
@@ -170,16 +169,66 @@ gist_indexsortbuild_flush(Relation rel, Page page, BlockNumber blockno, bool isN
 	LockBuffer(buffer, GIST_EXCLUSIVE);
 	newpage = BufferGetPage(buffer);
 
-	maxoff = PageGetMaxOffsetNumber(page);
-	for (i = FirstOffsetNumber; i <= maxoff; i = OffsetNumberNext(i))
-	{
-		ItemId itemid = PageGetItemId(page, i);
-		IndexTuple tuple = (IndexTuple) PageGetItem(page, itemid);
-		gistfillbuffer(newpage,	&tuple,
-						1, InvalidOffsetNumber);
-	}
+	START_CRIT_SECTION();
+	memcpy(newpage, page, BLCKSZ);
+	gistcheckpage(rel, buffer);
+
 	MarkBufferDirty(buffer);
+	log_newpage_buffer(buffer, true);
+	END_CRIT_SECTION();
 	UnlockReleaseBuffer(buffer);
+}
+
+typedef struct PageIterator
+{
+	Page page;
+	struct PageIterator* next;
+} PageIterator;
+
+static void
+gist_indexsortbuild_pageiterator_add(GISTBuildState *state, PageIterator *pi, IndexTuple itup)
+{
+	Page page = pi->page;
+	IndexTuple *itvec;
+	IndexTuple union_tuple;
+	int vect_len;
+	MemoryContext oldCtx;
+	int page_flags;
+
+	if ((itup != NULL) 
+		&& (PageGetFreeSpace(page) >= IndexTupleSize(itup) + sizeof(ItemIdData) + state->freespace))
+	{
+		gistfillbuffer(page, &itup, 1, InvalidOffsetNumber);
+		return;
+	}
+	
+	gist_indexsortbuild_flush(state->indexrel, page, state->next_block, true);
+
+	if (pi->next == NULL)
+	{
+		pi->next = palloc(sizeof(PageIterator) + BLCKSZ);
+		pi->next->page = (Page)(&pi->next[1]);
+		pi->next->next = NULL;
+		gistinitpage(pi->next->page, 0);
+	}
+
+	oldCtx = MemoryContextSwitchTo(state->giststate->tempCxt);
+
+	itvec = gistextractpage(page, &vect_len);
+	union_tuple = gistunion(state->indexrel, itvec, vect_len,
+							state->giststate);
+	ItemPointerSetBlockNumber(&(union_tuple->t_tid), state->next_block);
+	state->next_block++;
+
+	MemoryContextSwitchTo(oldCtx);
+
+	gist_indexsortbuild_pageiterator_add(state, pi->next, union_tuple);
+
+	page_flags = GistPageIsLeaf(page) ? F_LEAF : 0;
+	memset(page, 1, BLCKSZ);
+	gistinitpage(page, page_flags);
+	if (itup != NULL)
+		gistfillbuffer(page, &itup, 1, InvalidOffsetNumber);
 }
 
 /*
@@ -194,16 +243,13 @@ gist_indexsortbuild(GISTBuildState *state)
 	 * Build constructs GiST by levels. Level is always allocated
 	 * sequentially from level_start until level_end.
 	 */
-	BlockNumber level_start = GIST_ROOT_BLKNO + 1;
-	BlockNumber level_end = level_start;
-	BlockNumber prev_level_start;
+	state->next_block = GIST_ROOT_BLKNO + 1;
 	IndexTuple	itup;
-	/*
-	 * We keep one page in memory for the special case
-	 * When layer will have only on page - we will place it
-	 * to ROOT_BLOCK_NO
-	 */
-	Page page = palloc(BLCKSZ);
+	
+	PageIterator *pi = palloc(sizeof(PageIterator) + BLCKSZ);
+	Page page = (Page)(&pi[1]);
+	pi->page = page;
+	pi->next = NULL;
 	gistinitpage(page, F_LEAF);
 
 	tuplesort_performsort(gspool->sortstate);
@@ -211,71 +257,20 @@ gist_indexsortbuild(GISTBuildState *state)
 	/* Create a first layer of leaf pages */
 	while ((itup = tuplesort_getindextuple(gspool->sortstate, true)) != NULL)
 	{
-		if (PageGetFreeSpace(page) >= IndexTupleSize(itup) + sizeof(ItemIdData) + state->freespace)
-		{
-			gistfillbuffer(page, &itup, 1, InvalidOffsetNumber);
-		}
-		else
-		{
-			gist_indexsortbuild_flush(state->indexrel, page, level_end, true);
-			level_end++;
-			gistinitpage(page, F_LEAF);
-			gistfillbuffer(page, &itup, 1, InvalidOffsetNumber);
-		}
+		gist_indexsortbuild_pageiterator_add(state, pi, itup);
 	}
 
-	/* Construct internal levels */
-	do
+	while (pi->next != NULL)
 	{
-		/* If previous level had only one page - that page is a root */
-		if (level_start == level_end)
-		{
-			gist_indexsortbuild_flush(state->indexrel, page, GIST_ROOT_BLKNO,
+		PageIterator *pi_next = pi->next;
+		gist_indexsortbuild_pageiterator_add(state, pi, NULL);
+		pfree (pi);
+		pi = pi_next;
+	}
+
+	gist_indexsortbuild_flush(state->indexrel, pi->page, GIST_ROOT_BLKNO,
 										false);
-			return;
-		}
-
-		gist_indexsortbuild_flush(state->indexrel, page, level_end, true);
-		level_end++;
-		gistinitpage(page, 0);
-
-		prev_level_start = level_start;
-		level_start = level_end;
-
-		for (BlockNumber i = prev_level_start; i < level_start; i++)
-		{
-			/* For each page on previous level we form one tuple */
-			Buffer lower_buffer = ReadBuffer(state->indexrel, i);
-			Page lower_page;
-			IndexTuple union_tuple;
-			IndexTuple *itvec;
-			MemoryContext oldCtx = MemoryContextSwitchTo(state->giststate->tempCxt);
-			int vect_len;
-			LockBuffer(lower_buffer, GIST_SHARE);
-			lower_page = BufferGetPage(lower_buffer);
-
-			itvec = gistextractpage(lower_page, &vect_len);
-			union_tuple = gistunion(state->indexrel, itvec, vect_len,
-									state->giststate);
-			ItemPointerSetBlockNumber(&(union_tuple->t_tid), i);
-
-			if (PageGetFreeSpace(page) >= IndexTupleSize(union_tuple) + sizeof(ItemIdData) + state->freespace)
-			{
-				gistfillbuffer(page, &union_tuple, 1, InvalidOffsetNumber);
-			}
-			else
-			{
-				gist_indexsortbuild_flush(state->indexrel, page, level_end, true);
-				level_end++;
-				gistinitpage(page, 0);
-				gistfillbuffer(page, &union_tuple, 1, InvalidOffsetNumber);
-			}
-
-			UnlockReleaseBuffer(lower_buffer);
-			MemoryContextSwitchTo(oldCtx);
-			MemoryContextReset(state->giststate->tempCxt);
-		}
-	} while (true);
+	pfree(pi);
 }
 
 /*
@@ -427,7 +422,7 @@ gistbuild(Relation heap, Relation index, IndexInfo *indexInfo)
 	 * We didn't write WAL records as we built the index, so if WAL-logging is
 	 * required, write all pages to the WAL now.
 	 */
-	if (RelationNeedsWAL(index))
+	if (RelationNeedsWAL(index) && (buildstate.spool == NULL))
 	{
 		log_newpage_range(index, MAIN_FORKNUM,
 						  0, RelationGetNumberOfBlocks(index),
