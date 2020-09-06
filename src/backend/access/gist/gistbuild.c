@@ -87,6 +87,8 @@ typedef struct
 	GistBufferingMode bufferingMode;
 	GSpool *spool;
 	BlockNumber next_block;
+	BlockNumber block_flushed;
+	BlockNumber block_logged;
 } GISTBuildState;
 
 /* prototypes for private functions */
@@ -123,7 +125,8 @@ static BlockNumber gistGetParent(GISTBuildState *buildstate, BlockNumber child);
 static GSpool *gist_spoolinit(Relation heap, Relation index, SortSupport ssup);
 static void gist_spool(GSpool *gspool, ItemPointer self, Datum *values, bool *isnull);
 static void gist_indexsortbuild(GISTBuildState *state);
-static void gist_indexsortbuild_flush(Relation rel, Page page, BlockNumber blockno, bool isNew);
+static void gist_indexsortbuild_flush(GISTBuildState *state, Page page,
+										BlockNumber blockno, bool isNew);
 
 /*
  * create and initialize a spool structure to sort tuples
@@ -157,11 +160,11 @@ gist_spoolinit(Relation heap, Relation index, SortSupport ssup)
  * logic.
  */
 static void
-gist_indexsortbuild_flush(Relation rel, Page page, BlockNumber blockno, bool isNew)
+gist_indexsortbuild_flush(GISTBuildState *state, Page page, BlockNumber blockno, bool isNew)
 {
 	Page newpage;
 
-	Buffer buffer = ReadBuffer(rel, isNew ? P_NEW : blockno);
+	Buffer buffer = ReadBuffer(state->indexrel, isNew ? P_NEW : blockno);
 	GISTInitBuffer(buffer, GistPageIsLeaf(page) ? F_LEAF : 0);
 	/* If the page is new - check that it was allocated correctly */
 	Assert(BufferGetBlockNumber(buffer) == blockno);
@@ -169,13 +172,27 @@ gist_indexsortbuild_flush(Relation rel, Page page, BlockNumber blockno, bool isN
 	LockBuffer(buffer, GIST_EXCLUSIVE);
 	newpage = BufferGetPage(buffer);
 
-	START_CRIT_SECTION();
 	memcpy(newpage, page, BLCKSZ);
 
 	MarkBufferDirty(buffer);
-	log_newpage_buffer(buffer, true);
-	END_CRIT_SECTION();
+
+	state->block_flushed = blockno;
+
+	if (!isNew)
+	{
+		START_CRIT_SECTION();
+		log_newpage_buffer(buffer, true);
+		END_CRIT_SECTION();
+	}
 	UnlockReleaseBuffer(buffer);
+
+	if (!isNew || state->block_flushed >= state->block_logged + XLR_MAX_BLOCK_ID)
+	{
+		log_newpage_range(state->indexrel, MAIN_FORKNUM,
+						  state->block_logged + 1, state->block_flushed + 1,
+						  true);
+		state->block_logged = state->block_flushed;
+	}
 }
 
 /* This is basically a page and a reference to yet another iterator */
@@ -203,8 +220,11 @@ gist_indexsortbuild_pageiterator_add(GISTBuildState *state, PageIterator *pi, In
 		return;
 	}
 
+	/* check once per page */
+	CHECK_FOR_INTERRUPTS();
+
 	/* We have to flush block on disk and form a downlink */
-	gist_indexsortbuild_flush(state->indexrel, page, state->next_block, true);
+	gist_indexsortbuild_flush(state, page, state->next_block, true);
 
 	/* Check if a tree needs to grow */
 	if (pi->next == NULL)
@@ -253,6 +273,8 @@ gist_indexsortbuild(GISTBuildState *state)
 	 * sequentially from level_start until level_end.
 	 */
 	state->next_block = GIST_ROOT_BLKNO + 1;
+	state->block_flushed = GIST_ROOT_BLKNO;
+	state->block_logged = GIST_ROOT_BLKNO;
 	IndexTuple	itup;
 
 	/* Allocate a temp block withing page iterator to gather tuples */
@@ -281,7 +303,7 @@ gist_indexsortbuild(GISTBuildState *state)
 	}
 
 	/* Last block is root */
-	gist_indexsortbuild_flush(state->indexrel, pi->page, GIST_ROOT_BLKNO,
+	gist_indexsortbuild_flush(state, pi->page, GIST_ROOT_BLKNO,
 										false);
 	pfree(pi);
 }
