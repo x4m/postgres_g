@@ -254,6 +254,9 @@ typedef struct BTWriteState
 	BlockNumber btws_pages_alloced; /* # pages allocated */
 	BlockNumber btws_pages_written; /* # pages written out */
 	Page		btws_zeropage;	/* workspace for filling zeroes */
+
+	BlockNumber last_written;
+	BlockNumber last_logged;
 } BTWriteState;
 
 
@@ -570,6 +573,9 @@ _bt_leafbuild(BTSpool *btspool, BTSpool *btspool2)
 	wstate.btws_pages_written = 0;
 	wstate.btws_zeropage = NULL;	/* until needed */
 
+	wstate.last_logged = BTREE_METAPAGE;
+	wstate.last_written = BTREE_METAPAGE;
+
 	pgstat_progress_update_param(PROGRESS_CREATEIDX_SUBPHASE,
 								 PROGRESS_BTREE_PHASE_LEAF_LOAD);
 	_bt_load(&wstate, btspool, btspool2);
@@ -643,8 +649,24 @@ _bt_blwritepage(BTWriteState *wstate, Page page, BlockNumber blkno)
 	/* XLOG stuff */
 	if (wstate->btws_use_wal)
 	{
-		/* We use the XLOG_FPI record type for this */
-		log_newpage(&wstate->index->rd_node, MAIN_FORKNUM, blkno, page, true);
+		if (blkno != BTREE_METAPAGE &&
+			blkno == wstate->last_written + 1 &&
+			blkno < wstate->last_logged + XLR_MAX_BLOCK_ID)
+		{
+			/* Fast path for batching */
+		}
+		else
+		{
+			if (blkno != wstate->last_written + 1)
+				/* We use the XLOG_FPI record type for this */
+				log_newpage(&wstate->index->rd_node, MAIN_FORKNUM, blkno, page, true);
+			else
+				wstate->last_written++;
+			if (wstate->last_logged < wstate->last_written)
+				log_newpage_range(wstate->index, MAIN_FORKNUM,
+								wstate->last_logged + 1, wstate->last_written + 1, true);
+			wstate->last_logged = wstate->last_written = blkno;
+		}
 	}
 
 	/*
