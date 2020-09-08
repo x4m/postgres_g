@@ -15,6 +15,7 @@
 #include "postgres.h"
 
 #include "access/attmap.h"
+#include "access/compressamapi.h"
 #include "access/genam.h"
 #include "access/heapam.h"
 #include "access/heapam_xlog.h"
@@ -559,7 +560,7 @@ static void refuseDupeIndexAttach(Relation parentIdx, Relation partIdx,
 static List *GetParentedForeignKeyRefs(Relation partition);
 static void ATDetachCheckNoForeignKeyRefs(Relation partition);
 static void ATExecAlterCollationRefreshVersion(Relation rel, List *coll);
-
+static Oid GetAttributeCompression(Form_pg_attribute att, char *compression);
 
 /* ----------------------------------------------------------------
  *		DefineRelation
@@ -853,6 +854,18 @@ DefineRelation(CreateStmt *stmt, char relkind, Oid ownerId,
 
 		if (colDef->generated)
 			attr->attgenerated = colDef->generated;
+
+		/*
+		 * lookup attribute's compression method and store its Oid in the
+		 * attr->attcompression.
+		 */
+		if (relkind == RELKIND_RELATION ||
+			relkind == RELKIND_PARTITIONED_TABLE ||
+			relkind == RELKIND_MATVIEW)
+			attr->attcompression =
+				GetAttributeCompression(attr, colDef->compression);
+		else
+			attr->attcompression = InvalidOid;
 	}
 
 	/*
@@ -2395,6 +2408,21 @@ MergeAttributes(List *schema, List *supers, char relpersistence,
 									   storage_name(def->storage),
 									   storage_name(attribute->attstorage))));
 
+				/* Copy/check compression parameter */
+				if (OidIsValid(attribute->attcompression))
+				{
+					char *compression = get_am_name(attribute->attcompression);
+
+					if (!def->compression)
+						def->compression = compression;
+					else if (strcmp(def->compression, compression))
+						ereport(ERROR,
+								(errcode(ERRCODE_DATATYPE_MISMATCH),
+								 errmsg("column \"%s\" has a compression method conflict",
+										attributeName),
+								 errdetail("%s versus %s", def->compression, compression)));
+				}
+
 				def->inhcount++;
 				/* Merge of NOT NULL constraints = OR 'em together */
 				def->is_not_null |= attribute->attnotnull;
@@ -2429,6 +2457,7 @@ MergeAttributes(List *schema, List *supers, char relpersistence,
 				def->collOid = attribute->attcollation;
 				def->constraints = NIL;
 				def->location = -1;
+				def->compression = get_am_name(attribute->attcompression);
 				inhSchema = lappend(inhSchema, def);
 				newattmap->attnums[parent_attno - 1] = ++child_attno;
 			}
@@ -2673,6 +2702,19 @@ MergeAttributes(List *schema, List *supers, char relpersistence,
 							 errdetail("%s versus %s",
 									   storage_name(def->storage),
 									   storage_name(newdef->storage))));
+
+				/* Copy compression parameter */
+				if (!def->compression)
+					def->compression = newdef->compression;
+				else if (newdef->compression)
+				{
+					if (strcmp(def->compression, newdef->compression))
+						ereport(ERROR,
+								(errcode(ERRCODE_DATATYPE_MISMATCH),
+								 errmsg("column \"%s\" has a compression method conflict",
+										attributeName),
+								 errdetail("%s versus %s", def->compression, newdef->compression)));
+				}
 
 				/* Mark the column as locally defined */
 				def->is_local = true;
@@ -6233,6 +6275,18 @@ ATExecAddColumn(List **wqueue, AlteredTableInfo *tab, Relation rel,
 	attribute.attislocal = colDef->is_local;
 	attribute.attinhcount = colDef->inhcount;
 	attribute.attcollation = collOid;
+
+	/*
+	 * lookup attribute's compression method and store its Oid in the
+	 * attr->attcompression.
+	 */
+	if (rel->rd_rel->relkind == RELKIND_RELATION ||
+		rel->rd_rel->relkind == RELKIND_PARTITIONED_TABLE)
+		attribute.attcompression = GetAttributeCompression(&attribute,
+														   colDef->compression);
+	else
+		attribute.attcompression = InvalidOid;
+
 	/* attribute.attacl is handled by InsertPgAttributeTuples() */
 
 	ReleaseSysCache(typeTuple);
@@ -11751,6 +11805,22 @@ ATExecAlterColumnType(AlteredTableInfo *tab, Relation rel,
 	attTup->attstorage = tform->typstorage;
 
 	ReleaseSysCache(typeTuple);
+
+	/* Setup attribute compression */
+	if (rel->rd_rel->relkind == RELKIND_RELATION ||
+		rel->rd_rel->relkind == RELKIND_PARTITIONED_TABLE)
+	{
+		/*
+		 * InvalidOid for the plain/external storage otherwise default
+		 * compression id.
+		 */
+		if (!IsStorageCompressible(tform->typstorage))
+			attTup->attcompression = InvalidOid;
+		else if (!OidIsValid(attTup->attcompression))
+			attTup->attcompression = DefaultCompressionOid;
+	}
+	else
+		attTup->attcompression = InvalidOid;
 
 	CatalogTupleUpdate(attrelation, &heapTup->t_self, heapTup);
 
@@ -17630,4 +17700,33 @@ ATExecAlterCollationRefreshVersion(Relation rel, List *coll)
 {
 	index_update_collation_versions(rel->rd_id, get_collation_oid(coll, false));
 	CacheInvalidateRelcache(rel);
+}
+
+/*
+ * Get compression method Oid for the attribute.
+ */
+static Oid
+GetAttributeCompression(Form_pg_attribute att, char *compression)
+{
+	char		typstorage = get_typstorage(att->atttypid);
+
+	/*
+	 * No compression for the plain/external storage, refer comments atop
+	 * attcompression parameter in pg_attribute.h
+	 */
+	if (!IsStorageCompressible(typstorage))
+	{
+		if (compression != NULL)
+			ereport(ERROR,
+					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+					 errmsg("column data type %s does not support compression",
+							format_type_be(att->atttypid))));
+		return InvalidOid;
+	}
+
+	/* fallback to default compression if it's not specified */
+	if (compression == NULL)
+		return DefaultCompressionOid;
+
+	return get_compression_am_oid(compression, false);
 }

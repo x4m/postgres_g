@@ -176,6 +176,16 @@ get_table_am_oid(const char *amname, bool missing_ok)
 }
 
 /*
+ * get_compression_am_oid - given an access method name, look up its OID
+ *		and verify it corresponds to an compression AM.
+ */
+Oid
+get_compression_am_oid(const char *amname, bool missing_ok)
+{
+	return get_am_type_oid(amname, AMTYPE_COMPRESSION, missing_ok);
+}
+
+/*
  * get_am_oid - given an access method name, look up its OID.
  *		The type is not checked.
  */

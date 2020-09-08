@@ -29,6 +29,7 @@
  */
 #include "postgres.h"
 
+#include "access/compressamapi.h"
 #include "access/genam.h"
 #include "access/htup_details.h"
 #include "access/multixact.h"
@@ -780,6 +781,7 @@ InsertPgAttributeTuples(Relation pg_attribute_rel,
 		slot[slotCount]->tts_values[Anum_pg_attribute_attislocal - 1] = BoolGetDatum(attrs->attislocal);
 		slot[slotCount]->tts_values[Anum_pg_attribute_attinhcount - 1] = Int32GetDatum(attrs->attinhcount);
 		slot[slotCount]->tts_values[Anum_pg_attribute_attcollation - 1] = ObjectIdGetDatum(attrs->attcollation);
+		slot[slotCount]->tts_values[Anum_pg_attribute_attcompression - 1] = CharGetDatum(attrs->attcompression);
 		if (attoptions && attoptions[natts] != (Datum) 0)
 			slot[slotCount]->tts_values[Anum_pg_attribute_attoptions - 1] = attoptions[natts];
 		else
@@ -1705,6 +1707,8 @@ RemoveAttributeById(Oid relid, AttrNumber attnum)
 
 		/* Unset this so no one tries to look up the generation expression */
 		attStruct->attgenerated = '\0';
+
+		attStruct->attcompression = InvalidOid;
 
 		/*
 		 * Change the column name to something that isn't likely to conflict

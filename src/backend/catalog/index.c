@@ -24,6 +24,7 @@
 #include <unistd.h>
 
 #include "access/amapi.h"
+#include "access/compressamapi.h"
 #include "access/heapam.h"
 #include "access/multixact.h"
 #include "access/reloptions.h"
@@ -347,6 +348,7 @@ ConstructTupleDescriptor(Relation heapRelation,
 			to->attbyval = from->attbyval;
 			to->attstorage = from->attstorage;
 			to->attalign = from->attalign;
+			to->attcompression = from->attcompression;
 		}
 		else
 		{
