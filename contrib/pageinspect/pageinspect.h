@@ -18,4 +18,9 @@
 /* in rawpage.c */
 extern Page get_page_from_raw(bytea *raw_page);
 
+/* note: BlockNumber is unsigned, hence can't be negative */
+#define CHECK_RELATION_BLOCK_RANGE(rel, blkno) { \
+		if ( RelationGetNumberOfBlocks(rel) <= (BlockNumber) (blkno) ) \
+			 elog(ERROR, "block number out of range"); }
+
 #endif							/* _PAGEINSPECT_H_ */
