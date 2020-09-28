@@ -1,0 +1,140 @@
+CREATE TABLE test_gist AS SELECT point(i,i) p, i::text t FROM
+    generate_series(1,1000) i;
+CREATE INDEX test_gist_idx ON test_gist USING gist (p);
+\x
+SELECT * FROM gist_page_opaque_info(get_raw_page('test_gist_idx', 0));
+-[ RECORD 1 ]---------
+lsn       | 0/1
+nsn       | 0/0
+rightlink | 4294967295
+flags     | {}
+
+SELECT * FROM gist_page_opaque_info(get_raw_page('test_gist_idx', 1));
+-[ RECORD 1 ]---------
+lsn       | 0/1
+nsn       | 0/0
+rightlink | 4294967295
+flags     | {leaf}
+
+SELECT * FROM gist_page_opaque_info(get_raw_page('test_gist_idx', 2));
+-[ RECORD 1 ]-----
+lsn       | 0/1
+nsn       | 0/0
+rightlink | 1
+flags     | {leaf}
+
+SELECT * FROM gist_page_items(get_raw_page('test_gist_idx', 0));
+-[ RECORD 1 ]---------
+itemoffset | 1
+ctid       | (1,65535)
+itemlen    | 40
+-[ RECORD 2 ]---------
+itemoffset | 2
+ctid       | (2,65535)
+itemlen    | 40
+-[ RECORD 3 ]---------
+itemoffset | 3
+ctid       | (3,65535)
+itemlen    | 40
+-[ RECORD 4 ]---------
+itemoffset | 4
+ctid       | (4,65535)
+itemlen    | 40
+-[ RECORD 5 ]---------
+itemoffset | 5
+ctid       | (5,65535)
+itemlen    | 40
+-[ RECORD 6 ]---------
+itemoffset | 6
+ctid       | (6,65535)
+itemlen    | 40
+-[ RECORD 7 ]---------
+itemoffset | 7
+ctid       | (7,65535)
+itemlen    | 40
+
+SELECT * FROM gist_page_items(get_raw_page('test_gist_idx', 1)) LIMIT 10;
+-[ RECORD 1 ]------
+itemoffset | 1
+ctid       | (0,1)
+itemlen    | 40
+-[ RECORD 2 ]------
+itemoffset | 2
+ctid       | (0,2)
+itemlen    | 40
+-[ RECORD 3 ]------
+itemoffset | 3
+ctid       | (0,3)
+itemlen    | 40
+-[ RECORD 4 ]------
+itemoffset | 4
+ctid       | (0,4)
+itemlen    | 40
+-[ RECORD 5 ]------
+itemoffset | 5
+ctid       | (0,5)
+itemlen    | 40
+-[ RECORD 6 ]------
+itemoffset | 6
+ctid       | (0,6)
+itemlen    | 40
+-[ RECORD 7 ]------
+itemoffset | 7
+ctid       | (0,7)
+itemlen    | 40
+-[ RECORD 8 ]------
+itemoffset | 8
+ctid       | (0,8)
+itemlen    | 40
+-[ RECORD 9 ]------
+itemoffset | 9
+ctid       | (0,9)
+itemlen    | 40
+-[ RECORD 10 ]-----
+itemoffset | 10
+ctid       | (0,10)
+itemlen    | 40
+
+SELECT * FROM gist_page_items(get_raw_page('test_gist_idx', 2)) LIMIT 10;
+-[ RECORD 1 ]------
+itemoffset | 1
+ctid       | (1,10)
+itemlen    | 40
+-[ RECORD 2 ]------
+itemoffset | 2
+ctid       | (1,11)
+itemlen    | 40
+-[ RECORD 3 ]------
+itemoffset | 3
+ctid       | (1,12)
+itemlen    | 40
+-[ RECORD 4 ]------
+itemoffset | 4
+ctid       | (1,13)
+itemlen    | 40
+-[ RECORD 5 ]------
+itemoffset | 5
+ctid       | (1,14)
+itemlen    | 40
+-[ RECORD 6 ]------
+itemoffset | 6
+ctid       | (1,15)
+itemlen    | 40
+-[ RECORD 7 ]------
+itemoffset | 7
+ctid       | (1,16)
+itemlen    | 40
+-[ RECORD 8 ]------
+itemoffset | 8
+ctid       | (1,17)
+itemlen    | 40
+-[ RECORD 9 ]------
+itemoffset | 9
+ctid       | (1,18)
+itemlen    | 40
+-[ RECORD 10 ]-----
+itemoffset | 10
+ctid       | (1,19)
+itemlen    | 40
+
+DROP TABLE test1;
