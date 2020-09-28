@@ -672,6 +672,66 @@ test=# SELECT first_tid, nbytes, tids[0:5] AS some_tids
  </sect2>
 
  <sect2>
+  <title>GiST Functions</title>
+
+  <variablelist>
+   <varlistentry>
+    <term>
+     <function>gist_page_opaque_info(page bytea) returns record</function>
+     <indexterm>
+      <primary>gist_page_opaque_info</primary>
+     </indexterm>
+    </term>
+
+    <listitem>
+     <para>
+      <function>gist_page_opaque_info</function> returns information about
+      a <acronym>GiST</acronym> index opaque area, like the NSN, rightlink and
+      page type.
+      For example:
+<screen>
+test=# SELECT * FROM gist_page_opaque_info(get_raw_page('test_gist_idx', 2));
+ lsn | nsn | rightlink | flags  
+-----+-----+-----------+--------
+ 0/1 | 0/0 |         1 | {leaf}
+(1 row)
+</screen>
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry>
+    <term>
+     <function>gist_page_items(page bytea) returns setof record</function>
+     <indexterm>
+      <primary>gist_page_items</primary>
+     </indexterm>
+    </term>
+
+    <listitem>
+     <para>
+      <function>gist_page_items</function> returns information about
+      the data stored in a <acronym>GiST</acronym> page.  For example:
+<screen>
+test=# SELECT * FROM gist_page_items(get_raw_page('test_gist_idx', 0));
+ itemoffset |   ctid    | itemlen 
+------------+-----------+---------
+          1 | (1,65535) |      40
+          2 | (2,65535) |      40
+          3 | (3,65535) |      40
+          4 | (4,65535) |      40
+          5 | (5,65535) |      40
+          6 | (6,65535) |      40
+          7 | (7,65535) |      40
+(7 rows)
+</screen>
+     </para>
+    </listitem>
+   </varlistentry>
+  </variablelist>
+ </sect2>
+
+ <sect2>
   <title>Hash Functions</title>
 
   <variablelist>
