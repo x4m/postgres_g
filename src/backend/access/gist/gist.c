@@ -27,6 +27,8 @@
 #include "utils/memutils.h"
 #include "utils/rel.h"
 
+double gist_seed;
+
 /* non-export function prototypes */
 static void gistfixsplit(GISTInsertState *state, GISTSTATE *giststate);
 static bool gistinserttuple(GISTInsertState *state, GISTInsertStack *stack,
@@ -1616,6 +1618,11 @@ initGISTstate(Relation index)
 		giststate->fetchFn[i].fn_oid = InvalidOid;
 		giststate->supportCollation[i] = InvalidOid;
 	}
+
+	memset(&giststate->random_state, 0, sizeof(giststate->random_state));
+	memcpy(&giststate->random_state,
+		   &gist_seed,
+		   Min(sizeof(giststate->random_state), sizeof(gist_seed)));
 
 	MemoryContextSwitchTo(oldCxt);
 

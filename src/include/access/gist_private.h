@@ -95,6 +95,9 @@ typedef struct GISTSTATE
 
 	/* Collations to pass to the support functions */
 	Oid			supportCollation[INDEX_MAX_KEYS];
+
+	/* Random state for gistchoose tie breaker PRNG */
+	unsigned short random_state[3];
 } GISTSTATE;
 
 

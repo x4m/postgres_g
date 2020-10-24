@@ -30,6 +30,7 @@
 #include <unistd.h>
 
 #include "access/commit_ts.h"
+#include "access/gist.h"
 #include "access/gin.h"
 #include "access/rmgr.h"
 #include "access/tableam.h"
@@ -3549,6 +3550,16 @@ static struct config_real ConfigureNamesReal[] =
 			GUC_EXPLAIN
 		},
 		&Geqo_seed,
+		0.0, 0.0, 1.0,
+		NULL, NULL, NULL
+	},
+	{
+		{"gist_seed", PGC_USERSET, DEVELOPER_OPTIONS,
+			gettext_noop("Seed for random path selection in GiST insertion."),
+			NULL,
+			GUC_EXPLAIN
+		},
+		&gist_seed,
 		0.0, 0.0, 1.0,
 		NULL, NULL, NULL
 	},
