@@ -1216,6 +1216,7 @@ GetMultiXactIdMembers(MultiXactId multi, MultiXactMember **members,
 	MultiXactId tmpMXact;
 	MultiXactOffset nextOffset;
 	MultiXactMember *ptr;
+	LWLockMode	lockmode = LW_NONE;
 
 	debug_elog3(DEBUG2, "GetMembers: asked for %u", multi);
 
@@ -1319,12 +1320,13 @@ GetMultiXactIdMembers(MultiXactId multi, MultiXactMember **members,
 	 * time on every multixact creation.
 	 */
 retry:
-	LWLockAcquire(MultiXactOffsetControlLock, LW_EXCLUSIVE);
 
 	pageno = MultiXactIdToOffsetPage(multi);
 	entryno = MultiXactIdToOffsetEntry(multi);
 
-	slotno = SimpleLruReadPage(MultiXactOffsetCtl, pageno, true, multi);
+	/* lock is acquired by SimpleLruReadPage_ReadOnly */
+	slotno = SimpleLruReadPage_ReadOnly(MultiXactOffsetCtl, pageno,
+										multi, &lockmode);
 	offptr = (MultiXactOffset *) MultiXactOffsetCtl->shared->page_buffer[slotno];
 	offptr += entryno;
 	offset = *offptr;
@@ -1356,7 +1358,8 @@ retry:
 		entryno = MultiXactIdToOffsetEntry(tmpMXact);
 
 		if (pageno != prev_pageno)
-			slotno = SimpleLruReadPage(MultiXactOffsetCtl, pageno, true, tmpMXact);
+			slotno = SimpleLruReadPage_ReadOnly(MultiXactOffsetCtl, pageno,
+												tmpMXact, &lockmode);
 
 		offptr = (MultiXactOffset *) MultiXactOffsetCtl->shared->page_buffer[slotno];
 		offptr += entryno;
@@ -1380,8 +1383,7 @@ retry:
 	*members = ptr;
 
 	/* Now get the members themselves. */
-	LWLockAcquire(MultiXactMemberControlLock, LW_EXCLUSIVE);
-
+	lockmode = LW_NONE;
 	truelength = 0;
 	prev_pageno = -1;
 	for (i = 0; i < length; i++, offset++)
@@ -1397,7 +1399,8 @@ retry:
 
 		if (pageno != prev_pageno)
 		{
-			slotno = SimpleLruReadPage(MultiXactMemberCtl, pageno, true, multi);
+			slotno = SimpleLruReadPage_ReadOnly(MultiXactMemberCtl, pageno,
+												multi, &lockmode);
 			prev_pageno = pageno;
 		}
 
@@ -1420,6 +1423,7 @@ retry:
 		truelength++;
 	}
 
+	Assert(lockmode != LW_NONE);
 	LWLockRelease(MultiXactMemberControlLock);
 
 	/*
@@ -2723,6 +2727,7 @@ find_multixact_start(MultiXactId multi, MultiXactOffset *result)
 	int			entryno;
 	int			slotno;
 	MultiXactOffset *offptr;
+	LWLockMode	lockmode = LW_NONE;
 
 	Assert(MultiXactState->finishedStartup);
 
@@ -2743,10 +2748,12 @@ find_multixact_start(MultiXactId multi, MultiXactOffset *result)
 		return false;
 
 	/* lock is acquired by SimpleLruReadPage_ReadOnly */
-	slotno = SimpleLruReadPage_ReadOnly(MultiXactOffsetCtl, pageno, multi);
+	slotno = SimpleLruReadPage_ReadOnly(MultiXactOffsetCtl, pageno,
+										multi, &lockmode);
 	offptr = (MultiXactOffset *) MultiXactOffsetCtl->shared->page_buffer[slotno];
 	offptr += entryno;
 	offset = *offptr;
+	Assert(lockmode != LW_NONE);
 	LWLockRelease(MultiXactOffsetControlLock);
 
 	*result = offset;

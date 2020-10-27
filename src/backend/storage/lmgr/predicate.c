@@ -908,6 +908,7 @@ OldSerXidGetMinConflictCommitSeqNo(TransactionId xid)
 	TransactionId tailXid;
 	SerCommitSeqNo val;
 	int			slotno;
+	LWLockMode	lockmode = LW_NONE;
 
 	Assert(TransactionIdIsValid(xid));
 
@@ -930,8 +931,9 @@ OldSerXidGetMinConflictCommitSeqNo(TransactionId xid)
 	 * but will return with that lock held, which must then be released.
 	 */
 	slotno = SimpleLruReadPage_ReadOnly(OldSerXidSlruCtl,
-										OldSerXidPage(xid), xid);
+										OldSerXidPage(xid), xid, &lockmode);
 	val = OldSerXidValue(slotno, xid);
+	Assert(lockmode != LW_NONE);
 	LWLockRelease(OldSerXidLock);
 	return val;
 }

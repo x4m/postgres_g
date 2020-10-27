@@ -640,10 +640,11 @@ TransactionIdGetStatus(TransactionId xid, XLogRecPtr *lsn)
 	int			lsnindex;
 	char	   *byteptr;
 	XidStatus	status;
+	LWLockMode	lockmode = LW_NONE;
 
 	/* lock is acquired by SimpleLruReadPage_ReadOnly */
 
-	slotno = SimpleLruReadPage_ReadOnly(ClogCtl, pageno, xid);
+	slotno = SimpleLruReadPage_ReadOnly(ClogCtl, pageno, xid, &lockmode);
 	byteptr = ClogCtl->shared->page_buffer[slotno] + byteno;
 
 	status = (*byteptr >> bshift) & CLOG_XACT_BITMASK;
