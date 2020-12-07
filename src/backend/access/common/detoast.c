@@ -439,12 +439,43 @@ toast_fetch_datum_slice(struct varlena *attr, int32 sliceoffset,
 }
 
 /* ----------
+ * toast_get_compression_oid -
+ *
+ * Return the Oid of the compresion method stored in the compressed data.
+ * For built-in methods, we only store the built-in compression method id in
+ * first 2-bits of the rawsize and that is directly mapped to the compression
+ * method Oid.  And, for the custom compression method we store the Oid of the
+ * compression method in the custom compression header.
+ */
+Oid
+toast_get_compression_oid(struct varlena *attr)
+{
+	CompressionId cmid;
+
+	/*
+	 * If it is custom compression id then get the Oid from the custom
+	 * compression header otherwise, directly translate the buil-in compression
+	 * id to compression method Oid.
+	 */
+	cmid = TOAST_COMPRESS_METHOD(attr);
+	if (IsCustomCompression(cmid))
+	{
+		toast_compress_header_custom	*hdr;
+
+		hdr = (toast_compress_header_custom *) attr;
+		return hdr->cmoid;
+	}
+	else
+		return CompressionIdToOid(cmid);
+}
+
+/* ----------
  * toast_get_compression_handler - get the compression handler routines
  *
  * helper function for toast_decompress_datum and toast_decompress_datum_slice
  */
 static inline const CompressionAmRoutine *
-toast_get_compression_handler(struct varlena *attr)
+toast_get_compression_handler(struct varlena *attr, int32 *header_size)
 {
 	const CompressionAmRoutine *cmroutine;
 	CompressionId cmid;
@@ -458,10 +489,21 @@ toast_get_compression_handler(struct varlena *attr)
 	{
 		case PGLZ_COMPRESSION_ID:
 			cmroutine = &pglz_compress_methods;
+			*header_size = TOAST_COMPRESS_HDRSZ;
 			break;
 		case LZ4_COMPRESSION_ID:
 			cmroutine = &lz4_compress_methods;
+			*header_size = TOAST_COMPRESS_HDRSZ;
 			break;
+		case CUSTOM_COMPRESSION_ID:
+		{
+			toast_compress_header_custom	*hdr;
+
+			hdr = (toast_compress_header_custom *) attr;
+			cmroutine = GetCompressionAmRoutineByAmId(hdr->cmoid);
+			*header_size = TOAST_CUSTOM_COMPRESS_HDRSZ;
+			break;
+		}
 		default:
 			elog(ERROR, "Invalid compression method id %d", cmid);
 	}
@@ -477,9 +519,11 @@ toast_get_compression_handler(struct varlena *attr)
 static struct varlena *
 toast_decompress_datum(struct varlena *attr)
 {
-	const CompressionAmRoutine *cmroutine = toast_get_compression_handler(attr);
+	int32	header_size;
+	const CompressionAmRoutine *cmroutine =
+				toast_get_compression_handler(attr, &header_size);
 
-	return cmroutine->datum_decompress(attr);
+	return cmroutine->datum_decompress(attr, header_size);
 }
 
 
@@ -493,16 +537,19 @@ toast_decompress_datum(struct varlena *attr)
 static struct varlena *
 toast_decompress_datum_slice(struct varlena *attr, int32 slicelength)
 {
-	const CompressionAmRoutine *cmroutine = toast_get_compression_handler(attr);
+	int32	header_size;
+	const CompressionAmRoutine *cmroutine =
+				toast_get_compression_handler(attr, &header_size);
 
 	/*
 	 * If the handler supports the slice decompression then decompress the
 	 * slice otherwise decompress complete data.
 	 */
 	if (cmroutine->datum_decompress_slice)
-		return cmroutine->datum_decompress_slice(attr, slicelength);
+		return cmroutine->datum_decompress_slice(attr, header_size,
+												 slicelength);
 	else
-		return cmroutine->datum_decompress(attr);
+		return cmroutine->datum_decompress(attr, header_size);
 }
 
 /* ----------

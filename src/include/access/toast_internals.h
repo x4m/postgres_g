@@ -27,6 +27,17 @@ typedef struct toast_compress_header
 								 * rawsize */
 } toast_compress_header;
 
+/*
+ * If the compression method were used, then data also contains
+ * Oid of compression options
+ */
+typedef struct toast_compress_header_custom
+{
+	int32		vl_len_;		/* varlena header (do not touch directly!) */
+	uint32		info;			/*  2 bits for compression method + rawsize */
+	Oid			cmoid;			/* Oid from pg_compression */
+} toast_compress_header_custom;
+
 #define RAWSIZEMASK (0x3FFFFFFFU)
 
 /*
@@ -38,6 +49,7 @@ typedef struct toast_compress_header
  * two highest bits.
  */
 #define TOAST_COMPRESS_HDRSZ		((int32) sizeof(toast_compress_header))
+#define TOAST_CUSTOM_COMPRESS_HDRSZ ((int32)sizeof(toast_compress_header_custom))
 #define TOAST_COMPRESS_RAWSIZE(ptr) (((toast_compress_header *) (ptr))->info & RAWSIZEMASK)
 #define TOAST_COMPRESS_METHOD(ptr)  (((toast_compress_header *) (ptr))->info >> 30)
 #define TOAST_COMPRESS_SIZE(ptr)	((int32) VARSIZE_ANY(ptr) - TOAST_COMPRESS_HDRSZ)
@@ -48,6 +60,9 @@ typedef struct toast_compress_header
 		Assert((len) > 0 && (len) <= RAWSIZEMASK); \
 		((toast_compress_header *) (ptr))->info = ((len) | (cm_method) << 30); \
 	} while (0)
+
+#define TOAST_COMPRESS_SET_CMOID(ptr, oid) \
+	(((toast_compress_header_custom *)(ptr))->cmoid = (oid))
 
 extern Datum toast_compress_datum(Datum value, Oid cmoid);
 extern Oid	toast_get_valid_index(Oid toastoid, LOCKMODE lock);

@@ -999,11 +999,12 @@ WITH ( MODULUS <replaceable class="parameter">numeric_literal</replaceable>, REM
     <listitem>
      <para>
       This clause adds the compression method to a column.  Compression method
-      can be set from the available built-in compression methods.  The available
-      options are <literal>pglz</literal> and <literal>lz4</literal>.  If the
-      compression method is not sepcified for the compressible type then it will
-      have the default compression method.  The default compression method is
-      <literal>pglz</literal>.
+      could be created with <xref linkend="sql-create-access-method"/> or it can
+      be set from the available built-in compression methods.  The available
+      built-in methods are <literal>pglz</literal> and <literal>lz4</literal>.
+      If the compression method is not sepcified for the compressible type then
+      it will have the default compression method.  The default compression
+      method is <literal>pglz</literal>.
      </para>
     </listitem>
    </varlistentry>

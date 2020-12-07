@@ -27,7 +27,7 @@
  * compressed varlena, or NULL if compression fails.
  */
 static struct varlena *
-pglz_cmcompress(const struct varlena *value)
+pglz_cmcompress(const struct varlena *value, int32 header_size)
 {
 	int32		valsize,
 				len;
@@ -44,16 +44,16 @@ pglz_cmcompress(const struct varlena *value)
 		return NULL;
 
 	tmp = (struct varlena *) palloc(PGLZ_MAX_OUTPUT(valsize) +
-									TOAST_COMPRESS_HDRSZ);
+									header_size);
 
 	len = pglz_compress(VARDATA_ANY(DatumGetPointer(value)),
 						valsize,
-						TOAST_COMPRESS_RAWDATA(tmp),
+						(char *) tmp + header_size,
 						NULL);
 
 	if (len >= 0)
 	{
-		SET_VARSIZE_COMPRESSED(tmp, len + TOAST_COMPRESS_HDRSZ);
+		SET_VARSIZE_COMPRESSED(tmp, len + header_size);
 		return tmp;
 	}
 
@@ -68,7 +68,7 @@ pglz_cmcompress(const struct varlena *value)
  * Returns the decompressed varlena.
  */
 static struct varlena *
-pglz_cmdecompress(const struct varlena *value)
+pglz_cmdecompress(const struct varlena *value, int32 header_size)
 {
 	struct varlena *result;
 	int32		rawsize;
@@ -76,8 +76,8 @@ pglz_cmdecompress(const struct varlena *value)
 	result = (struct varlena *) palloc(TOAST_COMPRESS_RAWSIZE(value) + VARHDRSZ);
 	SET_VARSIZE(result, TOAST_COMPRESS_RAWSIZE(value) + VARHDRSZ);
 
-	rawsize = pglz_decompress(TOAST_COMPRESS_RAWDATA(value),
-							  TOAST_COMPRESS_SIZE(value),
+	rawsize = pglz_decompress((char *) value + header_size,
+							  VARSIZE(value) - header_size,
 							  VARDATA(result),
 							  TOAST_COMPRESS_RAWSIZE(value), true);
 
@@ -95,7 +95,7 @@ pglz_cmdecompress(const struct varlena *value)
  * Decompresses part of the data. Returns the decompressed varlena.
  */
 static struct varlena *
-pglz_cmdecompress_slice(const struct varlena *value,
+pglz_cmdecompress_slice(const struct varlena *value, int32 header_size,
 						int32 slicelength)
 {
 	struct varlena *result;
@@ -103,8 +103,8 @@ pglz_cmdecompress_slice(const struct varlena *value,
 
 	result = (struct varlena *) palloc(slicelength + VARHDRSZ);
 
-	rawsize = pglz_decompress(TOAST_COMPRESS_RAWDATA(value),
-							  VARSIZE(value) - TOAST_COMPRESS_HDRSZ,
+	rawsize = pglz_decompress((char *) value + header_size,
+							  VARSIZE(value) - header_size,
 							  VARDATA(result),
 							  slicelength, false);
 

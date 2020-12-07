@@ -5254,6 +5254,7 @@ CreateAmStmt: CREATE ACCESS METHOD name TYPE_P am_type HANDLER handler_name
 am_type:
 			INDEX			{ $$ = AMTYPE_INDEX; }
 		|	TABLE			{ $$ = AMTYPE_TABLE; }
+		|	COMPRESSION		{ $$ = AMTYPE_COMPRESSION; }
 		;
 
 /*****************************************************************************

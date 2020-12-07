@@ -883,6 +883,12 @@ static const SchemaQuery Query_for_list_of_statistics = {
 "  WHERE substring(pg_catalog.quote_ident(amname),1,%d)='%s' AND "\
 "   amtype=" CppAsString2(AMTYPE_TABLE)
 
+#define Query_for_list_of_compression_access_methods \
+" SELECT pg_catalog.quote_ident(amname) "\
+"   FROM pg_catalog.pg_am "\
+"  WHERE substring(pg_catalog.quote_ident(amname),1,%d)='%s' AND "\
+"   amtype=" CppAsString2(AMTYPE_COMPRESSION)
+
 /* the silly-looking length condition is just to eat up the current word */
 #define Query_for_list_of_arguments \
 "SELECT pg_catalog.oidvectortypes(proargtypes)||')' "\

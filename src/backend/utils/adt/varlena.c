@@ -5285,7 +5285,6 @@ Datum
 pg_column_compression(PG_FUNCTION_ARGS)
 {
 	Datum		value = PG_GETARG_DATUM(0);
-	char	   *compression;
 	int			typlen;
 	struct varlena *varvalue;
 
@@ -5315,10 +5314,8 @@ pg_column_compression(PG_FUNCTION_ARGS)
 
 	varvalue = (struct varlena *) DatumGetPointer(value);
 
-	compression =
-		get_am_name(CompressionIdToOid(TOAST_COMPRESS_METHOD(varvalue)));
-
-	PG_RETURN_TEXT_P(cstring_to_text(compression));
+	PG_RETURN_TEXT_P(cstring_to_text(get_am_name(
+								toast_get_compression_oid(varvalue))));
 }
 
 /*

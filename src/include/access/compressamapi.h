@@ -26,18 +26,25 @@
 typedef enum CompressionId
 {
 	PGLZ_COMPRESSION_ID = 0,
-	LZ4_COMPRESSION_ID = 1
+	LZ4_COMPRESSION_ID = 1,
+	/* one free slot for the future built-in method */
+	CUSTOM_COMPRESSION_ID = 3
 } CompressionId;
 
 /* Use default compression method if it is not specified. */
 #define DefaultCompressionOid	PGLZ_COMPRESSION_AM_OID
+#define IsCustomCompression(cmid)     ((cmid) == CUSTOM_COMPRESSION_ID)
 #define IsStorageCompressible(storage) ((storage) != TYPSTORAGE_PLAIN && \
 										(storage) != TYPSTORAGE_EXTERNAL)
 /* compression handler routines */
-typedef struct varlena *(*cmcompress_function) (const struct varlena *value);
-typedef struct varlena *(*cmdecompress_function) (const struct varlena *value);
+typedef struct varlena *(*cmcompress_function) (const struct varlena *value,
+												int32 toast_header_size);
+typedef struct varlena *(*cmdecompress_function) (const struct varlena *value,
+												  int32 toast_header_size);
 typedef struct varlena *(*cmdecompress_slice_function)
-			(const struct varlena *value, int32 slicelength);
+												(const struct varlena *value,
+												 int32 toast_header_size,
+												 int32 slicelength);
 
 /*
  * API struct for a compression AM.
@@ -61,5 +68,6 @@ extern const CompressionAmRoutine lz4_compress_methods;
 /* access/compression/compressamapi.c */
 extern CompressionId CompressionOidToId(Oid cmoid);
 extern Oid CompressionIdToOid(CompressionId cmid);
+extern CompressionAmRoutine *GetCompressionAmRoutineByAmId(Oid amoid);
 
 #endif							/* COMPRESSAMAPI_H */

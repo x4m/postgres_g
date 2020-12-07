@@ -48,6 +48,7 @@ toast_compress_datum(Datum value, Oid cmoid)
 {
 	struct varlena *tmp = NULL;
 	int32		valsize;
+	bool		isCustomCompression = false;
 	const CompressionAmRoutine *cmroutine = NULL;
 
 	Assert(!VARATT_IS_EXTERNAL(DatumGetPointer(value)));
@@ -65,11 +66,16 @@ toast_compress_datum(Datum value, Oid cmoid)
 			cmroutine = &lz4_compress_methods;
 			break;
 		default:
-			elog(ERROR, "Invalid compression method oid %u", cmoid);
+			isCustomCompression = true;
+			cmroutine = GetCompressionAmRoutineByAmId(cmoid);
+			break;
 	}
 
 	/* Call the actual compression function */
-	tmp = cmroutine->datum_compress((const struct varlena *) value);
+	tmp = cmroutine->datum_compress((const struct varlena *)value,
+									isCustomCompression ?
+									TOAST_CUSTOM_COMPRESS_HDRSZ :
+									TOAST_COMPRESS_HDRSZ);
 	if (!tmp)
 		return PointerGetDatum(NULL);
 
@@ -88,7 +94,14 @@ toast_compress_datum(Datum value, Oid cmoid)
 	if (VARSIZE(tmp) < valsize - 2)
 	{
 		/* successful compression */
-		TOAST_COMPRESS_SET_SIZE_AND_METHOD(tmp, valsize, CompressionOidToId(cmoid));
+		TOAST_COMPRESS_SET_SIZE_AND_METHOD(tmp, valsize, isCustomCompression ?
+										   CUSTOM_COMPRESSION_ID :
+										   CompressionOidToId(cmoid));
+
+		/* For custom compression, set the oid of the compression method */
+		if (isCustomCompression)
+			TOAST_COMPRESS_SET_CMOID(tmp, cmoid);
+
 		return PointerGetDatum(tmp);
 	}
 	else

@@ -235,13 +235,51 @@ SELECT pg_column_compression(f1) FROM cmdata;
  pglz
 (2 rows)
 
+-- create compression method
+CREATE ACCESS METHOD pglz2 TYPE COMPRESSION HANDLER pglzhandler;
+ALTER TABLE cmdata ALTER COLUMN f1 SET COMPRESSION pglz2 PRESERVE ALL;
+INSERT INTO cmdata VALUES (repeat('1234567890',1004));
+\d+ cmdata
+                                        Table "public.cmdata"
+ Column | Type | Collation | Nullable | Default | Storage  | Compression | Stats target | Description 
+--------+------+-----------+----------+---------+----------+-------------+--------------+-------------
+ f1     | text |           |          |         | extended | pglz2       |              | 
+Indexes:
+    "idx" btree (f1)
+
+SELECT pg_column_compression(f1) FROM cmdata;
+ pg_column_compression 
+-----------------------
+ lz4
+ pglz
+ pglz2
+(3 rows)
+
+ALTER TABLE cmdata ALTER COLUMN f1 SET COMPRESSION lz4 PRESERVE (pglz2);
+SELECT pg_column_compression(f1) FROM cmdata;
+ pg_column_compression 
+-----------------------
+ lz4
+ lz4
+ pglz2
+(3 rows)
+
+\d+ cmdata
+                                        Table "public.cmdata"
+ Column | Type | Collation | Nullable | Default | Storage  | Compression | Stats target | Description 
+--------+------+-----------+----------+---------+----------+-------------+--------------+-------------
+ f1     | text |           |          |         | extended | lz4         |              | 
+Indexes:
+    "idx" btree (f1)
+
 -- check data is ok
 SELECT length(f1) FROM cmdata;
  length 
 --------
   10000
   10040
-(2 rows)
+  10040
+(3 rows)
 
 SELECT length(f1) FROM cmdata1;
  length 
@@ -270,3 +308,4 @@ SELECT length(f1) FROM cmmove3;
 
 DROP MATERIALIZED VIEW mv;
 DROP TABLE cmdata, cmdata1, cmmove1, cmmove2, cmmove3, cmpart;
+DROP ACCESS METHOD pglz2;
