@@ -86,6 +86,15 @@ ALTER TABLE cmpart1 ALTER COLUMN f1 SET COMPRESSION pglz;
 ALTER TABLE cmpart2 ALTER COLUMN f1 SET COMPRESSION lz4;
 SELECT pg_column_compression(f1) FROM cmpart;
 
+-- preserve old compression method
+ALTER TABLE cmdata ALTER COLUMN f1 SET COMPRESSION pglz PRESERVE (lz4);
+INSERT INTO cmdata VALUES (repeat('1234567890',1004));
+\d+ cmdata
+SELECT pg_column_compression(f1) FROM cmdata;
+\d+ cmdata
+ALTER TABLE cmdata ALTER COLUMN f1 SET COMPRESSION lz4 PRESERVE ALL;
+SELECT pg_column_compression(f1) FROM cmdata;
+
 -- check data is ok
 SELECT length(f1) FROM cmdata;
 SELECT length(f1) FROM cmdata1;

@@ -45,6 +45,7 @@
 #include "access/toast_internals.h"
 #include "access/xact.h"
 #include "catalog/catalog.h"
+#include "commands/defrem.h"
 #include "commands/trigger.h"
 #include "executor/execPartition.h"
 #include "executor/executor.h"
@@ -1933,6 +1934,7 @@ CompareCompressionMethodAndDecompress(TupleTableSlot *slot,
 	int			natts = slot->tts_tupleDescriptor->natts;
 	bool		isnull = false;
 	bool		decompressed_any = false;
+	Oid			cmoid = InvalidOid;
 	TupleDesc	tupleDesc = slot->tts_tupleDescriptor;
 
 	if (natts == 0)
@@ -1963,10 +1965,12 @@ CompareCompressionMethodAndDecompress(TupleTableSlot *slot,
 
 			/*
 			 * Get the compression method stored in the toast header and
-			 * compare with the compression method of the target.
+			 * compare with the compression method of the target attribute.  If
+			 * the target compression method is not same then we need to
+			 * decompress it.
 			 */
-			if (targetTupDesc->attrs[i].attcompression !=
-				CompressionIdToOid(TOAST_COMPRESS_METHOD(new_value)))
+			cmoid = CompressionIdToOid(TOAST_COMPRESS_METHOD(new_value));
+			if (!IsCompressionSupported(&targetTupDesc->attrs[i], cmoid))
 			{
 				new_value = detoast_attr(new_value);
 				slot->tts_values[attnum - 1] = PointerGetDatum(new_value);

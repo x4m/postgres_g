@@ -624,6 +624,20 @@ typedef struct RangeTableSample
 } RangeTableSample;
 
 /*
+ * ColumnCompression - compression parameters for some attribute
+ *
+ * This represents compression information defined using clause:
+ * .. COMPRESSION <compression method> PRESERVE <compression methods>
+ */
+typedef struct ColumnCompression
+{
+	NodeTag		type;
+	char	   *cmname;
+	bool		preserve_all;
+	List	   *preserve;
+} ColumnCompression;
+
+/*
  * ColumnDef - column definition (used in various creates)
  *
  * If the column has a default value, we may have the value expression
@@ -646,7 +660,7 @@ typedef struct ColumnDef
 	NodeTag		type;
 	char	   *colname;		/* name of column */
 	TypeName   *typeName;		/* type of column */
-	char	   *compression;	/* compression method for column */
+	ColumnCompression *compression;	/* column compression */
 	int			inhcount;		/* number of times column is inherited */
 	bool		is_local;		/* column has local (non-inherited) def'n */
 	bool		is_not_null;	/* NOT NULL constraint specified? */
