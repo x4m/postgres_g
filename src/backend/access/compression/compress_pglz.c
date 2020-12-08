@@ -15,10 +15,91 @@
 
 #include "access/compressamapi.h"
 #include "access/toast_internals.h"
+#include "commands/defrem.h"
 #include "common/pg_lzcompress.h"
 
 #include "fmgr.h"
 #include "utils/builtins.h"
+
+#define PGLZ_OPTIONS_COUNT 6
+
+static char *PGLZ_options[PGLZ_OPTIONS_COUNT] = {
+	"min_input_size",
+	"max_input_size",
+	"min_comp_rate",
+	"first_success_by",
+	"match_size_good",
+	"match_size_drop"
+};
+
+/*
+ * Convert value from reloptions to int32, and report if it is not correct.
+ * Also checks parameter names
+ */
+static int32
+parse_option(char *name, char *value)
+{
+	int			i;
+
+	for (i = 0; i < PGLZ_OPTIONS_COUNT; i++)
+	{
+		if (strcmp(PGLZ_options[i], name) == 0)
+			return pg_atoi(value, 4, 0);
+	}
+
+	ereport(ERROR,
+			(errcode(ERRCODE_UNDEFINED_PARAMETER),
+			 errmsg("unexpected parameter for pglz: \"%s\"", name)));
+}
+
+/*
+ * Check PGLZ options if specified
+ */
+static void
+pglz_cmcheck(List *options)
+{
+	ListCell   *lc;
+
+	foreach(lc, options)
+	{
+		DefElem    *def = (DefElem *) lfirst(lc);
+
+		parse_option(def->defname, defGetString(def));
+	}
+}
+
+/*
+ * Configure PGLZ_Strategy struct for compression function
+ */
+static void *
+pglz_cminitstate(List *options)
+{
+	ListCell   *lc;
+	PGLZ_Strategy *strategy = palloc(sizeof(PGLZ_Strategy));
+
+	/* initialize with default strategy values */
+	memcpy(strategy, PGLZ_strategy_default, sizeof(PGLZ_Strategy));
+	foreach(lc, options)
+	{
+		DefElem    *def = (DefElem *) lfirst(lc);
+		int32		val = parse_option(def->defname, defGetString(def));
+
+		/* fill the strategy */
+		if (strcmp(def->defname, "min_input_size") == 0)
+			strategy->min_input_size = val;
+		else if (strcmp(def->defname, "max_input_size") == 0)
+			strategy->max_input_size = val;
+		else if (strcmp(def->defname, "min_comp_rate") == 0)
+			strategy->min_comp_rate = val;
+		else if (strcmp(def->defname, "first_success_by") == 0)
+			strategy->first_success_by = val;
+		else if (strcmp(def->defname, "match_size_good") == 0)
+			strategy->match_size_good = val;
+		else if (strcmp(def->defname, "match_size_drop") == 0)
+			strategy->match_size_drop = val;
+	}
+	return (void *) strategy;
+}
 
 /*
  * pglz_cmcompress - compression routine for pglz compression method
@@ -27,20 +108,22 @@
  * compressed varlena, or NULL if compression fails.
  */
 static struct varlena *
-pglz_cmcompress(const struct varlena *value, int32 header_size)
+pglz_cmcompress(const struct varlena *value, int32 header_size, void *options)
 {
 	int32		valsize,
 				len;
-	struct varlena *tmp = NULL;
+	struct varlena	*tmp = NULL;
+	PGLZ_Strategy	*strategy;
 
 	valsize = VARSIZE_ANY_EXHDR(DatumGetPointer(value));
+	strategy = (PGLZ_Strategy *) options;
 
 	/*
 	 * No point in wasting a palloc cycle if value size is out of the allowed
 	 * range for compression
 	 */
-	if (valsize < PGLZ_strategy_default->min_input_size ||
-		valsize > PGLZ_strategy_default->max_input_size)
+	if (valsize < strategy->min_input_size ||
+		valsize > strategy->max_input_size)
 		return NULL;
 
 	tmp = (struct varlena *) palloc(PGLZ_MAX_OUTPUT(valsize) +
@@ -49,7 +132,7 @@ pglz_cmcompress(const struct varlena *value, int32 header_size)
 	len = pglz_compress(VARDATA_ANY(DatumGetPointer(value)),
 						valsize,
 						(char *) tmp + header_size,
-						NULL);
+						strategy);
 
 	if (len >= 0)
 	{
@@ -118,10 +201,11 @@ pglz_cmdecompress_slice(const struct varlena *value, int32 header_size,
 
 const CompressionAmRoutine pglz_compress_methods = {
 	.type = T_CompressionAmRoutine,
+	.datum_check = pglz_cmcheck,
+	.datum_initstate = pglz_cminitstate,
 	.datum_compress = pglz_cmcompress,
 	.datum_decompress = pglz_cmdecompress,
-	.datum_decompress_slice = pglz_cmdecompress_slice
-};
+	.datum_decompress_slice = pglz_cmdecompress_slice};
 
 /* pglz compression handler function */
 Datum

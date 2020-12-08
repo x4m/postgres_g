@@ -634,6 +634,7 @@ typedef struct ColumnCompression
 	NodeTag		type;
 	char	   *cmname;
 	bool		preserve_all;
+	List	   *options;
 	List	   *preserve;
 } ColumnCompression;
 

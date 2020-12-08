@@ -107,10 +107,12 @@ static TupleDesc ConstructTupleDescriptor(Relation heapRelation,
 										  List *indexColNames,
 										  Oid accessMethodObjectId,
 										  Oid *collationObjectId,
-										  Oid *classObjectId);
+										  Oid *classObjectId,
+										  Datum *acoptions);
 static void InitializeAttributeOids(Relation indexRelation,
 									int numatts, Oid indexoid);
-static void AppendAttributeTuples(Relation indexRelation, Datum *attopts);
+static void AppendAttributeTuples(Relation indexRelation, Datum *attopts,
+								  Datum *attcmopts);
 static void UpdateIndexRelation(Oid indexoid, Oid heapoid,
 								Oid parentIndexId,
 								IndexInfo *indexInfo,
@@ -272,7 +274,8 @@ ConstructTupleDescriptor(Relation heapRelation,
 						 List *indexColNames,
 						 Oid accessMethodObjectId,
 						 Oid *collationObjectId,
-						 Oid *classObjectId)
+						 Oid *classObjectId,
+						 Datum *acoptions)
 {
 	int			numatts = indexInfo->ii_NumIndexAttrs;
 	int			numkeyatts = indexInfo->ii_NumIndexKeyAttrs;
@@ -333,6 +336,9 @@ ConstructTupleDescriptor(Relation heapRelation,
 		{
 			/* Simple index column */
 			const FormData_pg_attribute *from;
+			HeapTuple	attr_tuple;
+			Datum		attcmoptions;
+			bool		isNull;
 
 			Assert(atnum > 0);	/* should've been caught above */
 
@@ -349,6 +355,23 @@ ConstructTupleDescriptor(Relation heapRelation,
 			to->attstorage = from->attstorage;
 			to->attalign = from->attalign;
 			to->attcompression = from->attcompression;
+
+			attr_tuple = SearchSysCache2(ATTNUM,
+										 ObjectIdGetDatum(from->attrelid),
+										 Int16GetDatum(from->attnum));
+			if (!HeapTupleIsValid(attr_tuple))
+				elog(ERROR, "cache lookup failed for attribute %d of relation %u",
+					 from->attnum, from->attrelid);
+
+			attcmoptions = SysCacheGetAttr(ATTNUM, attr_tuple,
+										   Anum_pg_attribute_attcmoptions,
+										   &isNull);
+			if (isNull)
+				acoptions[i] = PointerGetDatum(NULL);
+			else
+				acoptions[i] =
+					PointerGetDatum(DatumGetArrayTypePCopy(attcmoptions));
+			ReleaseSysCache(attr_tuple);
 		}
 		else
 		{
@@ -489,7 +512,7 @@ InitializeAttributeOids(Relation indexRelation,
  * ----------------------------------------------------------------
  */
 static void
-AppendAttributeTuples(Relation indexRelation, Datum *attopts)
+AppendAttributeTuples(Relation indexRelation, Datum *attopts, Datum *attcmopts)
 {
 	Relation	pg_attribute;
 	CatalogIndexState indstate;
@@ -507,7 +530,8 @@ AppendAttributeTuples(Relation indexRelation, Datum *attopts)
 	 */
 	indexTupDesc = RelationGetDescr(indexRelation);
 
-	InsertPgAttributeTuples(pg_attribute, indexTupDesc, InvalidOid, attopts, indstate);
+	InsertPgAttributeTuples(pg_attribute, indexTupDesc, InvalidOid,
+							attopts, attcmopts, indstate);
 
 	CatalogCloseIndexes(indstate);
 
@@ -720,6 +744,7 @@ index_create(Relation heapRelation,
 	bool		concurrent = (flags & INDEX_CREATE_CONCURRENT) != 0;
 	bool		partitioned = (flags & INDEX_CREATE_PARTITIONED) != 0;
 	char		relkind;
+	Datum	   *acoptions;
 	TransactionId relfrozenxid;
 	MultiXactId relminmxid;
 
@@ -875,6 +900,8 @@ index_create(Relation heapRelation,
 						indexRelationName, RelationGetRelationName(heapRelation))));
 	}
 
+	acoptions = (Datum *) palloc0(sizeof(Datum) * indexInfo->ii_NumIndexAttrs);
+
 	/*
 	 * construct tuple descriptor for index tuples
 	 */
@@ -883,7 +910,8 @@ index_create(Relation heapRelation,
 											indexColNames,
 											accessMethodObjectId,
 											collationObjectId,
-											classObjectId);
+											classObjectId,
+											acoptions);
 
 	/*
 	 * Allocate an OID for the index, unless we were told what to use.
@@ -974,7 +1002,8 @@ index_create(Relation heapRelation,
 	/*
 	 * append ATTRIBUTE tuples for the index
 	 */
-	AppendAttributeTuples(indexRelation, indexInfo->ii_OpclassOptions);
+	AppendAttributeTuples(indexRelation, indexInfo->ii_OpclassOptions,
+						  acoptions);
 
 	/* ----------------
 	 *	  update pg_index

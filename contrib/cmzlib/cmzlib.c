@@ -14,6 +14,7 @@
 #include "postgres.h"
 #include "access/compressamapi.h"
 #include "access/toast_internals.h"
+#include "commands/defrem.h"
 
 #include "fmgr.h"
 #include "utils/builtins.h"
@@ -46,29 +47,83 @@ typedef struct
 } zlib_state;
 
 /*
+ * Check options if specified. All validation is located here so
+ * we don't need do it again in cminitstate function.
+ */
+static void
+zlib_cmcheck(List *options)
+{
+	ListCell	*lc;
+
+	foreach(lc, options)
+	{
+		DefElem    *def = (DefElem *) lfirst(lc);
+
+		if (strcmp(def->defname, "level") == 0)
+		{
+			int8 level = pg_atoi(defGetString(def), sizeof(int8), 0);
+
+			if (level < 0 || level > 9)
+				ereport(ERROR,
+					(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+					 errmsg("unexpected value for zlib compression level: \"%s\"",
+								defGetString(def)),
+					 errhint("expected value between 0 and 9")
+					));
+		}
+		else
+			ereport(ERROR,
+					(errcode(ERRCODE_UNDEFINED_PARAMETER),
+					 errmsg("unexpected parameter for zlib: \"%s\"", def->defname)));
+	}
+}
+
+static void *
+zlib_cminitstate(List *options)
+{
+	zlib_state		*state = NULL;
+
+	state = palloc0(sizeof(zlib_state));
+	state->level = Z_DEFAULT_COMPRESSION;
+
+	if (list_length(options) > 0)
+	{
+		ListCell	*lc;
+
+		foreach(lc, options)
+		{
+			DefElem    *def = (DefElem *) lfirst(lc);
+
+			if (strcmp(def->defname, "level") == 0)
+				state->level = pg_atoi(defGetString(def), sizeof(int), 0);
+		}
+	}
+
+	return state;
+}
+
+/*
  * zlib_cmcompress - compression routine for zlib compression method
  *
  * Compresses source into dest using the default compression level.
  * Returns the compressed varlena, or NULL if compression fails.
  */
 static struct varlena *
-zlib_cmcompress(const struct varlena *value, int32 header_size)
+zlib_cmcompress(const struct varlena *value, int32 header_size, void *options)
 {
-	int32		valsize,
-				len;
+	int32			valsize,
+					len;
 	struct varlena *tmp = NULL;
-	z_streamp	zp;
-	int			res;
-	zlib_state	state;
-
-	state.level = Z_DEFAULT_COMPRESSION;
+	z_streamp		zp;
+	int				res;
+	zlib_state	   *state = (zlib_state *) options;
 
 	zp = (z_streamp) palloc(sizeof(z_stream));
 	zp->zalloc = Z_NULL;
 	zp->zfree = Z_NULL;
 	zp->opaque = Z_NULL;
 
-	if (deflateInit(zp, state.level) != Z_OK)
+	if (deflateInit(zp, state->level) != Z_OK)
 		elog(ERROR, "could not initialize compression library: %s", zp->msg);
 
 	valsize = VARSIZE_ANY_EXHDR(DatumGetPointer(value));
@@ -146,6 +201,8 @@ zlib_cmdecompress(const struct varlena *value, int32 header_size)
 
 const CompressionAmRoutine zlib_compress_methods = {
 	.type = T_CompressionAmRoutine,
+	.datum_check = zlib_cmcheck,
+	.datum_initstate = zlib_cminitstate,
 	.datum_compress = zlib_cmcompress,
 	.datum_decompress = zlib_cmdecompress,
 	.datum_decompress_slice = NULL};

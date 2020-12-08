@@ -272,6 +272,23 @@ SELECT pg_column_compression(f1) FROM cmdata;
 Indexes:
     "idx" btree (f1)
 
+-- compression options
+DROP TABLE cmmove1;
+CREATE TABLE cmmove1(f1 TEXT COMPRESSION pglz WITH (min_input_size '100'));
+CREATE INDEX idx1 ON cmdata(f1);
+INSERT INTO cmmove1 VALUES(repeat('1234567890',1000));
+ALTER TABLE cmmove1 ALTER COLUMN f1 SET COMPRESSION lz4 WITH (acceleration '50');
+INSERT INTO cmmove1 VALUES(repeat('1234567890',1004));
+ALTER TABLE cmmove1 ALTER COLUMN f1 SET COMPRESSION pglz WITH (min_input_size '200') PRESERVE (lz4);
+INSERT INTO cmmove1 VALUES(repeat('1234567890',1008));
+SELECT pg_column_compression(f1) FROM cmmove1;
+ pg_column_compression 
+-----------------------
+ lz4
+ lz4
+ pglz
+(3 rows)
+
 -- check data is ok
 SELECT length(f1) FROM cmdata;
  length 
@@ -291,7 +308,9 @@ SELECT length(f1) FROM cmmove1;
  length 
 --------
   10000
-(1 row)
+  10040
+  10080
+(3 rows)
 
 SELECT length(f1) FROM cmmove2;
  length 

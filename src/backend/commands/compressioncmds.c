@@ -27,6 +27,7 @@
 #include "utils/builtins.h"
 #include "utils/fmgroids.h"
 #include "utils/lsyscache.h"
+#include "utils/syscache.h"
 
 /*
  * get list of all supported compression methods for the given attribute.
@@ -127,7 +128,7 @@ IsCompressionSupported(Form_pg_attribute att, Oid cmoid)
  */
 Oid
 GetAttributeCompression(Form_pg_attribute att, ColumnCompression *compression,
-						bool *need_rewrite)
+						Datum *acoptions, bool *need_rewrite)
 {
 	Oid			cmoid;
 	char		typstorage = get_typstorage(att->atttypid);
@@ -152,6 +153,20 @@ GetAttributeCompression(Form_pg_attribute att, ColumnCompression *compression,
 		return DefaultCompressionOid;
 
 	cmoid = get_compression_am_oid(compression->cmname, false);
+
+	/* if compression options are given then check them */
+	if (compression->options)
+	{
+		CompressionAmRoutine *routine = GetCompressionAmRoutineByAmId(cmoid);
+
+		/* we need routine only to call cmcheck function */
+		if (routine->datum_check != NULL)
+			routine->datum_check(compression->options);
+
+		*acoptions = optionListToArray(compression->options);
+	}
+	else
+		*acoptions = PointerGetDatum(NULL);
 
 	/*
 	 * Determine if the column needs rewrite or not. Rewrite conditions: SET
@@ -217,15 +232,71 @@ GetAttributeCompression(Form_pg_attribute att, ColumnCompression *compression,
  * Construct ColumnCompression node from the compression method oid.
  */
 ColumnCompression *
-MakeColumnCompression(Oid attcompression)
+MakeColumnCompression(Form_pg_attribute att)
 {
 	ColumnCompression *node;
 
-	if (!OidIsValid(attcompression))
+	if (!OidIsValid(att->attcompression))
 		return NULL;
 
 	node = makeNode(ColumnCompression);
-	node->cmname = get_am_name(attcompression);
+	node->cmname = get_am_name(att->attcompression);
+	node->options = GetAttributeCompressionOptions(att);
 
 	return node;
+}
+
+/*
+ * Fetch atttributes compression options
+ */
+List *
+GetAttributeCompressionOptions(Form_pg_attribute att)
+{
+	HeapTuple	attr_tuple;
+	Datum		attcmoptions;
+	List	   *acoptions;
+	bool		isNull;
+
+	attr_tuple = SearchSysCache2(ATTNUM,
+								 ObjectIdGetDatum(att->attrelid),
+								 Int16GetDatum(att->attnum));
+	if (!HeapTupleIsValid(attr_tuple))
+		elog(ERROR, "cache lookup failed for attribute %d of relation %u",
+			 att->attnum, att->attrelid);
+
+	attcmoptions = SysCacheGetAttr(ATTNUM, attr_tuple,
+								   Anum_pg_attribute_attcmoptions,
+								   &isNull);
+	if (isNull)
+		acoptions = NULL;
+	else
+		acoptions = untransformRelOptions(attcmoptions);
+
+	ReleaseSysCache(attr_tuple);
+
+	return acoptions;
+}
+
+/*
+ * Compare compression options for two columns.
+ */
+void
+CheckCompressionMismatch(ColumnCompression *c1, ColumnCompression *c2,
+						 const char *attributeName)
+{
+	if (strcmp(c1->cmname, c2->cmname))
+		ereport(ERROR,
+				(errcode(ERRCODE_DATATYPE_MISMATCH),
+				 errmsg("column \"%s\" has a compression method conflict",
+						attributeName),
+				 errdetail("%s versus %s", c1->cmname, c2->cmname)));
+
+	if (!equal(c1->options, c2->options))
+		ereport(ERROR,
+				(errcode(ERRCODE_DATATYPE_MISMATCH),
+				 errmsg("column \"%s\" has a compression options conflict",
+						attributeName),
+				 errdetail("(%s) versus (%s)",
+						   formatRelOptions(c1->options),
+						   formatRelOptions(c2->options))));
 }

@@ -16,11 +16,69 @@
 #include "postgres.h"
 #include "access/compressamapi.h"
 #include "access/toast_internals.h"
+#include "commands/defrem.h"
 #include "fmgr.h"
 #include "utils/builtins.h"
 
 #ifdef HAVE_LIBLZ4
 #include "lz4.h"
+
+/*
+ * Check options if specified. All validation is located here so
+ * we don't need do it again in cminitstate function.
+ */
+static void
+lz4_cmcheck(List *options)
+{
+	ListCell	*lc;
+
+	foreach(lc, options)
+	{
+		DefElem    *def = (DefElem *) lfirst(lc);
+
+		if (strcmp(def->defname, "acceleration") == 0)
+		{
+			int32 acceleration =
+				pg_atoi(defGetString(def), sizeof(acceleration), 0);
+
+			if (acceleration < INT32_MIN || acceleration > INT32_MAX)
+				ereport(ERROR,
+					(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+					 errmsg("unexpected value for lz4 compression acceleration: \"%s\"",
+								defGetString(def)),
+					 errhint("expected value between INT32_MIN and INT32_MAX")
+					));
+		}
+		else
+			ereport(ERROR,
+					(errcode(ERRCODE_UNDEFINED_PARAMETER),
+					 errmsg("unexpected parameter for lz4: \"%s\"", def->defname)));
+	}
+}
+
+static void *
+lz4_cminitstate(List *options)
+{
+	int32	*acceleration = palloc(sizeof(int32));
+
+	/* initialize with the default acceleration */
+	*acceleration = 1;
+
+	if (list_length(options) > 0)
+	{
+		ListCell	*lc;
+
+		foreach(lc, options)
+		{
+			DefElem    *def = (DefElem *) lfirst(lc);
+
+			if (strcmp(def->defname, "acceleration") == 0)
+				*acceleration = pg_atoi(defGetString(def), sizeof(int32), 0);
+		}
+	}
+
+	return acceleration;
+}
 
 /*
  * lz4_cmcompress - compression routine for lz4 compression method
@@ -29,7 +87,7 @@
  * compressed varlena, or NULL if compression fails.
  */
 static struct varlena *
-lz4_cmcompress(const struct varlena *value, int32 header_size)
+lz4_cmcompress(const struct varlena *value, int32 header_size, void *options)
 {
 #ifndef HAVE_LIBLZ4
 	ereport(ERROR,
@@ -39,6 +97,7 @@ lz4_cmcompress(const struct varlena *value, int32 header_size)
 	int32		valsize;
 	int32		len;
 	int32		max_size;
+	int32      *acceleration = (int32 *) options;
 	struct varlena *tmp = NULL;
 
 	valsize = VARSIZE_ANY_EXHDR(value);
@@ -46,9 +105,9 @@ lz4_cmcompress(const struct varlena *value, int32 header_size)
 	max_size = LZ4_compressBound(VARSIZE_ANY_EXHDR(value));
 	tmp = (struct varlena *) palloc(max_size + header_size);
 
-	len = LZ4_compress_default(VARDATA_ANY(value),
-							   (char *) tmp + header_size,
-							   valsize, max_size);
+	len = LZ4_compress_fast(VARDATA_ANY(value),
+							(char *) tmp + header_size,
+							valsize, max_size, *acceleration);
 	if (len <= 0)
 	{
 		pfree(tmp);
@@ -129,6 +188,8 @@ lz4_cmdecompress_slice(const struct varlena *value, int32 header_size,
 
 const CompressionAmRoutine lz4_compress_methods = {
 	.type = T_CompressionAmRoutine,
+	.datum_check = lz4_cmcheck,
+	.datum_initstate = lz4_cminitstate,
 	.datum_compress = lz4_cmcompress,
 	.datum_decompress = lz4_cmdecompress,
 	.datum_decompress_slice = lz4_cmdecompress_slice

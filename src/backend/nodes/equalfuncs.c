@@ -2611,6 +2611,7 @@ _equalColumnCompression(const ColumnCompression *a, const ColumnCompression *b)
 {
 	COMPARE_STRING_FIELD(cmname);
 	COMPARE_SCALAR_FIELD(preserve_all);
+	COMPARE_NODE_FIELD(options);
 	COMPARE_NODE_FIELD(preserve);
 
 	return true;

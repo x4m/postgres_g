@@ -44,10 +44,11 @@ static bool toastid_valueid_exists(Oid toastrelid, Oid valueid);
  * ----------
  */
 Datum
-toast_compress_datum(Datum value, Oid cmoid)
+toast_compress_datum(Datum value, Oid cmoid, List *cmoptions)
 {
 	struct varlena *tmp = NULL;
 	int32		valsize;
+	void	   *options = NULL;
 	bool		isCustomCompression = false;
 	const CompressionAmRoutine *cmroutine = NULL;
 
@@ -71,11 +72,20 @@ toast_compress_datum(Datum value, Oid cmoid)
 			break;
 	}
 
+	if (cmroutine->datum_initstate)
+		options = cmroutine->datum_initstate(cmoptions);
+
 	/* Call the actual compression function */
 	tmp = cmroutine->datum_compress((const struct varlena *)value,
 									isCustomCompression ?
 									TOAST_CUSTOM_COMPRESS_HDRSZ :
-									TOAST_COMPRESS_HDRSZ);
+									TOAST_COMPRESS_HDRSZ, options);
+	if (options != NULL)
+	{
+		pfree(options);
+		list_free(cmoptions);
+	}
+
 	if (!tmp)
 		return PointerGetDatum(NULL);
 
