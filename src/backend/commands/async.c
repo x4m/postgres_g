@@ -2016,6 +2016,7 @@ asyncQueueReadAllNotifications(void)
 			int			curoffset = QUEUE_POS_OFFSET(pos);
 			int			slotno;
 			int			copysize;
+			LWLockMode	lockmode = LW_NONE;
 
 			/*
 			 * We copy the data from SLRU into a local buffer, so as to avoid
@@ -2024,7 +2025,7 @@ asyncQueueReadAllNotifications(void)
 			 * part of the page we will actually inspect.
 			 */
 			slotno = SimpleLruReadPage_ReadOnly(NotifyCtl, curpage,
-												InvalidTransactionId);
+												InvalidTransactionId, &lockmode);
 			if (curpage == QUEUE_POS_PAGE(head))
 			{
 				/* we only want to read as far as head */
@@ -2041,6 +2042,7 @@ asyncQueueReadAllNotifications(void)
 				   NotifyCtl->shared->page_buffer[slotno] + curoffset,
 				   copysize);
 			/* Release lock that we got from SimpleLruReadPage_ReadOnly() */
+			Assert(lockmode != LW_NONE);
 			LWLockRelease(NotifySLRULock);
 
 			/*
