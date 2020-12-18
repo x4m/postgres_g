@@ -65,6 +65,27 @@ SELECT pg_column_compression(f1) FROM cmpart;
 CREATE TABLE cminh() INHERITS(cmdata, cmdata1);
 CREATE TABLE cminh(f1 TEXT COMPRESSION lz4) INHERITS(cmdata);
 
+-- test alter compression method with rewrite
+ALTER TABLE cmdata ALTER COLUMN f1 SET COMPRESSION lz4;
+\d+ cmdata
+SELECT pg_column_compression(f1) FROM cmdata;
+
+-- test alter compression method for the materialized view
+ALTER TABLE cmdata1 ALTER COLUMN f1 SET COMPRESSION pglz;
+ALTER MATERIALIZED VIEW mv ALTER COLUMN x SET COMPRESSION lz4;
+REFRESH MATERIALIZED VIEW mv;
+\d+ mv
+SELECT pg_column_compression(f1) FROM cmdata1;
+SELECT pg_column_compression(x) FROM mv;
+
+-- test alter compression method for the partioned table
+ALTER TABLE cmpart ALTER COLUMN f1 SET COMPRESSION pglz;
+SELECT pg_column_compression(f1) FROM cmpart;
+
+ALTER TABLE cmpart1 ALTER COLUMN f1 SET COMPRESSION pglz;
+ALTER TABLE cmpart2 ALTER COLUMN f1 SET COMPRESSION lz4;
+SELECT pg_column_compression(f1) FROM cmpart;
+
 -- check data is ok
 SELECT length(f1) FROM cmdata;
 SELECT length(f1) FROM cmdata1;

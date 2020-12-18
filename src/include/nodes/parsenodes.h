@@ -1856,7 +1856,8 @@ typedef enum AlterTableType
 	AT_AddIdentity,				/* ADD IDENTITY */
 	AT_SetIdentity,				/* SET identity column options */
 	AT_DropIdentity,			/* DROP IDENTITY */
-	AT_AlterCollationRefreshVersion /* ALTER COLLATION ... REFRESH VERSION */
+	AT_AlterCollationRefreshVersion, /* ALTER COLLATION ... REFRESH VERSION */
+	AT_SetCompression			/* SET COMPRESSION */
 } AlterTableType;
 
 typedef struct ReplicaIdentityStmt

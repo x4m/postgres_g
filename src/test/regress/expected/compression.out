@@ -142,6 +142,65 @@ CREATE TABLE cminh(f1 TEXT COMPRESSION lz4) INHERITS(cmdata);
 NOTICE:  merging column "f1" with inherited definition
 ERROR:  column "f1" has a compression method conflict
 DETAIL:  pglz versus lz4
+-- test alter compression method with rewrite
+ALTER TABLE cmdata ALTER COLUMN f1 SET COMPRESSION lz4;
+\d+ cmdata
+                                        Table "public.cmdata"
+ Column | Type | Collation | Nullable | Default | Storage  | Compression | Stats target | Description 
+--------+------+-----------+----------+---------+----------+-------------+--------------+-------------
+ f1     | text |           |          |         | extended | lz4         |              | 
+Indexes:
+    "idx" btree (f1)
+
+SELECT pg_column_compression(f1) FROM cmdata;
+ pg_column_compression 
+-----------------------
+ lz4
+(1 row)
+
+-- test alter compression method for the materialized view
+ALTER TABLE cmdata1 ALTER COLUMN f1 SET COMPRESSION pglz;
+ALTER MATERIALIZED VIEW mv ALTER COLUMN x SET COMPRESSION lz4;
+REFRESH MATERIALIZED VIEW mv;
+\d+ mv
+                                    Materialized view "public.mv"
+ Column | Type | Collation | Nullable | Default | Storage  | Compression | Stats target | Description 
+--------+------+-----------+----------+---------+----------+-------------+--------------+-------------
+ x      | text |           |          |         | extended | lz4         |              | 
+View definition:
+ SELECT cmdata1.f1 AS x
+   FROM cmdata1;
+
+SELECT pg_column_compression(f1) FROM cmdata1;
+ pg_column_compression 
+-----------------------
+ pglz
+(1 row)
+
+SELECT pg_column_compression(x) FROM mv;
+ pg_column_compression 
+-----------------------
+ lz4
+(1 row)
+
+-- test alter compression method for the partioned table
+ALTER TABLE cmpart ALTER COLUMN f1 SET COMPRESSION pglz;
+SELECT pg_column_compression(f1) FROM cmpart;
+ pg_column_compression 
+-----------------------
+ lz4
+ pglz
+(2 rows)
+
+ALTER TABLE cmpart1 ALTER COLUMN f1 SET COMPRESSION pglz;
+ALTER TABLE cmpart2 ALTER COLUMN f1 SET COMPRESSION lz4;
+SELECT pg_column_compression(f1) FROM cmpart;
+ pg_column_compression 
+-----------------------
+ pglz
+ lz4
+(2 rows)
+
 -- check data is ok
 SELECT length(f1) FROM cmdata;
  length 

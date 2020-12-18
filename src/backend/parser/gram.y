@@ -2257,6 +2257,15 @@ alter_table_cmd:
 					n->missing_ok = true;
 					$$ = (Node *)n;
 				}
+			/* ALTER TABLE <name> ALTER [COLUMN] <colname> SET (COMPRESSION <cm>) */
+			| ALTER opt_column ColId SET optColumnCompression
+				{
+					AlterTableCmd *n = makeNode(AlterTableCmd);
+					n->subtype = AT_SetCompression;
+					n->name = $3;
+					n->def = (Node *) makeString($5);;
+					$$ = (Node *)n;
+				}
 			/* ALTER TABLE <name> DROP [COLUMN] IF EXISTS <colname> [RESTRICT|CASCADE] */
 			| DROP opt_column IF_P EXISTS ColId opt_drop_behavior
 				{
