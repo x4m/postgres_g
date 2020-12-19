@@ -70,6 +70,8 @@ typedef struct
 #define VirtualTransactionIdIsValid(vxid) \
 	(((vxid).backendId != InvalidBackendId) && \
 	 LocalTransactionIdIsValid((vxid).localTransactionId))
+#define VirtualTransactionIdIsPreparedXact(vxid) \
+	((vxid).backendId == InvalidBackendId)
 #define VirtualTransactionIdEquals(vxid1, vxid2) \
 	((vxid1).backendId == (vxid2).backendId && \
 	 (vxid1).localTransactionId == (vxid2).localTransactionId)

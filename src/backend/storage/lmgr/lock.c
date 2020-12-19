@@ -2904,9 +2904,7 @@ FastPathGetRelationLockEntry(LOCALLOCK *locallock)
  * so use of this function has to be thought about carefully.
  *
  * Note we never include the current xact's vxid in the result array,
- * since an xact never blocks itself.  Also, prepared transactions are
- * ignored, which is a bit more debatable but is appropriate for current
- * uses of the result.
+ * since an xact never blocks itself.
  */
 VirtualTransactionId *
 GetLockConflicts(const LOCKTAG *locktag, LOCKMODE lockmode, int *countp)
@@ -2931,15 +2929,17 @@ GetLockConflicts(const LOCKTAG *locktag, LOCKMODE lockmode, int *countp)
 
 	/*
 	 * Allocate memory to store results, and fill with InvalidVXID.  We only
-	 * need enough space for MaxBackends + a terminator, since prepared xacts
-	 * don't count. InHotStandby allocate once in TopMemoryContext.
+	 * need enough space for MaxBackends + max_prepared_xacts + a
+	 * terminator. InHotStandby allocate once in TopMemoryContext.
 	 */
 	if (InHotStandby)
 	{
 		if (vxids == NULL)
 			vxids = (VirtualTransactionId *)
 				MemoryContextAlloc(TopMemoryContext,
-								   sizeof(VirtualTransactionId) * (MaxBackends + 1));
+								   sizeof(VirtualTransactionId) * (MaxBackends 
+								   + max_prepared_xacts
+								   + 1));
 	}
 	else
 		vxids = (VirtualTransactionId *)
@@ -3085,10 +3085,11 @@ GetLockConflicts(const LOCKTAG *locktag, LOCKMODE lockmode, int *countp)
 
 				/*
 				 * If we see an invalid VXID, then either the xact has already
-				 * committed (or aborted), or it's a prepared xact.  In either
-				 * case we may ignore it.
+				 * committed (or aborted), or it's a prepared xact. We take
+				 * prepared xacts into account too.
 				 */
-				if (VirtualTransactionIdIsValid(vxid))
+				if (VirtualTransactionIdIsValid(vxid)
+					|| VirtualTransactionIdIsPreparedXact(vxid))
 				{
 					int			i;
 
@@ -3108,7 +3109,7 @@ GetLockConflicts(const LOCKTAG *locktag, LOCKMODE lockmode, int *countp)
 
 	LWLockRelease(partitionLock);
 
-	if (count > MaxBackends)	/* should never happen */
+	if (count > MaxBackends + max_prepared_xacts)	/* should never happen */
 		elog(PANIC, "too many conflicting locks found");
 
 	vxids[count].backendId = InvalidBackendId;
@@ -4461,9 +4462,21 @@ bool
 VirtualXactLock(VirtualTransactionId vxid, bool wait)
 {
 	LOCKTAG		tag;
-	PGPROC	   *proc;
+	PGPROC	   *proc = NULL;
 
-	Assert(VirtualTransactionIdIsValid(vxid));
+	Assert(VirtualTransactionIdIsValid(vxid) ||
+			VirtualTransactionIdIsPreparedXact(vxid));
+
+	if (VirtualTransactionIdIsPreparedXact(vxid))
+	{
+		LockAcquireResult lar;
+		/* If it's prepared xact - just wait for it */
+		SET_LOCKTAG_TRANSACTION(tag, vxid.localTransactionId);
+		lar = LockAcquire(&tag, ShareLock, false, !wait);
+		if (lar == LOCKACQUIRE_OK)
+			LockRelease(&tag, ShareLock, false);
+		return lar != LOCKACQUIRE_NOT_AVAIL;
+	}
 
 	SET_LOCKTAG_VIRTUALTRANSACTION(tag, vxid);
 
