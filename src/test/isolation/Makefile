@@ -67,7 +67,7 @@ check: all
 # via TEMP_CONFIG for the check case, or via the postgresql.conf for the
 # installcheck case.
 installcheck-prepared-txns: all temp-install
-	$(pg_isolation_regress_installcheck) --schedule=$(srcdir)/isolation_schedule prepared-transactions
+	$(pg_isolation_regress_installcheck) --schedule=$(srcdir)/isolation_schedule prepared-transactions prepared-transactions-cic
 
 check-prepared-txns: all temp-install
-	$(pg_isolation_regress_check) --schedule=$(srcdir)/isolation_schedule prepared-transactions
+	$(pg_isolation_regress_check) --schedule=$(srcdir)/isolation_schedule prepared-transactions prepared-transactions-cic
