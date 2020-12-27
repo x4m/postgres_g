@@ -129,9 +129,10 @@ typedef struct XLogRecordBlockHeader
  */
 typedef struct XLogRecordBlockImageHeader
 {
-	uint16		length;			/* number of page image bytes */
-	uint16		hole_offset;	/* number of bytes before "hole" */
-	uint8		bimg_info;		/* flag bits, see below */
+	uint16		length;				/* number of page image bytes */
+	uint16		hole_offset;		/* number of bytes before "hole" */
+	uint8		compression_method; /* compression method used for image */
+	uint8		bimg_info;			/* flag bits, see below */
 
 	/*
 	 * If BKPIMAGE_HAS_HOLE and BKPIMAGE_IS_COMPRESSED, an

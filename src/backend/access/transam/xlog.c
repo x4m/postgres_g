@@ -112,6 +112,7 @@ int			CommitDelay = 0;	/* precommit delay in microseconds */
 int			CommitSiblings = 5; /* # concurrent xacts needed to sleep */
 int			wal_retrieve_retry_interval = 5000;
 int			max_slot_wal_keep_size_mb = -1;
+int			wal_compression_method = PGLZ_COMPRESSION_ID;
 
 #ifdef WAL_DEBUG
 bool		XLOG_DEBUG = false;
