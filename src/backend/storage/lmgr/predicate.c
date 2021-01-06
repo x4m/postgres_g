@@ -438,7 +438,7 @@ static void SetPossibleUnsafeConflict(SERIALIZABLEXACT *roXact, SERIALIZABLEXACT
 static void ReleaseRWConflict(RWConflict conflict);
 static void FlagSxactUnsafe(SERIALIZABLEXACT *sxact);
 
-static bool SerialPagePrecedesLogically(int page1, int page2);
+static int32 SerialPageDiffLogically(int page1, int page2);
 static void SerialInit(void);
 static void SerialAdd(TransactionId xid, SerCommitSeqNo minConflictCommitSeqNo);
 static SerCommitSeqNo SerialGetMinConflictCommitSeqNo(TransactionId xid);
@@ -784,26 +784,30 @@ FlagSxactUnsafe(SERIALIZABLEXACT *sxact)
 /*------------------------------------------------------------------------*/
 
 /*
- * Decide whether a Serial page number is "older" for truncation purposes.
- * Analogous to CLOGPagePrecedes().
+ * Diff Serial page numbers for truncation purposes.  Analogous to
+ * CLOGPageDiff().
+ *
+ * This must follow stricter rules than PageDiff demands, for the benefit of
+ * the call local to this file.
  */
-static bool
-SerialPagePrecedesLogically(int page1, int page2)
+static int32
+SerialPageDiffLogically(int page1, int page2)
 {
 	TransactionId xid1;
 	TransactionId xid2;
+	int32		diff_head;
+	int32		diff_tail;
 
 	xid1 = ((TransactionId) page1) * SERIAL_ENTRIESPERPAGE;
-	xid1 += FirstNormalTransactionId + 1;
 	xid2 = ((TransactionId) page2) * SERIAL_ENTRIESPERPAGE;
-	xid2 += FirstNormalTransactionId + 1;
 
-	return (TransactionIdPrecedes(xid1, xid2) &&
-			TransactionIdPrecedes(xid1, xid2 + SERIAL_ENTRIESPERPAGE - 1));
+	diff_head = xid1 - xid2;
+	diff_tail = xid1 - (xid2 + SERIAL_ENTRIESPERPAGE - 1);
+	return Max(diff_head, diff_tail);
 }
 
 static void
-SerialPagePrecedesLogicallyUnitTests(void)
+SerialPageDiffLogicallyUnitTests(void)
 {
 	int			per_page = SERIAL_ENTRIESPERPAGE,
 				offset = per_page / 2;
@@ -826,21 +830,21 @@ SerialPagePrecedesLogicallyUnitTests(void)
 	 * In this scenario, the SLRU headPage pertains to the last ~1000 XIDs
 	 * assigned.  oldestXact finishes, ~2B XIDs having elapsed since it
 	 * started.  Further transactions cause us to summarize oldestXact to
-	 * tailPage.  Function must return false so SerialAdd() doesn't zero
-	 * tailPage (which may contain entries for other old, recently-finished
-	 * XIDs) and half the SLRU.  Reaching this requires burning ~2B XIDs in
-	 * single-user mode, a negligible possibility.
+	 * tailPage.  Function must return non-negative so SerialAdd() doesn't
+	 * zero tailPage (which may contain entries for other old,
+	 * recently-finished XIDs) and half the SLRU.  Reaching this requires
+	 * burning ~2B XIDs in single-user mode, a negligible possibility.
 	 */
 	headPage = newestPage;
 	targetPage = oldestPage;
-	Assert(!SerialPagePrecedesLogically(headPage, targetPage));
+	Assert(SerialPageDiffLogically(headPage, targetPage) >= 0);
 
 	/*
 	 * In this scenario, the SLRU headPage pertains to oldestXact.  We're
 	 * summarizing an XID near newestXact.  (Assume few other XIDs used
 	 * SERIALIZABLE, hence the minimal headPage advancement.  Assume
 	 * oldestXact was long-running and only recently reached the SLRU.)
-	 * Function must return true to make SerialAdd() create targetPage.
+	 * Function must return negative to make SerialAdd() create targetPage.
 	 *
 	 * Today's implementation mishandles this case, but it doesn't matter
 	 * enough to fix.  Verify that the defect affects just one page by
@@ -851,9 +855,9 @@ SerialPagePrecedesLogicallyUnitTests(void)
 	 */
 	headPage = oldestPage;
 	targetPage = newestPage;
-	Assert(SerialPagePrecedesLogically(headPage, targetPage - 1));
+	Assert(SerialPageDiffLogically(headPage, targetPage - 1) < 0);
 #if 0
-	Assert(SerialPagePrecedesLogically(headPage, targetPage));
+	Assert(SerialPageDiffLogically(headPage, targetPage) < 0);
 #endif
 }
 
@@ -868,12 +872,12 @@ SerialInit(void)
 	/*
 	 * Set up SLRU management of the pg_serial data.
 	 */
-	SerialSlruCtl->PagePrecedes = SerialPagePrecedesLogically;
+	SerialSlruCtl->PageDiff = SerialPageDiffLogically;
 	SimpleLruInit(SerialSlruCtl, "Serial",
 				  NUM_SERIAL_BUFFERS, 0, SerialSLRULock, "pg_serial",
 				  LWTRANCHE_SERIAL_BUFFER, SYNC_HANDLER_NONE);
-	SerialPagePrecedesLogicallyUnitTests();
-	SlruPagePrecedesUnitTests(SerialSlruCtl, SERIAL_ENTRIESPERPAGE);
+	SerialPageDiffLogicallyUnitTests();
+	SlruPageDiffUnitTests(SerialSlruCtl, SERIAL_ENTRIESPERPAGE);
 
 	/*
 	 * Create or attach to the SerialControl structure.
@@ -935,8 +939,8 @@ SerialAdd(TransactionId xid, SerCommitSeqNo minConflictCommitSeqNo)
 	else
 	{
 		firstZeroPage = SerialNextPage(serialControl->headPage);
-		isNewPage = SerialPagePrecedesLogically(serialControl->headPage,
-												targetPage);
+		isNewPage = SerialPageDiffLogically(serialControl->headPage,
+											targetPage) < 0;
 	}
 
 	if (!TransactionIdIsValid(serialControl->headXid)

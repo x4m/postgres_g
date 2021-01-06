@@ -102,7 +102,7 @@
  * 0xFFFFFFFF/MULTIXACT_OFFSETS_PER_PAGE/SLRU_PAGES_PER_SEGMENT.  We need
  * take no explicit notice of that fact in this module, except when comparing
  * segment and page numbers in TruncateMultiXact (see
- * MultiXactOffsetPagePrecedes).
+ * MultiXactOffsetPageDiff).
  */
 
 /* We need four bytes per offset */
@@ -355,8 +355,8 @@ static char *mxstatus_to_string(MultiXactStatus status);
 /* management of SLRU infrastructure */
 static int	ZeroMultiXactOffsetPage(int pageno, bool writeXlog);
 static int	ZeroMultiXactMemberPage(int pageno, bool writeXlog);
-static bool MultiXactOffsetPagePrecedes(int page1, int page2);
-static bool MultiXactMemberPagePrecedes(int page1, int page2);
+static int32 MultiXactOffsetPageDiff(int page1, int page2);
+static int32 MultiXactMemberPageDiff(int page1, int page2);
 static bool MultiXactOffsetPrecedes(MultiXactOffset offset1,
 									MultiXactOffset offset2);
 static void ExtendMultiXactOffset(MultiXactId multi);
@@ -1844,15 +1844,15 @@ MultiXactShmemInit(void)
 
 	debug_elog2(DEBUG2, "Shared Memory Init for MultiXact");
 
-	MultiXactOffsetCtl->PagePrecedes = MultiXactOffsetPagePrecedes;
-	MultiXactMemberCtl->PagePrecedes = MultiXactMemberPagePrecedes;
+	MultiXactOffsetCtl->PageDiff = MultiXactOffsetPageDiff;
+	MultiXactMemberCtl->PageDiff = MultiXactMemberPageDiff;
 
 	SimpleLruInit(MultiXactOffsetCtl,
 				  "MultiXactOffset", NUM_MULTIXACTOFFSET_BUFFERS, 0,
 				  MultiXactOffsetSLRULock, "pg_multixact/offsets",
 				  LWTRANCHE_MULTIXACTOFFSET_BUFFER,
 				  SYNC_HANDLER_MULTIXACT_OFFSET);
-	SlruPagePrecedesUnitTests(MultiXactOffsetCtl, MULTIXACT_OFFSETS_PER_PAGE);
+	SlruPageDiffUnitTests(MultiXactOffsetCtl, MULTIXACT_OFFSETS_PER_PAGE);
 	SimpleLruInit(MultiXactMemberCtl,
 				  "MultiXactMember", NUM_MULTIXACTMEMBER_BUFFERS, 0,
 				  MultiXactMemberSLRULock, "pg_multixact/members",
@@ -2867,7 +2867,7 @@ SlruScanDirCbFindEarliest(SlruCtl ctl, char *filename, int segpage, void *data)
 	mxtruncinfo *trunc = (mxtruncinfo *) data;
 
 	if (trunc->earliestExistingPage == -1 ||
-		ctl->PagePrecedes(segpage, trunc->earliestExistingPage))
+		ctl->PageDiff(segpage, trunc->earliestExistingPage))
 	{
 		trunc->earliestExistingPage = segpage;
 	}
@@ -2986,11 +2986,12 @@ TruncateMultiXact(MultiXactId newOldestMulti, Oid newOldestMultiDB)
 	 *
 	 * When nextMXact is less than one segment away from multiWrapLimit,
 	 * SlruScanDirCbFindEarliest can find some early segment other than the
-	 * actual earliest.  (MultiXactOffsetPagePrecedes(EARLIEST, LATEST)
-	 * returns false, because not all pairs of entries have the same answer.)
-	 * That can also arise when an earlier truncation attempt failed unlink()
-	 * or returned early from this function.  The only consequence is
-	 * returning early, which wastes space that we could have liberated.
+	 * actual earliest.  (MultiXactOffsetPageDiff(EARLIEST, LATEST) >= 0,
+	 * because not all pairs of entries have the same answer.)  That can also
+	 * arise when an earlier truncation attempt failed unlink(), returned
+	 * early from this function, or saw SlruWouldTruncateSegment() decline to
+	 * delete the older half of the SLRU.  The only consequence is returning
+	 * early, which wastes space that we could have liberated.
 	 *
 	 * NB: It's also possible that the page that oldestMulti is on has already
 	 * been truncated away, and we crashed before updating oldestMulti.
@@ -3106,44 +3107,42 @@ TruncateMultiXact(MultiXactId newOldestMulti, Oid newOldestMultiDB)
 }
 
 /*
- * Decide whether a MultiXactOffset page number is "older" for truncation
- * purposes.  Analogous to CLOGPagePrecedes().
- *
- * Offsetting the values is optional, because MultiXactIdPrecedes() has
- * translational symmetry.
+ * Diff MultiXactOffset page numbers for truncation purposes.  Analogous to
+ * CLOGPageDiff().
  */
-static bool
-MultiXactOffsetPagePrecedes(int page1, int page2)
+static int32
+MultiXactOffsetPageDiff(int page1, int page2)
 {
 	MultiXactId multi1;
 	MultiXactId multi2;
+	int32		diff_head;
+	int32		diff_tail;
 
 	multi1 = ((MultiXactId) page1) * MULTIXACT_OFFSETS_PER_PAGE;
-	multi1 += FirstMultiXactId + 1;
 	multi2 = ((MultiXactId) page2) * MULTIXACT_OFFSETS_PER_PAGE;
-	multi2 += FirstMultiXactId + 1;
 
-	return (MultiXactIdPrecedes(multi1, multi2) &&
-			MultiXactIdPrecedes(multi1,
-								multi2 + MULTIXACT_OFFSETS_PER_PAGE - 1));
+	diff_head = multi1 - multi2;
+	diff_tail = multi1 - (multi2 + MULTIXACT_OFFSETS_PER_PAGE - 1);
+	return Max(diff_head, diff_tail);
 }
 
 /*
- * Decide whether a MultiXactMember page number is "older" for truncation
- * purposes.  There is no "invalid offset number" so use the numbers verbatim.
+ * Diff MultiXactMember page numbers for truncation purposes.
  */
-static bool
-MultiXactMemberPagePrecedes(int page1, int page2)
+static int32
+MultiXactMemberPageDiff(int page1, int page2)
 {
 	MultiXactOffset offset1;
 	MultiXactOffset offset2;
+	int32		diff_head;
+	int32		diff_tail;
 
 	offset1 = ((MultiXactOffset) page1) * MULTIXACT_MEMBERS_PER_PAGE;
 	offset2 = ((MultiXactOffset) page2) * MULTIXACT_MEMBERS_PER_PAGE;
 
-	return (MultiXactOffsetPrecedes(offset1, offset2) &&
-			MultiXactOffsetPrecedes(offset1,
-									offset2 + MULTIXACT_MEMBERS_PER_PAGE - 1));
+	diff_head = offset1 - offset2;
+	diff_tail = offset1 - (offset2 + MULTIXACT_MEMBERS_PER_PAGE - 1);
+	return Max(diff_head, diff_tail);
 }
 
 /*

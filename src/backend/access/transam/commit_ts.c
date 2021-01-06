@@ -46,7 +46,7 @@
  * 0xFFFFFFFF/COMMIT_TS_XACTS_PER_PAGE, and CommitTs segment numbering at
  * 0xFFFFFFFF/COMMIT_TS_XACTS_PER_PAGE/SLRU_PAGES_PER_SEGMENT.  We need take no
  * explicit notice of that fact in this module, except when comparing segment
- * and page numbers in TruncateCommitTs (see CommitTsPagePrecedes).
+ * and page numbers in TruncateCommitTs (see CommitTsPageDiff).
  */
 
 /*
@@ -109,7 +109,7 @@ static void TransactionIdSetCommitTs(TransactionId xid, TimestampTz ts,
 									 RepOriginId nodeid, int slotno);
 static void error_commit_ts_disabled(void);
 static int	ZeroCommitTsPage(int pageno, bool writeXlog);
-static bool CommitTsPagePrecedes(int page1, int page2);
+static int32 CommitTsPageDiff(int page1, int page2);
 static void ActivateCommitTs(void);
 static void DeactivateCommitTs(void);
 static void WriteZeroPageXlogRec(int pageno);
@@ -552,12 +552,12 @@ CommitTsShmemInit(void)
 {
 	bool		found;
 
-	CommitTsCtl->PagePrecedes = CommitTsPagePrecedes;
+	CommitTsCtl->PageDiff = CommitTsPageDiff;
 	SimpleLruInit(CommitTsCtl, "CommitTs", CommitTsShmemBuffers(), 0,
 				  CommitTsSLRULock, "pg_commit_ts",
 				  LWTRANCHE_COMMITTS_BUFFER,
 				  SYNC_HANDLER_COMMIT_TS);
-	SlruPagePrecedesUnitTests(CommitTsCtl, COMMIT_TS_XACTS_PER_PAGE);
+	SlruPageDiffUnitTests(CommitTsCtl, COMMIT_TS_XACTS_PER_PAGE);
 
 	commitTsShared = ShmemInitStruct("CommitTs shared",
 									 sizeof(CommitTimestampShared),
@@ -875,7 +875,7 @@ TruncateCommitTs(TransactionId oldestXact)
 	cutoffPage = TransactionIdToCTsPage(oldestXact);
 
 	/* Check to see if there's any files that could be removed */
-	if (!SlruScanDirectory(CommitTsCtl, SlruScanDirCbReportPresence,
+	if (!SlruScanDirectory(CommitTsCtl, SlruScanDirCbWouldTruncate,
 						   &cutoffPage))
 		return;					/* nothing to remove */
 
@@ -928,8 +928,8 @@ AdvanceOldestCommitTsXid(TransactionId oldestXact)
 
 
 /*
- * Decide whether a commitTS page number is "older" for truncation purposes.
- * Analogous to CLOGPagePrecedes().
+ * Diff commitTS page numbers for truncation purposes.  Analogous to
+ * CLOGPageDiff().
  *
  * At every supported BLCKSZ, (1 << 31) % COMMIT_TS_XACTS_PER_PAGE == 128.
  * This introduces differences compared to CLOG and the other SLRUs having (1
@@ -940,7 +940,7 @@ AdvanceOldestCommitTsXid(TransactionId oldestXact)
  * 128 entries of its page.  Since this function doesn't know the location of
  * oldestXact within page2, it returns false for one page that actually is
  * expendable.  This is a wider (yet still negligible) version of the
- * truncation opportunity that CLOGPagePrecedes() cannot recognize.
+ * truncation opportunity that CLOGPageDiff() cannot recognize.
  *
  * For the sake of a worked example, number entries with decimal values such
  * that page1==1 entries range from 1.0 to 1.999.  Let N+0.15 be the number of
@@ -950,19 +950,20 @@ AdvanceOldestCommitTsXid(TransactionId oldestXact)
  * last entry of the oldestXact page.  While page 2 is expendable at
  * oldestXact=N+2.1, it would be precious at oldestXact=N+2.9.
  */
-static bool
-CommitTsPagePrecedes(int page1, int page2)
+static int32
+CommitTsPageDiff(int page1, int page2)
 {
 	TransactionId xid1;
 	TransactionId xid2;
+	int32		diff_head;
+	int32		diff_tail;
 
 	xid1 = ((TransactionId) page1) * COMMIT_TS_XACTS_PER_PAGE;
-	xid1 += FirstNormalTransactionId + 1;
 	xid2 = ((TransactionId) page2) * COMMIT_TS_XACTS_PER_PAGE;
-	xid2 += FirstNormalTransactionId + 1;
 
-	return (TransactionIdPrecedes(xid1, xid2) &&
-			TransactionIdPrecedes(xid1, xid2 + COMMIT_TS_XACTS_PER_PAGE - 1));
+	diff_head = xid1 - xid2;
+	diff_tail = xid1 - (xid2 + COMMIT_TS_XACTS_PER_PAGE - 1);
+	return Max(diff_head, diff_tail);
 }
 
 

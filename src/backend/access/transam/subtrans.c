@@ -44,7 +44,7 @@
  * 0xFFFFFFFF/SUBTRANS_XACTS_PER_PAGE, and segment numbering at
  * 0xFFFFFFFF/SUBTRANS_XACTS_PER_PAGE/SLRU_PAGES_PER_SEGMENT.  We need take no
  * explicit notice of that fact in this module, except when comparing segment
- * and page numbers in TruncateSUBTRANS (see SubTransPagePrecedes) and zeroing
+ * and page numbers in TruncateSUBTRANS (see SubTransPageDiff) and zeroing
  * them in StartupSUBTRANS.
  */
 
@@ -64,7 +64,7 @@ static SlruCtlData SubTransCtlData;
 
 
 static int	ZeroSUBTRANSPage(int pageno);
-static bool SubTransPagePrecedes(int page1, int page2);
+static int32 SubTransPageDiff(int page1, int page2);
 
 
 /*
@@ -190,11 +190,11 @@ SUBTRANSShmemSize(void)
 void
 SUBTRANSShmemInit(void)
 {
-	SubTransCtl->PagePrecedes = SubTransPagePrecedes;
+	SubTransCtl->PageDiff = SubTransPageDiff;
 	SimpleLruInit(SubTransCtl, "Subtrans", NUM_SUBTRANS_BUFFERS, 0,
 				  SubtransSLRULock, "pg_subtrans",
 				  LWTRANCHE_SUBTRANS_BUFFER, SYNC_HANDLER_NONE);
-	SlruPagePrecedesUnitTests(SubTransCtl, SUBTRANS_XACTS_PER_PAGE);
+	SlruPageDiffUnitTests(SubTransCtl, SUBTRANS_XACTS_PER_PAGE);
 }
 
 /*
@@ -355,20 +355,21 @@ TruncateSUBTRANS(TransactionId oldestXact)
 
 
 /*
- * Decide whether a SUBTRANS page number is "older" for truncation purposes.
- * Analogous to CLOGPagePrecedes().
+ * Diff SUBTRANS page numbers for truncation purposes.  Analogous to
+ * CLOGPageDiff().
  */
-static bool
-SubTransPagePrecedes(int page1, int page2)
+static int32
+SubTransPageDiff(int page1, int page2)
 {
 	TransactionId xid1;
 	TransactionId xid2;
+	int32		diff_head;
+	int32		diff_tail;
 
 	xid1 = ((TransactionId) page1) * SUBTRANS_XACTS_PER_PAGE;
-	xid1 += FirstNormalTransactionId + 1;
 	xid2 = ((TransactionId) page2) * SUBTRANS_XACTS_PER_PAGE;
-	xid2 += FirstNormalTransactionId + 1;
 
-	return (TransactionIdPrecedes(xid1, xid2) &&
-			TransactionIdPrecedes(xid1, xid2 + SUBTRANS_XACTS_PER_PAGE - 1));
+	diff_head = xid1 - xid2;
+	diff_tail = xid1 - (xid2 + SUBTRANS_XACTS_PER_PAGE - 1);
+	return Max(diff_head, diff_tail);
 }
