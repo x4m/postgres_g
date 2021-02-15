@@ -2306,6 +2306,83 @@ static struct config_int ConfigureNamesInt[] =
 	},
 
 	{
+		{"multixact_offsets_buffers", PGC_POSTMASTER, RESOURCES_MEM,
+			gettext_noop("Sets the number of shared memory buffers used for MultiXact offsets SLRU."),
+			NULL,
+			GUC_UNIT_BLOCKS
+		},
+		&multixact_offsets_buffers,
+		8, 2, INT_MAX / 2,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"multixact_members_buffers", PGC_POSTMASTER, RESOURCES_MEM,
+			gettext_noop("Sets the number of shared memory buffers used for MultiXact members SLRU."),
+			NULL,
+			GUC_UNIT_BLOCKS
+		},
+		&multixact_members_buffers,
+		16, 2, INT_MAX / 2,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"subtrans_buffers", PGC_POSTMASTER, RESOURCES_MEM,
+			gettext_noop("Sets the number of shared memory buffers used for substransactions SLRU."),
+			NULL,
+			GUC_UNIT_BLOCKS
+		},
+		&subtrans_buffers,
+		32, 2, INT_MAX / 2,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"notify_buffers", PGC_POSTMASTER, RESOURCES_MEM,
+			gettext_noop("Sets the number of shared memory buffers used for asyncronous notifications SLRU."),
+			NULL,
+			GUC_UNIT_BLOCKS
+		},
+		&notify_buffers,
+		8, 2, INT_MAX / 2,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"serial_buffers", PGC_POSTMASTER, RESOURCES_MEM,
+			gettext_noop("Sets the number of shared memory buffers used for predicate locks SLRU."),
+			NULL,
+			GUC_UNIT_BLOCKS
+		},
+		&serial_buffers,
+		16, 2, INT_MAX / 2,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"clog_buffers", PGC_POSTMASTER, RESOURCES_MEM,
+			gettext_noop("Sets the number of shared memory buffers used for commit log SLRU."),
+			NULL,
+			GUC_UNIT_BLOCKS
+		},
+		&clog_buffers,
+		0, 0, INT_MAX / 2,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"commit_ts_buffers", PGC_POSTMASTER, RESOURCES_MEM,
+			gettext_noop("Sets the number of shared memory buffers used for commit timestamps SLRU."),
+			NULL,
+			GUC_UNIT_BLOCKS
+		},
+		&commit_ts_buffers,
+		0, 0, INT_MAX / 2,
+		NULL, NULL, NULL
+	},
+
+	{
 		{"temp_buffers", PGC_USERSET, RESOURCES_MEM,
 			gettext_noop("Sets the maximum number of temporary buffers used by each session."),
 			NULL,

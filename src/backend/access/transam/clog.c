@@ -659,6 +659,9 @@ TransactionIdGetStatus(TransactionId xid, XLogRecPtr *lsn)
 /*
  * Number of shared CLOG buffers.
  *
+ * If values is configured via GUC - just use given value. Otherwise
+ * apply following euristics.
+ *
  * On larger multi-processor systems, it is possible to have many CLOG page
  * requests in flight at one time which could lead to disk access for CLOG
  * page if the required page is not found in memory.  Testing revealed that we
@@ -675,6 +678,9 @@ TransactionIdGetStatus(TransactionId xid, XLogRecPtr *lsn)
 Size
 CLOGShmemBuffers(void)
 {
+	/* consider 0 and 1 as unset GUC */
+	if (clog_buffers > 1)
+		return clog_buffers;
 	return Min(128, Max(4, NBuffers / 512));
 }
 
