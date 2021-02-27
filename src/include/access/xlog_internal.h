@@ -324,4 +324,11 @@ extern bool InArchiveRecovery;
 extern bool StandbyMode;
 extern char *recoveryRestoreCommand;
 
+typedef enum CompressionId
+{
+	PGLZ_COMPRESSION_ID = 0,
+	LZ4_COMPRESSION_ID = 1,
+	ZLIB_COMPRESSION_ID = 2,
+} CompressionId;
+
 #endif							/* XLOG_INTERNAL_H */

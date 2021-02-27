@@ -12,6 +12,8 @@ subdir = src/backend/access/transam
 top_builddir = ../../../..
 include $(top_builddir)/src/Makefile.global
 
+LIBS="-lz  $LIBS"
+
 OBJS = \
 	clog.o \
 	commit_ts.o \

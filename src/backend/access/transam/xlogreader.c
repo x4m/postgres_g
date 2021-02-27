@@ -33,6 +33,14 @@
 #include "utils/memutils.h"
 #endif
 
+#ifdef HAVE_LIBLZ4
+#include "lz4.h"
+#endif
+
+#ifdef HAVE_LIBZ
+#include <zlib.h>
+#endif
+
 static void report_invalid_record(XLogReaderState *state, const char *fmt,...)
 			pg_attribute_printf(2, 3);
 static bool allocate_recordbuf(XLogReaderState *state, uint32 reclength);
@@ -1291,6 +1299,7 @@ DecodeXLogRecord(XLogReaderState *state, XLogRecord *record, char **errormsg)
 			{
 				COPY_HEADER_FIELD(&blk->bimg_len, sizeof(uint16));
 				COPY_HEADER_FIELD(&blk->hole_offset, sizeof(uint16));
+				COPY_HEADER_FIELD(&blk->compression_method, sizeof(uint8));
 				COPY_HEADER_FIELD(&blk->bimg_info, sizeof(uint8));
 
 				blk->apply_image = ((blk->bimg_info & BKPIMAGE_APPLY) != 0);
@@ -1565,8 +1574,49 @@ RestoreBlockImage(XLogReaderState *record, uint8 block_id, char *page)
 	if (bkpb->bimg_info & BKPIMAGE_IS_COMPRESSED)
 	{
 		/* If a backup block image is compressed, decompress it */
-		if (pglz_decompress(ptr, bkpb->bimg_len, tmp.data,
-							BLCKSZ - bkpb->hole_length, true) < 0)
+		int32 decomp_result = -1;
+		if (bkpb->compression_method == PGLZ_COMPRESSION_ID)
+		{
+			decomp_result = pglz_decompress(ptr, bkpb->bimg_len, tmp.data,
+							BLCKSZ - bkpb->hole_length, true);
+		}
+		else if (bkpb->compression_method == LZ4_COMPRESSION_ID)
+		{
+#ifndef HAVE_LIBLZ4
+			report_invalid_record(record, "image at %X/%X is compressed with "
+									"lz4 not compiled into this build, block %d",
+								  (uint32) (record->ReadRecPtr >> 32),
+								  (uint32) record->ReadRecPtr,
+								  block_id);
+			return false;
+#else
+			decomp_result = LZ4_decompress_safe(ptr, tmp.data, bkpb->bimg_len, BLCKSZ);
+#endif
+		}
+		else if (bkpb->compression_method == ZLIB_COMPRESSION_ID)
+		{
+			unsigned long decomp_result_l = 0;
+#ifndef HAVE_LIBZ
+			report_invalid_record(record, "image at %X/%X is compressed with "
+									"zlib not compiled into this build, block %d",
+								  (uint32) (record->ReadRecPtr >> 32),
+								  (uint32) record->ReadRecPtr,
+								  block_id);
+			return false;
+#else
+			uncompress((Bytef*)tmp.data, &decomp_result_l, (Bytef*)ptr, bkpb->bimg_len);
+			decomp_result = decomp_result_l;
+#endif
+		}
+		else
+		{
+			report_invalid_record(record, "image at %X/%X is compressed with unknown codec, block %d",
+								  (uint32) (record->ReadRecPtr >> 32),
+								  (uint32) record->ReadRecPtr,
+								  block_id);
+			return false;
+		}
+		if ( decomp_result < 0)
 		{
 			report_invalid_record(record, "invalid compressed image at %X/%X, block %d",
 								  (uint32) (record->ReadRecPtr >> 32),
