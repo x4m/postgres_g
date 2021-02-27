@@ -33,6 +33,14 @@
 #include "storage/proc.h"
 #include "utils/memutils.h"
 
+#ifdef HAVE_LIBLZ4
+#include "lz4.h"
+#endif
+
+#ifdef HAVE_LIBZ
+#include <zlib.h>
+#endif
+
 /* Buffer size required to store a compressed version of backup block image */
 #define PGLZ_MAX_BLCKSZ PGLZ_MAX_OUTPUT(BLCKSZ)
 
@@ -113,7 +121,8 @@ static XLogRecData *XLogRecordAssemble(RmgrId rmid, uint8 info,
 									   XLogRecPtr RedoRecPtr, bool doPageWrites,
 									   XLogRecPtr *fpw_lsn, int *num_fpi);
 static bool XLogCompressBackupBlock(char *page, uint16 hole_offset,
-									uint16 hole_length, char *dest, uint16 *dlen);
+									uint16 hole_length, char *dest,
+									uint16 *dlen, CompressionId compression);
 
 /*
  * Begin constructing a WAL record. This must be called before the
@@ -630,11 +639,20 @@ XLogRecordAssemble(RmgrId rmid, uint8 info,
 			 */
 			if (wal_compression)
 			{
+				bimg.compression_method = PGLZ_COMPRESSION_ID;
+#ifdef HAVE_LIBLZ4
+				if (wal_compression_method == LZ4_COMPRESSION_ID)
+					bimg.compression_method = wal_compression_method;
+#endif
+#ifdef HAVE_LIBZ
+				if (wal_compression_method == ZLIB_COMPRESSION_ID)
+					bimg.compression_method = wal_compression_method;
+#endif
 				is_compressed =
 					XLogCompressBackupBlock(page, bimg.hole_offset,
 											cbimg.hole_length,
 											regbuf->compressed_page,
-											&compressed_len);
+											&compressed_len, bimg.compression_method);
 			}
 
 			/*
@@ -827,7 +845,7 @@ XLogRecordAssemble(RmgrId rmid, uint8 info,
  */
 static bool
 XLogCompressBackupBlock(char *page, uint16 hole_offset, uint16 hole_length,
-						char *dest, uint16 *dlen)
+						char *dest, uint16 *dlen, CompressionId compression)
 {
 	int32		orig_len = BLCKSZ - hole_length;
 	int32		len;
@@ -853,12 +871,49 @@ XLogCompressBackupBlock(char *page, uint16 hole_offset, uint16 hole_length,
 	else
 		source = page;
 
+	if (compression == LZ4_COMPRESSION_ID)
+	{
+#ifndef HAVE_LIBLZ4
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				errmsg("not built with lz4 support")));
+#else
+		len = LZ4_compress_fast(source, dest, orig_len, PGLZ_MAX_BLCKSZ, 1);
+#endif
+	}
+	else if (compression == ZLIB_COMPRESSION_ID)
+	{
+		unsigned long	len_l = PGLZ_MAX_BLCKSZ;
+#ifndef HAVE_LIBZ
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				errmsg("not built with zlib support")));
+#else
+		if (compress((Bytef*)dest, &len_l, (Bytef*)source, orig_len) != Z_OK)
+		{
+			Assert(0); /* Zlib is not expected to fail compression */
+			len_l = -1;
+		}
+		len = len_l;
+#endif
+	}
+	else if (compression == PGLZ_COMPRESSION_ID)
+	{
+		len = pglz_compress(source, orig_len, dest, PGLZ_strategy_default);
+	}
+	else
+	{
+		ereport(ERROR,
+			(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+			 errmsg("unknown compression method requested")));
+	}
+	
+	
 	/*
-	 * We recheck the actual size even if pglz_compress() reports success and
+	 * We recheck the actual size even if compression reports success and
 	 * see if the number of bytes saved by compression is larger than the
 	 * length of extra data needed for the compressed version of block image.
 	 */
-	len = pglz_compress(source, orig_len, dest, PGLZ_strategy_default);
 	if (len >= 0 &&
 		len + extra_bytes < orig_len)
 	{

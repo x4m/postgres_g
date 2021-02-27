@@ -484,6 +484,13 @@ const struct config_enum_entry ssl_protocol_versions_info[] = {
 	{NULL, 0, false}
 };
 
+const struct config_enum_entry wal_compression_options[] = {
+	{"pglz", PGLZ_COMPRESSION_ID, false},
+	{"lz4", LZ4_COMPRESSION_ID, false},
+	{"zlib", ZLIB_COMPRESSION_ID, false},
+	{NULL, 0, false}
+};
+
 StaticAssertDecl(lengthof(ssl_protocol_versions_info) == (PG_TLS1_3_VERSION + 2),
 				 "array length mismatch");
 
@@ -4718,6 +4725,16 @@ static struct config_enum ConfigureNamesEnum[] =
 		},
 		&wal_level,
 		WAL_LEVEL_REPLICA, wal_level_options,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"wal_compression_method", PGC_SUSET, WAL_SETTINGS,
+			gettext_noop("Set the method used to compress full page images in the WAL."),
+			NULL
+		},
+		&wal_compression_method,
+		PGLZ_COMPRESSION_ID, wal_compression_options,
 		NULL, NULL, NULL
 	},
 
