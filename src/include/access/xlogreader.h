@@ -133,6 +133,7 @@ typedef struct
 	bool		apply_image;	/* has image that should be restored */
 	char	   *bkp_image;
 	uint16		hole_offset;
+	uint8		compression_method;
 	uint16		hole_length;
 	uint16		bimg_len;
 	uint8		bimg_info;

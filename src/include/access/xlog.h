@@ -184,6 +184,7 @@ typedef enum RecoveryPauseState
 } RecoveryPauseState;
 
 extern PGDLLIMPORT int wal_level;
+extern PGDLLIMPORT int wal_compression_method;
 
 /* Is WAL archiving enabled (always or only while server is running normally)? */
 #define XLogArchivingActive() \

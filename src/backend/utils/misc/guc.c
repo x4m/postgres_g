@@ -508,6 +508,7 @@ extern const struct config_enum_entry archive_mode_options[];
 extern const struct config_enum_entry recovery_target_action_options[];
 extern const struct config_enum_entry sync_method_options[];
 extern const struct config_enum_entry dynamic_shared_memory_options[];
+extern const struct config_enum_entry wal_compression_options[];
 
 /*
  * GUC option variables that are exported from this module
@@ -4718,6 +4719,16 @@ static struct config_enum ConfigureNamesEnum[] =
 		},
 		&wal_level,
 		WAL_LEVEL_REPLICA, wal_level_options,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"wal_compression_method", PGC_SIGHUP, WAL_SETTINGS,
+			gettext_noop("Set the method used to compress full page images in the WAL."),
+			NULL
+		},
+		&wal_compression_method,
+		PGLZ_COMPRESSION_ID, wal_compression_options,
 		NULL, NULL, NULL
 	},
 
