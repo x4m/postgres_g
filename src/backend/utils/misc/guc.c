@@ -1269,7 +1269,7 @@ static struct config_bool ConfigureNamesBool[] =
 			NULL
 		},
 		&wal_compression,
-		false,
+		true,
 		NULL, NULL, NULL
 	},
 
@@ -4728,7 +4728,7 @@ static struct config_enum ConfigureNamesEnum[] =
 			NULL
 		},
 		&wal_compression_method,
-		PGLZ_COMPRESSION_ID, wal_compression_options,
+		LZ4_COMPRESSION_ID, wal_compression_options,
 		NULL, NULL, NULL
 	},
 
