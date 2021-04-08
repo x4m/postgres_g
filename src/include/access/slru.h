@@ -63,6 +63,9 @@ typedef struct SlruSharedData
 	/* Number of buffers managed by this SLRU structure */
 	int			num_slots;
 
+	/* Where to start buffer replacement search. */
+	int			search_slotno;
+
 	/*
 	 * Arrays holding info for each buffer slot.  Page number is undefined
 	 * when status is EMPTY, as is page_lru_count.

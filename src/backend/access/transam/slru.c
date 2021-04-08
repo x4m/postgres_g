@@ -71,6 +71,12 @@
  */
 #define MAX_WRITEALL_BUFFERS	16
 
+/*
+ * When searching for buffers to replace, we will limit the scope of our search
+ * for now, to avoid holding an exclusive lock for too long.
+ */
+#define MAX_REPLACEMENT_SEARCH	128
+
 typedef struct SlruWriteAllData
 {
 	int			num_files;		/* # files actually open */
@@ -1060,6 +1066,7 @@ SlruSelectLRUPage(SlruCtl ctl, int pageno)
 {
 	SlruShared	shared = ctl->shared;
 
+
 	/* Outer loop handles restart after I/O */
 	for (;;)
 	{
@@ -1071,6 +1078,7 @@ SlruSelectLRUPage(SlruCtl ctl, int pageno)
 		int			bestinvalidslot = 0;	/* keep compiler quiet */
 		int			best_invalid_delta = -1;
 		int			best_invalid_page_number = 0;	/* keep compiler quiet */
+		int			max_search;
 
 		/* See if page already has a buffer assigned */
 		slotno = SlruMappingFind(ctl, pageno);
@@ -1108,11 +1116,16 @@ SlruSelectLRUPage(SlruCtl ctl, int pageno)
 		 * That gets us back on the path to having good data when there are
 		 * multiple pages with the same lru_count.
 		 */
+		max_search = Min(shared->num_slots, MAX_REPLACEMENT_SEARCH);
 		cur_count = (shared->cur_lru_count)++;
-		for (slotno = 0; slotno < shared->num_slots; slotno++)
+		for (int i = 0; i < max_search; ++i)
 		{
 			int			this_delta;
 			int			this_page_number;
+
+			slotno = shared->search_slotno++;
+			if (shared->search_slotno == shared->num_slots)
+				shared->search_slotno = 0;
 
 			if (shared->page_status[slotno] == SLRU_PAGE_EMPTY)
 				return slotno;
