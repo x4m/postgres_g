@@ -342,6 +342,7 @@ TransactionIdSetPageStatusInternal(TransactionId xid, int nsubxids,
 {
 	int			slotno;
 	int			i;
+	int			bankno = pageno & SLRU_BANK_MASK;
 
 	Assert(status == TRANSACTION_STATUS_COMMITTED ||
 		   status == TRANSACTION_STATUS_ABORTED ||
@@ -375,7 +376,7 @@ TransactionIdSetPageStatusInternal(TransactionId xid, int nsubxids,
 		{
 			for (i = 0; i < nsubxids; i++)
 			{
-				Assert(XactCtl->shared->page_number[slotno] == TransactionIdToPage(subxids[i]));
+				Assert(XactCtl->shared->banks[bankno].page_number[slotno] == TransactionIdToPage(subxids[i]));
 				TransactionIdSetStatusBit(subxids[i],
 										  TRANSACTION_STATUS_SUB_COMMITTED,
 										  lsn, slotno);
@@ -389,11 +390,11 @@ TransactionIdSetPageStatusInternal(TransactionId xid, int nsubxids,
 	/* Set the subtransactions */
 	for (i = 0; i < nsubxids; i++)
 	{
-		Assert(XactCtl->shared->page_number[slotno] == TransactionIdToPage(subxids[i]));
+		Assert(XactCtl->shared->banks[bankno].page_number[slotno] == TransactionIdToPage(subxids[i]));
 		TransactionIdSetStatusBit(subxids[i], status, lsn, slotno);
 	}
 
-	XactCtl->shared->page_dirty[slotno] = true;
+	XactCtl->shared->banks[bankno].page_dirty[slotno] = true;
 }
 
 /*
@@ -569,8 +570,10 @@ TransactionIdSetStatusBit(TransactionId xid, XidStatus status, XLogRecPtr lsn, i
 	char	   *byteptr;
 	char		byteval;
 	char		curval;
+	int			pageno = TransactionIdToPage(xid);
+	int			bankno = pageno & SLRU_BANK_MASK;
 
-	byteptr = XactCtl->shared->page_buffer[slotno] + byteno;
+	byteptr = XactCtl->shared->banks[bankno].page_buffer[slotno] + byteno;
 	curval = (*byteptr >> bshift) & CLOG_XACT_BITMASK;
 
 	/*
@@ -640,11 +643,12 @@ TransactionIdGetStatus(TransactionId xid, XLogRecPtr *lsn)
 	int			lsnindex;
 	char	   *byteptr;
 	XidStatus	status;
+	int			bankno = pageno & SLRU_BANK_MASK;
 
 	/* lock is acquired by SimpleLruReadPage_ReadOnly */
 
 	slotno = SimpleLruReadPage_ReadOnly(XactCtl, pageno, xid);
-	byteptr = XactCtl->shared->page_buffer[slotno] + byteno;
+	byteptr = XactCtl->shared->banks[bankno].page_buffer[slotno] + byteno;
 
 	status = (*byteptr >> bshift) & CLOG_XACT_BITMASK;
 
@@ -702,13 +706,14 @@ BootStrapCLOG(void)
 	int			slotno;
 
 	LWLockAcquire(XactSLRULock, LW_EXCLUSIVE);
+	int			bankno = 0 & SLRU_BANK_MASK;
 
 	/* Create and zero the first page of the commit log */
 	slotno = ZeroCLOGPage(0, false);
 
 	/* Make sure it's written out */
 	SimpleLruWritePage(XactCtl, slotno);
-	Assert(!XactCtl->shared->page_dirty[slotno]);
+	Assert(!XactCtl->shared->banks[bankno].page_dirty[slotno]);
 
 	LWLockRelease(XactSLRULock);
 }
@@ -763,6 +768,7 @@ TrimCLOG(void)
 {
 	TransactionId xid = XidFromFullTransactionId(ShmemVariableCache->nextXid);
 	int			pageno = TransactionIdToPage(xid);
+	int			bankno = pageno & SLRU_BANK_MASK;
 
 	LWLockAcquire(XactSLRULock, LW_EXCLUSIVE);
 
@@ -786,14 +792,14 @@ TrimCLOG(void)
 		char	   *byteptr;
 
 		slotno = SimpleLruReadPage(XactCtl, pageno, false, xid);
-		byteptr = XactCtl->shared->page_buffer[slotno] + byteno;
+		byteptr = XactCtl->shared->banks[bankno].page_buffer[slotno] + byteno;
 
 		/* Zero so-far-unused positions in the current byte */
 		*byteptr &= (1 << bshift) - 1;
 		/* Zero the rest of the page */
 		MemSet(byteptr + 1, 0, BLCKSZ - byteno - 1);
 
-		XactCtl->shared->page_dirty[slotno] = true;
+		XactCtl->shared->banks[bankno].page_dirty[slotno] = true;
 	}
 
 	LWLockRelease(XactSLRULock);
@@ -982,14 +988,16 @@ clog_redo(XLogReaderState *record)
 	{
 		int			pageno;
 		int			slotno;
+		int			bankno;
 
 		memcpy(&pageno, XLogRecGetData(record), sizeof(int));
+		bankno = pageno & SLRU_BANK_MASK;
 
 		LWLockAcquire(XactSLRULock, LW_EXCLUSIVE);
 
 		slotno = ZeroCLOGPage(pageno, false);
 		SimpleLruWritePage(XactCtl, slotno);
-		Assert(!XactCtl->shared->page_dirty[slotno]);
+		Assert(!XactCtl->shared->banks[bankno].page_dirty[slotno]);
 
 		LWLockRelease(XactSLRULock);
 	}

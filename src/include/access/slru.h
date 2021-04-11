@@ -22,6 +22,8 @@
  * number of buffers should not exceed this number.
  */
 #define SLRU_MAX_ALLOWED_BUFFERS ((1024 * 1024 * 1024) / BLCKSZ)
+#define SLRU_BANK_SIZE 4
+#define SLRU_BANK_MASK (SLRU_BANK_SIZE - 1)
 
 /*
  * Define SLRU segment size.  A page is the same BLCKSZ as is used everywhere
@@ -52,6 +54,18 @@ typedef enum
 	SLRU_PAGE_WRITE_IN_PROGRESS /* page is being written out */
 } SlruPageStatus;
 
+typedef struct SlruDataBank {
+	/*
+	 * Arrays holding info for each buffer slot.  Page number is undefined
+	 * when status is EMPTY, as is page_lru_count.
+	 */
+	char	  **page_buffer;
+	SlruPageStatus *page_status;
+	bool	   *page_dirty;
+	int		   *page_number;
+	int		   *page_lru_count;
+} SlruDataBank;
+
 /*
  * Shared-memory state
  */
@@ -62,15 +76,7 @@ typedef struct SlruSharedData
 	/* Number of buffers managed by this SLRU structure */
 	int			num_slots;
 
-	/*
-	 * Arrays holding info for each buffer slot.  Page number is undefined
-	 * when status is EMPTY, as is page_lru_count.
-	 */
-	char	  **page_buffer;
-	SlruPageStatus *page_status;
-	bool	   *page_dirty;
-	int		   *page_number;
-	int		   *page_lru_count;
+	SlruDataBank *banks;
 	LWLockPadded *buffer_locks;
 
 	/*
