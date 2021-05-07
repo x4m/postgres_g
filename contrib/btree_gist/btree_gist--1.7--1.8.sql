@@ -180,3 +180,10 @@ LANGUAGE C IMMUTABLE STRICT;
 ALTER OPERATOR FAMILY gist_interval_ops USING gist ADD
 	FUNCTION	11	(interval, interval) gbt_intv_sortsupport (internal) ;
 
+CREATE FUNCTION gbt_bool_sortsupport(internal)
+RETURNS void
+AS 'MODULE_PATHNAME'
+LANGUAGE C IMMUTABLE STRICT;
+
+ALTER OPERATOR FAMILY gist_bool_ops USING gist ADD
+	FUNCTION	11	(bool, bool) gbt_enum_sortsupport (internal) ;

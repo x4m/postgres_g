@@ -32,7 +32,14 @@ SELECT count(*) FROM booltmp WHERE a >  true;
      0
 (1 row)
 
+SET client_min_messages = DEBUG1;
 CREATE INDEX boolidx ON booltmp USING gist ( a );
+DEBUG:  building index "boolidx" on table "booltmp" serially
+DEBUG:  using sorted GiST build
+CREATE INDEX boolidx_b ON booltmp USING gist ( a ) WITH (buffering=on);
+DEBUG:  building index "boolidx_b" on table "booltmp" serially
+DROP INDEX boolidx_b;
+RESET client_min_messages;
 SET enable_seqscan=off;
 SELECT count(*) FROM booltmp WHERE a <  true;
  count 
