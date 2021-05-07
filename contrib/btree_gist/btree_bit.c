@@ -214,10 +214,12 @@ gbt_bit_penalty(PG_FUNCTION_ARGS)
 static int
 gbt_bit_sort_build_cmp(Datum a, Datum b, SortSupport ssup)
 {
+	GBT_VARKEY_R ra = gbt_var_key_readable((GBT_VARKEY *) PG_DETOAST_DATUM(a));
+	GBT_VARKEY_R rb = gbt_var_key_readable((GBT_VARKEY *) PG_DETOAST_DATUM(b));
 	/* Use byteacmp(), like gbt_bitcmp() does */
 	return DatumGetInt32(DirectFunctionCall2(byteacmp,
-											 PointerGetDatum(a),
-											 PointerGetDatum(b)));
+											 PointerGetDatum(ra.lower),
+											 PointerGetDatum(rb.lower)));
 }
 
 /*
