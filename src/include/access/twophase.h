@@ -58,4 +58,6 @@ extern void PrepareRedoAdd(char *buf, XLogRecPtr start_lsn,
 						   XLogRecPtr end_lsn, RepOriginId origin_id);
 extern void PrepareRedoRemove(TransactionId xid, bool giveWarning);
 extern void restoreTwoPhaseData(void);
+
+extern TransactionId TwoPhaseGetXidByVXid(VirtualTransactionId vxid);
 #endif							/* TWOPHASE_H */
