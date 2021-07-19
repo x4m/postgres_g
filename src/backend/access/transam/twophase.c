@@ -459,14 +459,15 @@ MarkAsPreparingGuts(GlobalTransaction gxact, TransactionId xid, const char *gid,
 	proc->pgprocno = gxact->pgprocno;
 	SHMQueueElemInit(&(proc->links));
 	proc->waitStatus = PROC_WAIT_STATUS_OK;
-	/* We set up the gxact's VXID as InvalidBackendId/XID */
-	proc->lxid = (LocalTransactionId) xid;
+	/* We set up the gxact's VXID as real for CIC purposes */
+	proc->lxid = MyProc->lxid;
 	proc->xid = xid;
 	Assert(proc->xmin == InvalidTransactionId);
 	proc->delayChkpt = false;
 	proc->statusFlags = 0;
 	proc->pid = 0;
-	proc->backendId = InvalidBackendId;
+	/* May be backendId of startup process */
+	proc->backendId = MyBackendId;
 	proc->databaseId = databaseid;
 	proc->roleId = owner;
 	proc->tempNamespaceId = InvalidOid;
@@ -842,6 +843,45 @@ TwoPhaseGetGXact(TransactionId xid, bool lock_held)
 
 	cached_xid = xid;
 	cached_gxact = result;
+
+	return result;
+}
+
+/*
+ * TwoPhaseGetXidByVXid
+ *		Try to lookup for vxid among prepared xacts.
+ *		If more then one 2PC have same vxid - return any and set overflown to
+ *		true.
+ */
+TransactionId
+TwoPhaseGetXidByVXid(VirtualTransactionId vxid, bool *overflown)
+{
+	int				i;
+	TransactionId	result = InvalidTransactionId;
+
+	LWLockAcquire(TwoPhaseStateLock, LW_SHARED);
+
+	for (i = 0; i < TwoPhaseState->numPrepXacts; i++)
+	{
+		GlobalTransaction	gxact = TwoPhaseState->prepXacts[i];
+		PGPROC			   *proc = &ProcGlobal->allProcs[gxact->pgprocno];
+		VirtualTransactionId proc_vxid;
+		GET_VXID_FROM_PGPROC(proc_vxid, *proc);
+
+		if (VirtualTransactionIdEquals(vxid, proc_vxid))
+		{
+			if (result != InvalidTransactionId)
+			{
+				/* Already has candidate - need to set overflown */
+				*overflown = true;
+				return result;
+			}
+			/* Found one, but need to check that there is no others */
+			result = gxact->xid;
+		}
+	}
+
+	LWLockRelease(TwoPhaseStateLock);
 
 	return result;
 }

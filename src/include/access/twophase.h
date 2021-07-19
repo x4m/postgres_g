@@ -60,4 +60,6 @@ extern void PrepareRedoRemove(TransactionId xid, bool giveWarning);
 extern void restoreTwoPhaseData(void);
 extern bool LookupGXact(const char *gid, XLogRecPtr prepare_at_lsn,
 						TimestampTz origin_prepare_timestamp);
+
+extern TransactionId TwoPhaseGetXidByVXid(VirtualTransactionId vxid, bool *overflown);
 #endif							/* TWOPHASE_H */
