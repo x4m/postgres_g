@@ -25,6 +25,17 @@
  */
 typedef struct GlobalTransactionData *GlobalTransaction;
 
+/* 
+ * XidListEntry is expected to be used as list very rarely. Under normal
+ * circumstances TwoPhaseGetXidByVXid() returns only one xid.
+ * But under certain conditions can return many xids or nothing.
+ */
+typedef struct XidListEntry
+{
+	TransactionId xid;
+	struct XidListEntry* next;
+} XidListEntry;
+
 /* GUC variable */
 extern PGDLLIMPORT int max_prepared_xacts;
 
@@ -58,4 +69,6 @@ extern void PrepareRedoAdd(char *buf, XLogRecPtr start_lsn,
 						   XLogRecPtr end_lsn, RepOriginId origin_id);
 extern void PrepareRedoRemove(TransactionId xid, bool giveWarning);
 extern void restoreTwoPhaseData(void);
+
+extern XidListEntry TwoPhaseGetXidByVXid(VirtualTransactionId vxid);
 #endif							/* TWOPHASE_H */
