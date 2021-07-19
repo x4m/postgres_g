@@ -386,6 +386,7 @@ static void LockRefindAndRelease(LockMethod lockMethodTable, PGPROC *proc,
 								 bool decrement_strong_lock_count);
 static void GetSingleProcBlockerStatusData(PGPROC *blocked_proc,
 										   BlockedProcsData *data);
+static bool PreparedXactLock(VirtualTransactionId vxid, TransactionId xid, bool wait);
 
 
 /*
@@ -3017,7 +3018,14 @@ GetLockConflicts(const LOCKTAG *locktag, LOCKMODE lockmode, int *countp)
 				/* Conflict! */
 				GET_VXID_FROM_PGPROC(vxid, *proc);
 
-				if (VirtualTransactionIdIsValid(vxid))
+				/* Prefer real Xid over local Xid */
+				if (TransactionIdIsValid(proc->xid))
+				{
+					vxids[count].backendId = InvalidBackendId;
+					vxids[count].localTransactionId = proc->xid;
+					count++;
+				}
+				else if (VirtualTransactionIdIsValid(vxid))
 					vxids[count++] = vxid;
 				/* else, xact already committed or aborted */
 
@@ -3078,7 +3086,14 @@ GetLockConflicts(const LOCKTAG *locktag, LOCKMODE lockmode, int *countp)
 
 				GET_VXID_FROM_PGPROC(vxid, *proc);
 
-				if (VirtualTransactionIdIsValid(vxid))
+				/* Prefer real Xid over local Xid */
+				if (TransactionIdIsValid(proc->xid))
+				{
+					vxids[count].backendId = InvalidBackendId;
+					vxids[count].localTransactionId = proc->xid;
+					count++;
+				}
+				else if (VirtualTransactionIdIsValid(vxid))
 				{
 					int			i;
 
@@ -4448,6 +4463,51 @@ VirtualXactLockTableCleanup(void)
 }
 
 /*
+ *		PreparedXactLock
+ *
+ *		Wait for xid completition if have xid. Otherwise try to find xid among
+ *		fake procarray entries.
+ */
+static bool PreparedXactLock(VirtualTransactionId vxid, TransactionId xid, bool wait)
+{
+	LockAcquireResult	lar;
+	LOCKTAG				tag;
+	XidListEntry		xidlist;
+
+	/* Questionable heuristics */
+	if (max_prepared_xacts == 0)
+		return true;
+
+	if (TransactionIdIsValid(xid))
+	{
+		xidlist.xid = xid;
+		xidlist.next = NULL;
+	}
+	else
+	{
+		/* We must search for vxids in 2pc state */
+		/* XXX: O(N*N) complexity where N is number of prepared xacts */
+		xidlist = TwoPhaseGetXidByVXid(vxid);
+		elog(NOTICE,"XXX: Sucessfully found xid by vxid");	// Remove this line
+	}
+
+	while (true)
+	{
+		if (TransactionIdIsValid(xidlist.xid))
+		{
+			SET_LOCKTAG_TRANSACTION(tag, xid);
+			lar = LockAcquire(&tag, ShareLock, false, !wait);
+			if (lar != LOCKACQUIRE_NOT_AVAIL)
+				LockRelease(&tag, ShareLock, false);
+			return lar != LOCKACQUIRE_NOT_AVAIL;
+		}
+		if (xidlist.next == NULL)
+			return true;
+		xidlist = *xidlist.next;
+	}
+}
+
+/*
  *		VirtualXactLock
  *
  * If wait = true, wait until the given VXID has been released, and then
@@ -4459,25 +4519,18 @@ VirtualXactLockTableCleanup(void)
 bool
 VirtualXactLock(VirtualTransactionId vxid, bool wait)
 {
-	LOCKTAG		tag;
-	PGPROC	   *proc;
+	LOCKTAG			tag;
+	PGPROC		   *proc;
+	TransactionId	xid = InvalidTransactionId;
 
 	Assert(VirtualTransactionIdIsValid(vxid));
 
+	/*
+	 * Already prepared transactions don't hold vxid locks.  The
+	 * LocalTransactionId is always a normal, locked XID.
+	 */
 	if (VirtualTransactionIdIsPreparedXact(vxid))
-	{
-		LockAcquireResult lar;
-
-		/*
-		 * Prepared transactions don't hold vxid locks.  The
-		 * LocalTransactionId is always a normal, locked XID.
-		 */
-		SET_LOCKTAG_TRANSACTION(tag, vxid.localTransactionId);
-		lar = LockAcquire(&tag, ShareLock, false, !wait);
-		if (lar != LOCKACQUIRE_NOT_AVAIL)
-			LockRelease(&tag, ShareLock, false);
-		return lar != LOCKACQUIRE_NOT_AVAIL;
-	}
+		return PreparedXactLock(vxid, vxid.localTransactionId, wait);
 
 	SET_LOCKTAG_VIRTUALTRANSACTION(tag, vxid);
 
@@ -4491,7 +4544,7 @@ VirtualXactLock(VirtualTransactionId vxid, bool wait)
 	 */
 	proc = BackendIdGetProc(vxid.backendId);
 	if (proc == NULL)
-		return true;
+		return PreparedXactLock(vxid, InvalidTransactionId, wait);
 
 	/*
 	 * We must acquire this lock before checking the backendId and lxid
@@ -4505,8 +4558,11 @@ VirtualXactLock(VirtualTransactionId vxid, bool wait)
 		|| proc->fpLocalTransactionId != vxid.localTransactionId)
 	{
 		LWLockRelease(&proc->fpInfoLock);
-		return true;
+		return PreparedXactLock(vxid, InvalidTransactionId, wait);
 	}
+
+	/* Save the xid to test if transaction coverted to 2pc later */
+	xid = proc->xid;
 
 	/*
 	 * If we aren't asked to wait, there's no need to set up a lock table
@@ -4559,7 +4615,7 @@ VirtualXactLock(VirtualTransactionId vxid, bool wait)
 	(void) LockAcquire(&tag, ShareLock, false, false);
 
 	LockRelease(&tag, ShareLock, false);
-	return true;
+	return PreparedXactLock(vxid, xid, wait);;
 }
 
 /*
