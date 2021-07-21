@@ -4472,33 +4472,39 @@ static bool PreparedXactLock(VirtualTransactionId vxid, TransactionId xid, bool 
 {
 	LockAcquireResult	lar;
 	LOCKTAG				tag;
+	XidListEntry		xidlist;
 
 	/* Questionable heuristics */
 	if (max_prepared_xacts == 0)
 		return true;
 
-	if (!TransactionIdIsValid(xid))
+	if (TransactionIdIsValid(xid))
 	{
-		/* We must search for vxid in 2pc state */
+		xidlist.xid = xid;
+		xidlist.next = NULL;
+	}
+	else
+	{
+		/* We must search for vxids in 2pc state */
 		/* XXX: O(N*N) complexity where N is number of prepared xacts */
-		xid = TwoPhaseGetXidByVXid(vxid);
-		if (TransactionIdIsValid(xid))							// Remove this line
-		{														// Remove this line
-			elog(NOTICE,"XXX: Sucessfully found xid by vxid");	// Remove this line
-		}														// Remove this line
+		xidlist = TwoPhaseGetXidByVXid(vxid);
+		elog(NOTICE,"XXX: Sucessfully found xid by vxid");	// Remove this line
 	}
 
-	if (!TransactionIdIsValid(xid))
+	while (true)
 	{
-		/* Seems like vxid's 2pc is gone or never existed */
-		return true;
+		if (TransactionIdIsValid(xidlist.xid))
+		{
+			SET_LOCKTAG_TRANSACTION(tag, xid);
+			lar = LockAcquire(&tag, ShareLock, false, !wait);
+			if (lar != LOCKACQUIRE_NOT_AVAIL)
+				LockRelease(&tag, ShareLock, false);
+			return lar != LOCKACQUIRE_NOT_AVAIL;
+		}
+		if (xidlist.next == NULL)
+			return true;
+		xidlist = *xidlist.next;
 	}
-
-	SET_LOCKTAG_TRANSACTION(tag, xid);
-	lar = LockAcquire(&tag, ShareLock, false, !wait);
-	if (lar != LOCKACQUIRE_NOT_AVAIL)
-		LockRelease(&tag, ShareLock, false);
-	return lar != LOCKACQUIRE_NOT_AVAIL;
 }
 
 /*

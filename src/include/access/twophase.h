@@ -59,5 +59,15 @@ extern void PrepareRedoAdd(char *buf, XLogRecPtr start_lsn,
 extern void PrepareRedoRemove(TransactionId xid, bool giveWarning);
 extern void restoreTwoPhaseData(void);
 
-extern TransactionId TwoPhaseGetXidByVXid(VirtualTransactionId vxid);
+/* 
+ * This struc is expected to be used as list very rarely. Under normal
+ * circumstances TwoPhaseGetXidByVXid() returns only one xid.
+ * But under certain conditions can return many xids or nothing.
+ */
+typedef struct XidListEntry
+{
+	TransactionId xid;
+	struct XidListEntry* next;
+} XidListEntry;
+extern XidListEntry TwoPhaseGetXidByVXid(VirtualTransactionId vxid);
 #endif							/* TWOPHASE_H */

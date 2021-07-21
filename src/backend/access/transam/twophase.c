@@ -854,11 +854,13 @@ TwoPhaseGetGXact(TransactionId xid, bool lock_held)
  * TwoPhaseGetXidByVXid
  *		Try to lookup for vxid among prepared xacts
  */
-TransactionId
+XidListEntry
 TwoPhaseGetXidByVXid(VirtualTransactionId vxid)
 {
-	TransactionId result = InvalidTransactionId;
-	int			i;
+	int				i;
+	XidListEntry	result;
+	result.next = NULL;
+	result.xid = InvalidTransactionId;
 
 	LWLockAcquire(TwoPhaseStateLock, LW_SHARED);
 
@@ -871,8 +873,14 @@ TwoPhaseGetXidByVXid(VirtualTransactionId vxid)
 		if (proc->backendId == vxid.backendId &&
 				proc->lxid == vxid.localTransactionId)
 		{
-			result = gxact->xid;
-			break;
+			if (result.xid != InvalidTransactionId)
+			{
+				XidListEntry *copy = palloc(sizeof(XidListEntry));
+				copy->next = result.next;
+				copy->xid = result.xid;
+				result.next = copy;
+			}
+			result.xid = gxact->xid;
 		}
 	}
 
