@@ -3018,7 +3018,14 @@ GetLockConflicts(const LOCKTAG *locktag, LOCKMODE lockmode, int *countp)
 				/* Conflict! */
 				GET_VXID_FROM_PGPROC(vxid, *proc);
 
-				if (VirtualTransactionIdIsValid(vxid))
+				/* Prefer real Xid over local Xid */
+				if (TransactionIdIsValid(proc->xid))
+				{
+					vxids[count].backendId = InvalidBackendId;
+					vxids[count].localTransactionId = proc->xid;
+					count++;
+				}
+				else if (VirtualTransactionIdIsValid(vxid))
 					vxids[count++] = vxid;
 				/* else, xact already committed or aborted */
 
@@ -3079,7 +3086,14 @@ GetLockConflicts(const LOCKTAG *locktag, LOCKMODE lockmode, int *countp)
 
 				GET_VXID_FROM_PGPROC(vxid, *proc);
 
-				if (VirtualTransactionIdIsValid(vxid))
+				/* Prefer real Xid over local Xid */
+				if (TransactionIdIsValid(proc->xid))
+				{
+					vxids[count].backendId = InvalidBackendId;
+					vxids[count].localTransactionId = proc->xid;
+					count++;
+				}
+				else if (VirtualTransactionIdIsValid(vxid))
 				{
 					int			i;
 
