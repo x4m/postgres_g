@@ -1,0 +1,64 @@
+-- minimal test, basically just verifying that amcheck works with GiST
+SELECT setseed(1);
+ setseed 
+---------
+ 
+(1 row)
+
+CREATE TABLE gist_check AS SELECT point(random(),s) c, random() p FROM generate_series(1,10000) s;
+INSERT INTO gist_check SELECT point(random(),s) c, random() p FROM generate_series(1,100000) s;
+CREATE INDEX gist_check_idx1 ON gist_check USING gist(c);
+CREATE INDEX gist_check_idx2 ON gist_check USING gist(c) INCLUDE(p);
+SELECT gist_index_parent_check('gist_check_idx1', false);
+ gist_index_parent_check 
+-------------------------
+ 
+(1 row)
+
+SELECT gist_index_parent_check('gist_check_idx2', false);
+ gist_index_parent_check 
+-------------------------
+ 
+(1 row)
+
+SELECT gist_index_parent_check('gist_check_idx1', true);
+ gist_index_parent_check 
+-------------------------
+ 
+(1 row)
+
+SELECT gist_index_parent_check('gist_check_idx2', true);
+ gist_index_parent_check 
+-------------------------
+ 
+(1 row)
+
+DELETE FROM gist_check WHERE c[1] < 1000;
+DELETE FROM gist_check WHERE c[1]::int % 2 = 0;
+VACUUM gist_check;
+SELECT gist_index_parent_check('gist_check_idx1', false);
+ gist_index_parent_check 
+-------------------------
+ 
+(1 row)
+
+SELECT gist_index_parent_check('gist_check_idx2', false);
+ gist_index_parent_check 
+-------------------------
+ 
+(1 row)
+
+SELECT gist_index_parent_check('gist_check_idx1', true);
+ gist_index_parent_check 
+-------------------------
+ 
+(1 row)
+
+SELECT gist_index_parent_check('gist_check_idx2', true);
+ gist_index_parent_check 
+-------------------------
+ 
+(1 row)
+
+-- cleanup
+DROP TABLE gist_check;
