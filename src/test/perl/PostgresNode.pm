@@ -1912,6 +1912,132 @@ sub background_psql
 
 =pod
 
+=item $node->pgbench($opts, $stat, $out, $err, $name, $files, @args)
+
+Invoke pgbench, with parameters and files.
+
+=over
+
+=item $opts
+
+Options as a string to be split on spaces.
+
+=item $stat
+
+Expected exit status.
+
+=item $out
+
+Reference to a regexp list that must match stdout.
+
+=item $err
+
+Reference to a regexp list that must match stderr.
+
+=item $name
+
+Name of test for error messages.
+
+=item $files
+
+Reference to filename/contents dictionary.
+
+=item @args
+
+Further raw options or arguments.
+
+=back
+
+=cut
+sub pgbench
+{
+	my ($self, $opts, $stat, $out, $err, $name, $files, @args) = @_;
+	my @cmd = ('pgbench', split /\s+/, $opts);
+	my @filenames = ();
+	if (defined $files)
+	{
+
+		# note: files are ordered for determinism
+		for my $fn (sort keys %$files)
+		{
+			my $filename = $self->basedir . '/' . $fn;
+			push @cmd, '-f', $filename;
+
+			# cleanup file weight
+			$filename =~ s/\@\d+$//;
+
+			#push @filenames, $filename;
+			# filenames are expected to be unique on a test
+			if (-e $filename)
+			{
+				ok(0, "$filename must not already exist");
+				unlink $filename or die "cannot unlink $filename: $!";
+			}
+			TestLib::append_to_file($filename, $$files{$fn});
+		}
+	}
+
+	push @cmd, @args;
+
+	$self->command_checks_all(\@cmd, $stat, $out, $err, $name);
+
+	# cleanup?
+	#unlink @filenames or die "cannot unlink files (@filenames): $!";
+
+	return;
+}
+=pod
+
+=item $node->background_pgbench($dbname, \$stdin, \$stdout, $timer, $files, %opts) => harness
+
+Invoke B<pgbench> in background alike background_psql.
+
+=cut
+sub background_pgbench
+{
+	my ($self, $dbname, $stdin, $stdout, $timer, $files, $opts) = @_;
+
+	my @cmd = ('pgbench', split /\s+/, $opts);
+	my @filenames = ();
+	if (defined $files)
+	{
+
+		# note: files are ordered for determinism
+		for my $fn (sort keys %$files)
+		{
+			my $filename = $self->basedir . '/' . $fn;
+			push @cmd, '-f', $filename;
+
+			# cleanup file weight
+			$filename =~ s/\@\d+$//;
+
+			#push @filenames, $filename;
+			# filenames are expected to be unique on a test
+			if (-e $filename)
+			{
+				ok(0, "$filename must not already exist");
+				unlink $filename or die "cannot unlink $filename: $!";
+			}
+			TestLib::append_to_file($filename, $$files{$fn});
+		}
+	}
+
+	local %ENV = $self->_get_env();
+
+	# Ensure there is no data waiting to be sent:
+	$$stdin = "" if ref($stdin);
+	# IPC::Run would otherwise append to existing contents:
+	$$stdout = "" if ref($stdout);
+
+	my $harness = IPC::Run::start \@cmd,
+	  '<', $stdin, '>', $stdout, $timer;
+
+	# Not checking actual input unlike in background_psql
+
+	return $harness;
+}
+=pod
+
 =item $node->interactive_psql($dbname, \$stdin, \$stdout, $timer, %params) => harness
 
 Invoke B<psql> on B<$dbname> and return an IPC::Run harness object,
