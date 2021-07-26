@@ -17,71 +17,79 @@ my ($node, $result);
 #
 $node = get_new_node('CIC_2PC_test');
 $node->init;
-#$node->append_conf('postgresql.conf', 'autovacuum=off');
 $node->append_conf('postgresql.conf', 'max_prepared_transactions = 10');
 $node->start;
 $node->safe_psql('postgres', q(CREATE EXTENSION amcheck));
-
 $node->safe_psql('postgres', q(CREATE TABLE tbl(i int)));
 $node->safe_psql('postgres', q(CREATE INDEX idx on tbl(i)));
 
 
-my $i_in  = '';
-my $i_out = '';
-my $i_timer = IPC::Run::timeout(5);
+#
+# Test 1: run 3 overlapping 2PC transactions with concurrent reindex rebuild
+#
+# We have two concurrent background psqls: main_h for transaction and
+# reindex_h for cuncurrent reindex. Also we commit transactions from independent
+# psql's sometimes.
+#
 
-my $i_h = $node->background_psql('postgres', \$i_in, \$i_out, $i_timer,
+my $main_in  = '';
+my $main_out = '';
+my $main_timer = IPC::Run::timeout(5);
+
+my $main_h = $node->background_psql('postgres', \$main_in, \$main_out, $main_timer,
 	on_error_stop => 1);
-$i_in .= q(
+$main_in .= q(
 BEGIN;
 INSERT INTO tbl VALUES(0);
 );
-$i_h->pump_nb;
+$main_h->pump_nb;
 
-my $bg_in  = '';
-my $bg_out = '';
-my $bg_timer = IPC::Run::timeout(5);
-my $bg_h = $node->background_psql('postgres', \$bg_in, \$bg_out, $bg_timer,
+my $reindex_in  = '';
+my $reindex_out = '';
+my $reindex_timer = IPC::Run::timeout(5);
+my $reindex_h = $node->background_psql('postgres', \$reindex_in, \$reindex_out, $reindex_timer,
 	on_error_stop => 1);
-$bg_in .= q(
+$reindex_in .= q(
 \echo start
 REINDEX TABLE CONCURRENTLY tbl;
-select 'Reindex done';
 );
-pump $bg_h until $bg_out =~ /start/ || $bg_timer->is_expired;
+pump $reindex_h until $reindex_out =~ /start/ || $reindex_timer->is_expired;
 
-$i_in .= q(
+$main_in .= q(
 PREPARE TRANSACTION 'a';
 );
-$i_h->pump_nb;
+$main_h->pump_nb;
 
-$i_in .= q(
+$main_in .= q(
 BEGIN;
 INSERT INTO tbl VALUES(0);
 );
-$i_h->pump_nb;
+$main_h->pump_nb;
 
 $node->safe_psql('postgres', q(COMMIT PREPARED 'a';));
 
-$i_in .= q(
+$main_in .= q(
 PREPARE TRANSACTION 'b';
 BEGIN;
 INSERT INTO tbl VALUES(0);
 );
-$i_h->pump_nb;
+$main_h->pump_nb;
 
 $node->safe_psql('postgres', q(COMMIT PREPARED 'b';));
 
-$i_in .= q(
+$main_in .= q(
 PREPARE TRANSACTION 'c';
 COMMIT PREPARED 'c';
 );
-$i_h->pump_nb;
+$main_h->pump_nb;
 
-$i_h->finish;
-$bg_h->finish;
+$main_h->finish;
+$reindex_h->finish;
 
-$result = $node->safe_psql('postgres', q(SELECT bt_index_check('idx',true)));
+$result = $node->psql('postgres', q(SELECT bt_index_check('idx',true)));
 is($result, '', 'bt_index_check checks index');
 
-$node->safe_psql('postgres', q(DROP TABLE tbl));
+
+# done
+$node->stop;
+done_testing();
