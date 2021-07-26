@@ -12,7 +12,7 @@ PGFILEDESC = "amcheck - function for verifying relation integrity"
 
 REGRESS = check check_btree check_heap
 
-TAP_TESTS = 1
+TAP_TESTS = 2
 
 ifdef USE_PGXS
 PG_CONFIG = pg_config
