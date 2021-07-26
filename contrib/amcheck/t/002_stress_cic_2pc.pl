@@ -74,44 +74,12 @@ $node->safe_psql('postgres', q(COMMIT PREPARED 'b';));
 
 $i_in .= q(
 PREPARE TRANSACTION 'c';
-BEGIN;
-INSERT INTO tbl VALUES(0);
-);
-$i_h->pump_nb;
-
-$node->safe_psql('postgres', q(COMMIT PREPARED 'c';));
-
-$i_in .= q(
-PREPARE TRANSACTION 'd';
-COMMIT PREPARED 'd';
+COMMIT PREPARED 'c';
 );
 $i_h->pump_nb;
 
 $i_h->finish;
 $bg_h->finish;
-
-# $node->safe_psql('postgres', q(
-# BEGIN;
-# INSERT INTO tbl VALUES(1);
-# PREPARE TRANSACTION 'b';
-# ));
-
-# $node->safe_psql('postgres', q(COMMIT PREPARED 'a'));
-
-# $node->safe_psql('postgres', q(
-# BEGIN;
-# INSERT INTO tbl VALUES(2);
-# PREPARE TRANSACTION 'c';
-# ));
-
-# $node->safe_psql('postgres', q(COMMIT PREPARED 'b'));
-# $node->safe_psql('postgres', q(
-# BEGIN;
-# INSERT INTO tbl VALUES(3);
-# PREPARE TRANSACTION 'd';
-# ));
-# $node->safe_psql('postgres', q(COMMIT PREPARED 'c'));
-# $node->safe_psql('postgres', q(COMMIT PREPARED 'd'));
 
 $result = $node->safe_psql('postgres', q(SELECT bt_index_check('idx',true)));
 is($result, '', 'bt_index_check checks index');
