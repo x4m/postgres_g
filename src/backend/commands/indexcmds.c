@@ -1536,7 +1536,6 @@ DefineIndex(Oid relationId,
 	 */
 	pgstat_progress_update_param(PROGRESS_CREATEIDX_PHASE,
 								 PROGRESS_CREATEIDX_PHASE_WAIT_2);
-	WaitForLockers(heaplocktag, ShareLock, true);
 
 	/*
 	 * Now take the "reference snapshot" that will be used by validate_index()
@@ -1555,6 +1554,8 @@ DefineIndex(Oid relationId,
 	 */
 	snapshot = RegisterSnapshot(GetTransactionSnapshot());
 	PushActiveSnapshot(snapshot);
+
+	WaitForLockers(heaplocktag, ShareLock, true);
 
 	/*
 	 * Scan the index and the heap, insert any missing index entries.
@@ -3519,6 +3520,7 @@ ReindexRelationConcurrently(Oid relationOid, ReindexParams *params)
 	 * for efficiency.
 	 */
 
+	elog(WARNING, "Phase 1");
 	/*
 	 * Phase 1 of REINDEX CONCURRENTLY
 	 *
@@ -3669,6 +3671,7 @@ ReindexRelationConcurrently(Oid relationOid, ReindexParams *params)
 	 * to set the PROC_IN_SAFE_IC flag here.
 	 */
 
+	elog(WARNING, "Phase 2");
 	/*
 	 * Phase 2 of REINDEX CONCURRENTLY
 	 *
@@ -3730,6 +3733,7 @@ ReindexRelationConcurrently(Oid relationOid, ReindexParams *params)
 	 * need to set the PROC_IN_SAFE_IC flag here.
 	 */
 
+	elog(WARNING, "Phase 3");
 	/*
 	 * Phase 3 of REINDEX CONCURRENTLY
 	 *
@@ -3816,6 +3820,7 @@ ReindexRelationConcurrently(Oid relationOid, ReindexParams *params)
 		CommitTransactionCommand();
 	}
 
+	elog(WARNING, "Phase 4");
 	/*
 	 * Phase 4 of REINDEX CONCURRENTLY
 	 *
@@ -3889,6 +3894,7 @@ ReindexRelationConcurrently(Oid relationOid, ReindexParams *params)
 	 * done, and that lasts for a very short period.
 	 */
 
+	elog(WARNING, "Phase 5");
 	/*
 	 * Phase 5 of REINDEX CONCURRENTLY
 	 *
@@ -3925,6 +3931,7 @@ ReindexRelationConcurrently(Oid relationOid, ReindexParams *params)
 	 * done, and that lasts for a very short period.
 	 */
 
+	elog(WARNING, "Phase 6");
 	/*
 	 * Phase 6 of REINDEX CONCURRENTLY
 	 *
@@ -3962,6 +3969,7 @@ ReindexRelationConcurrently(Oid relationOid, ReindexParams *params)
 
 	PopActiveSnapshot();
 	CommitTransactionCommand();
+	elog(WARNING, "Phase Final");
 
 	/*
 	 * Finally, release the session-level lock on the table.
