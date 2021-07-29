@@ -125,9 +125,12 @@ pgbench(
 		  q(
 			\set txid random(1, 1000000000)
 			BEGIN;
+			select pg_sleep(0.001);
 			INSERT INTO tbl VALUES(0);
-			PREPARE TRANSACTION 'tx:txid';
-			COMMIT PREPARED 'tx:txid';
+			--select pg_sleep(0.001);
+			COMMIT;
+			--PREPARE TRANSACTION 'tx:txid';
+			--COMMIT PREPARED 'tx:txid';
 		  )
 	});
 
