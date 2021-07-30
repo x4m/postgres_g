@@ -997,9 +997,21 @@ equalRSDesc(RowSecurityDesc *rsdesc1, RowSecurityDesc *rsdesc2)
  *		(suggesting we are trying to access a just-deleted relation).
  *		Any other error is reported via elog.
  */
+
+/*
+ * InProgressRels is a stack of current RelationBuildDesc() calls
+ * that can consume incalidation messages and put borken desc into cache.
+ */
+typedef struct InProgressRels {
+	Oid relid;
+	bool invalidated;
+} InProgressRels;
+static InProgressRels inProgress[100];
+
 static Relation
 RelationBuildDesc(Oid targetRelId, bool insertIt)
 {
+	int in_progress_offset;
 	Relation	relation;
 	Oid			relid;
 	HeapTuple	pg_class_tuple;
@@ -1032,6 +1044,15 @@ RelationBuildDesc(Oid targetRelId, bool insertIt)
 		oldcxt = MemoryContextSwitchTo(tmpcxt);
 	}
 #endif
+
+	/* Register ourselves as in progress of RelationBuildDesc for invalidation messages */
+	for (in_progress_offset = 0;
+		 OidIsValid(inProgress[in_progress_offset].relid);
+		 in_progress_offset++)
+		;
+	inProgress[in_progress_offset].relid = targetRelId;
+retry:
+	inProgress[in_progress_offset].invalidated = false;
 
 	/*
 	 * find the tuple in pg_class corresponding to the given relation id
@@ -1212,6 +1233,13 @@ RelationBuildDesc(Oid targetRelId, bool insertIt)
 	 * now we can free the memory allocated for pg_class_tuple
 	 */
 	heap_freetuple(pg_class_tuple);
+
+	/* We got invalidation message, need to rebuild */
+	if (inProgress[in_progress_offset].invalidated)
+		goto retry;				/* TODO free old one */
+	/* inProgress is in fact the stack, we can safely remove it's top */
+	inProgress[in_progress_offset].relid = InvalidOid;
+	Assert(inProgress[in_progress_offset + 1].relid == InvalidOid);
 
 	/*
 	 * Insert newly created relation into relcache hash table, if requested.
@@ -2805,6 +2833,14 @@ RelationCacheInvalidateEntry(Oid relationId)
 		relcacheInvalsReceived++;
 		RelationFlushRelation(relation);
 	}
+	else
+	{
+		/* Any RelationBuildDesc() on the stack must start over. */
+		int i;
+		for (i = 0; OidIsValid(inProgress[i].relid); i++)
+			if (inProgress[i].relid == relationId)
+				inProgress[i].invalidated = true;
+	}
 }
 
 /*
@@ -2845,6 +2881,7 @@ RelationCacheInvalidate(void)
 	List	   *rebuildFirstList = NIL;
 	List	   *rebuildList = NIL;
 	ListCell   *l;
+	int i;
 
 	/*
 	 * Reload relation mapping data before starting to reconstruct cache.
@@ -2931,6 +2968,10 @@ RelationCacheInvalidate(void)
 		RelationClearRelation(relation, true);
 	}
 	list_free(rebuildList);
+
+	/* Any RelationBuildDesc() on the stack must start over. */
+	for (i = 0; OidIsValid(inProgress[i].relid); i++)
+		inProgress[i].invalidated = true;
 }
 
 /*
