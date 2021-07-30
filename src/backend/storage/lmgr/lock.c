@@ -4547,6 +4547,7 @@ VirtualXactLock(VirtualTransactionId vxid, bool wait)
 	TransactionId	xid = InvalidTransactionId;
 
 	Assert(VirtualTransactionIdIsValid(vxid));
+	elog(WARNING,"XXX: VirtualXactLock vxid %d/%d", vxid.backendId, vxid.localTransactionId);	// Remove this line
 
 	/*
 	 * Already prepared transactions don't hold vxid locks.  The
