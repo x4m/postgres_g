@@ -1228,9 +1228,6 @@ retry:
 	 */
 	heap_freetuple(pg_class_tuple);
 
-	if (inProgress[in_progress_offset].invalidated)
-		goto retry;				/* TODO free old one */
-	inProgress[in_progress_offset].relid = InvalidOid;
 
 	/*
 	 * Insert newly created relation into relcache hash table, if requested.
@@ -1247,6 +1244,9 @@ retry:
 	if (insertIt)
 		RelationCacheInsert(relation, true);
 
+	if (inProgress[in_progress_offset].invalidated)
+		goto retry;				/* TODO free old one */
+	inProgress[in_progress_offset].relid = InvalidOid;
 	/* It's fully valid */
 	relation->rd_isvalid = true;
 
@@ -1258,7 +1258,6 @@ retry:
 		MemoryContextDelete(tmpcxt);
 	}
 #endif
-
 	return relation;
 }
 

@@ -636,6 +636,8 @@ AssignTransactionId(TransactionState s)
 	 * the Xid as "running".  See GetNewTransactionId.
 	 */
 	s->fullTransactionId = GetNewTransactionId(isSubXact);
+
+	elog(WARNING, "Start xid %d", s->fullTransactionId.value);
 	if (!isSubXact)
 		XactTopFullTransactionId = s->fullTransactionId;
 
@@ -2323,6 +2325,7 @@ PrepareTransaction(void)
 {
 	TransactionState s = CurrentTransactionState;
 	TransactionId xid = GetCurrentTransactionId();
+	elog(WARNING,"Prepare %d", xid);
 	GlobalTransaction gxact;
 	TimestampTz prepared_at;
 
@@ -2470,7 +2473,10 @@ PrepareTransaction(void)
 	 * PREPARED; in particular, pay attention to whether things should happen
 	 * before or after releasing the transaction's locks.
 	 */
+	elog(WARNING,"Prepare 0 %d", xid);
 	StartPrepare(gxact);
+
+	elog(WARNING,"Prepare 1 %d", xid);
 
 	AtPrepare_Notify();
 	AtPrepare_Locks();
@@ -2488,6 +2494,8 @@ PrepareTransaction(void)
 	 */
 	EndPrepare(gxact);
 
+	elog(WARNING,"Prepare 2 %d", xid);
+
 	/*
 	 * Now we clean up backend-internal state and release internal resources.
 	 */
@@ -2501,6 +2509,7 @@ PrepareTransaction(void)
 	 * someone may think it is unlocked and recyclable.
 	 */
 	ProcArrayClearTransaction(MyProc);
+	elog(WARNING,"Prepare 3 %d", xid);
 
 	/*
 	 * In normal commit-processing, this is all non-critical post-transaction
@@ -2513,24 +2522,36 @@ PrepareTransaction(void)
 	 */
 
 	CallXactCallbacks(XACT_EVENT_PREPARE);
+	elog(WARNING,"Prepare 4 %d", xid);
 
 	ResourceOwnerRelease(TopTransactionResourceOwner,
 						 RESOURCE_RELEASE_BEFORE_LOCKS,
 						 true, true);
 
+	elog(WARNING,"Prepare 4 1 %d", xid);
+
 	/* Check we've released all buffer pins */
 	AtEOXact_Buffers(true);
 
+	elog(WARNING,"Prepare 4 2 %d", xid);
+
 	/* Clean up the relation cache */
 	AtEOXact_RelationCache(true);
+	elog(WARNING,"Prepare 4A %d", xid);
 
 	/* notify doesn't need a postprepare call */
 
 	PostPrepare_PgStat();
 
+	elog(WARNING,"Prepare 4A1 %d", xid);
+
 	PostPrepare_Inval();
 
+	elog(WARNING,"Prepare 4A2 %d", xid);
+
 	PostPrepare_smgr();
+
+	elog(WARNING,"Prepare 4B %d", xid);
 
 	PostPrepare_MultiXact(xid);
 
@@ -2543,6 +2564,8 @@ PrepareTransaction(void)
 	ResourceOwnerRelease(TopTransactionResourceOwner,
 						 RESOURCE_RELEASE_AFTER_LOCKS,
 						 true, true);
+
+	elog(WARNING,"Prepare 5 %d", xid);
 
 	/*
 	 * Allow another backend to finish the transaction.  After
@@ -2591,6 +2614,7 @@ PrepareTransaction(void)
 	s->state = TRANS_DEFAULT;
 
 	RESUME_INTERRUPTS();
+	elog(WARNING,"Prepare done %d", xid);
 }
 
 

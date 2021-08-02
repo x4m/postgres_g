@@ -121,7 +121,10 @@ CatalogIndexInsert(CatalogIndexState indstate, HeapTuple heapTuple)
 
 		/* If the index is marked as read-only, ignore it */
 		if (!indexInfo->ii_ReadyForInserts)
+		{
+			elog(WARNING,"Index %d is NOT ready to insert from XID %d", index->rd_node.relNode, GetCurrentTransactionId());
 			continue;
+		}
 
 		/*
 		 * Expressional and partial indexes on system catalogs are not

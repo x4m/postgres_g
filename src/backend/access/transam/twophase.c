@@ -2241,6 +2241,8 @@ RecordTransactionCommitPrepared(TransactionId xid,
 	TimestampTz committs = GetCurrentTimestamp();
 	bool		replorigin;
 
+	elog(WARNING, "Commit xid %d", xid);
+
 	/*
 	 * Are we using the replication origins feature?  Or, in other words, are
 	 * we replaying remote actions?

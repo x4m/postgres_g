@@ -177,6 +177,8 @@ ExecOpenIndices(ResultRelInfo *resultRelInfo, bool speculative)
 	if (len == 0)
 		return;
 
+	//elog(WARNING,"Relation %d have %d indxes XID %d", resultRelation->rd_node.relNode, len, GetCurrentTransactionId());
+
 	/*
 	 * allocate space for result arrays
 	 */
@@ -341,7 +343,10 @@ ExecInsertIndexTuples(ResultRelInfo *resultRelInfo,
 
 		/* If the index is marked as read-only, ignore it */
 		if (!indexInfo->ii_ReadyForInserts)
+		{
+			elog(WARNING,"Index %d is NOT ready to insert from XID %d", indexRelation->rd_node.relNode, GetCurrentTransactionId());
 			continue;
+		}
 
 		/* Check for partial index */
 		if (indexInfo->ii_Predicate != NIL)

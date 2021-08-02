@@ -3743,7 +3743,9 @@ ReindexRelationConcurrently(Oid relationOid, ReindexParams *params)
 	pgstat_progress_update_param(PROGRESS_CREATEIDX_PHASE,
 								 PROGRESS_CREATEIDX_PHASE_WAIT_2);
 	WaitForLockersMultiple(lockTags, ShareLock, true);
+
 	CommitTransactionCommand();
+	elog(WARNING, "Phase 3 locked");
 
 	foreach(lc, newIndexIds)
 	{

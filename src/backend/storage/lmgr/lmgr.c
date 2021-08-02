@@ -892,10 +892,11 @@ WaitForLockersMultiple(List *locktags, LOCKMODE lockmode, bool progress)
 	{
 		LOCKTAG    *locktag = lfirst(lc);
 		int			count;
-
+		elog(WARNING,"GetLockConflicts begin");
 		holders = lappend(holders,
 						  GetLockConflicts(locktag, lockmode,
 										   progress ? &count : NULL));
+		elog(WARNING,"GetLockConflicts end");
 		if (progress)
 			total += count;
 	}
