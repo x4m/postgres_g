@@ -3044,6 +3044,7 @@ GetLockConflicts(const LOCKTAG *locktag, LOCKMODE lockmode, int *countp)
 	 * Look up the lock object matching the tag.
 	 */
 	LWLockAcquire(partitionLock, LW_SHARED);
+	elog(WARNING, "Lock partition %d",LockHashPartition(hashcode));
 
 	lock = (LOCK *) hash_search_with_hash_value(LockMethodLockHash,
 												(const void *) locktag,
@@ -3078,6 +3079,8 @@ GetLockConflicts(const LOCKTAG *locktag, LOCKMODE lockmode, int *countp)
 		if (conflictMask & proclock->holdMask)
 		{
 			PGPROC	   *proc = proclock->tag.myProc;
+			if (TransactionIdIsValid(proc->xid))
+				elog(WARNING, "%d",proc->xid);
 
 			/* A backend never blocks itself */
 			if (proc != MyProc)
@@ -3352,6 +3355,7 @@ PostPrepare_Locks(TransactionId xid)
 	PROCLOCK   *proclock;
 	PROCLOCKTAG proclocktag;
 	int			partition;
+	elog(WARNING, "PostPrepare_locks %d", xid);
 
 	/* Can't prepare a lock group follower. */
 	Assert(MyProc->lockGroupLeader == NULL ||
@@ -3443,6 +3447,7 @@ PostPrepare_Locks(TransactionId xid)
 		if (SHMQueueNext(procLocks, procLocks,
 						 offsetof(PROCLOCK, procLink)) == NULL)
 			continue;			/* needn't examine this partition */
+		elog(WARNING, "PostPrepare_locks xid %d partition %d", xid, partition);
 
 		LWLockAcquire(partitionLock, LW_EXCLUSIVE);
 
@@ -3526,6 +3531,8 @@ PostPrepare_Locks(TransactionId xid)
 
 		LWLockRelease(partitionLock);
 	}							/* loop over partitions */
+
+	elog(WARNING, "PostPrepare_locks %d done", xid);
 
 	END_CRIT_SECTION();
 }
