@@ -2496,13 +2496,6 @@ PrepareTransaction(void)
 	XactLastRecEnd = 0;
 
 	/*
-	 * Let others know about no transaction in progress by me.  This has to be
-	 * done *after* the prepared transaction has been marked valid, else
-	 * someone may think it is unlocked and recyclable.
-	 */
-	ProcArrayClearTransaction(MyProc);
-
-	/*
 	 * In normal commit-processing, this is all non-critical post-transaction
 	 * cleanup.  When the transaction is prepared, however, it's important
 	 * that the locks and other per-backend resources are transferred to the
@@ -2535,6 +2528,15 @@ PrepareTransaction(void)
 	PostPrepare_MultiXact(xid);
 
 	PostPrepare_Locks(xid);
+
+	/*
+	 * Let others know about no transaction in progress by me.  This has to be
+	 * done *after* the prepared transaction has been marked valid and locks
+	 * transfered to new PGPROC, else someone may think it is unlocked and
+	 * recyclable.
+	 */
+	ProcArrayClearTransaction(MyProc);
+
 	PostPrepare_PredicateLocks(xid);
 
 	ResourceOwnerRelease(TopTransactionResourceOwner,
