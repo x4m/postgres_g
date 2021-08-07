@@ -2314,7 +2314,7 @@ CommitTransaction(void)
 	RESUME_INTERRUPTS();
 }
 
-
+void EnsureIhave16391(TransactionId xid, int suffix);
 /*
  *	PrepareTransaction
  *
@@ -2325,6 +2325,7 @@ PrepareTransaction(void)
 {
 	TransactionState s = CurrentTransactionState;
 	TransactionId xid = GetCurrentTransactionId();
+	EnsureIhave16391(xid,10);
 	elog(WARNING,"Prepare %d", xid);
 	GlobalTransaction gxact;
 	TimestampTz prepared_at;
@@ -2364,6 +2365,7 @@ PrepareTransaction(void)
 	}
 
 	CallXactCallbacks(XACT_EVENT_PRE_PREPARE);
+	EnsureIhave16391(xid,20);
 
 	/*
 	 * The remaining actions cannot call any user-defined code, so it's safe
@@ -2390,6 +2392,8 @@ PrepareTransaction(void)
 
 	/* close large objects before lower-level cleanup */
 	AtEOXact_LargeObject(true);
+
+	EnsureIhave16391(xid,30);
 
 	/* NOTIFY requires no work at this point */
 
@@ -2449,6 +2453,8 @@ PrepareTransaction(void)
 	/* Tell bufmgr and smgr to prepare for commit */
 	BufmgrCommit();
 
+	EnsureIhave16391(xid,40);
+
 	/*
 	 * Reserve the GID for this transaction. This could fail if the requested
 	 * GID is invalid or already in use.
@@ -2477,13 +2483,18 @@ PrepareTransaction(void)
 	StartPrepare(gxact);
 
 	elog(WARNING,"Prepare 1 %d", xid);
+	//EnsureIhave16391(xid,50);
 
 	AtPrepare_Notify();
+	EnsureIhave16391(xid,52);
 	AtPrepare_Locks();
+	EnsureIhave16391(xid,54);
 	AtPrepare_PredicateLocks();
+	//EnsureIhave16391(xid,56);
 	AtPrepare_PgStat();
 	AtPrepare_MultiXact();
 	AtPrepare_RelationMap();
+	//EnsureIhave16391(xid,58);
 
 	/*
 	 * Here is where we really truly prepare.
@@ -2495,6 +2506,7 @@ PrepareTransaction(void)
 	EndPrepare(gxact);
 
 	elog(WARNING,"Prepare 2 %d", xid);
+	EnsureIhave16391(xid,60);
 
 	/*
 	 * Now we clean up backend-internal state and release internal resources.
@@ -2508,8 +2520,8 @@ PrepareTransaction(void)
 	 * done *after* the prepared transaction has been marked valid, else
 	 * someone may think it is unlocked and recyclable.
 	 */
-	ProcArrayClearTransaction(MyProc);
 	elog(WARNING,"Prepare 3 %d", xid);
+	EnsureIhave16391(xid,70);
 
 	/*
 	 * In normal commit-processing, this is all non-critical post-transaction
@@ -2534,6 +2546,7 @@ PrepareTransaction(void)
 	AtEOXact_Buffers(true);
 
 	elog(WARNING,"Prepare 4 2 %d", xid);
+	EnsureIhave16391(xid,80);
 
 	/* Clean up the relation cache */
 	AtEOXact_RelationCache(true);
@@ -2552,10 +2565,13 @@ PrepareTransaction(void)
 	PostPrepare_smgr();
 
 	elog(WARNING,"Prepare 4B %d", xid);
+	EnsureIhave16391(xid,100);
 
 	PostPrepare_MultiXact(xid);
 
 	PostPrepare_Locks(xid);
+
+	ProcArrayClearTransaction(MyProc);
 	PostPrepare_PredicateLocks(xid);
 
 	ResourceOwnerRelease(TopTransactionResourceOwner,
@@ -2566,6 +2582,7 @@ PrepareTransaction(void)
 						 true, true);
 
 	elog(WARNING,"Prepare 5 %d", xid);
+	EnsureIhave16391(xid,110);
 
 	/*
 	 * Allow another backend to finish the transaction.  After

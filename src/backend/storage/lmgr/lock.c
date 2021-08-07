@@ -2950,6 +2950,7 @@ GetLockConflicts(const LOCKTAG *locktag, LOCKMODE lockmode, int *countp)
 	partitionLock = LockHashPartitionLock(hashcode);
 	conflictMask = lockMethodTable->conflictTab[lockmode];
 
+	elog(WARNING, "Fastpath look start");
 	/*
 	 * Fast path locks might not have been entered in the primary lock table.
 	 * If the lock we're dealing with could conflict with such a lock, we must
@@ -3036,6 +3037,7 @@ GetLockConflicts(const LOCKTAG *locktag, LOCKMODE lockmode, int *countp)
 			LWLockRelease(&proc->fpInfoLock);
 		}
 	}
+	elog(WARNING, "Fastpath look end");
 
 	/* Remember how many fast-path conflicts we found. */
 	fast_count = count;
@@ -3044,7 +3046,7 @@ GetLockConflicts(const LOCKTAG *locktag, LOCKMODE lockmode, int *countp)
 	 * Look up the lock object matching the tag.
 	 */
 	LWLockAcquire(partitionLock, LW_SHARED);
-	elog(WARNING, "Lock partition %d",LockHashPartition(hashcode));
+	elog(WARNING, "Locked partition %d",LockHashPartition(hashcode));
 
 	lock = (LOCK *) hash_search_with_hash_value(LockMethodLockHash,
 												(const void *) locktag,
@@ -3057,6 +3059,7 @@ GetLockConflicts(const LOCKTAG *locktag, LOCKMODE lockmode, int *countp)
 		 * If the lock object doesn't exist, there is nothing holding a lock
 		 * on this lockable object.
 		 */
+		elog(WARNING, "UnLocked partition %d (NULL)",LockHashPartition(hashcode));
 		LWLockRelease(partitionLock);
 		vxids[count].backendId = InvalidBackendId;
 		vxids[count].localTransactionId = InvalidLocalTransactionId;
@@ -3074,13 +3077,18 @@ GetLockConflicts(const LOCKTAG *locktag, LOCKMODE lockmode, int *countp)
 	proclock = (PROCLOCK *) SHMQueueNext(procLocks, procLocks,
 										 offsetof(PROCLOCK, lockLink));
 
+	int total_in_prockloks = 0;
+
 	while (proclock)
 	{
+		total_in_prockloks++;
 		if (conflictMask & proclock->holdMask)
 		{
 			PGPROC	   *proc = proclock->tag.myProc;
 			if (TransactionIdIsValid(proc->xid))
 				elog(WARNING, "%d",proc->xid);
+			else
+				elog(WARNING, "%d/%d pid %d",proc->backendId,proc->lxid, proc->pid);
 
 			/* A backend never blocks itself */
 			if (proc != MyProc)
@@ -3110,11 +3118,15 @@ GetLockConflicts(const LOCKTAG *locktag, LOCKMODE lockmode, int *countp)
 				/* else, xact already committed or aborted */
 			}
 		}
+		else
+		{
+			elog(WARNING, "Lock not held %d", proclock->tag.myProc->xid);
+		}
 
 		proclock = (PROCLOCK *) SHMQueueNext(procLocks, &proclock->lockLink,
 											 offsetof(PROCLOCK, lockLink));
 	}
-
+	elog(WARNING, "UnLocked partition %d total(%d)",LockHashPartition(hashcode), total_in_prockloks);
 	LWLockRelease(partitionLock);
 
 	if (count > MaxBackends + max_prepared_xacts)	/* should never happen */
@@ -3221,7 +3233,7 @@ LockRefindAndRelease(LockMethod lockMethodTable, PGPROC *proc,
 		SpinLockRelease(&FastPathStrongRelationLocks->mutex);
 	}
 }
-
+void EnsureIhave16391(TransactionId xid, int suffix);
 /*
  * AtPrepare_Locks
  *		Do the preparatory work for a PREPARE: make 2PC state file records
@@ -3308,8 +3320,29 @@ AtPrepare_Locks(void)
 		 */
 		if (locallock->proclock == NULL)
 		{
+			elog(WARNING, "Convert to fastpath %d", GetCurrentTransactionIdIfAny());
 			locallock->proclock = FastPathGetRelationLockEntry(locallock);
 			locallock->lock = locallock->proclock->tag.myLock;
+
+			SHM_QUEUE	*procLocks = &(locallock->lock->procLocks);
+
+			PROCLOCK *proclock = (PROCLOCK *) SHMQueueNext(procLocks, procLocks,
+												offsetof(PROCLOCK, lockLink));
+
+			int locks_in_queue = 0;
+
+			while (proclock)
+			{
+				PGPROC	   *proc = proclock->tag.myProc;
+				//if (TransactionIdIsValid(proc->xid))
+						//elog(WARNING, "with me %d",proc->xid);
+				locks_in_queue++;
+
+				proclock = (PROCLOCK *) SHMQueueNext(procLocks, &proclock->lockLink,
+													offsetof(PROCLOCK, lockLink));
+			}
+
+			elog(WARNING, "Convert to fastpath end %d rel %d (total %d)", GetCurrentTransactionIdIfAny(), locallock->lock->tag.locktag_field2, locks_in_queue);
 		}
 
 		/*
@@ -3330,6 +3363,106 @@ AtPrepare_Locks(void)
 	}
 }
 
+int CountProcLocs(LOCK *lock, PROCLOCK   *proclock_must_be)
+{
+	SHM_QUEUE *procLocks = &(lock->procLocks);
+
+	PROCLOCK * proclock = (PROCLOCK *) SHMQueueNext(procLocks, procLocks,
+										 offsetof(PROCLOCK, lockLink));
+
+	int result = 0;
+
+	bool observed = false;
+
+	while (proclock)
+	{
+		result++;
+
+		if(proclock_must_be == proclock)
+		{
+			Assert(!observed);
+			observed = true;
+		}
+
+		proclock = (PROCLOCK *) SHMQueueNext(procLocks, &proclock->lockLink,
+											 offsetof(PROCLOCK, lockLink));
+	}
+	Assert(observed);
+	return result;
+}
+
+void EnsureIhave16391(TransactionId xid, int suffix)
+{
+	return;
+	bool ok = false;
+	int partition;
+for (partition = 0; partition < NUM_LOCK_PARTITIONS; partition++)
+	{
+	LWLock	   *partitionLock;
+	SHM_QUEUE  *procLocks = &(MyProc->myProcLocks[partition]);
+	PROCLOCK   *nextplock;
+	PROCLOCK   *proclock;
+	LOCK	   *lock;
+
+	partitionLock = LockHashPartitionLockByIndex(partition);
+
+	/*
+		* If the proclock list for this partition is empty, we can skip
+		* acquiring the partition lock.  This optimization is safer than the
+		* situation in LockReleaseAll, because we got rid of any fast-path
+		* locks during AtPrepare_Locks, so there cannot be any case where
+		* another backend is adding something to our lists now.  For safety,
+		* though, we code this the same way as in LockReleaseAll.
+		*/
+	if (SHMQueueNext(procLocks, procLocks,
+						offsetof(PROCLOCK, procLink)) == NULL)
+		continue;
+
+	LWLockAcquire(partitionLock, LW_EXCLUSIVE);
+
+	for (proclock = (PROCLOCK *) SHMQueueNext(procLocks, procLocks,
+												offsetof(PROCLOCK, procLink));
+			proclock;
+			proclock = nextplock)
+	{
+		/* Get link first, since we may unlink/relink this proclock */
+		nextplock = (PROCLOCK *)
+			SHMQueueNext(procLocks, &proclock->procLink,
+							offsetof(PROCLOCK, procLink));
+
+		Assert(proclock->tag.myProc == MyProc);
+
+
+		lock = proclock->tag.myLock;
+
+		/* Ignore VXID locks */
+		if (lock->tag.locktag_type == LOCKTAG_VIRTUALTRANSACTION)
+			continue;
+
+		PROCLOCK_PRINT("PostPrepare_Locks", proclock);
+		LOCK_PRINT("PostPrepare_Locks", lock, 0);
+		Assert(lock->nRequested >= 0);
+		Assert(lock->nGranted >= 0);
+		Assert(lock->nGranted <= lock->nRequested);
+		Assert((proclock->holdMask & ~lock->grantMask) == 0);
+
+		/* Ignore it if nothing to release (must be a session lock) */
+		//if (proclock->holdMask == 0)
+		//	continue;
+
+		if (lock->tag.locktag_field2 == 16391)
+		{
+			Assert(!ok);
+			ok = true;
+		}
+	}						/* loop over PROCLOCKs within this partition */
+
+	LWLockRelease(partitionLock);
+}
+	if(!ok)
+		elog(WARNING, "I %d dont have lock %d", suffix, xid);
+}
+
 /*
  * PostPrepare_Locks
  *		Clean up after successful PREPARE
@@ -3348,6 +3481,7 @@ AtPrepare_Locks(void)
 void
 PostPrepare_Locks(TransactionId xid)
 {
+	EnsureIhave16391(xid,0);
 	PGPROC	   *newproc = TwoPhaseGetDummyProc(xid, false);
 	HASH_SEQ_STATUS status;
 	LOCALLOCK  *locallock;
@@ -3356,6 +3490,7 @@ PostPrepare_Locks(TransactionId xid)
 	PROCLOCKTAG proclocktag;
 	int			partition;
 	elog(WARNING, "PostPrepare_locks %d", xid);
+	EnsureIhave16391(xid,1);
 
 	/* Can't prepare a lock group follower. */
 	Assert(MyProc->lockGroupLeader == NULL ||
@@ -3389,6 +3524,7 @@ PostPrepare_Locks(TransactionId xid)
 			 * lock.  Just forget the local entry.
 			 */
 			Assert(locallock->nLocks == 0);
+			elog(WARNING,"RemoveLocalLock %d", xid);
 			RemoveLocalLock(locallock);
 			continue;
 		}
@@ -3424,6 +3560,7 @@ PostPrepare_Locks(TransactionId xid)
 		/* And remove the locallock hashtable entry */
 		RemoveLocalLock(locallock);
 	}
+	EnsureIhave16391(xid,2);
 
 	/*
 	 * Now, scan each lock partition separately.
@@ -3447,9 +3584,9 @@ PostPrepare_Locks(TransactionId xid)
 		if (SHMQueueNext(procLocks, procLocks,
 						 offsetof(PROCLOCK, procLink)) == NULL)
 			continue;			/* needn't examine this partition */
-		elog(WARNING, "PostPrepare_locks xid %d partition %d", xid, partition);
 
 		LWLockAcquire(partitionLock, LW_EXCLUSIVE);
+		elog(WARNING, "PostPrepare_locks xid %d partition %d", xid, partition);
 
 		for (proclock = (PROCLOCK *) SHMQueueNext(procLocks, procLocks,
 												  offsetof(PROCLOCK, procLink));
@@ -3460,10 +3597,25 @@ PostPrepare_Locks(TransactionId xid)
 			nextplock = (PROCLOCK *)
 				SHMQueueNext(procLocks, &proclock->procLink,
 							 offsetof(PROCLOCK, procLink));
+			
 
 			Assert(proclock->tag.myProc == MyProc);
 
+
 			lock = proclock->tag.myLock;
+			if (partition == 6)
+			{
+				elog(WARNING, "%d have a lock for %d", xid, lock->tag.locktag_field2);
+			}
+
+			LOCK *x = hash_search_with_hash_value(LockMethodLockHash,
+												(const void *) &lock->tag,
+												LockTagHashCode(&lock->tag),
+												HASH_FIND,
+												NULL);
+			Assert(x == lock);	
+
+			int before = CountProcLocs(lock, proclock);
 
 			/* Ignore VXID locks */
 			if (lock->tag.locktag_type == LOCKTAG_VIRTUALTRANSACTION)
@@ -3526,9 +3678,18 @@ PostPrepare_Locks(TransactionId xid)
 			SHMQueueInsertBefore(&(newproc->myProcLocks[partition]),
 								 &proclock->procLink);
 
+			int after = CountProcLocs(lock, proclock);
+
+			if (before != after)
+			{
+				elog(WARNING, "before %d after %d", before, after);
+				Assert(0);
+			}
+
 			PROCLOCK_PRINT("PostPrepare_Locks: updated", proclock);
 		}						/* loop over PROCLOCKs within this partition */
 
+		elog(WARNING, "PostPrepare_locks xid %d partition %d unlocked", xid, partition);
 		LWLockRelease(partitionLock);
 	}							/* loop over partitions */
 
