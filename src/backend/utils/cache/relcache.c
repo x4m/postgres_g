@@ -2873,6 +2873,7 @@ RelationCacheInvalidate(void)
 	List	   *rebuildFirstList = NIL;
 	List	   *rebuildList = NIL;
 	ListCell   *l;
+	int i;
 
 	/*
 	 * Reload relation mapping data before starting to reconstruct cache.
@@ -2959,6 +2960,10 @@ RelationCacheInvalidate(void)
 		RelationClearRelation(relation, true);
 	}
 	list_free(rebuildList);
+
+	/* Any RelationBuildDesc() on the stack must start over. */
+	for (i = 0; OidIsValid(inProgress[i].relid); i++)
+		inProgress[i].invalidated = true;
 }
 
 /*
