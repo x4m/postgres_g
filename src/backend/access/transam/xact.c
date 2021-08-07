@@ -2500,7 +2500,6 @@ PrepareTransaction(void)
 	 * done *after* the prepared transaction has been marked valid, else
 	 * someone may think it is unlocked and recyclable.
 	 */
-	ProcArrayClearTransaction(MyProc);
 
 	/*
 	 * In normal commit-processing, this is all non-critical post-transaction
@@ -2535,6 +2534,8 @@ PrepareTransaction(void)
 	PostPrepare_MultiXact(xid);
 
 	PostPrepare_Locks(xid);
+
+	ProcArrayClearTransaction(MyProc);
 	PostPrepare_PredicateLocks(xid);
 
 	ResourceOwnerRelease(TopTransactionResourceOwner,
