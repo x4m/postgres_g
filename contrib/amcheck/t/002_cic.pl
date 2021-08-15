@@ -44,11 +44,11 @@ my $pgbench_h = $node->background_pgbench('postgres', \$pgbench_in, \$pgbench_ou
 			SELECT bt_index_check('idx',true);
 		   )
 	},
-	'--no-vacuum --client=1 --transactions=200');
+	'--no-vacuum --client=1 --time=30');
 
 # Run pgbench.
 $node->pgbench(
-	'--no-vacuum --client=5 --transactions=200',
+	'--no-vacuum --client=5 --time=30',
 	0,
 	[qr{actually processed}],
 	[qr{^$}],
