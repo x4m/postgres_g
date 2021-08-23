@@ -2470,16 +2470,29 @@ bt_tuple_present_callback(Relation index, ItemPointer tid, Datum *values,
 	/* Probe Bloom filter -- tuple should be present */
 	if (bloom_lacks_element(state->filter, (unsigned char *) norm,
 							IndexTupleSize(norm)))
+{
+		BlockIdData bid = tid->ip_blkid;
+		Buffer buf = ReadBufferExtended(state->heaprel, MAIN_FORKNUM, BlockIdGetBlockNumber(&bid), RBM_NORMAL, NULL);
+		LockBuffer(buf, BUFFER_LOCK_SHARE);
+		Page page = BufferGetPage(buf);
+
+		HeapTupleHeader tuphdr = (HeapTupleHeader) PageGetItem(page, PageGetItemId(page,tid->ip_posid));
+
+		LockBuffer(buf, BUFFER_LOCK_UNLOCK);
+		ReleaseBuffer(buf);
 		ereport(ERROR,
 				(errcode(ERRCODE_DATA_CORRUPTED),
-				 errmsg("heap tuple (%u,%u) from table \"%s\" lacks matching index tuple within index \"%s\"",
+				 errmsg("heap tuple (%u,%u) from table \"%s\" lacks matching index tuple within index \"%s\" xmin %d xmax %d",
 						ItemPointerGetBlockNumber(&(itup->t_tid)),
 						ItemPointerGetOffsetNumber(&(itup->t_tid)),
 						RelationGetRelationName(state->heaprel),
-						RelationGetRelationName(state->rel)),
+						RelationGetRelationName(state->rel),
+						HeapTupleHeaderGetRawXmin(tuphdr),
+						HeapTupleHeaderGetRawXmax(tuphdr)),
 				 !state->readonly
 				 ? errhint("Retrying verification using the function bt_index_parent_check() might provide a more specific error.")
 				 : 0));
+	}
 
 	state->heaptuplespresent++;
 	pfree(itup);

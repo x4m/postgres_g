@@ -3020,11 +3020,11 @@ GetLockConflicts(const LOCKTAG *locktag, LOCKMODE lockmode, int *countp)
 				GET_VXID_FROM_PGPROC(vxid, *proc);
 
 				/* Prefer real Xid over local VXid */
-				if (TransactionIdIsValid(proc->xid))
+				/*if (TransactionIdIsValid(proc->xid))
 				{
 					vxid.backendId = InvalidBackendId;
 					vxid.localTransactionId = proc->xid;
-				}
+				}*/
 				if (VirtualTransactionIdIsValid(vxid))
 					vxids[count++] = vxid;
 				/* else, xact already committed or aborted */
@@ -3087,11 +3087,11 @@ GetLockConflicts(const LOCKTAG *locktag, LOCKMODE lockmode, int *countp)
 				GET_VXID_FROM_PGPROC(vxid, *proc);
 
 				/* Prefer real Xid over local VXid */
-				if (TransactionIdIsValid(proc->xid))
+				/*if (TransactionIdIsValid(proc->xid))
 				{
 					vxid.backendId = InvalidBackendId;
 					vxid.localTransactionId = proc->xid;
-				}
+				}*/
 				if (VirtualTransactionIdIsValid(vxid))
 				{
 					int			i;
@@ -4585,14 +4585,14 @@ static bool WaitXact(VirtualTransactionId vxid, TransactionId xid, bool wait)
 		/* Iterate over possible xids */
 		Assert(TransactionIdIsValid(xidlist.xid));
 		SET_LOCKTAG_TRANSACTION(tag, xidlist.xid);
-		lar = LockAcquire(&tag, ShareLock, false, !wait);
+		lar = LockAcquire(&tag, ExclusiveLock, false, !wait);
 		if (lar == LOCKACQUIRE_NOT_AVAIL)
 		{
 			result = false;
 			break;
 		}
 
-		LockRelease(&tag, ShareLock, false);
+		LockRelease(&tag, ExclusiveLock, false);
 
 		if (xidlist.next == NULL)
 		{
