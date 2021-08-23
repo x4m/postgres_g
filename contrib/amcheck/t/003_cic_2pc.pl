@@ -43,8 +43,9 @@ my $main_h = $node->background_psql('postgres', \$main_in, \$main_out, $main_tim
 $main_in .= q(
 BEGIN;
 INSERT INTO tbl VALUES(0);
+\echo syncpoint1
 );
-$main_h->pump_nb;
+pump $main_h until $main_out =~ /syncpoint1/ || $main_timer->is_expired;
 
 my $reindex_in  = '';
 my $reindex_out = '';
@@ -60,13 +61,13 @@ pump $reindex_h until $reindex_out =~ /start/ || $reindex_timer->is_expired;
 $main_in .= q(
 PREPARE TRANSACTION 'a';
 );
-$main_h->pump_nb;
 
 $main_in .= q(
 BEGIN;
 INSERT INTO tbl VALUES(0);
+\echo syncpoint2
 );
-$main_h->pump_nb;
+pump $main_h until $main_out =~ /syncpoint2/ || $main_timer->is_expired;
 
 $node->safe_psql('postgres', q(COMMIT PREPARED 'a';));
 
@@ -74,8 +75,9 @@ $main_in .= q(
 PREPARE TRANSACTION 'b';
 BEGIN;
 INSERT INTO tbl VALUES(0);
+\echo syncpoint3
 );
-$main_h->pump_nb;
+pump $main_h until $main_out =~ /syncpoint3/ || $main_timer->is_expired;
 
 $node->safe_psql('postgres', q(COMMIT PREPARED 'b';));
 
