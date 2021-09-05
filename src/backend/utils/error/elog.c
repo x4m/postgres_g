@@ -970,7 +970,11 @@ set_backtrace(ErrorData *edata, int num_skip)
 			return;
 
 		for (int i = num_skip; i < nframes; i++)
+		{
 			appendStringInfo(&errtrace, "\n%s", strfrms[i]);
+			elog(WARNING, strfrms[i]);
+		}
+
 		free(strfrms);
 	}
 #else

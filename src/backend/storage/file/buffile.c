@@ -62,6 +62,71 @@
 #define MAX_PHYSICAL_FILESIZE	0x40000000
 #define BUFFILE_SEG_SIZE		(MAX_PHYSICAL_FILESIZE / BLCKSZ)
 
+
+typedef struct CompressedFile
+{
+	File inner;
+	PGAlignedBlock buffer;
+	int buffnum;
+	PGAlignedBlock compressed_buffer;
+	int	offsets[BUFFILE_SEG_SIZE];
+	int	sizes[BUFFILE_SEG_SIZE];
+	int nblocks;
+	int size;
+} CompressedFile;
+
+static void CompressedFileClose(CompressedFile *file)
+{
+	FileClose(file->inner);
+}
+
+static void CompressedFileInit(CompressedFile *file, File inner)
+{
+	file->inner = inner;
+	/*for (int i = 0; i < BUFFILE_SEG_SIZE; i++)
+	{
+		file->offsets[i] = 0;
+		file->sizes[i] = 0;
+	}*/
+	memset(&file->offsets[0], 0, sizeof(file->offsets));
+	memset(&file->sizes[0], 0, sizeof(file->sizes));
+	file->nblocks = 0;
+	file->buffnum = -1;
+}
+
+static void CompressedFileLoadBuffer(CompressedFile *file, off_t offset, uint32 wait_event_info)
+{
+	off_t idx = offset / BLCKSZ;
+	if (file->buffnum == idx)
+		return;
+	FileRead(file->inner, file->compressed_buffer.data, file->sizes[idx], file->offsets[idx], wait_event_info);
+}
+
+static int	CompressedFileRead(CompressedFile *file, char *buffer, int amount, off_t offset, uint32 wait_event_info)
+{
+	return FileRead(file->inner, buffer, amount, offset, wait_event_info);
+}
+static int	CompressedFileWrite(CompressedFile *file, char *buffer, int amount, off_t offset, uint32 wait_event_info)
+{
+	file->size = Max(file->size, offset + amount);
+	return FileWrite(file->inner, buffer, amount, offset, wait_event_info);
+}
+static off_t CompressedFileSize(CompressedFile *file)
+{
+	return FileSize(file->inner);
+	return file->size;
+}
+static int CompressedFileTruncate(CompressedFile *file, off_t offset, uint32 wait_event_info)
+{
+	file->size = offset;
+	return FileTruncate(file->inner, offset, wait_event_info);
+}
+
+static char *CompressedFilePathName(CompressedFile *file)
+{
+	return FilePathName(file->inner);
+}
+
 /*
  * This data structure represents a buffered file that consists of one or
  * more physical files (each accessed through a virtual file descriptor
@@ -71,7 +136,7 @@ struct BufFile
 {
 	int			numFiles;		/* number of physical files in set */
 	/* all files except the last have length exactly MAX_PHYSICAL_FILESIZE */
-	File	   *files;			/* palloc'd array with numFiles entries */
+	CompressedFile	   *files;			/* palloc'd array with numFiles entries */
 
 	bool		isInterXact;	/* keep open over transactions? */
 	bool		dirty;			/* does buffer need to be written? */
@@ -135,8 +200,8 @@ makeBufFile(File firstfile)
 {
 	BufFile    *file = makeBufFileCommon(1);
 
-	file->files = (File *) palloc(sizeof(File));
-	file->files[0] = firstfile;
+	file->files = (CompressedFile *) palloc(sizeof(CompressedFile));
+	CompressedFileInit(&file->files[0], firstfile);
 	file->readOnly = false;
 	file->fileset = NULL;
 	file->name = NULL;
@@ -166,9 +231,9 @@ extendBufFile(BufFile *file)
 
 	CurrentResourceOwner = oldowner;
 
-	file->files = (File *) repalloc(file->files,
-									(file->numFiles + 1) * sizeof(File));
-	file->files[file->numFiles] = pfile;
+	file->files = (CompressedFile *) repalloc(file->files,
+									(file->numFiles + 1) * sizeof(CompressedFile));
+	CompressedFileInit(&file->files[file->numFiles], pfile);
 	file->numFiles++;
 }
 
@@ -266,8 +331,8 @@ BufFileCreateFileSet(FileSet *fileset, const char *name)
 	file = makeBufFileCommon(1);
 	file->fileset = fileset;
 	file->name = pstrdup(name);
-	file->files = (File *) palloc(sizeof(File));
-	file->files[0] = MakeNewFileSetSegment(file, 0);
+	file->files = (CompressedFile *) palloc(sizeof(CompressedFile));
+	CompressedFileInit(&file->files[0], MakeNewFileSetSegment(file, 0));
 	file->readOnly = false;
 
 	return file;
@@ -289,10 +354,10 @@ BufFileOpenFileSet(FileSet *fileset, const char *name, int mode,
 	BufFile    *file;
 	char		segment_name[MAXPGPATH];
 	Size		capacity = 16;
-	File	   *files;
+	CompressedFile	   *files;
 	int			nfiles = 0;
 
-	files = palloc(sizeof(File) * capacity);
+	files = palloc(sizeof(CompressedFile) * capacity);
 
 	/*
 	 * We don't know how many segments there are, so we'll probe the
@@ -304,12 +369,12 @@ BufFileOpenFileSet(FileSet *fileset, const char *name, int mode,
 		if (nfiles + 1 > capacity)
 		{
 			capacity *= 2;
-			files = repalloc(files, sizeof(File) * capacity);
+			files = repalloc(files, sizeof(CompressedFile) * capacity);
 		}
 		/* Try to load a segment. */
 		FileSetSegmentName(segment_name, name, nfiles);
-		files[nfiles] = FileSetOpen(fileset, segment_name, mode);
-		if (files[nfiles] <= 0)
+		CompressedFileInit(&files[nfiles], FileSetOpen(fileset, segment_name, mode));
+		if (files[nfiles].inner <= 0)
 			break;
 		++nfiles;
 
@@ -412,7 +477,7 @@ BufFileClose(BufFile *file)
 	BufFileFlush(file);
 	/* close and delete the underlying file(s) */
 	for (i = 0; i < file->numFiles; i++)
-		FileClose(file->files[i]);
+		CompressedFileClose(&file->files[i]);
 	/* release the buffer space */
 	pfree(file->files);
 	pfree(file);
@@ -428,8 +493,6 @@ BufFileClose(BufFile *file)
 static void
 BufFileLoadBuffer(BufFile *file)
 {
-	File		thisfile;
-
 	/*
 	 * Advance to next component file if necessary and possible.
 	 */
@@ -443,8 +506,8 @@ BufFileLoadBuffer(BufFile *file)
 	/*
 	 * Read whatever we can get, up to a full bufferload.
 	 */
-	thisfile = file->files[file->curFile];
-	file->nbytes = FileRead(thisfile,
+
+	file->nbytes = CompressedFileRead(&file->files[file->curFile],
 							file->buffer.data,
 							sizeof(file->buffer),
 							file->curOffset,
@@ -455,7 +518,7 @@ BufFileLoadBuffer(BufFile *file)
 		ereport(ERROR,
 				(errcode_for_file_access(),
 				 errmsg("could not read file \"%s\": %m",
-						FilePathName(thisfile))));
+						CompressedFilePathName(&file->files[file->curFile]))));
 	}
 
 	/* we choose not to advance curOffset here */
@@ -476,7 +539,6 @@ BufFileDumpBuffer(BufFile *file)
 {
 	int			wpos = 0;
 	int			bytestowrite;
-	File		thisfile;
 
 	/*
 	 * Unlike BufFileLoadBuffer, we must dump the whole buffer even if it
@@ -506,17 +568,17 @@ BufFileDumpBuffer(BufFile *file)
 		if ((off_t) bytestowrite > availbytes)
 			bytestowrite = (int) availbytes;
 
-		thisfile = file->files[file->curFile];
-		bytestowrite = FileWrite(thisfile,
+		bytestowrite = CompressedFileWrite(&file->files[file->curFile],
 								 file->buffer.data + wpos,
 								 bytestowrite,
 								 file->curOffset,
 								 WAIT_EVENT_BUFFILE_WRITE);
+
 		if (bytestowrite <= 0)
 			ereport(ERROR,
 					(errcode_for_file_access(),
 					 errmsg("could not write to file \"%s\": %m",
-							FilePathName(thisfile))));
+							CompressedFilePathName(&file->files[file->curFile]))));
 		file->curOffset += bytestowrite;
 		wpos += bytestowrite;
 
@@ -689,12 +751,12 @@ BufFileSeek(BufFile *file, int fileno, off_t offset, int whence)
 			 * file.
 			 */
 			newFile = file->numFiles - 1;
-			newOffset = FileSize(file->files[file->numFiles - 1]);
+			newOffset = CompressedFileSize(&file->files[file->numFiles - 1]);
 			if (newOffset < 0)
 				ereport(ERROR,
 						(errcode_for_file_access(),
 						 errmsg("could not determine size of temporary file \"%s\" from BufFile \"%s\": %m",
-								FilePathName(file->files[file->numFiles - 1]),
+								CompressedFilePathName(&file->files[file->numFiles - 1]),
 								file->name)));
 			break;
 		default:
@@ -810,12 +872,12 @@ BufFileSize(BufFile *file)
 	Assert(file->fileset != NULL);
 
 	/* Get the size of the last physical file. */
-	lastFileSize = FileSize(file->files[file->numFiles - 1]);
+	lastFileSize = CompressedFileSize(&file->files[file->numFiles - 1]);
 	if (lastFileSize < 0)
 		ereport(ERROR,
 				(errcode_for_file_access(),
 				 errmsg("could not determine size of temporary file \"%s\" from BufFile \"%s\": %m",
-						FilePathName(file->files[file->numFiles - 1]),
+						CompressedFilePathName(&file->files[file->numFiles - 1]),
 						file->name)));
 
 	return ((file->numFiles - 1) * (int64) MAX_PHYSICAL_FILESIZE) +
@@ -856,8 +918,8 @@ BufFileAppend(BufFile *target, BufFile *source)
 	if (target->resowner != source->resowner)
 		elog(ERROR, "could not append BufFile with non-matching resource owner");
 
-	target->files = (File *)
-		repalloc(target->files, sizeof(File) * newNumFiles);
+	target->files = (CompressedFile *)
+		repalloc(target->files, sizeof(CompressedFile) * newNumFiles);
 	for (i = target->numFiles; i < newNumFiles; i++)
 		target->files[i] = source->files[i - target->numFiles];
 	target->numFiles = newNumFiles;
@@ -889,7 +951,7 @@ BufFileTruncateFileSet(BufFile *file, int fileno, off_t offset)
 		if ((i != fileno || offset == 0) && i != 0)
 		{
 			FileSetSegmentName(segment_name, file->name, i);
-			FileClose(file->files[i]);
+			CompressedFileClose(&file->files[i]);
 			if (!FileSetDelete(file->fileset, segment_name, true))
 				ereport(ERROR,
 						(errcode_for_file_access(),
@@ -907,12 +969,12 @@ BufFileTruncateFileSet(BufFile *file, int fileno, off_t offset)
 		}
 		else
 		{
-			if (FileTruncate(file->files[i], offset,
+			if (CompressedFileTruncate(&file->files[i], offset,
 							 WAIT_EVENT_BUFFILE_TRUNCATE) < 0)
 				ereport(ERROR,
 						(errcode_for_file_access(),
 						 errmsg("could not truncate file \"%s\": %m",
-								FilePathName(file->files[i]))));
+								CompressedFilePathName(&file->files[i]))));
 			newOffset = offset;
 		}
 	}
