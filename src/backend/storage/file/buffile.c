@@ -92,6 +92,7 @@ static void CompressedFileInit(CompressedFile *file, File inner)
 	memset(&file->sizes[0], 0, sizeof(file->sizes));
 	file->nblocks = 0;
 	file->buffnum = -1;
+	file->size = 0;
 }
 
 static void CompressedFileLoadBuffer(CompressedFile *file, off_t offset, uint32 wait_event_info)
@@ -113,8 +114,10 @@ static int	CompressedFileWrite(CompressedFile *file, char *buffer, int amount, o
 }
 static off_t CompressedFileSize(CompressedFile *file)
 {
-	return FileSize(file->inner);
-	return file->size;
+	off_t external = FileSize(file->inner);
+	if (file->size != external)
+		elog(WARNING, "%d != %d", file->size, external);
+	return external;
 }
 static int CompressedFileTruncate(CompressedFile *file, off_t offset, uint32 wait_event_info)
 {
@@ -376,6 +379,7 @@ BufFileOpenFileSet(FileSet *fileset, const char *name, int mode,
 		CompressedFileInit(&files[nfiles], FileSetOpen(fileset, segment_name, mode));
 		if (files[nfiles].inner <= 0)
 			break;
+		files[nfiles].size = FileSize(files[nfiles].inner);
 		++nfiles;
 
 		CHECK_FOR_INTERRUPTS();
