@@ -62,6 +62,18 @@
 #define MAX_PHYSICAL_FILESIZE	0x40000000
 #define BUFFILE_SEG_SIZE		(MAX_PHYSICAL_FILESIZE / BLCKSZ)
 
+typedef struct BlockInfo
+{
+	int32_t offset;
+	int32_t size;
+} BlockInfo;
+
+typedef struct CompressedFilePersistentState
+{
+	int32_t offset;
+	int32_t size;
+	BlockInfo	blocks[2047];
+} CompressedFilePersistentState;
 
 typedef struct CompressedFile
 {
@@ -69,10 +81,7 @@ typedef struct CompressedFile
 	PGAlignedBlock buffer;
 	int buffnum;
 	PGAlignedBlock compressed_buffer;
-	int	offsets[BUFFILE_SEG_SIZE];
-	int	sizes[BUFFILE_SEG_SIZE];
-	int nblocks;
-	int size;
+	CompressedFilePersistentState state;
 } CompressedFile;
 
 static void CompressedFileClose(CompressedFile *file)
@@ -82,17 +91,20 @@ static void CompressedFileClose(CompressedFile *file)
 
 static void CompressedFileInit(CompressedFile *file, File inner)
 {
+	Assert (sizeof(CompressedFilePersistentState)%BLCKSZ == 0);
 	file->inner = inner;
-	/*for (int i = 0; i < BUFFILE_SEG_SIZE; i++)
-	{
-		file->offsets[i] = 0;
-		file->sizes[i] = 0;
-	}*/
-	memset(&file->offsets[0], 0, sizeof(file->offsets));
-	memset(&file->sizes[0], 0, sizeof(file->sizes));
-	file->nblocks = 0;
+	memset(&file->state, 0, sizeof(CompressedFilePersistentState));
 	file->buffnum = -1;
-	file->size = 0;
+}
+
+static void CompressedFileSaveState(CompressedFile *file)
+{
+	FileWrite(file->inner, (char*)&file->state, sizeof(CompressedFilePersistentState), 0, PG_WAIT_IO);
+}
+
+static void CompressedFileLoadState(CompressedFile *file)
+{
+	FileRead(file->inner, (char*)&file->state, sizeof(CompressedFilePersistentState), 0, PG_WAIT_IO);
 }
 
 static void CompressedFileLoadBuffer(CompressedFile *file, off_t offset, uint32 wait_event_info)
@@ -100,28 +112,28 @@ static void CompressedFileLoadBuffer(CompressedFile *file, off_t offset, uint32 
 	off_t idx = offset / BLCKSZ;
 	if (file->buffnum == idx)
 		return;
-	FileRead(file->inner, file->compressed_buffer.data, file->sizes[idx], file->offsets[idx], wait_event_info);
+	FileRead(file->inner, file->compressed_buffer.data, file->state.blocks[idx].size, file->state.blocks[idx].offset, wait_event_info);
 }
 
 static int	CompressedFileRead(CompressedFile *file, char *buffer, int amount, off_t offset, uint32 wait_event_info)
 {
-	return FileRead(file->inner, buffer, amount, offset, wait_event_info);
+	return FileRead(file->inner, buffer, amount, offset + sizeof(CompressedFilePersistentState), wait_event_info);
 }
 static int	CompressedFileWrite(CompressedFile *file, char *buffer, int amount, off_t offset, uint32 wait_event_info)
 {
-	file->size = Max(file->size, offset + amount);
-	return FileWrite(file->inner, buffer, amount, offset, wait_event_info);
+	file->state.size = Max(file->state.size, offset + amount);
+	return FileWrite(file->inner, buffer, amount, offset + sizeof(CompressedFilePersistentState), wait_event_info);
 }
 static off_t CompressedFileSize(CompressedFile *file)
 {
 	off_t external = FileSize(file->inner);
-	if (file->size != external)
-		elog(WARNING, "%d != %d", file->size, external);
-	return external;
+	if (file->state.size + sizeof(CompressedFilePersistentState) != external)
+		elog(WARNING, "%d != %d", file->state.size, external);
+	return file->state.size;
 }
 static int CompressedFileTruncate(CompressedFile *file, off_t offset, uint32 wait_event_info)
 {
-	file->size = offset;
+	file->state.size = offset;
 	return FileTruncate(file->inner, offset, wait_event_info);
 }
 
@@ -379,7 +391,8 @@ BufFileOpenFileSet(FileSet *fileset, const char *name, int mode,
 		CompressedFileInit(&files[nfiles], FileSetOpen(fileset, segment_name, mode));
 		if (files[nfiles].inner <= 0)
 			break;
-		files[nfiles].size = FileSize(files[nfiles].inner);
+		CompressedFileLoadState(&files[nfiles]);
+		//files[nfiles].state.size = FileSize(files[nfiles].inner);
 		++nfiles;
 
 		CHECK_FOR_INTERRUPTS();
@@ -464,6 +477,10 @@ BufFileExportFileSet(BufFile *file)
 	Assert(!file->readOnly);
 
 	BufFileFlush(file);
+	for (int i = 0; i < file->numFiles; i++)
+	{
+		CompressedFileSaveState(&file->files[i]);
+	}
 	file->readOnly = true;
 }
 
@@ -481,7 +498,10 @@ BufFileClose(BufFile *file)
 	BufFileFlush(file);
 	/* close and delete the underlying file(s) */
 	for (i = 0; i < file->numFiles; i++)
+	{
+		CompressedFileSaveState(&file->files[i]);
 		CompressedFileClose(&file->files[i]);
+	}
 	/* release the buffer space */
 	pfree(file->files);
 	pfree(file);
