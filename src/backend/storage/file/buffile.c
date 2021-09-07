@@ -72,7 +72,7 @@ typedef struct CompressedFilePersistentState
 {
 	int32_t offset;
 	int32_t size;
-	BlockInfo	blocks[2047];
+	BlockInfo	blocks[8192 - 1];
 } CompressedFilePersistentState;
 
 typedef struct CompressedFile
@@ -80,6 +80,7 @@ typedef struct CompressedFile
 	File inner;
 	PGAlignedBlock buffer;
 	int buffnum;
+	bool dirty;
 	PGAlignedBlock compressed_buffer;
 	CompressedFilePersistentState state;
 } CompressedFile;
@@ -95,10 +96,27 @@ static void CompressedFileInit(CompressedFile *file, File inner)
 	file->inner = inner;
 	memset(&file->state, 0, sizeof(CompressedFilePersistentState));
 	file->buffnum = -1;
+	file->dirty = false;
+}
+
+static void CompressedFileStoreBuffer(CompressedFile *file, uint32 wait_event_info)
+{
+	if (!file->dirty)
+		return;
+	//elog(WARNING, "CompressedFileStoreBuffer at %d", file->buffnum);
+	int size = LZ4_compress_default(file->buffer.data, file->compressed_buffer.data, BLCKSZ, BLCKSZ);
+	//elog(WARNING, "result %d", size);
+	FileWrite(file->inner, file->compressed_buffer.data, size, file->state.offset + sizeof(CompressedFilePersistentState), wait_event_info);
+
+	file->state.blocks[file->buffnum].offset = file->state.offset;
+	file->state.blocks[file->buffnum].size = size;
+	file->state.offset += size;
+	file->dirty = false;
 }
 
 static void CompressedFileSaveState(CompressedFile *file)
 {
+	CompressedFileStoreBuffer(file, PG_WAIT_IO);
 	FileWrite(file->inner, (char*)&file->state, sizeof(CompressedFilePersistentState), 0, PG_WAIT_IO);
 }
 
@@ -109,20 +127,63 @@ static void CompressedFileLoadState(CompressedFile *file)
 
 static void CompressedFileLoadBuffer(CompressedFile *file, off_t offset, uint32 wait_event_info)
 {
+	//elog(WARNING, "CompressedFileLoadBuffer at %d", offset);
 	off_t idx = offset / BLCKSZ;
 	if (file->buffnum == idx)
 		return;
-	FileRead(file->inner, file->compressed_buffer.data, file->state.blocks[idx].size, file->state.blocks[idx].offset, wait_event_info);
+	CompressedFileStoreBuffer(file, wait_event_info);
+	FileRead(file->inner, file->compressed_buffer.data, file->state.blocks[idx].size, file->state.blocks[idx].offset + sizeof(CompressedFilePersistentState), wait_event_info);
+	int result = BLCKSZ;
+	if (file->state.blocks[idx].size != 0)
+		result = LZ4_decompress_safe(file->compressed_buffer.data, file->buffer.data, file->state.blocks[idx].size, BLCKSZ);
+	else
+		memset(file->buffer.data, 0, BLCKSZ);
+	
+	//elog(WARNING, "result %d", result);
+	if (result != BLCKSZ)
+		elog(ERROR, "Broken compressed block %d size %d", idx, file->state.blocks[idx].size);
+	file->buffnum = idx;
+	if (idx >= 2047)
+		elog(ERROR, "too big for prototype");
+	file->dirty = false;
 }
 
 static int	CompressedFileRead(CompressedFile *file, char *buffer, int amount, off_t offset, uint32 wait_event_info)
 {
-	return FileRead(file->inner, buffer, amount, offset + sizeof(CompressedFilePersistentState), wait_event_info);
+	//elog(WARNING, "CompressedFileRead %d at %d", amount, offset);
+	int result = amount;
+	do
+	{
+		CompressedFileLoadBuffer(file, offset, wait_event_info);
+		size_t local_offset = offset % BLCKSZ;
+		size_t bytes = Min(amount, BLCKSZ - local_offset);
+		memcpy(buffer, file->buffer.data + local_offset, bytes);
+		buffer += bytes;
+		offset += bytes;
+		amount -= bytes;
+	} while (amount > 0);
+	return result;
 }
 static int	CompressedFileWrite(CompressedFile *file, char *buffer, int amount, off_t offset, uint32 wait_event_info)
 {
+	//elog(WARNING, "CompressedFileWrite %d at %d", amount, offset);
+	int result = amount;
 	file->state.size = Max(file->state.size, offset + amount);
-	return FileWrite(file->inner, buffer, amount, offset + sizeof(CompressedFilePersistentState), wait_event_info);
+
+	do
+	{
+		CompressedFileLoadBuffer(file, offset, wait_event_info);
+		size_t local_offset = offset % BLCKSZ;
+		size_t bytes = Min(amount, BLCKSZ - local_offset);
+		memcpy(file->buffer.data + local_offset, buffer, bytes);
+		buffer += bytes;
+		offset += bytes;
+		amount -= bytes;
+		//elog(WARNING, "changed %d bytes", bytes);
+		file->dirty = true;
+	} while (amount > 0);
+	CompressedFileStoreBuffer(file, wait_event_info);
+	return result;
 }
 static off_t CompressedFileSize(CompressedFile *file)
 {
