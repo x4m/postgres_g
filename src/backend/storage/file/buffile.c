@@ -68,11 +68,13 @@ typedef struct BlockInfo
 	int32_t size;
 } BlockInfo;
 
+#define COMPRESSED_DIR_SIZE 65536 - 1
+
 typedef struct CompressedFilePersistentState
 {
 	int32_t offset;
 	int32_t size;
-	BlockInfo	blocks[8192 - 1];
+	BlockInfo	blocks[COMPRESSED_DIR_SIZE];
 } CompressedFilePersistentState;
 
 typedef struct CompressedFile
@@ -129,13 +131,20 @@ static void CompressedFileLoadBuffer(CompressedFile *file, off_t offset, uint32 
 {
 	//elog(WARNING, "CompressedFileLoadBuffer at %d", offset);
 	off_t idx = offset / BLCKSZ;
+	if (idx >= COMPRESSED_DIR_SIZE)
+		elog(ERROR, "too big for prototype offset %d", offset);
 	if (file->buffnum == idx)
 		return;
 	CompressedFileStoreBuffer(file, wait_event_info);
-	FileRead(file->inner, file->compressed_buffer.data, file->state.blocks[idx].size, file->state.blocks[idx].offset + sizeof(CompressedFilePersistentState), wait_event_info);
 	int result = BLCKSZ;
 	if (file->state.blocks[idx].size != 0)
+	{
+		Assert(file->state.blocks[idx].size <= BLCKSZ);
+		int sz = FileRead(file->inner, file->compressed_buffer.data, file->state.blocks[idx].size, file->state.blocks[idx].offset + sizeof(CompressedFilePersistentState), wait_event_info);
+		if (sz != file->state.blocks[idx].size)
+			elog(ERROR, "Error reading %d bytes", file->state.blocks[idx].size);
 		result = LZ4_decompress_safe(file->compressed_buffer.data, file->buffer.data, file->state.blocks[idx].size, BLCKSZ);
+	}
 	else
 		memset(file->buffer.data, 0, BLCKSZ);
 	
@@ -143,8 +152,6 @@ static void CompressedFileLoadBuffer(CompressedFile *file, off_t offset, uint32 
 	if (result != BLCKSZ)
 		elog(ERROR, "Broken compressed block %d size %d", idx, file->state.blocks[idx].size);
 	file->buffnum = idx;
-	if (idx >= 2047)
-		elog(ERROR, "too big for prototype");
 	file->dirty = false;
 }
 
@@ -187,9 +194,9 @@ static int	CompressedFileWrite(CompressedFile *file, char *buffer, int amount, o
 }
 static off_t CompressedFileSize(CompressedFile *file)
 {
-	off_t external = FileSize(file->inner);
-	if (file->state.size + sizeof(CompressedFilePersistentState) != external)
-		elog(WARNING, "%d != %d", file->state.size, external);
+	//off_t external = FileSize(file->inner);
+	//if (file->state.size + sizeof(CompressedFilePersistentState) != external)
+	//	elog(WARNING, "%d != %d", file->state.size, external);
 	return file->state.size;
 }
 static int CompressedFileTruncate(CompressedFile *file, off_t offset, uint32 wait_event_info)
