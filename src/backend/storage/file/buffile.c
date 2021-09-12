@@ -189,7 +189,7 @@ static int	CompressedFileWrite(CompressedFile *file, char *buffer, int amount, o
 		//elog(WARNING, "changed %d bytes", bytes);
 		file->dirty = true;
 	} while (amount > 0);
-	CompressedFileStoreBuffer(file, wait_event_info);
+	//CompressedFileStoreBuffer(file, wait_event_info);
 	return result;
 }
 static off_t CompressedFileSize(CompressedFile *file)
@@ -202,7 +202,8 @@ static off_t CompressedFileSize(CompressedFile *file)
 static int CompressedFileTruncate(CompressedFile *file, off_t offset, uint32 wait_event_info)
 {
 	file->state.size = offset;
-	return FileTruncate(file->inner, offset, wait_event_info);
+	CompressedFileLoadBuffer(file, offset, PG_WAIT_IO);
+	//return FileTruncate(file->inner, offset, wait_event_info);
 }
 
 static char *CompressedFilePathName(CompressedFile *file)
