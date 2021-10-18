@@ -141,7 +141,7 @@ $node->safe_psql('postgres', q(REINDEX TABLE CONCURRENTLY tbl;));
 my $pgbench_out   = '';
 my $pgbench_timer = IPC::Run::timeout(180);
 my $pgbench_h     = $node->background_pgbench(
-	'--no-vacuum --client=1 --transactions=100',
+	'--no-vacuum --client=1 --time=100',
 	{
 		'002_pgbench_concurrent_cic' => q(
 			REINDEX INDEX CONCURRENTLY idx;
@@ -153,7 +153,7 @@ my $pgbench_h     = $node->background_pgbench(
 
 # Run pgbench.
 $node->pgbench(
-	'--no-vacuum --client=5 --transactions=100',
+	'--no-vacuum --client=5 --time=100',
 	0,
 	[qr{actually processed}],
 	[qr{^$}],
