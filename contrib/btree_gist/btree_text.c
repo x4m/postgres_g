@@ -260,6 +260,10 @@ gbt_text_sortsupport(PG_FUNCTION_ARGS)
 {
 	SortSupport ssup = (SortSupport) PG_GETARG_POINTER(0);
 
+	/*
+	 * Text has abbreviation routines in varlena.c, but we don't try to use
+	 * them here. Maybe later.
+	 */
 	ssup->comparator = gbt_text_sort_build_cmp;
 	ssup->abbrev_converter = NULL;
 	ssup->abbrev_abort = NULL;
