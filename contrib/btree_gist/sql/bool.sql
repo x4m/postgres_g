@@ -16,11 +16,9 @@ SELECT count(*) FROM booltmp WHERE a >= true;
 
 SELECT count(*) FROM booltmp WHERE a >  true;
 
-SET client_min_messages = DEBUG1;
 CREATE INDEX boolidx ON booltmp USING gist ( a );
 CREATE INDEX boolidx_b ON booltmp USING gist ( a ) WITH (buffering=on);
 DROP INDEX boolidx_b;
-RESET client_min_messages;
 
 SET enable_seqscan=off;
 
