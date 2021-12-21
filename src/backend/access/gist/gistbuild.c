@@ -120,7 +120,11 @@ typedef struct
  */
 typedef struct GistSortedBuildPageState
 {
-	Page		page;
+	Page		pages_candidates[128];
+	Page		union_tuples;
+	int			pages_count;
+	int			ages[128];
+	int			current_age;
 	struct GistSortedBuildPageState *parent;	/* Upper level, if any */
 } GistSortedBuildPageState;
 
@@ -134,7 +138,9 @@ static void gist_indexsortbuild_pagestate_add(GISTBuildState *state,
 											  GistSortedBuildPageState *pagestate,
 											  IndexTuple itup);
 static void gist_indexsortbuild_pagestate_flush(GISTBuildState *state,
-												GistSortedBuildPageState *pagestate);
+												GistSortedBuildPageState *pagestate, int index);
+static void gist_indexsortbuild_pagestate_check_flush(GISTBuildState *state,
+												GistSortedBuildPageState *pagestate, int max_pages_left);
 static void gist_indexsortbuild_flush_ready_pages(GISTBuildState *state);
 
 static void gistInitBuffering(GISTBuildState *buildstate);
@@ -415,10 +421,14 @@ gist_indexsortbuild(GISTBuildState *state)
 	state->pages_written++;
 
 	/* Allocate a temporary buffer for the first leaf page. */
-	leafstate = palloc(sizeof(GistSortedBuildPageState));
-	leafstate->page = page;
+	leafstate = palloc0(sizeof(GistSortedBuildPageState));
+	leafstate->pages_candidates[0] = page;
+	leafstate->pages_count = 1;
 	leafstate->parent = NULL;
 	gistinitpage(page, F_LEAF);
+
+	leafstate->union_tuples = palloc0(BLCKSZ);
+	gistinitpage(leafstate->union_tuples, 0);
 
 	/*
 	 * Fill index pages with tuples in the sorted order.
@@ -435,13 +445,13 @@ gist_indexsortbuild(GISTBuildState *state)
 	 * Keep in mind that flush can build a new root.
 	 */
 	pagestate = leafstate;
-	while (pagestate->parent != NULL)
+	while (pagestate->pages_count != 1)
 	{
 		GistSortedBuildPageState *parent;
 
-		gist_indexsortbuild_pagestate_flush(state, pagestate);
+		gist_indexsortbuild_pagestate_check_flush(state, pagestate, 0);
 		parent = pagestate->parent;
-		pfree(pagestate->page);
+		//pfree(pagestate->page);
 		pfree(pagestate);
 		pagestate = parent;
 	}
@@ -449,15 +459,15 @@ gist_indexsortbuild(GISTBuildState *state)
 	gist_indexsortbuild_flush_ready_pages(state);
 
 	/* Write out the root */
-	PageSetLSN(pagestate->page, GistBuildLSN);
-	PageSetChecksumInplace(pagestate->page, GIST_ROOT_BLKNO);
+	PageSetLSN(pagestate->pages_candidates[0], GistBuildLSN);
+	PageSetChecksumInplace(pagestate->pages_candidates[0], GIST_ROOT_BLKNO);
 	smgrwrite(RelationGetSmgr(state->indexrel), MAIN_FORKNUM, GIST_ROOT_BLKNO,
-			  pagestate->page, true);
+			  pagestate->pages_candidates[0], true);
 	if (RelationNeedsWAL(state->indexrel))
 		log_newpage(&state->indexrel->rd_node, MAIN_FORKNUM, GIST_ROOT_BLKNO,
-					pagestate->page, true);
+					pagestate->pages_candidates[0], true);
 
-	pfree(pagestate->page);
+	//pfree(pagestate->page);
 	pfree(pagestate);
 }
 
@@ -470,27 +480,113 @@ gist_indexsortbuild_pagestate_add(GISTBuildState *state,
 								  GistSortedBuildPageState *pagestate,
 								  IndexTuple itup)
 {
-	Size		sizeNeeded;
+	if (PageIsEmpty(pagestate->union_tuples))
+	{
+		Assert(pagestate->pages_count == 1);
+		gistfillbuffer(pagestate->pages_candidates[0], &itup, 1, InvalidOffsetNumber);
+		gistfillbuffer(pagestate->union_tuples, &itup, 1, InvalidOffsetNumber);
+		return;
+	}
 
-	/* Does the tuple fit? If not, flush */
-	sizeNeeded = IndexTupleSize(itup) + sizeof(ItemIdData) + state->freespace;
-	if (PageGetFreeSpace(pagestate->page) < sizeNeeded)
-		gist_indexsortbuild_pagestate_flush(state, pagestate);
+	do
+	{
+		int		idx = gistchoose(state->indexrel, pagestate->union_tuples, itup, state->giststate) - FirstOffsetNumber;
+		Page	target = pagestate->pages_candidates[idx];
+		uint32	flags = GistPageIsLeaf(target)? F_LEAF : 0;
+		Size	sizeNeeded;
+		int		i;
 
-	gistfillbuffer(pagestate->page, &itup, 1, InvalidOffsetNumber);
+		/* Does the tuple fit? If not, split */
+		sizeNeeded = IndexTupleSize(itup) + sizeof(ItemIdData) + state->freespace;
+		if (PageGetFreeSpace(target) < sizeNeeded)
+		{
+			int			tlen;
+			IndexTuple *itvec = gistextractpage(target, &tlen);
+			SplitedPageLayout *dist = gistSplit(state->indexrel, target, itvec, tlen, state->giststate);
+			memset(target, 0 , BLCKSZ);
+			gistinitpage(target, flags);
+
+			char	   *data = (char *) (dist->list);
+
+			for (i = 0; i < dist->block.num; i++)
+			{
+				IndexTuple	thistup = (IndexTuple) data;
+
+				if (PageAddItem(target, (Item) data, IndexTupleSize(thistup), i + FirstOffsetNumber, false, false) == InvalidOffsetNumber)
+					elog(ERROR, "failed to add item to index page in \"%s\"", RelationGetRelationName(state->indexrel));
+
+				data += IndexTupleSize(thistup);
+			}
+			PageIndexTupleOverwrite(pagestate->union_tuples, idx + FirstOffsetNumber, (Item)dist->itup, IndexTupleSize(dist->itup));
+			dist = dist->next;
+
+			for (;dist != NULL; dist = dist->next)
+			{
+				data = (char *) (dist->list);
+				target = pagestate->pages_candidates[pagestate->pages_count] = palloc0(BLCKSZ);
+				pagestate->ages[pagestate->pages_count] = pagestate->current_age;
+				gistinitpage(target, flags);
+				for (i = 0; i < dist->block.num; i++)
+				{
+					IndexTuple	thistup = (IndexTuple) data;
+
+					if (PageAddItem(target, (Item) data, IndexTupleSize(thistup), i + FirstOffsetNumber, false, false) == InvalidOffsetNumber)
+						elog(ERROR, "failed to add item to index page in \"%s\"", RelationGetRelationName(state->indexrel));
+
+					data += IndexTupleSize(thistup);
+				}
+				gistfillbuffer(pagestate->union_tuples, &dist->itup, 1, InvalidOffsetNumber);
+				pagestate->pages_count++;
+			}
+
+			continue;
+		}
+
+		gistfillbuffer(pagestate->pages_candidates[idx], &itup, 1, InvalidOffsetNumber);
+		pagestate->ages[idx] = pagestate->current_age++;
+
+		IndexTuple union_tuple = (IndexTuple) PageGetItem(pagestate->union_tuples, PageGetItemId(pagestate->union_tuples, idx + FirstOffsetNumber));
+		IndexTuple newtup = gistgetadjusted(state->indexrel, union_tuple, itup, state->giststate);
+		if (newtup)
+		{
+			PageIndexTupleOverwrite(pagestate->union_tuples, idx + FirstOffsetNumber, (Item)newtup, IndexTupleSize(newtup));
+		}
+		break;
+	} while(true);
+
+	gist_indexsortbuild_pagestate_check_flush(state, pagestate, 4);
+}
+
+static void
+gist_indexsortbuild_pagestate_check_flush(GISTBuildState *state,
+									GistSortedBuildPageState *pagestate, int max_pages_left)
+{
+	while(pagestate->pages_count > max_pages_left)
+	{
+		int i;
+		int min_age = PG_INT32_MAX;
+		int victim = -1;
+		for (i = 0; i < pagestate->pages_count; i++)
+		{
+			if (pagestate->ages[i] < min_age)
+			{
+				victim = i;
+				min_age = pagestate->ages[i];
+			}
+		}
+		gist_indexsortbuild_pagestate_flush(state, pagestate, victim);
+	}
 }
 
 static void
 gist_indexsortbuild_pagestate_flush(GISTBuildState *state,
-									GistSortedBuildPageState *pagestate)
+									GistSortedBuildPageState *pagestate, int index)
 {
 	GistSortedBuildPageState *parent;
-	IndexTuple *itvec;
 	IndexTuple	union_tuple;
-	int			vect_len;
 	bool		isleaf;
 	BlockNumber blkno;
-	MemoryContext oldCtx;
+	int			i;
 
 	/* check once per page */
 	CHECK_FOR_INTERRUPTS();
@@ -505,20 +601,16 @@ gist_indexsortbuild_pagestate_flush(GISTBuildState *state,
 	 */
 	blkno = state->pages_allocated++;
 	state->ready_blknos[state->ready_num_pages] = blkno;
-	state->ready_pages[state->ready_num_pages] = pagestate->page;
+	state->ready_pages[state->ready_num_pages] = pagestate->pages_candidates[index];
 	state->ready_num_pages++;
 
-	isleaf = GistPageIsLeaf(pagestate->page);
+	isleaf = GistPageIsLeaf(pagestate->pages_candidates[index]);
 
 	/*
 	 * Form a downlink tuple to represent all the tuples on the page.
 	 */
-	oldCtx = MemoryContextSwitchTo(state->giststate->tempCxt);
-	itvec = gistextractpage(pagestate->page, &vect_len);
-	union_tuple = gistunion(state->indexrel, itvec, vect_len,
-							state->giststate);
+	union_tuple = (IndexTuple) PageGetItem(pagestate->union_tuples, PageGetItemId(pagestate->union_tuples, index + FirstOffsetNumber));
 	ItemPointerSetBlockNumber(&(union_tuple->t_tid), blkno);
-	MemoryContextSwitchTo(oldCtx);
 
 	/*
 	 * Insert the downlink to the parent page. If this was the root, create a
@@ -527,18 +619,28 @@ gist_indexsortbuild_pagestate_flush(GISTBuildState *state,
 	parent = pagestate->parent;
 	if (parent == NULL)
 	{
-		parent = palloc(sizeof(GistSortedBuildPageState));
-		parent->page = (Page) palloc(BLCKSZ);
+		parent = palloc0(sizeof(GistSortedBuildPageState));
+		parent->pages_candidates[0] = (Page) palloc(BLCKSZ);
+		parent->pages_count = 1;
 		parent->parent = NULL;
-		gistinitpage(parent->page, 0);
+		gistinitpage(parent->pages_candidates[0], 0);
+
+		parent->union_tuples = palloc0(BLCKSZ);
+		gistinitpage(parent->union_tuples, 0);
 
 		pagestate->parent = parent;
 	}
 	gist_indexsortbuild_pagestate_add(state, parent, union_tuple);
 
-	/* Re-initialize the page buffer for next page on this level. */
-	pagestate->page = palloc(BLCKSZ);
-	gistinitpage(pagestate->page, isleaf ? F_LEAF : 0);
+	/* Cleanup page from leftovers */
+	for (i = index + 1; i < pagestate->pages_count; i++)
+	{
+		pagestate->ages[i - 1] = pagestate->ages[i];
+		pagestate->pages_candidates[i - 1] = pagestate->pages_candidates[i];
+	}
+	pagestate->pages_count--;
+
+	PageIndexTupleDelete(pagestate->union_tuples, index + FirstOffsetNumber);
 
 	/*
 	 * Set the right link to point to the previous page. This is just for
@@ -551,7 +653,7 @@ gist_indexsortbuild_pagestate_flush(GISTBuildState *state,
 	 * right-links form a chain through all the pages in the same level, the
 	 * order doesn't matter.
 	 */
-	GistPageGetOpaque(pagestate->page)->rightlink = blkno;
+	//GistPageGetOpaque(pagestate->page)->rightlink = blkno;
 }
 
 static void
