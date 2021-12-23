@@ -482,13 +482,13 @@ gist_indexsortbuild_pagestate_add(GISTBuildState *state,
 		Page newPage;
 		Page old_page = pagestate->pages[pagestate->current_page];
 		uint16 old_page_flags = GistPageGetOpaque(old_page)->flags;
-		pagestate->current_page++;
-		if (pagestate->current_page == 8)
+		if (pagestate->current_page + 1 == 8)
 			gist_indexsortbuild_pagestate_flush(state, pagestate);
-		else if (pagestate->pages[pagestate->current_page] == NULL)
-		{
+		else
+			pagestate->current_page++;
+		
+		if (pagestate->pages[pagestate->current_page] == NULL)
 			pagestate->pages[pagestate->current_page] = palloc(BLCKSZ);
-		}
 
 		newPage = pagestate->pages[pagestate->current_page];
 		gistinitpage(newPage, old_page_flags);
@@ -502,27 +502,31 @@ gist_indexsortbuild_pagestate_flush(GISTBuildState *state,
 									GistSortedBuildPageState *pagestate)
 {
 	GistSortedBuildPageState *parent;
-	IndexTuple *itvec = NULL;
-	IndexTuple	union_tuple;
-	int			vect_len = 0;
-	bool		isleaf = GistPageIsLeaf(pagestate->pages[0]);;
-	BlockNumber blkno;
+	BlockNumber	blkno;
 	MemoryContext oldCtx;
+	IndexTuple union_tuple;
+	SplitedPageLayout *dist;
+	IndexTuple *itvec;
+	int vect_len;
+	bool isleaf = GistPageIsLeaf(pagestate->pages[0]);
 
 	/* check once per whatever */
 	CHECK_FOR_INTERRUPTS();
 
+	oldCtx = MemoryContextSwitchTo(state->giststate->tempCxt);
+
 	itvec = gistextractpage(pagestate->pages[0], &vect_len);
-	for (int i = 1; i < pagestate->current_page; i++)
+	for (int i = 1; i < pagestate->current_page + 1; i++)
 	{
 		int len_local;
 		IndexTuple *itvec_local = gistextractpage(pagestate->pages[i], &len_local);
 		itvec = gistjoinvector(itvec, &vect_len, itvec_local, len_local);
-		pfree(itvec_local);
 	}
 	pagestate->current_page = 0;
 
-	SplitedPageLayout *dist = gistSplit(state->indexrel, pagestate->pages[0], itvec, vect_len, state->giststate);
+	dist = gistSplit(state->indexrel, pagestate->pages[0], itvec, vect_len, state->giststate);
+
+	MemoryContextSwitchTo(oldCtx);
 
 	for (;dist != NULL; dist = dist->next)
 	{
