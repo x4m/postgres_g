@@ -436,7 +436,7 @@ gist_indexsortbuild(GISTBuildState *state)
 	 * Keep in mind that flush can build a new root.
 	 */
 	pagestate = leafstate;
-	while (pagestate->current_page != 0)
+	while (pagestate->parent != NULL || pagestate->current_page != 0)
 	{
 		GistSortedBuildPageState *parent;
 
