@@ -44,13 +44,21 @@
  * in the latter case it implies that the page has been re-dirtied since
  * the write started.
  */
-typedef enum
+typedef enum SlruPageStatus
 {
 	SLRU_PAGE_EMPTY,			/* buffer is not in use */
 	SLRU_PAGE_READ_IN_PROGRESS, /* page is being read in */
 	SLRU_PAGE_VALID,			/* page is valid and not being written */
 	SLRU_PAGE_WRITE_IN_PROGRESS /* page is being written out */
 } SlruPageStatus;
+
+typedef struct SlruPageEntry
+{
+	int32	page_number;
+	char	page_status;
+	bool	page_dirty;
+	uint16	padding;
+} SlruPageEntry;
 
 /*
  * Shared-memory state
@@ -69,9 +77,7 @@ typedef struct SlruSharedData
 	 * when status is EMPTY, as is page_lru_count.
 	 */
 	char	  **page_buffer;
-	SlruPageStatus *page_status;
-	bool	   *page_dirty;
-	int		   *page_number;
+	SlruPageEntry *page_entries;
 	int		   *page_lru_count;
 	LWLockPadded *buffer_locks;
 

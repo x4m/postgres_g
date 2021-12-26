@@ -1445,7 +1445,7 @@ asyncQueueAddEntries(ListCell *nextNotify)
 								   InvalidTransactionId);
 
 	/* Note we mark the page dirty before writing in it */
-	NotifyCtl->shared->page_dirty[slotno] = true;
+	NotifyCtl->shared->page_entries[slotno].page_dirty = true;
 
 	while (nextNotify != NULL)
 	{

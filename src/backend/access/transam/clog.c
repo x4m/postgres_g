@@ -375,7 +375,7 @@ TransactionIdSetPageStatusInternal(TransactionId xid, int nsubxids,
 		{
 			for (i = 0; i < nsubxids; i++)
 			{
-				Assert(XactCtl->shared->page_number[slotno] == TransactionIdToPage(subxids[i]));
+				Assert(XactCtl->shared->page_entries[slotno].page_number == TransactionIdToPage(subxids[i]));
 				TransactionIdSetStatusBit(subxids[i],
 										  TRANSACTION_STATUS_SUB_COMMITTED,
 										  lsn, slotno);
@@ -389,11 +389,11 @@ TransactionIdSetPageStatusInternal(TransactionId xid, int nsubxids,
 	/* Set the subtransactions */
 	for (i = 0; i < nsubxids; i++)
 	{
-		Assert(XactCtl->shared->page_number[slotno] == TransactionIdToPage(subxids[i]));
+		Assert(XactCtl->shared->page_entries[slotno].page_number == TransactionIdToPage(subxids[i]));
 		TransactionIdSetStatusBit(subxids[i], status, lsn, slotno);
 	}
 
-	XactCtl->shared->page_dirty[slotno] = true;
+	XactCtl->shared->page_entries[slotno].page_dirty = true;
 }
 
 /*
@@ -713,7 +713,7 @@ BootStrapCLOG(void)
 
 	/* Make sure it's written out */
 	SimpleLruWritePage(XactCtl, slotno);
-	Assert(!XactCtl->shared->page_dirty[slotno]);
+	Assert(!XactCtl->shared->page_entries[slotno].page_dirty);
 
 	LWLockRelease(XactSLRULock);
 }
@@ -798,7 +798,7 @@ TrimCLOG(void)
 		/* Zero the rest of the page */
 		MemSet(byteptr + 1, 0, BLCKSZ - byteno - 1);
 
-		XactCtl->shared->page_dirty[slotno] = true;
+		XactCtl->shared->page_entries[slotno].page_dirty = true;
 	}
 
 	LWLockRelease(XactSLRULock);
@@ -994,7 +994,7 @@ clog_redo(XLogReaderState *record)
 
 		slotno = ZeroCLOGPage(pageno, false);
 		SimpleLruWritePage(XactCtl, slotno);
-		Assert(!XactCtl->shared->page_dirty[slotno]);
+		Assert(!XactCtl->shared->page_entries[slotno].page_dirty);
 
 		LWLockRelease(XactSLRULock);
 	}
