@@ -97,7 +97,7 @@ SubTransSetParent(TransactionId xid, TransactionId parent)
 	{
 		Assert(*ptr == InvalidTransactionId);
 		*ptr = parent;
-		SubTransCtl->shared->page_dirty[slotno] = true;
+		SubTransCtl->shared->page_entries[slotno].page_dirty = true;
 	}
 
 	LWLockRelease(SubtransSLRULock);
@@ -220,7 +220,7 @@ BootStrapSUBTRANS(void)
 
 	/* Make sure it's written out */
 	SimpleLruWritePage(SubTransCtl, slotno);
-	Assert(!SubTransCtl->shared->page_dirty[slotno]);
+	Assert(!SubTransCtl->shared->page_entries[slotno].page_dirty);
 
 	LWLockRelease(SubtransSLRULock);
 }
