@@ -805,6 +805,7 @@
 #include_if_exists = '...'		# include file only if it exists
 #include = '...'			# include file
 
+libpq_compression = off
 
 #------------------------------------------------------------------------------
 # CUSTOMIZED OPTIONS
