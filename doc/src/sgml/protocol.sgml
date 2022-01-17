@@ -92,6 +92,15 @@
    such as <command>COPY</command>.
   </para>
 
+  <para>
+    It is possible to compress protocol data to reduce traffic and speed-up client-server interaction.
+    Compression is especially useful for importing/exporting data to/from the database using the <literal>COPY</literal> command
+    and for replication (both physical and logical). Compression can also reduce the server's response time
+    for queries returning a large amount of data (for example, JSON, BLOBs, text, ...).
+    Currently, two libraries are supported: zlib (default) and lz4 (if Postgres was
+    configured with --with-lz4 option).
+  </para>
+
  <sect2 id="protocol-message-concepts">
   <title>Messaging Overview</title>
 
@@ -258,6 +267,21 @@
        <para>
         The connection attempt has been rejected.
         The server then immediately closes the connection.
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term>CompressionAck</term>
+      <listitem>
+       <para>
+         The server accepts the client's compression request.
+         Compression is requested when a client connection includes the "compression" option, which contains a list of the requested compression algorithms.
+         The server intersects the requested compression algorithms with the allowed ones (controlled via the <literal>libpq_compression</literal> server config setting).
+         If the intersection is not empty, the server responds with CompressionAck containing the final list of the compression algorithms that can be used for the compression of libpq messages between the client and server.
+         If the intersection is empty (server does not accept any of the requested algorithms), then it replies with CompressionAck containing the empty list and it is up to the client whether to continue without compression or to report an error.
+         After sending the CompressionAck message, the server can send the SetCompressionMethod message to set the current compression algorithm for server-to-client traffic compression.
+         After receiving the CompressionAck message, the client can send the SetCompressionMethod message to set the current compression algorithm for client-to-server traffic compression.
        </para>
       </listitem>
      </varlistentry>
@@ -7414,6 +7438,3633 @@ psql "dbname=postgres replication=database" -c "IDENTIFY_SYSTEM;"
    potential security hole, since it does not offer direct access to internal
    server data representations.
   </para>
+ </sect2>
+</sect1>
+
+<sect1 id="protocol-message-types">
+<title>Message Data Types</title>
+
+<para>
+This section describes the base data types used in messages.
+
+<variablelist>
+
+<varlistentry>
+<term>
+        Int<replaceable>n</replaceable>(<replaceable>i</replaceable>)
+</term>
+<listitem>
+<para>
+                An <replaceable>n</replaceable>-bit integer in network byte
+                order (most significant byte first).
+                If <replaceable>i</replaceable> is specified it
+                is the exact value that will appear, otherwise the value
+                is variable.  Eg. Int16, Int32(42).
+</para>
+</listitem>
+</varlistentry>
+
+<varlistentry>
+<term>
+        Int<replaceable>n</replaceable>[<replaceable>k</replaceable>]
+</term>
+<listitem>
+<para>
+                An array of <replaceable>k</replaceable>
+                <replaceable>n</replaceable>-bit integers, each in network
+                byte order.  The array length <replaceable>k</replaceable>
+                is always determined by an earlier field in the message.
+                Eg. Int16[M].
+</para>
+</listitem>
+</varlistentry>
+
+<varlistentry>
+<term>
+        String(<replaceable>s</replaceable>)
+</term>
+<listitem>
+<para>
+                A null-terminated string (C-style string).  There is no
+                specific length limitation on strings.
+                If <replaceable>s</replaceable> is specified it is the exact
+                value that will appear, otherwise the value is variable.
+                Eg. String, String("user").
+</para>
+
+<note>
+<para>
+<emphasis>There is no predefined limit</emphasis> on the length of a string
+that can be returned by the backend.  Good coding strategy for a frontend
+is to use an expandable buffer so that anything that fits in memory can be
+accepted.  If that's not feasible, read the full string and discard trailing
+characters that don't fit into your fixed-size buffer.
+</para>
+</note>
+</listitem>
+</varlistentry>
+
+<varlistentry>
+<term>
+        Byte<replaceable>n</replaceable>(<replaceable>c</replaceable>)
+</term>
+<listitem>
+<para>
+                Exactly <replaceable>n</replaceable> bytes.  If the field
+                width <replaceable>n</replaceable> is not a constant, it is
+                always determinable from an earlier field in the message.
+                If <replaceable>c</replaceable> is specified it is the exact
+                value.  Eg. Byte2, Byte1('\n').
+</para>
+</listitem>
+</varlistentry>
+
+</variablelist>
+</para>
+</sect1>
+
+<sect1 id="protocol-message-formats">
+<title>Message Formats</title>
+
+<para>
+This section describes the detailed format of each message.  Each is marked to
+indicate that it can be sent by a frontend (F), a backend (B), or both
+(F &amp; B).
+Notice that although each message includes a byte count at the beginning,
+the message format is defined so that the message end can be found without
+reference to the byte count.  This aids validity checking.  (The CopyData
+message is an exception, because it forms part of a data stream; the contents
+of any individual CopyData message cannot be interpretable on their own.)
+</para>
+
+<variablelist>
+
+
+<varlistentry>
+<term>
+AuthenticationOk (B)
+</term>
+<listitem>
+<para>
+
+<variablelist>
+<varlistentry>
+<term>
+        Byte1('R')
+</term>
+<listitem>
+<para>
+                Identifies the message as an authentication request.
+</para>
+</listitem>
+</varlistentry>
+<varlistentry>
+<term>
+        Int32(8)
+</term>
+<listitem>
+<para>
+                Length of message contents in bytes, including self.
+</para>
+</listitem>
+</varlistentry>
+<varlistentry>
+<term>
+        Int32(0)
+</term>
+<listitem>
+<para>
+                Specifies that the authentication was successful.
+</para>
+</listitem>
+</varlistentry>
+</variablelist>
+
+</para>
+</listitem>
+</varlistentry>
+
+
+<varlistentry>
+<term>
+AuthenticationKerberosV5 (B)
+</term>
+<listitem>
+<para>
+
+<variablelist>
+<varlistentry>
+<term>
+        Byte1('R')
+</term>
+<listitem>
+<para>
+                Identifies the message as an authentication request.
+</para>
+</listitem>
+</varlistentry>
+<varlistentry>
+<term>
+        Int32(8)
+</term>
+<listitem>
+<para>
+                Length of message contents in bytes, including self.
+</para>
+</listitem>
+</varlistentry>
+<varlistentry>
+<term>
+        Int32(2)
+</term>
+<listitem>
+<para>
+                Specifies that Kerberos V5 authentication is required.
+</para>
+</listitem>
+</varlistentry>
+</variablelist>
+</para>
+</listitem>
+</varlistentry>
+
+
+<varlistentry>
+<term>
+AuthenticationCleartextPassword (B)
+</term>
+<listitem>
+<para>
+
+<variablelist>
+<varlistentry>
+<term>
+        Byte1('R')
+</term>
+<listitem>
+<para>
+                Identifies the message as an authentication request.
+</para>
+</listitem>
+</varlistentry>
+<varlistentry>
+<term>
+        Int32(8)
+</term>
+<listitem>
+<para>
+                Length of message contents in bytes, including self.
+</para>
+</listitem>
+</varlistentry>
+<varlistentry>
+<term>
+        Int32(3)
+</term>
+<listitem>
+<para>
+                Specifies that a clear-text password is required.
+</para>
+</listitem>
+</varlistentry>
+</variablelist>
+</para>
+</listitem>
+</varlistentry>
+
+
+<varlistentry>
+<term>
+AuthenticationMD5Password (B)
+</term>
+<listitem>
+<para>
+
+<variablelist>
+<varlistentry>
+<term>
+        Byte1('R')
+</term>
+<listitem>
+<para>
+                Identifies the message as an authentication request.
+</para>
+</listitem>
+</varlistentry>
+<varlistentry>
+<term>
+        Int32(12)
+</term>
+<listitem>
+<para>
+                Length of message contents in bytes, including self.
+</para>
+</listitem>
+</varlistentry>
+<varlistentry>
+<term>
+        Int32(5)
+</term>
+<listitem>
+<para>
+                Specifies that an MD5-encrypted password is required.
+</para>
+</listitem>
+</varlistentry>
+<varlistentry>
+<term>
+        Byte4
+</term>
+<listitem>
+<para>
+                The salt to use when encrypting the password.
+</para>
+</listitem>
+</varlistentry>
+</variablelist>
+
+</para>
+</listitem>
+</varlistentry>
+
+
+<varlistentry>
+<term>
+AuthenticationSCMCredential (B)
+</term>
+<listitem>
+<para>
+
+<variablelist>
+<varlistentry>
+<term>
+        Byte1('R')
+</term>
+<listitem>
+<para>
+                Identifies the message as an authentication request.
+</para>
+</listitem>
+</varlistentry>
+<varlistentry>
+<term>
+        Int32(8)
+</term>
+<listitem>
+<para>
+                Length of message contents in bytes, including self.
+</para>
+</listitem>
+</varlistentry>
+<varlistentry>
+<term>
+        Int32(6)
+</term>
+<listitem>
+<para>
+                Specifies that an SCM credentials message is required.
+</para>
+</listitem>
+</varlistentry>
+</variablelist>
+
+</para>
+</listitem>
+</varlistentry>
+
+
+<varlistentry>
+<term>
+AuthenticationGSS (B)
+</term>
+<listitem>
+<para>
+
+<variablelist>
+<varlistentry>
+<term>
+        Byte1('R')
+</term>
+<listitem>
+<para>
+                Identifies the message as an authentication request.
+</para>
+</listitem>
+</varlistentry>
+<varlistentry>
+<term>
+        Int32(8)
+</term>
+<listitem>
+<para>
+                Length of message contents in bytes, including self.
+</para>
+</listitem>
+</varlistentry>
+<varlistentry>
+<term>
+        Int32(7)
+</term>
+<listitem>
+<para>
+                Specifies that GSSAPI authentication is required.
+</para>
+</listitem>
+</varlistentry>
+</variablelist>
+
+</para>
+</listitem>
+</varlistentry>
+
+
+<varlistentry>
+<term>
+AuthenticationGSSContinue (B)
+</term>
+<listitem>
+<para>
+
+<variablelist>
+<varlistentry>
+<term>
+        Byte1('R')
+</term>
+<listitem>
+<para>
+                Identifies the message as an authentication request.
+</para>
+</listitem>
+</varlistentry>
+<varlistentry>
+<term>
+        Int32
+</term>
+<listitem>
+<para>
+                Length of message contents in bytes, including self.
+</para>
+</listitem>
+</varlistentry>
+<varlistentry>
+<term>
+        Int32(8)
+</term>
+<listitem>
+<para>
+                Specifies that this message contains GSSAPI or SSPI data.
+</para>
+</listitem>
+</varlistentry>
+<varlistentry>
+<term>
+        Byte<replaceable>n</replaceable>
+</term>
+<listitem>
+<para>
+                GSSAPI or SSPI authentication data.
+</para>
+</listitem>
+</varlistentry>
+</variablelist>
+
+</para>
+</listitem>
+</varlistentry>
+
+
+<varlistentry>
+<term>
+AuthenticationSSPI (B)
+</term>
+<listitem>
+<para>
+
+<variablelist>
+<varlistentry>
+<term>
+        Byte1('R')
+</term>
+<listitem>
+<para>
+                Identifies the message as an authentication request.
+</para>
+</listitem>
+</varlistentry>
+<varlistentry>
+<term>
+        Int32(8)
+</term>
+<listitem>
+<para>
+                Length of message contents in bytes, including self.
+</para>
+</listitem>
+</varlistentry>
+<varlistentry>
+<term>
+        Int32(9)
+</term>
+<listitem>
+<para>
+                Specifies that SSPI authentication is required.
+</para>
+</listitem>
+</varlistentry>
+</variablelist>
+
+</para>
+</listitem>
+</varlistentry>
+
+
+<varlistentry>
+<term>
+AuthenticationSASL (B)
+</term>
+<listitem>
+<para>
+
+<variablelist>
+<varlistentry>
+<term>
+        Byte1('R')
+</term>
+<listitem>
+<para>
+                Identifies the message as an authentication request.
+</para>
+</listitem>
+</varlistentry>
+<varlistentry>
+<term>
+        Int32
+</term>
+<listitem>
+<para>
+                Length of message contents in bytes, including self.
+</para>
+</listitem>
+</varlistentry>
+<varlistentry>
+<term>
+        Int32(10)
+</term>
+<listitem>
+<para>
+                Specifies that SASL authentication is required.
+</para>
+</listitem>
+</varlistentry>
+</variablelist>
+The message body is a list of SASL authentication mechanisms, in the
+server's order of preference. A zero byte is required as terminator after
+the last authentication mechanism name. For each mechanism, there is the
+following:
+<variablelist>
+<varlistentry>
+<term>
+        String
+</term>
+<listitem>
+<para>
+                Name of a SASL authentication mechanism.
+</para>
+</listitem>
+</varlistentry>
+</variablelist>
+
+</para>
+</listitem>
+</varlistentry>
+
+
+<varlistentry>
+<term>
+CompressionAck (B)
+</term>
+<listitem>
+<para>
+
+<variablelist>
+<varlistentry>
+<term>
+        Byte1('z')
+</term>
+<listitem>
+<para>
+                Acknowledge use of compression for protocol data.
+</para>
+</listitem>
+</varlistentry>
+<varlistentry>
+<term>
+        Int32
+</term>
+<listitem>
+<para>
+                Length of message contents in bytes, including self.
+</para>
+</listitem>
+</varlistentry>
+<varlistentry>
+<term>
+        Byte<replaceable>n</replaceable>
+</term>
+<listitem>
+<para>
+                List of the negotiated compression algorithms.
+</para>
+</listitem>
+</varlistentry>
+</variablelist>
+
+</para>
+</listitem>
+</varlistentry>
+
+
+<varlistentry>
+<term>
+SetCompressionMethod (F &amp; B)
+</term>
+<listitem>
+<para>
+
+<variablelist>
+<varlistentry>
+<term>
+        Byte1('k')
+</term>
+<listitem>
+<para>
+                Switch the current compression algorithm. Following CompressedData messages will be compressed via the compressed algorithm specified in this message.
+</para>
+</listitem>
+</varlistentry>
+<varlistentry>
+<term>
+        Int32(5)
+</term>
+<listitem>
+<para>
+                Length of message contents in bytes, including self.
+</para>
+</listitem>
+</varlistentry>
+<varlistentry>
+<term>
+        Int8
+</term>
+<listitem>
+<para>
+                Index of the new compression algorithm.
+</para>
+</listitem>
+</varlistentry>
+</variablelist>
+
+</para>
+</listitem>
+</varlistentry>
+
+<varlistentry>
+<term>
+CompressedData (F &amp; B)
+</term>
+<listitem>
+<para>
+
+
+<variablelist>
+<varlistentry>
+<term>
+        Byte1('m')
+</term>
+<listitem>
+<para>
+                Identifies the message as compressed data.
+</para>
+</listitem>
+</varlistentry>
+<varlistentry>
+<term>
+        Int32
+</term>
+<listitem>
+<para>
+                Length of message contents in bytes, including self.
+</para>
+</listitem>
+</varlistentry>
+<varlistentry>
+<term>
+        Byte<replaceable>n</replaceable>
+</term>
+<listitem>
+<para>
+                Compressed message data.
+</para>
+</listitem>
+</varlistentry>
+</variablelist>
+
+</para>
+</listitem>
+</varlistentry>
+
+
+<varlistentry>
+<term>
+AuthenticationSASLContinue (B)
+</term>
+<listitem>
+<para>
+
+<variablelist>
+<varlistentry>
+<term>
+        Byte1('R')
+</term>
+<listitem>
+<para>
+                Identifies the message as an authentication request.
+</para>
+</listitem>
+</varlistentry>
+<varlistentry>
+<term>
+        Int32
+</term>
+<listitem>
+<para>
+                Length of message contents in bytes, including self.
+</para>
+</listitem>
+</varlistentry>
+<varlistentry>
+<term>
+        Int32(11)
+</term>
+<listitem>
+<para>
+                Specifies that this message contains a SASL challenge.
+</para>
+</listitem>
+</varlistentry>
+<varlistentry>
+<term>
+        Byte<replaceable>n</replaceable>
+</term>
+<listitem>
+<para>
+                SASL data, specific to the SASL mechanism being used.
+</para>
+</listitem>
+</varlistentry>
+</variablelist>
+
+</para>
+</listitem>
+</varlistentry>
+
+
+<varlistentry>
+<term>
+AuthenticationSASLFinal (B)
+</term>
+<listitem>
+<para>
+
+<variablelist>
+<varlistentry>
+<term>
+        Byte1('R')
+</term>
+<listitem>
+<para>
+                Identifies the message as an authentication request.
+</para>
+</listitem>
+</varlistentry>
+<varlistentry>
+<term>
+        Int32
+</term>
+<listitem>
+<para>
+                Length of message contents in bytes, including self.
+</para>
+</listitem>
+</varlistentry>
+<varlistentry>
+<term>
+        Int32(12)
+</term>
+<listitem>
+<para>
+                Specifies that SASL authentication has completed.
+</para>
+</listitem>
+</varlistentry>
+<varlistentry>
+<term>
+        Byte<replaceable>n</replaceable>
+</term>
+<listitem>
+<para>
+                SASL outcome "additional data", specific to the SASL mechanism
+                being used.
+</para>
+</listitem>
+</varlistentry>
+</variablelist>
+
+</para>
+</listitem>
+</varlistentry>
+
+
+<varlistentry>
+<term>
+BackendKeyData (B)
+</term>
+<listitem>
+<para>
+
+<variablelist>
+<varlistentry>
+<term>
+        Byte1('K')
+</term>
+<listitem>
+<para>
+                Identifies the message as cancellation key data.
+                The frontend must save these values if it wishes to be
+                able to issue CancelRequest messages later.
+</para>
+</listitem>
+</varlistentry>
+<varlistentry>
+<term>
+        Int32(12)
+</term>
+<listitem>
+<para>
+                Length of message contents in bytes, including self.
+</para>
+</listitem>
+</varlistentry>
+<varlistentry>
+<term>
+        Int32
+</term>
+<listitem>
+<para>
+                The process ID of this backend.
+</para>
+</listitem>
+</varlistentry>
+<varlistentry>
+<term>
+        Int32
+</term>
+<listitem>
+<para>
+                The secret key of this backend.
+</para>
+</listitem>
+</varlistentry>
+</variablelist>
+
+</para>
+</listitem>
+</varlistentry>
+
+
+<varlistentry>
+<term>
+Bind (F)
+</term>
+<listitem>
+<para>
+
+<variablelist>
+<varlistentry>
+<term>
+        Byte1('B')
+</term>
+<listitem>
+<para>
+                Identifies the message as a Bind command.
+</para>
+</listitem>
+</varlistentry>
+<varlistentry>
+<term>
+        Int32
+</term>
+<listitem>
+<para>
+                Length of message contents in bytes, including self.
+</para>
+</listitem>
+</varlistentry>
+<varlistentry>
+<term>
+        String
+</term>
+<listitem>
+<para>
+                The name of the destination portal
+                (an empty string selects the unnamed portal).
+</para>
+</listitem>
+</varlistentry>
+<varlistentry>
+<term>
+        String
+</term>
+<listitem>
+<para>
+                The name of the source prepared statement
+                (an empty string selects the unnamed prepared statement).
+</para>
+</listitem>
+</varlistentry>
+<varlistentry>
+<term>
+        Int16
+</term>
+<listitem>
+<para>
+                The number of parameter format codes that follow
+                (denoted <replaceable>C</replaceable> below).
+                This can be zero to indicate that there are no parameters
+                or that the parameters all use the default format (text);
+                or one, in which case the specified format code is applied
+                to all parameters; or it can equal the actual number of
+                parameters.
+</para>
+</listitem>
+</varlistentry>
+<varlistentry>
+<term>
+        Int16[<replaceable>C</replaceable>]
+</term>
+<listitem>
+<para>
+                The parameter format codes.  Each must presently be
+                zero (text) or one (binary).
+</para>
+</listitem>
+</varlistentry>
+<varlistentry>
+<term>
+        Int16
+</term>
+<listitem>
+<para>
+                The number of parameter values that follow (possibly zero).
+                This must match the number of parameters needed by the query.
+</para>
+</listitem>
+</varlistentry>
+</variablelist>
+        Next, the following pair of fields appear for each parameter:
+<variablelist>
+<varlistentry>
+<term>
+        Int32
+</term>
+<listitem>
+<para>
+                The length of the parameter value, in bytes (this count
+                does not include itself).  Can be zero.
+                As a special case, -1 indicates a NULL parameter value.
+                No value bytes follow in the NULL case.
+</para>
+</listitem>
+</varlistentry>
+<varlistentry>
+<term>
+        Byte<replaceable>n</replaceable>
+</term>
+<listitem>
+<para>
+                The value of the parameter, in the format indicated by the
+                associated format code.
+                <replaceable>n</replaceable> is the above length.
+</para>
+</listitem>
+</varlistentry>
+</variablelist>
+        After the last parameter, the following fields appear:
+<variablelist>
+<varlistentry>
+<term>
+        Int16
+</term>
+<listitem>
+<para>
+                The number of result-column format codes that follow
+                (denoted <replaceable>R</replaceable> below).
+                This can be zero to indicate that there are no result columns
+                or that the result columns should all use the default format
+                (text);
+                or one, in which case the specified format code is applied
+                to all result columns (if any); or it can equal the actual
+                number of result columns of the query.
+</para>
+</listitem>
+</varlistentry>
+<varlistentry>
+<term>
+        Int16[<replaceable>R</replaceable>]
+</term>
+<listitem>
+<para>
+                The result-column format codes.  Each must presently be
+                zero (text) or one (binary).
+</para>
+</listitem>
+</varlistentry>
+</variablelist>
+</para>
+</listitem>
+</varlistentry>
+
+
+<varlistentry>
+<term>
+BindComplete (B)
+</term>
+<listitem>
+<para>
+
+<variablelist>
+<varlistentry>
+<term>
+        Byte1('2')
+</term>
+<listitem>
+<para>
+                Identifies the message as a Bind-complete indicator.
+</para>
+</listitem>
+</varlistentry>
+<varlistentry>
+<term>
+        Int32(4)
+</term>
+<listitem>
+<para>
+                Length of message contents in bytes, including self.
+</para>
+</listitem>
+</varlistentry>
+</variablelist>
+
+</para>
+</listitem>
+</varlistentry>
+
+
+<varlistentry>
+<term>
+CancelRequest (F)
+</term>
+<listitem>
+<para>
+
+<variablelist>
+<varlistentry>
+<term>
+        Int32(16)
+</term>
+<listitem>
+<para>
+                Length of message contents in bytes, including self.
+</para>
+</listitem>
+</varlistentry>
+<varlistentry>
+<term>
+        Int32(80877102)
+</term>
+<listitem>
+<para>
+                The cancel request code.  The value is chosen to contain
+                <literal>1234</literal> in the most significant 16 bits, and <literal>5678</literal> in the
+                least significant 16 bits.  (To avoid confusion, this code
+                must not be the same as any protocol version number.)
+</para>
+</listitem>
+</varlistentry>
+<varlistentry>
+<term>
+        Int32
+</term>
+<listitem>
+<para>
+                The process ID of the target backend.
+</para>
+</listitem>
+</varlistentry>
+<varlistentry>
+<term>
+        Int32
+</term>
+<listitem>
+<para>
+                The secret key for the target backend.
+</para>
+</listitem>
+</varlistentry>
+</variablelist>
+
+</para>
+</listitem>
+</varlistentry>
+
+
+<varlistentry>
+<term>
+Close (F)
+</term>
+<listitem>
+<para>
+
+<variablelist>
+<varlistentry>
+<term>
+        Byte1('C')
+</term>
+<listitem>
+<para>
+                Identifies the message as a Close command.
+</para>
+</listitem>
+</varlistentry>
+<varlistentry>
+<term>
+        Int32
+</term>
+<listitem>
+<para>
+                Length of message contents in bytes, including self.
+</para>
+</listitem>
+</varlistentry>
+<varlistentry>
+<term>
+        Byte1
+</term>
+<listitem>
+<para>
+                '<literal>S</literal>' to close a prepared statement; or
+                '<literal>P</literal>' to close a portal.
+</para>
+</listitem>
+</varlistentry>
+<varlistentry>
+<term>
+        String
+</term>
+<listitem>
+<para>
+                The name of the prepared statement or portal to close
+                (an empty string selects the unnamed prepared statement
+                or portal).
+</para>
+</listitem>
+</varlistentry>
+</variablelist>
+</para>
+</listitem>
+</varlistentry>
+
+
+<varlistentry>
+<term>
+CloseComplete (B)
+</term>
+<listitem>
+<para>
+
+<variablelist>
+<varlistentry>
+<term>
+        Byte1('3')
+</term>
+<listitem>
+<para>
+                Identifies the message as a Close-complete indicator.
+</para>
+</listitem>
+</varlistentry>
+<varlistentry>
+<term>
+        Int32(4)
+</term>
+<listitem>
+<para>
+                Length of message contents in bytes, including self.
+</para>
+</listitem>
+</varlistentry>
+</variablelist>
+
+</para>
+</listitem>
+</varlistentry>
+
+
+<varlistentry>
+<term>
+CommandComplete (B)
+</term>
+<listitem>
+<para>
+
+<variablelist>
+<varlistentry>
+<term>
+        Byte1('C')
+</term>
+<listitem>
+<para>
+                Identifies the message as a command-completed response.
+</para>
+</listitem>
+</varlistentry>
+<varlistentry>
+<term>
+        Int32
+</term>
+<listitem>
+<para>
+                Length of message contents in bytes, including self.
+</para>
+</listitem>
+</varlistentry>
+<varlistentry>
+<term>
+        String
+</term>
+<listitem>
+       <para>
+        The command tag.  This is usually a single
+        word that identifies which SQL command was completed.
+       </para>
+
+       <para>
+        For an <command>INSERT</command> command, the tag is
+        <literal>INSERT <replaceable>oid</replaceable>
+        <replaceable>rows</replaceable></literal>, where
+        <replaceable>rows</replaceable> is the number of rows
+        inserted. <replaceable>oid</replaceable> used to be the object ID
+        of the inserted row if <replaceable>rows</replaceable> was 1
+        and the target table had OIDs, but OIDs system columns are
+        not supported anymore; therefore <replaceable>oid</replaceable>
+        is always 0.
+       </para>
+
+       <para>
+        For a <command>DELETE</command> command, the tag is
+        <literal>DELETE <replaceable>rows</replaceable></literal> where
+        <replaceable>rows</replaceable> is the number of rows deleted.
+       </para>
+
+       <para>
+        For an <command>UPDATE</command> command, the tag is
+        <literal>UPDATE <replaceable>rows</replaceable></literal> where
+        <replaceable>rows</replaceable> is the number of rows updated.
+       </para>
+
+       <para>
+        For a <command>SELECT</command> or <command>CREATE TABLE AS</command>
+        command, the tag is <literal>SELECT <replaceable>rows</replaceable></literal>
+        where <replaceable>rows</replaceable> is the number of rows retrieved.
+       </para>
+
+       <para>
+        For a <command>MOVE</command> command, the tag is
+        <literal>MOVE <replaceable>rows</replaceable></literal> where
+        <replaceable>rows</replaceable> is the number of rows the
+        cursor's position has been changed by.
+       </para>
+
+       <para>
+        For a <command>FETCH</command> command, the tag is
+        <literal>FETCH <replaceable>rows</replaceable></literal> where
+        <replaceable>rows</replaceable> is the number of rows that
+        have been retrieved from the cursor.
+       </para>
+
+       <para>
+        For a <command>COPY</command> command, the tag is
+        <literal>COPY <replaceable>rows</replaceable></literal> where
+        <replaceable>rows</replaceable> is the number of rows copied.
+        (Note: the row count appears only in
+        <productname>PostgreSQL</productname> 8.2 and later.)
+       </para>
+
+</listitem>
+</varlistentry>
+</variablelist>
+
+</para>
+</listitem>
+</varlistentry>
+
+
+<varlistentry>
+<term>
+CopyData (F &amp; B)
+</term>
+<listitem>
+<para>
+<variablelist>
+<varlistentry>
+<term>
+        Byte1('d')
+</term>
+<listitem>
+<para>
+                Identifies the message as <command>COPY</command> data.
+</para>
+</listitem>
+</varlistentry>
+<varlistentry>
+<term>
+        Int32
+</term>
+<listitem>
+<para>
+                Length of message contents in bytes, including self.
+</para>
+</listitem>
+</varlistentry>
+<varlistentry>
+<term>
+        Byte<replaceable>n</replaceable>
+</term>
+<listitem>
+<para>
+                Data that forms part of a <command>COPY</command> data stream.  Messages sent
+                from the backend will always correspond to single data rows,
+                but messages sent by frontends might divide the data stream
+                arbitrarily.
+</para>
+</listitem>
+</varlistentry>
+</variablelist>
+</para>
+</listitem>
+</varlistentry>
+
+
+<varlistentry>
+<term>
+CopyDone (F &amp; B)
+</term>
+<listitem>
+<para>
+
+<variablelist>
+<varlistentry>
+<term>
+        Byte1('c')
+</term>
+<listitem>
+<para>
+                Identifies the message as a <command>COPY</command>-complete indicator.
+</para>
+</listitem>
+</varlistentry>
+<varlistentry>
+<term>
+        Int32(4)
+</term>
+<listitem>
+<para>
+                Length of message contents in bytes, including self.
+</para>
+</listitem>
+</varlistentry>
+</variablelist>
+
+</para>
+</listitem>
+</varlistentry>
+
+
+<varlistentry>
+<term>
+CopyFail (F)
+</term>
+<listitem>
+<para>
+
+<variablelist>
+<varlistentry>
+<term>
+        Byte1('f')
+</term>
+<listitem>
+<para>
+                Identifies the message as a <command>COPY</command>-failure indicator.
+</para>
+</listitem>
+</varlistentry>
+<varlistentry>
+<term>
+        Int32
+</term>
+<listitem>
+<para>
+                Length of message contents in bytes, including self.
+</para>
+</listitem>
+</varlistentry>
+<varlistentry>
+<term>
+        String
+</term>
+<listitem>
+<para>
+                An error message to report as the cause of failure.
+</para>
+</listitem>
+</varlistentry>
+</variablelist>
+
+</para>
+</listitem>
+</varlistentry>
+
+
+<varlistentry>
+<term>
+CopyInResponse (B)
+</term>
+<listitem>
+<para>
+
+<variablelist>
+<varlistentry>
+<term>
+        Byte1('G')
+</term>
+<listitem>
+<para>
+                Identifies the message as a Start Copy In response.
+                The frontend must now send copy-in data (if not
+                prepared to do so, send a CopyFail message).
+</para>
+</listitem>
+</varlistentry>
+<varlistentry>
+<term>
+        Int32
+</term>
+<listitem>
+<para>
+                Length of message contents in bytes, including self.
+</para>
+</listitem>
+</varlistentry>
+<varlistentry>
+<term>
+        Int8
+</term>
+<listitem>
+<para>
+                0 indicates the overall <command>COPY</command> format is textual (rows
+                separated by newlines, columns separated by separator
+                characters, etc).
+                1 indicates the overall copy format is binary (similar
+                to DataRow format).
+                See <xref linkend="sql-copy"/>
+                for more information.
+</para>
+</listitem>
+</varlistentry>
+<varlistentry>
+<term>
+        Int16
+</term>
+<listitem>
+<para>
+                The number of columns in the data to be copied
+                (denoted <replaceable>N</replaceable> below).
+</para>
+</listitem>
+</varlistentry>
+<varlistentry>
+<term>
+        Int16[<replaceable>N</replaceable>]
+</term>
+<listitem>
+<para>
+                The format codes to be used for each column.
+                Each must presently be zero (text) or one (binary).
+                All must be zero if the overall copy format is textual.
+</para>
+</listitem>
+</varlistentry>
+</variablelist>
+
+</para>
+</listitem>
+</varlistentry>
+
+
+<varlistentry>
+<term>
+CopyOutResponse (B)
+</term>
+<listitem>
+<para>
+
+<variablelist>
+<varlistentry>
+<term>
+        Byte1('H')
+</term>
+<listitem>
+<para>
+                Identifies the message as a Start Copy Out response.
+                This message will be followed by copy-out data.
+</para>
+</listitem>
+</varlistentry>
+<varlistentry>
+<term>
+        Int32
+</term>
+<listitem>
+<para>
+                Length of message contents in bytes, including self.
+</para>
+</listitem>
+</varlistentry>
+<varlistentry>
+<term>
+        Int8
+</term>
+<listitem>
+<para>
+                0 indicates the overall <command>COPY</command> format
+                is textual (rows separated by newlines, columns
+                separated by separator characters, etc). 1 indicates
+                the overall copy format is binary (similar to DataRow
+                format). See <xref linkend="sql-copy"/> for more information.
+</para>
+</listitem>
+</varlistentry>
+<varlistentry>
+<term>
+        Int16
+</term>
+<listitem>
+<para>
+                The number of columns in the data to be copied
+                (denoted <replaceable>N</replaceable> below).
+</para>
+</listitem>
+</varlistentry>
+<varlistentry>
+<term>
+        Int16[<replaceable>N</replaceable>]
+</term>
+<listitem>
+<para>
+                The format codes to be used for each column.
+                Each must presently be zero (text) or one (binary).
+                All must be zero if the overall copy format is textual.
+</para>
+</listitem>
+</varlistentry>
+</variablelist>
+
+</para>
+</listitem>
+</varlistentry>
+
+
+<varlistentry>
+<term>
+CopyBothResponse (B)
+</term>
+<listitem>
+<para>
+
+<variablelist>
+<varlistentry>
+<term>
+        Byte1('W')
+</term>
+<listitem>
+<para>
+                Identifies the message as a Start Copy Both response.
+                This message is used only for Streaming Replication.
+</para>
+</listitem>
+</varlistentry>
+<varlistentry>
+<term>
+        Int32
+</term>
+<listitem>
+<para>
+                Length of message contents in bytes, including self.
+</para>
+</listitem>
+</varlistentry>
+<varlistentry>
+<term>
+        Int8
+</term>
+<listitem>
+<para>
+                0 indicates the overall <command>COPY</command> format
+                is textual (rows separated by newlines, columns
+                separated by separator characters, etc). 1 indicates
+                the overall copy format is binary (similar to DataRow
+                format). See <xref linkend="sql-copy"/> for more information.
+</para>
+</listitem>
+</varlistentry>
+<varlistentry>
+<term>
+        Int16
+</term>
+<listitem>
+<para>
+                The number of columns in the data to be copied
+                (denoted <replaceable>N</replaceable> below).
+</para>
+</listitem>
+</varlistentry>
+<varlistentry>
+<term>
+        Int16[<replaceable>N</replaceable>]
+</term>
+<listitem>
+<para>
+                The format codes to be used for each column.
+                Each must presently be zero (text) or one (binary).
+                All must be zero if the overall copy format is textual.
+</para>
+</listitem>
+</varlistentry>
+</variablelist>
+
+</para>
+</listitem>
+</varlistentry>
+
+
+<varlistentry>
+<term>
+DataRow (B)
+</term>
+<listitem>
+<para>
+<variablelist>
+<varlistentry>
+<term>
+        Byte1('D')
+</term>
+<listitem>
+<para>
+                Identifies the message as a data row.
+</para>
+</listitem>
+</varlistentry>
+<varlistentry>
+<term>
+        Int32
+</term>
+<listitem>
+<para>
+                Length of message contents in bytes, including self.
+</para>
+</listitem>
+</varlistentry>
+<varlistentry>
+<term>
+        Int16
+</term>
+<listitem>
+<para>
+                The number of column values that follow (possibly zero).
+</para>
+</listitem>
+</varlistentry>
+</variablelist>
+        Next, the following pair of fields appear for each column:
+<variablelist>
+<varlistentry>
+<term>
+        Int32
+</term>
+<listitem>
+<para>
+                The length of the column value, in bytes (this count
+                does not include itself).  Can be zero.
+                As a special case, -1 indicates a NULL column value.
+                No value bytes follow in the NULL case.
+</para>
+</listitem>
+</varlistentry>
+<varlistentry>
+<term>
+        Byte<replaceable>n</replaceable>
+</term>
+<listitem>
+<para>
+                The value of the column, in the format indicated by the
+                associated format code.
+                <replaceable>n</replaceable> is the above length.
+</para>
+</listitem>
+</varlistentry>
+</variablelist>
+
+</para>
+</listitem>
+</varlistentry>
+
+
+<varlistentry>
+<term>
+Describe (F)
+</term>
+<listitem>
+<para>
+
+<variablelist>
+<varlistentry>
+<term>
+        Byte1('D')
+</term>
+<listitem>
+<para>
+                Identifies the message as a Describe command.
+</para>
+</listitem>
+</varlistentry>
+<varlistentry>
+<term>
+        Int32
+</term>
+<listitem>
+<para>
+                Length of message contents in bytes, including self.
+</para>
+</listitem>
+</varlistentry>
+<varlistentry>
+<term>
+        Byte1
+</term>
+<listitem>
+<para>
+                '<literal>S</literal>' to describe a prepared statement; or
+                '<literal>P</literal>' to describe a portal.
+</para>
+</listitem>
+</varlistentry>
+<varlistentry>
+<term>
+        String
+</term>
+<listitem>
+<para>
+                The name of the prepared statement or portal to describe
+                (an empty string selects the unnamed prepared statement
+                or portal).
+</para>
+</listitem>
+</varlistentry>
+</variablelist>
+</para>
+</listitem>
+</varlistentry>
+
+
+<varlistentry>
+<term>
+EmptyQueryResponse (B)
+</term>
+<listitem>
+<para>
+
+<variablelist>
+<varlistentry>
+<term>
+        Byte1('I')
+</term>
+<listitem>
+<para>
+                Identifies the message as a response to an empty query string.
+                (This substitutes for CommandComplete.)
+</para>
+</listitem>
+</varlistentry>
+<varlistentry>
+<term>
+        Int32(4)
+</term>
+<listitem>
+<para>
+                Length of message contents in bytes, including self.
+</para>
+</listitem>
+</varlistentry>
+</variablelist>
+
+</para>
+</listitem>
+</varlistentry>
+
+
+<varlistentry>
+<term>
+ErrorResponse (B)
+</term>
+<listitem>
+<para>
+
+<variablelist>
+<varlistentry>
+<term>
+        Byte1('E')
+</term>
+<listitem>
+<para>
+                Identifies the message as an error.
+</para>
+</listitem>
+</varlistentry>
+<varlistentry>
+<term>
+        Int32
+</term>
+<listitem>
+<para>
+                Length of message contents in bytes, including self.
+</para>
+</listitem>
+</varlistentry>
+</variablelist>
+        The message body consists of one or more identified fields,
+        followed by a zero byte as a terminator.  Fields can appear in
+        any order.  For each field there is the following:
+<variablelist>
+<varlistentry>
+<term>
+        Byte1
+</term>
+<listitem>
+<para>
+                A code identifying the field type; if zero, this is
+                the message terminator and no string follows.
+                The presently defined field types are listed in
+                <xref linkend="protocol-error-fields"/>.
+                Since more field types might be added in future,
+                frontends should silently ignore fields of unrecognized
+                type.
+</para>
+</listitem>
+</varlistentry>
+<varlistentry>
+<term>
+        String
+</term>
+<listitem>
+<para>
+                The field value.
+</para>
+</listitem>
+</varlistentry>
+</variablelist>
+
+</para>
+</listitem>
+</varlistentry>
+
+
+<varlistentry>
+<term>
+Execute (F)
+</term>
+<listitem>
+<para>
+
+<variablelist>
+<varlistentry>
+<term>
+        Byte1('E')
+</term>
+<listitem>
+<para>
+                Identifies the message as an Execute command.
+</para>
+</listitem>
+</varlistentry>
+<varlistentry>
+<term>
+        Int32
+</term>
+<listitem>
+<para>
+                Length of message contents in bytes, including self.
+</para>
+</listitem>
+</varlistentry>
+<varlistentry>
+<term>
+        String
+</term>
+<listitem>
+<para>
+                The name of the portal to execute
+                (an empty string selects the unnamed portal).
+</para>
+</listitem>
+</varlistentry>
+<varlistentry>
+<term>
+        Int32
+</term>
+<listitem>
+<para>
+                Maximum number of rows to return, if portal contains
+                a query that returns rows (ignored otherwise).  Zero
+                denotes <quote>no limit</quote>.
+</para>
+</listitem>
+</varlistentry>
+</variablelist>
+</para>
+</listitem>
+</varlistentry>
+
+
+<varlistentry>
+<term>
+Flush (F)
+</term>
+<listitem>
+<para>
+
+<variablelist>
+<varlistentry>
+<term>
+        Byte1('H')
+</term>
+<listitem>
+<para>
+                Identifies the message as a Flush command.
+</para>
+</listitem>
+</varlistentry>
+<varlistentry>
+<term>
+        Int32(4)
+</term>
+<listitem>
+<para>
+                Length of message contents in bytes, including self.
+</para>
+</listitem>
+</varlistentry>
+</variablelist>
+
+</para>
+</listitem>
+</varlistentry>
+
+
+<varlistentry>
+<term>
+FunctionCall (F)
+</term>
+<listitem>
+<para>
+
+<variablelist>
+<varlistentry>
+<term>
+        Byte1('F')
+</term>
+<listitem>
+<para>
+                Identifies the message as a function call.
+</para>
+</listitem>
+</varlistentry>
+<varlistentry>
+<term>
+        Int32
+</term>
+<listitem>
+<para>
+                Length of message contents in bytes, including self.
+</para>
+</listitem>
+</varlistentry>
+<varlistentry>
+<term>
+        Int32
+</term>
+<listitem>
+<para>
+                Specifies the object ID of the function to call.
+</para>
+</listitem>
+</varlistentry>
+<varlistentry>
+<term>
+        Int16
+</term>
+<listitem>
+<para>
+                The number of argument format codes that follow
+                (denoted <replaceable>C</replaceable> below).
+                This can be zero to indicate that there are no arguments
+                or that the arguments all use the default format (text);
+                or one, in which case the specified format code is applied
+                to all arguments; or it can equal the actual number of
+                arguments.
+</para>
+</listitem>
+</varlistentry>
+<varlistentry>
+<term>
+        Int16[<replaceable>C</replaceable>]
+</term>
+<listitem>
+<para>
+                The argument format codes.  Each must presently be
+                zero (text) or one (binary).
+</para>
+</listitem>
+</varlistentry>
+<varlistentry>
+<term>
+        Int16
+</term>
+<listitem>
+<para>
+                Specifies the number of arguments being supplied to the
+                function.
+</para>
+</listitem>
+</varlistentry>
+</variablelist>
+        Next, the following pair of fields appear for each argument:
+<variablelist>
+<varlistentry>
+<term>
+        Int32
+</term>
+<listitem>
+<para>
+                The length of the argument value, in bytes (this count
+                does not include itself).  Can be zero.
+                As a special case, -1 indicates a NULL argument value.
+                No value bytes follow in the NULL case.
+</para>
+</listitem>
+</varlistentry>
+<varlistentry>
+<term>
+        Byte<replaceable>n</replaceable>
+</term>
+<listitem>
+<para>
+                The value of the argument, in the format indicated by the
+                associated format code.
+                <replaceable>n</replaceable> is the above length.
+</para>
+</listitem>
+</varlistentry>
+</variablelist>
+        After the last argument, the following field appears:
+<variablelist>
+<varlistentry>
+<term>
+        Int16
+</term>
+<listitem>
+<para>
+                The format code for the function result. Must presently be
+                zero (text) or one (binary).
+</para>
+</listitem>
+</varlistentry>
+</variablelist>
+
+</para>
+</listitem>
+</varlistentry>
+
+
+<varlistentry>
+<term>
+FunctionCallResponse (B)
+</term>
+<listitem>
+<para>
+
+<variablelist>
+<varlistentry>
+<term>
+        Byte1('V')
+</term>
+<listitem>
+<para>
+                Identifies the message as a function call result.
+</para>
+</listitem>
+</varlistentry>
+<varlistentry>
+<term>
+        Int32
+</term>
+<listitem>
+<para>
+                Length of message contents in bytes, including self.
+</para>
+</listitem>
+</varlistentry>
+<varlistentry>
+<term>
+        Int32
+</term>
+<listitem>
+<para>
+                The length of the function result value, in bytes (this count
+                does not include itself).  Can be zero.
+                As a special case, -1 indicates a NULL function result.
+                No value bytes follow in the NULL case.
+</para>
+</listitem>
+</varlistentry>
+<varlistentry>
+<term>
+        Byte<replaceable>n</replaceable>
+</term>
+<listitem>
+<para>
+                The value of the function result, in the format indicated by
+                the associated format code.
+                <replaceable>n</replaceable> is the above length.
+</para>
+</listitem>
+</varlistentry>
+</variablelist>
+
+</para>
+</listitem>
+</varlistentry>
+
+
+<varlistentry>
+<term>
+GSSENCRequest (F)
+</term>
+<listitem>
+<para>
+
+<variablelist>
+<varlistentry>
+<term>
+        Int32(8)
+</term>
+<listitem>
+<para>
+                Length of message contents in bytes, including self.
+</para>
+</listitem>
+</varlistentry>
+<varlistentry>
+<term>
+        Int32(80877104)
+</term>
+<listitem>
+<para>
+                The <acronym>GSSAPI</acronym> Encryption request code.  The value is chosen to contain
+                <literal>1234</literal> in the most significant 16 bits, and <literal>5680</literal> in the
+                least significant 16 bits.  (To avoid confusion, this code
+                must not be the same as any protocol version number.)
+</para>
+</listitem>
+</varlistentry>
+</variablelist>
+
+</para>
+</listitem>
+</varlistentry>
+
+
+<varlistentry>
+<term>
+GSSResponse (F)
+</term>
+<listitem>
+<para>
+
+<variablelist>
+<varlistentry>
+<term>
+        Byte1('p')
+</term>
+<listitem>
+<para>
+                Identifies the message as a GSSAPI or SSPI response. Note that
+                this is also used for SASL and password response messages.
+                The exact message type can be deduced from the context.
+</para>
+</listitem>
+</varlistentry>
+<varlistentry>
+<term>
+        Int32
+</term>
+<listitem>
+<para>
+                Length of message contents in bytes, including self.
+</para>
+</listitem>
+</varlistentry>
+<varlistentry>
+<term>
+        Byte<replaceable>n</replaceable>
+</term>
+<listitem>
+<para>
+                GSSAPI/SSPI specific message data.
+</para>
+</listitem>
+</varlistentry>
+</variablelist>
+</para>
+</listitem>
+</varlistentry>
+
+<varlistentry>
+<term>
+NegotiateProtocolVersion (B)
+</term>
+<listitem>
+<para>
+
+<variablelist>
+<varlistentry>
+<term>
+        Byte1('v')
+</term>
+<listitem>
+<para>
+                Identifies the message as a protocol version negotiation
+                message.
+</para>
+</listitem>
+</varlistentry>
+<varlistentry>
+<term>
+        Int32
+</term>
+<listitem>
+<para>
+                Length of message contents in bytes, including self.
+</para>
+</listitem>
+</varlistentry>
+<varlistentry>
+<term>
+        Int32
+</term>
+<listitem>
+<para>
+                Newest minor protocol version supported by the server
+                for the major protocol version requested by the client.
+</para>
+</listitem>
+</varlistentry>
+<varlistentry>
+<term>
+        Int32
+</term>
+<listitem>
+<para>
+                Number of protocol options not recognized by the server.
+</para>
+</listitem>
+</varlistentry>
+</variablelist>
+        Then, for protocol option not recognized by the server, there
+        is the following:
+<variablelist>
+<varlistentry>
+<term>
+        String
+</term>
+<listitem>
+<para>
+                The option name.
+</para>
+</listitem>
+</varlistentry>
+</variablelist>
+</para>
+</listitem>
+</varlistentry>
+
+<varlistentry>
+<term>
+NoData (B)
+</term>
+<listitem>
+<para>
+
+<variablelist>
+<varlistentry>
+<term>
+        Byte1('n')
+</term>
+<listitem>
+<para>
+                Identifies the message as a no-data indicator.
+</para>
+</listitem>
+</varlistentry>
+<varlistentry>
+<term>
+        Int32(4)
+</term>
+<listitem>
+<para>
+                Length of message contents in bytes, including self.
+</para>
+</listitem>
+</varlistentry>
+</variablelist>
+
+</para>
+</listitem>
+</varlistentry>
+
+
+<varlistentry>
+<term>
+NoticeResponse (B)
+</term>
+<listitem>
+<para>
+
+<variablelist>
+<varlistentry>
+<term>
+        Byte1('N')
+</term>
+<listitem>
+<para>
+                Identifies the message as a notice.
+</para>
+</listitem>
+</varlistentry>
+<varlistentry>
+<term>
+        Int32
+</term>
+<listitem>
+<para>
+                Length of message contents in bytes, including self.
+</para>
+</listitem>
+</varlistentry>
+</variablelist>
+        The message body consists of one or more identified fields,
+        followed by a zero byte as a terminator.  Fields can appear in
+        any order.  For each field there is the following:
+<variablelist>
+<varlistentry>
+<term>
+        Byte1
+</term>
+<listitem>
+<para>
+                A code identifying the field type; if zero, this is
+                the message terminator and no string follows.
+                The presently defined field types are listed in
+                <xref linkend="protocol-error-fields"/>.
+                Since more field types might be added in future,
+                frontends should silently ignore fields of unrecognized
+                type.
+</para>
+</listitem>
+</varlistentry>
+<varlistentry>
+<term>
+        String
+</term>
+<listitem>
+<para>
+                The field value.
+</para>
+</listitem>
+</varlistentry>
+</variablelist>
+
+</para>
+</listitem>
+</varlistentry>
+
+
+<varlistentry>
+<term>
+NotificationResponse (B)
+</term>
+<listitem>
+<para>
+
+<variablelist>
+<varlistentry>
+<term>
+        Byte1('A')
+</term>
+<listitem>
+<para>
+                Identifies the message as a notification response.
+</para>
+</listitem>
+</varlistentry>
+<varlistentry>
+<term>
+        Int32
+</term>
+<listitem>
+<para>
+                Length of message contents in bytes, including self.
+</para>
+</listitem>
+</varlistentry>
+<varlistentry>
+<term>
+        Int32
+</term>
+<listitem>
+<para>
+                The process ID of the notifying backend process.
+</para>
+</listitem>
+</varlistentry>
+<varlistentry>
+<term>
+        String
+</term>
+<listitem>
+<para>
+                The name of the channel that the notify has been raised on.
+</para>
+</listitem>
+</varlistentry>
+<varlistentry>
+<term>
+        String
+</term>
+<listitem>
+<para>
+                The <quote>payload</quote> string passed from the notifying process.
+</para>
+</listitem>
+</varlistentry>
+</variablelist>
+
+</para>
+</listitem>
+</varlistentry>
+
+
+<varlistentry>
+<term>
+ParameterDescription (B)
+</term>
+<listitem>
+<para>
+
+<variablelist>
+<varlistentry>
+<term>
+        Byte1('t')
+</term>
+<listitem>
+<para>
+                Identifies the message as a parameter description.
+</para>
+</listitem>
+</varlistentry>
+<varlistentry>
+<term>
+        Int32
+</term>
+<listitem>
+<para>
+                Length of message contents in bytes, including self.
+</para>
+</listitem>
+</varlistentry>
+<varlistentry>
+<term>
+        Int16
+</term>
+<listitem>
+<para>
+                The number of parameters used by the statement
+                (can be zero).
+</para>
+</listitem>
+</varlistentry>
+</variablelist>
+        Then, for each parameter, there is the following:
+<variablelist>
+<varlistentry>
+<term>
+        Int32
+</term>
+<listitem>
+<para>
+                Specifies the object ID of the parameter data type.
+</para>
+</listitem>
+</varlistentry>
+</variablelist>
+</para>
+</listitem>
+</varlistentry>
+
+
+<varlistentry>
+<term>
+ParameterStatus (B)
+</term>
+<listitem>
+<para>
+
+<variablelist>
+<varlistentry>
+<term>
+        Byte1('S')
+</term>
+<listitem>
+<para>
+                Identifies the message as a run-time parameter status report.
+</para>
+</listitem>
+</varlistentry>
+<varlistentry>
+<term>
+        Int32
+</term>
+<listitem>
+<para>
+                Length of message contents in bytes, including self.
+</para>
+</listitem>
+</varlistentry>
+<varlistentry>
+<term>
+        String
+</term>
+<listitem>
+<para>
+                The name of the run-time parameter being reported.
+</para>
+</listitem>
+</varlistentry>
+<varlistentry>
+<term>
+        String
+</term>
+<listitem>
+<para>
+                The current value of the parameter.
+</para>
+</listitem>
+</varlistentry>
+</variablelist>
+</para>
+</listitem>
+</varlistentry>
+
+
+<varlistentry>
+<term>
+Parse (F)
+</term>
+<listitem>
+<para>
+
+<variablelist>
+<varlistentry>
+<term>
+        Byte1('P')
+</term>
+<listitem>
+<para>
+                Identifies the message as a Parse command.
+</para>
+</listitem>
+</varlistentry>
+<varlistentry>
+<term>
+        Int32
+</term>
+<listitem>
+<para>
+                Length of message contents in bytes, including self.
+</para>
+</listitem>
+</varlistentry>
+<varlistentry>
+<term>
+        String
+</term>
+<listitem>
+<para>
+                The name of the destination prepared statement
+                (an empty string selects the unnamed prepared statement).
+</para>
+</listitem>
+</varlistentry>
+<varlistentry>
+<term>
+        String
+</term>
+<listitem>
+<para>
+                The query string to be parsed.
+</para>
+</listitem>
+</varlistentry>
+<varlistentry>
+<term>
+        Int16
+</term>
+<listitem>
+<para>
+                The number of parameter data types specified
+                (can be zero).  Note that this is not an indication of
+                the number of parameters that might appear in the
+                query string, only the number that the frontend wants to
+                prespecify types for.
+</para>
+</listitem>
+</varlistentry>
+</variablelist>
+        Then, for each parameter, there is the following:
+<variablelist>
+<varlistentry>
+<term>
+        Int32
+</term>
+<listitem>
+<para>
+                Specifies the object ID of the parameter data type.
+                Placing a zero here is equivalent to leaving the type
+                unspecified.
+</para>
+</listitem>
+</varlistentry>
+</variablelist>
+</para>
+</listitem>
+</varlistentry>
+
+
+<varlistentry>
+<term>
+ParseComplete (B)
+</term>
+<listitem>
+<para>
+
+<variablelist>
+<varlistentry>
+<term>
+        Byte1('1')
+</term>
+<listitem>
+<para>
+                Identifies the message as a Parse-complete indicator.
+</para>
+</listitem>
+</varlistentry>
+<varlistentry>
+<term>
+        Int32(4)
+</term>
+<listitem>
+<para>
+                Length of message contents in bytes, including self.
+</para>
+</listitem>
+</varlistentry>
+</variablelist>
+
+</para>
+</listitem>
+</varlistentry>
+
+
+<varlistentry>
+<term>
+PasswordMessage (F)
+</term>
+<listitem>
+<para>
+
+<variablelist>
+<varlistentry>
+<term>
+        Byte1('p')
+</term>
+<listitem>
+<para>
+                Identifies the message as a password response. Note that
+                this is also used for GSSAPI, SSPI and SASL response messages.
+                The exact message type can be deduced from the context.
+</para>
+</listitem>
+</varlistentry>
+<varlistentry>
+<term>
+        Int32
+</term>
+<listitem>
+<para>
+                Length of message contents in bytes, including self.
+</para>
+</listitem>
+</varlistentry>
+<varlistentry>
+<term>
+        String
+</term>
+<listitem>
+<para>
+                The password (encrypted, if requested).
+</para>
+</listitem>
+</varlistentry>
+</variablelist>
+</para>
+</listitem>
+</varlistentry>
+
+
+<varlistentry>
+<term>
+PortalSuspended (B)
+</term>
+<listitem>
+<para>
+
+<variablelist>
+<varlistentry>
+<term>
+        Byte1('s')
+</term>
+<listitem>
+<para>
+                Identifies the message as a portal-suspended indicator.
+                Note this only appears if an Execute message's row-count limit
+                was reached.
+</para>
+</listitem>
+</varlistentry>
+<varlistentry>
+<term>
+        Int32(4)
+</term>
+<listitem>
+<para>
+                Length of message contents in bytes, including self.
+</para>
+</listitem>
+</varlistentry>
+</variablelist>
+
+</para>
+</listitem>
+</varlistentry>
+
+
+<varlistentry>
+<term>
+Query (F)
+</term>
+<listitem>
+<para>
+
+<variablelist>
+<varlistentry>
+<term>
+        Byte1('Q')
+</term>
+<listitem>
+<para>
+                Identifies the message as a simple query.
+</para>
+</listitem>
+</varlistentry>
+<varlistentry>
+<term>
+        Int32
+</term>
+<listitem>
+<para>
+                Length of message contents in bytes, including self.
+</para>
+</listitem>
+</varlistentry>
+<varlistentry>
+<term>
+        String
+</term>
+<listitem>
+<para>
+                The query string itself.
+</para>
+</listitem>
+</varlistentry>
+</variablelist>
+
+</para>
+</listitem>
+</varlistentry>
+
+
+<varlistentry>
+<term>
+ReadyForQuery (B)
+</term>
+<listitem>
+<para>
+
+<variablelist>
+<varlistentry>
+<term>
+        Byte1('Z')
+</term>
+<listitem>
+<para>
+                Identifies the message type.  ReadyForQuery is sent
+                whenever the backend is ready for a new query cycle.
+</para>
+</listitem>
+</varlistentry>
+<varlistentry>
+<term>
+        Int32(5)
+</term>
+<listitem>
+<para>
+                Length of message contents in bytes, including self.
+</para>
+</listitem>
+</varlistentry>
+<varlistentry>
+<term>
+        Byte1
+</term>
+<listitem>
+<para>
+                Current backend transaction status indicator.
+                Possible values are '<literal>I</literal>' if idle (not in
+                a transaction block); '<literal>T</literal>' if in a transaction
+                block; or '<literal>E</literal>' if in a failed transaction
+                block (queries will be rejected until block is ended).
+</para>
+</listitem>
+</varlistentry>
+</variablelist>
+
+</para>
+</listitem>
+</varlistentry>
+
+
+<varlistentry>
+<term>
+RowDescription (B)
+</term>
+<listitem>
+<para>
+
+<variablelist>
+<varlistentry>
+<term>
+        Byte1('T')
+</term>
+<listitem>
+<para>
+                Identifies the message as a row description.
+</para>
+</listitem>
+</varlistentry>
+<varlistentry>
+<term>
+        Int32
+</term>
+<listitem>
+<para>
+                Length of message contents in bytes, including self.
+</para>
+</listitem>
+</varlistentry>
+<varlistentry>
+<term>
+        Int16
+</term>
+<listitem>
+<para>
+                Specifies the number of fields in a row (can be zero).
+</para>
+</listitem>
+</varlistentry>
+</variablelist>
+        Then, for each field, there is the following:
+<variablelist>
+<varlistentry>
+<term>
+        String
+</term>
+<listitem>
+<para>
+                The field name.
+</para>
+</listitem>
+</varlistentry>
+<varlistentry>
+<term>
+        Int32
+</term>
+<listitem>
+<para>
+                If the field can be identified as a column of a specific
+                table, the object ID of the table; otherwise zero.
+</para>
+</listitem>
+</varlistentry>
+<varlistentry>
+<term>
+        Int16
+</term>
+<listitem>
+<para>
+                If the field can be identified as a column of a specific
+                table, the attribute number of the column; otherwise zero.
+</para>
+</listitem>
+</varlistentry>
+<varlistentry>
+<term>
+        Int32
+</term>
+<listitem>
+<para>
+                The object ID of the field's data type.
+</para>
+</listitem>
+</varlistentry>
+<varlistentry>
+<term>
+        Int16
+</term>
+<listitem>
+<para>
+                The data type size (see <varname>pg_type.typlen</varname>).
+                Note that negative values denote variable-width types.
+</para>
+</listitem>
+</varlistentry>
+<varlistentry>
+<term>
+        Int32
+</term>
+<listitem>
+<para>
+                The type modifier (see <varname>pg_attribute.atttypmod</varname>).
+                The meaning of the modifier is type-specific.
+</para>
+</listitem>
+</varlistentry>
+<varlistentry>
+<term>
+        Int16
+</term>
+<listitem>
+<para>
+                The format code being used for the field.  Currently will
+                be zero (text) or one (binary).  In a RowDescription
+                returned from the statement variant of Describe, the
+                format code is not yet known and will always be zero.
+</para>
+</listitem>
+</varlistentry>
+</variablelist>
+
+</para>
+</listitem>
+</varlistentry>
+
+
+<varlistentry>
+<term>
+SASLInitialResponse (F)
+</term>
+<listitem>
+<para>
+
+<variablelist>
+<varlistentry>
+<term>
+        Byte1('p')
+</term>
+<listitem>
+<para>
+                Identifies the message as an initial SASL response. Note that
+                this is also used for GSSAPI, SSPI and password response messages.
+                The exact message type is deduced from the context.
+</para>
+</listitem>
+</varlistentry>
+<varlistentry>
+<term>
+        Int32
+</term>
+<listitem>
+<para>
+                Length of message contents in bytes, including self.
+</para>
+</listitem>
+</varlistentry>
+<varlistentry>
+<term>
+        String
+</term>
+<listitem>
+<para>
+                Name of the SASL authentication mechanism that the client
+                selected.
+</para>
+</listitem>
+</varlistentry>
+<varlistentry>
+<term>
+        Int32
+</term>
+<listitem>
+<para>
+                Length of SASL mechanism specific "Initial Client Response" that
+                follows, or -1 if there is no Initial Response.
+</para>
+</listitem>
+</varlistentry>
+<varlistentry>
+<term>
+        Byte<replaceable>n</replaceable>
+</term>
+<listitem>
+<para>
+                SASL mechanism specific "Initial Response".
+</para>
+</listitem>
+</varlistentry>
+</variablelist>
+</para>
+</listitem>
+</varlistentry>
+
+
+<varlistentry>
+<term>
+SASLResponse (F)
+</term>
+<listitem>
+<para>
+
+<variablelist>
+<varlistentry>
+<term>
+        Byte1('p')
+</term>
+<listitem>
+<para>
+                Identifies the message as a SASL response. Note that
+                this is also used for GSSAPI, SSPI and password response messages.
+                The exact message type can be deduced from the context.
+</para>
+</listitem>
+</varlistentry>
+<varlistentry>
+<term>
+        Int32
+</term>
+<listitem>
+<para>
+                Length of message contents in bytes, including self.
+</para>
+</listitem>
+</varlistentry>
+<varlistentry>
+<term>
+        Byte<replaceable>n</replaceable>
+</term>
+<listitem>
+<para>
+                SASL mechanism specific message data.
+</para>
+</listitem>
+</varlistentry>
+</variablelist>
+</para>
+</listitem>
+</varlistentry>
+
+
+<varlistentry>
+<term>
+SSLRequest (F)
+</term>
+<listitem>
+<para>
+
+<variablelist>
+<varlistentry>
+<term>
+        Int32(8)
+</term>
+<listitem>
+<para>
+                Length of message contents in bytes, including self.
+</para>
+</listitem>
+</varlistentry>
+<varlistentry>
+<term>
+        Int32(80877103)
+</term>
+<listitem>
+<para>
+                The <acronym>SSL</acronym> request code.  The value is chosen to contain
+                <literal>1234</literal> in the most significant 16 bits, and <literal>5679</literal> in the
+                least significant 16 bits.  (To avoid confusion, this code
+                must not be the same as any protocol version number.)
+</para>
+</listitem>
+</varlistentry>
+</variablelist>
+
+</para>
+</listitem>
+</varlistentry>
+
+
+<varlistentry>
+<term>
+StartupMessage (F)
+</term>
+<listitem>
+<para>
+
+<variablelist>
+<varlistentry>
+<term>
+        Int32
+</term>
+<listitem>
+<para>
+                Length of message contents in bytes, including self.
+</para>
+</listitem>
+</varlistentry>
+<varlistentry>
+<term>
+        Int32(196608)
+</term>
+<listitem>
+<para>
+                The protocol version number.  The most significant 16 bits are
+                the major version number (3 for the protocol described here).
+                The least significant 16 bits are the minor version number
+                (0 for the protocol described here).
+</para>
+</listitem>
+</varlistentry>
+</variablelist>
+        The protocol version number is followed by one or more pairs of
+        parameter name and value strings.  A zero byte is required as a
+        terminator after the last name/value pair.
+        Parameters can appear in any
+        order.  <literal>user</literal> is required, others are optional.
+        Each parameter is specified as:
+<variablelist>
+<varlistentry>
+<term>
+        String
+</term>
+<listitem>
+<para>
+                The parameter name.  Currently recognized names are:
+
+<variablelist>
+<varlistentry>
+<term>
+                <literal>user</literal>
+</term>
+<listitem>
+<para>
+                        The database user name to connect as.  Required;
+                        there is no default.
+</para>
+</listitem>
+</varlistentry>
+<varlistentry>
+<term>
+                <literal>database</literal>
+</term>
+<listitem>
+<para>
+                        The database to connect to.  Defaults to the user name.
+</para>
+</listitem>
+</varlistentry>
+<varlistentry>
+<term>
+                <literal>options</literal>
+</term>
+<listitem>
+<para>
+                        Command-line arguments for the backend.  (This is
+                        deprecated in favor of setting individual run-time
+                        parameters.)  Spaces within this string are
+                        considered to separate arguments, unless escaped with
+                        a backslash (<literal>\</literal>); write <literal>\\</literal> to
+                        represent a literal backslash.
+</para>
+</listitem>
+</varlistentry>
+<varlistentry>
+<term>
+                <literal>replication</literal>
+</term>
+<listitem>
+<para>
+                        Used to connect in streaming replication mode, where
+                        a small set of replication commands can be issued
+                        instead of SQL statements. Value can be
+                        <literal>true</literal>, <literal>false</literal>, or
+                        <literal>database</literal>, and the default is
+                        <literal>false</literal>. See
+                        <xref linkend="protocol-replication"/> for details.
+</para>
+</listitem>
+</varlistentry>
+<varlistentry>
+<term>
+                <literal>_pq_.compression</literal>
+</term>
+<listitem>
+<para>
+                        Request compression of libpq traffic. The value is a list of compression algorithms requested by the client with an optional
+                        specification of compression level: <literal>"zlib,lz4:5"</literal>.
+                        If the server does not support compression, the backend will ignore the _pq_.compression
+                        parameter and will not send the CompressionAck message to the frontend.
+                        By default, compression is disabled. Please note that using compression together with SSL may expose extra vulnerabilities:
+                        <ulink url="https://en.wikipedia.org/wiki/CRIME">CRIME</ulink>.
+</para>
+</listitem>
+</varlistentry>
+</variablelist>
+
+                In addition to the above, other parameters may be listed.
+                Parameter names beginning with <literal>_pq_.</literal> are
+                reserved for use as protocol extensions, while others are
+                treated as run-time parameters to be set at backend start
+                time.  Such settings will be applied during backend start
+                (after parsing the command-line arguments if any) and will
+                act as session defaults.
+</para>
+</listitem>
+</varlistentry>
+<varlistentry>
+<term>
+        String
+</term>
+<listitem>
+<para>
+                The parameter value.
+</para>
+</listitem>
+</varlistentry>
+</variablelist>
+
+</para>
+</listitem>
+</varlistentry>
+
+
+<varlistentry>
+<term>
+Sync (F)
+</term>
+<listitem>
+<para>
+
+<variablelist>
+<varlistentry>
+<term>
+        Byte1('S')
+</term>
+<listitem>
+<para>
+                Identifies the message as a Sync command.
+</para>
+</listitem>
+</varlistentry>
+<varlistentry>
+<term>
+        Int32(4)
+</term>
+<listitem>
+<para>
+                Length of message contents in bytes, including self.
+</para>
+</listitem>
+</varlistentry>
+</variablelist>
+
+</para>
+</listitem>
+</varlistentry>
+
+
+<varlistentry>
+<term>
+Terminate (F)
+</term>
+<listitem>
+<para>
+
+<variablelist>
+<varlistentry>
+<term>
+        Byte1('X')
+</term>
+<listitem>
+<para>
+                Identifies the message as a termination.
+</para>
+</listitem>
+</varlistentry>
+<varlistentry>
+<term>
+        Int32(4)
+</term>
+<listitem>
+<para>
+                Length of message contents in bytes, including self.
+</para>
+</listitem>
+</varlistentry>
+</variablelist>
+
+</para>
+</listitem>
+</varlistentry>
+
+
+</variablelist>
+
+</sect1>
+
+
+<sect1 id="protocol-error-fields">
+<title>Error and Notice Message Fields</title>
+
+<para>
+This section describes the fields that can appear in ErrorResponse and
+NoticeResponse messages.  Each field type has a single-byte identification
+token.  Note that any given field type should appear at most once per
+message.
+</para>
+
+<variablelist>
+
+<varlistentry>
+<term>
+<literal>S</literal>
+</term>
+<listitem>
+<para>
+        Severity: the field contents are
+        <literal>ERROR</literal>, <literal>FATAL</literal>, or
+        <literal>PANIC</literal> (in an error message), or
+        <literal>WARNING</literal>, <literal>NOTICE</literal>, <literal>DEBUG</literal>,
+        <literal>INFO</literal>, or <literal>LOG</literal> (in a notice message),
+        or a localized translation of one of these.  Always present.
+</para>
+</listitem>
+</varlistentry>
+
+<varlistentry>
+<term>
+<literal>V</literal>
+</term>
+<listitem>
+<para>
+        Severity: the field contents are
+        <literal>ERROR</literal>, <literal>FATAL</literal>, or
+        <literal>PANIC</literal> (in an error message), or
+        <literal>WARNING</literal>, <literal>NOTICE</literal>, <literal>DEBUG</literal>,
+        <literal>INFO</literal>, or <literal>LOG</literal> (in a notice message).
+        This is identical to the <literal>S</literal> field except
+        that the contents are never localized.  This is present only in
+        messages generated by <productname>PostgreSQL</productname> versions 9.6
+        and later.
+</para>
+</listitem>
+</varlistentry>
+
+<varlistentry>
+<term>
+<literal>C</literal>
+</term>
+<listitem>
+<para>
+        Code: the SQLSTATE code for the error (see <xref
+        linkend="errcodes-appendix"/>).  Not localizable.  Always present.
+</para>
+</listitem>
+</varlistentry>
+
+<varlistentry>
+<term>
+<literal>M</literal>
+</term>
+<listitem>
+<para>
+        Message: the primary human-readable error message.
+        This should be accurate but terse (typically one line).
+        Always present.
+</para>
+</listitem>
+</varlistentry>
+
+<varlistentry>
+<term>
+<literal>D</literal>
+</term>
+<listitem>
+<para>
+        Detail: an optional secondary error message carrying more
+        detail about the problem.  Might run to multiple lines.
+</para>
+</listitem>
+</varlistentry>
+
+<varlistentry>
+<term>
+<literal>H</literal>
+</term>
+<listitem>
+<para>
+        Hint: an optional suggestion what to do about the problem.
+        This is intended to differ from Detail in that it offers advice
+        (potentially inappropriate) rather than hard facts.
+        Might run to multiple lines.
+</para>
+</listitem>
+</varlistentry>
+
+<varlistentry>
+<term>
+<literal>P</literal>
+</term>
+<listitem>
+<para>
+        Position: the field value is a decimal ASCII integer, indicating
+        an error cursor position as an index into the original query string.
+        The first character has index 1, and positions are measured in
+        characters not bytes.
+</para>
+</listitem>
+</varlistentry>
+
+<varlistentry>
+<term>
+<literal>p</literal>
+</term>
+<listitem>
+<para>
+        Internal position: this is defined the same as the <literal>P</literal>
+        field, but it is used when the cursor position refers to an internally
+        generated command rather than the one submitted by the client.
+        The <literal>q</literal> field will always appear when this field appears.
+</para>
+</listitem>
+</varlistentry>
+
+<varlistentry>
+<term>
+<literal>q</literal>
+</term>
+<listitem>
+<para>
+        Internal query: the text of a failed internally-generated command.
+        This could be, for example, an SQL query issued by a PL/pgSQL function.
+</para>
+</listitem>
+</varlistentry>
+
+<varlistentry>
+<term>
+<literal>W</literal>
+</term>
+<listitem>
+<para>
+        Where: an indication of the context in which the error occurred.
+        Presently this includes a call stack traceback of active
+        procedural language functions and internally-generated queries.
+        The trace is one entry per line, most recent first.
+</para>
+</listitem>
+</varlistentry>
+
+<varlistentry>
+<term>
+<literal>s</literal>
+</term>
+<listitem>
+<para>
+        Schema name: if the error was associated with a specific database
+        object, the name of the schema containing that object, if any.
+</para>
+</listitem>
+</varlistentry>
+
+<varlistentry>
+<term>
+<literal>t</literal>
+</term>
+<listitem>
+<para>
+        Table name: if the error was associated with a specific table, the
+        name of the table.  (Refer to the schema name field for the name of
+        the table's schema.)
+</para>
+</listitem>
+</varlistentry>
+
+<varlistentry>
+<term>
+<literal>c</literal>
+</term>
+<listitem>
+<para>
+        Column name: if the error was associated with a specific table column,
+        the name of the column.  (Refer to the schema and table name fields to
+        identify the table.)
+</para>
+</listitem>
+</varlistentry>
+
+<varlistentry>
+<term>
+<literal>d</literal>
+</term>
+<listitem>
+<para>
+        Data type name: if the error was associated with a specific data type,
+        the name of the data type.  (Refer to the schema name field for the
+        name of the data type's schema.)
+</para>
+</listitem>
+</varlistentry>
+
+<varlistentry>
+<term>
+<literal>n</literal>
+</term>
+<listitem>
+<para>
+        Constraint name: if the error was associated with a specific
+        constraint, the name of the constraint.  Refer to fields listed above
+        for the associated table or domain.  (For this purpose, indexes are
+        treated as constraints, even if they weren't created with constraint
+        syntax.)
+</para>
+</listitem>
+</varlistentry>
+
+<varlistentry>
+<term>
+<literal>F</literal>
+</term>
+<listitem>
+<para>
+        File: the file name of the source-code location where the error
+        was reported.
+</para>
+</listitem>
+</varlistentry>
+
+<varlistentry>
+<term>
+<literal>L</literal>
+</term>
+<listitem>
+<para>
+        Line: the line number of the source-code location where the error
+        was reported.
+</para>
+</listitem>
+</varlistentry>
+
+<varlistentry>
+<term>
+<literal>R</literal>
+</term>
+<listitem>
+<para>
+        Routine: the name of the source-code routine reporting the error.
+</para>
+</listitem>
+</varlistentry>
+
+</variablelist>
+
+<note>
+ <para>
+  The fields for schema name, table name, column name, data type name, and
+  constraint name are supplied only for a limited number of error types;
+  see <xref linkend="errcodes-appendix"/>.  Frontends should not assume that
+  the presence of any of these fields guarantees the presence of another
+  field.  Core error sources observe the interrelationships noted above, but
+  user-defined functions may use these fields in other ways.  In the same
+  vein, clients should not assume that these fields denote contemporary
+  objects in the current database.
+ </para>
+</note>
 
   <para>
    The backend sends ParameterStatus ('<literal>S</literal>') messages during connection
