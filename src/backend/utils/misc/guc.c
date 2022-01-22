@@ -34,6 +34,7 @@
 
 #include "access/commit_ts.h"
 #include "access/gin.h"
+#include "access/gist.h"
 #include "access/rmgr.h"
 #include "access/tableam.h"
 #include "access/toast_compression.h"
@@ -3597,6 +3598,17 @@ static struct config_int ConfigureNamesInt[] =
 		},
 		&log_startup_progress_interval,
 		10000, 0, INT_MAX,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"gist_sorted_build_page_buffer_size", PGC_USERSET, UNGROUPED,
+			gettext_noop("GiST sorted build: # of pages to collect before applying split"),
+			NULL,
+			0
+		},
+		&GistSortedBuildPageBufferSize,
+		8, 1, INT_MAX,
 		NULL, NULL, NULL
 	},
 

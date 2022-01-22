@@ -186,6 +186,7 @@ typedef struct GISTENTRY
 #define GistPageGetNSN(page) ( PageXLogRecPtrGet(GistPageGetOpaque(page)->nsn))
 #define GistPageSetNSN(page, val) ( PageXLogRecPtrSet(GistPageGetOpaque(page)->nsn, val))
 
+extern int GistSortedBuildPageBufferSize;
 
 /*
  * On a deleted page, we store this struct. A deleted page doesn't contain any
