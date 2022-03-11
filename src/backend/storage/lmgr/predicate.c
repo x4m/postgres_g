@@ -333,9 +333,9 @@ static SlruCtlData SerialSlruCtlData;
 
 #define SerialValue(slotno, xid) (*((SerCommitSeqNo *) \
 	(SerialSlruCtl->shared->page_buffer[slotno] + \
-	((((uint32) (xid)) % SERIAL_ENTRIESPERPAGE) * SERIAL_ENTRYSIZE))))
+	((((uint64) (xid)) % SERIAL_ENTRIESPERPAGE) * SERIAL_ENTRYSIZE))))
 
-#define SerialPage(xid)	(((uint32) (xid)) / SERIAL_ENTRIESPERPAGE)
+#define SerialPage(xid)		((int64) (((uint64) (xid)) / SERIAL_ENTRIESPERPAGE))
 
 typedef struct SerialControlData
 {

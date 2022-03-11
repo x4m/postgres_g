@@ -1006,10 +1006,10 @@ SnapBuildPurgeOlderTxn(SnapBuild *builder)
 		InitialRunningXacts = NULL;
 	}
 
-	elog(DEBUG3, "purged initial running transactions from %u to %u, oldest running xid %u",
+	elog(DEBUG3, "purged initial running transactions from %u to %u, oldest running xid %llu",
 		 (uint32) NInitialRunningXacts,
 		 (uint32) surviving_xids,
-		 builder->xmin);
+		 (unsigned long long) builder->xmin);
 
 	NInitialRunningXacts = surviving_xids;
 	pfree(workspace);
@@ -1108,8 +1108,8 @@ SnapBuildCommitTxn(SnapBuild *builder, XLogRecPtr lsn, TransactionId xid,
 	else if (sub_needs_timetravel)
 	{
 		/* track toplevel txn as well, subxact alone isn't meaningful */
-		elog(DEBUG2, "forced transaction %u to do timetravel due to one of its subtransactions",
-			 xid);
+		elog(DEBUG2, "forced transaction %llu to do timetravel due to one of its subtransactions",
+			 (unsigned long long) xid);
 		needs_timetravel = true;
 		SnapBuildAddCommittedTxn(builder, xid);
 	}

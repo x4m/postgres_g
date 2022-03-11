@@ -150,10 +150,11 @@
 	((attalign) == TYPALIGN_INT) ? INTALIGN(cur_offset) : \
 	 (((attalign) == TYPALIGN_CHAR) ? (uintptr_t) (cur_offset) : \
 	  (((attalign) == TYPALIGN_DOUBLE) ? DOUBLEALIGN(cur_offset) : \
+	   (((attalign) == TYPALIGN_XID) ? MAXALIGN(cur_offset) : \
 	   ( \
 			AssertMacro((attalign) == TYPALIGN_SHORT), \
 			SHORTALIGN(cur_offset) \
-	   ))) \
+	   )))) \
 )
 
 /*

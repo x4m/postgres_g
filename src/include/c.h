@@ -75,6 +75,10 @@
 #include <libintl.h>
 #endif
 
+#if HAVE_INTTYPES_H
+#include "inttypes.h"
+#endif
+
 
 /* ----------------------------------------------------------------
  *				Section 1: compiler characteristics
@@ -612,19 +616,32 @@ typedef double float8;
 typedef Oid regproc;
 typedef regproc RegProcedure;
 
-typedef uint32 TransactionId;
+#define MAX_START_XID  UINT64CONST(0x3fffffffffffffff)
 
-typedef uint32 LocalTransactionId;
+typedef uint64 TransactionId;
 
-typedef uint32 SubTransactionId;
+extern bool TransactionIdPrecedes(TransactionId id1, TransactionId id2);
+extern bool TransactionIdPrecedesOrEquals(TransactionId id1, TransactionId id2);
+extern bool TransactionIdFollows(TransactionId id1, TransactionId id2);
+extern bool TransactionIdFollowsOrEquals(TransactionId id1, TransactionId id2);
 
-#define InvalidSubTransactionId		((SubTransactionId) 0)
-#define TopSubTransactionId			((SubTransactionId) 1)
+#define StartTransactionIdIsValid(start_xid)   ((start_xid) <= MAX_START_XID)
+
+typedef uint32 ShortTransactionId;
+typedef uint64 LocalTransactionId;
+typedef uint64 SubTransactionId;
+
+#define InvalidSubTransactionId        ((SubTransactionId) 0)
+#define TopSubTransactionId            ((SubTransactionId) 1)
 
 /* MultiXactId must be equivalent to TransactionId, to fit in t_xmax */
 typedef TransactionId MultiXactId;
 
-typedef uint32 MultiXactOffset;
+#define StartMultiXactIdIsValid(start_mx_id)   ((start_mx_id) <= MAX_START_XID)
+
+typedef uint64 MultiXactOffset;
+
+#define StartMultiXactOffsetIsValid(start_mx_offset)   ((start_mx_offset) <= MAX_START_XID)
 
 typedef uint32 CommandId;
 
@@ -808,7 +825,6 @@ typedef NameData *Name;
 
 /* we don't currently need wider versions of the other ALIGN macros */
 #define MAXALIGN64(LEN)			TYPEALIGN64(MAXIMUM_ALIGNOF, (LEN))
-
 
 /* ----------------------------------------------------------------
  *				Section 6:	assertions

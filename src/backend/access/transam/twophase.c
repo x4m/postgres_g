@@ -945,7 +945,7 @@ TwoPhaseGetDummyProc(TransactionId xid, bool lock_held)
 /************************************************************************/
 
 #define TwoPhaseFilePath(path, xid) \
-	snprintf(path, MAXPGPATH, TWOPHASE_DIR "/%08X", xid)
+	snprintf(path, MAXPGPATH, TWOPHASE_DIR "/%016llX", (unsigned long long) xid)
 
 /*
  * 2PC state file format:
@@ -1884,13 +1884,13 @@ restoreTwoPhaseData(void)
 	cldir = AllocateDir(TWOPHASE_DIR);
 	while ((clde = ReadDir(cldir, TWOPHASE_DIR)) != NULL)
 	{
-		if (strlen(clde->d_name) == 8 &&
-			strspn(clde->d_name, "0123456789ABCDEF") == 8)
+		if (strlen(clde->d_name) == 16 &&
+			strspn(clde->d_name, "0123456789ABCDEF") == 16)
 		{
 			TransactionId xid;
 			char	   *buf;
 
-			xid = (TransactionId) strtoul(clde->d_name, NULL, 16);
+			xid = (TransactionId) strtou64(clde->d_name, NULL, 16);
 
 			buf = ProcessTwoPhaseBuffer(xid, InvalidXLogRecPtr,
 										true, false, false);
@@ -2222,7 +2222,6 @@ ProcessTwoPhaseBuffer(TransactionId xid,
 
 	if (fromdisk)
 	{
-		/* Read and validate file */
 		buf = ReadTwoPhaseFile(xid, false);
 	}
 	else
