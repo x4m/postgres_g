@@ -4058,7 +4058,6 @@ PostgresSingleUserMain(int argc, char *argv[],
 	PostgresMain(dbname, username);
 }
 
-
 /* ----------------------------------------------------------------
  * PostgresMain
  *	   postgres main loop -- all backends, interactive or otherwise loop here
