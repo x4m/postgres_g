@@ -874,6 +874,7 @@ const char *const config_type_names[] =
 {
 	 /* PGC_BOOL */ "bool",
 	 /* PGC_INT */ "integer",
+	 /* PGC_INT64 */ "int64",
 	 /* PGC_REAL */ "real",
 	 /* PGC_STRING */ "string",
 	 /* PGC_ENUM */ "enum"
@@ -1007,10 +1008,47 @@ static const unit_conversion time_unit_conversion_table[] =
  *	  variable_is_guc_list_quote() in src/bin/pg_dump/dumputils.c.
  */
 
+static int	GUCNestLevel = 0;	/* 1 when in main transaction */
+
+
+static int	guc_var_compare(const void *a, const void *b);
+static void InitializeGUCOptionsFromEnvironment(void);
+static void InitializeOneGUCOption(struct config_generic *gconf);
+static void pg_timezone_abbrev_initialize(void);
+static void push_old_value(struct config_generic *gconf, GucAction action);
+static void ReportGUCOption(struct config_generic *record);
+static void set_config_sourcefile(const char *name, char *sourcefile,
+								  int sourceline);
+static void reapply_stacked_values(struct config_generic *variable,
+								   struct config_string *pHolder,
+								   GucStack *stack,
+								   const char *curvalue,
+								   GucContext curscontext, GucSource cursource,
+								   Oid cursrole);
+static bool validate_option_array_item(const char *name, const char *value,
+									   bool skipIfNoPermissions);
+static void write_auto_conf_file(int fd, const char *filename, ConfigVariable *head);
+static void replace_auto_config_value(ConfigVariable **head_p, ConfigVariable **tail_p,
+									  const char *name, const char *value);
+static bool valid_custom_variable_name(const char *name);
+static void do_serialize(char **destptr, Size *maxbytes,
+						 const char *fmt,...) pg_attribute_printf(3, 4);
+static bool call_bool_check_hook(struct config_bool *conf, bool *newval,
+								 void **extra, GucSource source, int elevel);
+static bool call_int_check_hook(struct config_int *conf, int *newval,
+								void **extra, GucSource source, int elevel);
+static bool call_int64_check_hook(struct config_int64 *conf, int64 *newval,
+								  void **extra, GucSource source, int elevel);
+static bool call_real_check_hook(struct config_real *conf, double *newval,
+								 void **extra, GucSource source, int elevel);
+static bool call_string_check_hook(struct config_string *conf, char **newval,
+								   void **extra, GucSource source, int elevel);
+static bool call_enum_check_hook(struct config_enum *conf, int *newval,
+								 void **extra, GucSource source, int elevel);
 
 /******** option records follow ********/
 
-static struct config_bool ConfigureNamesBool[] =
+struct config_bool ConfigureNamesBool[] =
 {
 	{
 		{"enable_seqscan", PGC_USERSET, QUERY_TUNING_METHOD,
@@ -2179,7 +2217,16 @@ static struct config_bool ConfigureNamesBool[] =
 };
 
 
-static struct config_int ConfigureNamesInt[] =
+struct config_int64 ConfigureNamesInt64[] =
+{
+	/* End-of-list marker */
+	{
+		{NULL, 0, 0, NULL, NULL}, NULL, 0, 0, 0, NULL, NULL, NULL
+	}
+};
+
+
+struct config_int ConfigureNamesInt[] =
 {
 	{
 		{"archive_timeout", PGC_SIGHUP, WAL_ARCHIVING,
@@ -3659,7 +3706,7 @@ static struct config_int ConfigureNamesInt[] =
 };
 
 
-static struct config_real ConfigureNamesReal[] =
+struct config_real ConfigureNamesReal[] =
 {
 	{
 		{"seq_page_cost", PGC_USERSET, QUERY_TUNING_COST,
@@ -3940,7 +3987,7 @@ static struct config_real ConfigureNamesReal[] =
 };
 
 
-static struct config_string ConfigureNamesString[] =
+struct config_string ConfigureNamesString[] =
 {
 	{
 		{"archive_command", PGC_SIGHUP, WAL_ARCHIVING,
@@ -4718,7 +4765,7 @@ static struct config_string ConfigureNamesString[] =
 };
 
 
-static struct config_enum ConfigureNamesEnum[] =
+struct config_enum ConfigureNamesEnum[] =
 {
 	{
 		{"backslash_quote", PGC_USERSET, COMPAT_OPTIONS_PREVIOUS,
@@ -5149,8 +5196,6 @@ static bool reporting_enabled;	/* true to enable GUC_REPORT */
 
 static bool report_needed;		/* true if any GUC_REPORT reports are needed */
 
-static int	GUCNestLevel = 0;	/* 1 when in main transaction */
-
 
 static int	guc_var_compare(const void *a, const void *b);
 static int	guc_name_compare(const char *namea, const char *nameb);
@@ -5282,6 +5327,10 @@ extra_field_used(struct config_generic *gconf, void *extra)
 			if (extra == ((struct config_int *) gconf)->reset_extra)
 				return true;
 			break;
+		case PGC_INT64:
+			if (extra == ((struct config_int64 *) gconf)->reset_extra)
+				return true;
+			break;
 		case PGC_REAL:
 			if (extra == ((struct config_real *) gconf)->reset_extra)
 				return true;
@@ -5343,6 +5392,10 @@ set_stack_value(struct config_generic *gconf, config_var_value *val)
 			val->val.intval =
 				*((struct config_int *) gconf)->variable;
 			break;
+		case PGC_INT64:
+			val->val.int64val =
+				*((struct config_int64 *) gconf)->variable;
+			break;
 		case PGC_REAL:
 			val->val.realval =
 				*((struct config_real *) gconf)->variable;
@@ -5371,6 +5424,7 @@ discard_stack_value(struct config_generic *gconf, config_var_value *val)
 	{
 		case PGC_BOOL:
 		case PGC_INT:
+		case PGC_INT64:
 		case PGC_REAL:
 		case PGC_ENUM:
 			/* no need to do anything */
@@ -5464,6 +5518,9 @@ build_guc_variables(void)
 
 	for (i = 0; ConfigureNamesInt[i].gen.name; i++)
 		guc_vars[num_vars++] = &ConfigureNamesInt[i].gen;
+
+	for (i = 0; ConfigureNamesInt64[i].gen.name; i++)
+		guc_vars[num_vars++] = &ConfigureNamesInt64[i].gen;
 
 	for (i = 0; ConfigureNamesReal[i].gen.name; i++)
 		guc_vars[num_vars++] = &ConfigureNamesReal[i].gen;
@@ -5623,7 +5680,7 @@ add_placeholder_variable(const char *name, int elevel)
  * can only happen when create_placeholders is true, so callers passing
  * false need not think terribly hard about this.)
  */
-static struct config_generic *
+struct config_generic *
 find_option(const char *name, bool create_placeholders, bool skip_errors,
 			int elevel)
 {
@@ -6015,6 +6072,24 @@ InitializeOneGUCOption(struct config_generic *gconf)
 				conf->gen.extra = conf->reset_extra = extra;
 				break;
 			}
+		case PGC_INT64:
+			{
+				struct config_int64 *conf = (struct config_int64 *) gconf;
+				int64		newval = conf->boot_val;
+				void	   *extra = NULL;
+
+				Assert(newval >= conf->min);
+				Assert(newval <= conf->max);
+				if (!call_int64_check_hook(conf, &newval, &extra,
+										   PGC_S_DEFAULT, LOG))
+					elog(FATAL, "failed to initialize %s to %lld",
+						 conf->gen.name, (long long) newval);
+				if (conf->assign_hook)
+					(*conf->assign_hook) (newval, extra);
+				*conf->variable = conf->reset_val = newval;
+				conf->gen.extra = conf->reset_extra = extra;
+				break;
+			}
 		case PGC_REAL:
 			{
 				struct config_real *conf = (struct config_real *) gconf;
@@ -6301,6 +6376,18 @@ ResetAllOptions(void)
 			case PGC_INT:
 				{
 					struct config_int *conf = (struct config_int *) gconf;
+
+					if (conf->assign_hook)
+						conf->assign_hook(conf->reset_val,
+										  conf->reset_extra);
+					*conf->variable = conf->reset_val;
+					set_extra_field(&conf->gen, &conf->gen.extra,
+									conf->reset_extra);
+					break;
+				}
+			case PGC_INT64:
+				{
+					struct config_int64 *conf = (struct config_int64 *) gconf;
 
 					if (conf->assign_hook)
 						conf->assign_hook(conf->reset_val,
@@ -6654,6 +6741,24 @@ AtEOXact_GUC(bool isCommit, int nestLevel)
 						{
 							struct config_int *conf = (struct config_int *) gconf;
 							int			newval = newvalue.val.intval;
+							void	   *newextra = newvalue.extra;
+
+							if (*conf->variable != newval ||
+								conf->gen.extra != newextra)
+							{
+								if (conf->assign_hook)
+									conf->assign_hook(newval, newextra);
+								*conf->variable = newval;
+								set_extra_field(&conf->gen, &conf->gen.extra,
+												newextra);
+								changed = true;
+							}
+							break;
+						}
+					case PGC_INT64:
+						{
+							struct config_int64 *conf = (struct config_int64 *) gconf;
+							int64		newval = newvalue.val.int64val;
 							void	   *newextra = newvalue.extra;
 
 							if (*conf->variable != newval ||
@@ -7183,6 +7288,71 @@ parse_int(const char *value, int *result, int flags, const char **hintmsg)
 }
 
 /*
+ * Try to parse value as an 64-bit integer.  The accepted format is
+ * decimal number.
+ *
+ * If the string parses okay, return true, else false.
+ * If okay and result is not NULL, return the value in *result.
+ * If not okay and hintmsg is not NULL, *hintmsg is set to a suitable
+ *	HINT message, or NULL if no hint provided.
+ */
+bool
+parse_int64(const char *value, int64 *result, int flags, const char **hintmsg)
+{
+	int64		val;
+	char	   *endptr;
+
+	/* To suppress compiler warnings, always set output params */
+	if (result)
+		*result = 0;
+	if (hintmsg)
+		*hintmsg = NULL;
+
+	/* We assume here that int64 is at least as wide as long */
+	errno = 0;
+	val = strtoi64(value, &endptr, 0);
+
+	if (endptr == value)
+		return false;			/* no HINT for integer syntax error */
+
+	if (errno == ERANGE)
+	{
+		if (hintmsg)
+			*hintmsg = gettext_noop("Value exceeds 64-bit integer range.");
+		return false;
+	}
+
+	/*
+	 * got double format and/or units. For now we attempts parse it as double
+	 * and throw error on 53bit overflow
+	 */
+	if (*endptr != '\0')
+	{
+		double		dval;
+		bool		ok;
+
+		ok = parse_real(value, &dval, flags, hintmsg);
+		if (!ok)
+			return false;
+
+		dval = rint(val);
+
+		if (fabs(dval) >= (double) ((uint64) 1 << 53))
+		{
+			*hintmsg = gettext_noop("Int64 value with units should be positive number < 2^53");
+			return false;
+		}
+
+		val = (int64) dval;
+	}
+
+
+	if (result)
+		*result = val;
+	return true;
+}
+
+/*
  * Try to parse value as a floating point number in the usual format.
  * Optionally, the value can be followed by a unit name if "flags" indicates
  * a unit is allowed.
@@ -7420,6 +7590,36 @@ parse_and_validate_value(struct config_generic *record,
 
 				if (!call_int_check_hook(conf, &newval->intval, newextra,
 										 source, elevel))
+					return false;
+			}
+			break;
+		case PGC_INT64:
+			{
+				struct config_int64 *conf = (struct config_int64 *) record;
+				const char *hintmsg;
+
+				if (!parse_int64(value, &newval->int64val, conf->gen.flags, &hintmsg))
+				{
+					ereport(elevel,
+							(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+							 errmsg("invalid value for parameter \"%s\": \"%s\"",
+									name, value),
+							 hintmsg ? errhint("%s", _(hintmsg)) : 0));
+					return false;
+				}
+
+				if (newval->int64val < conf->min || newval->int64val > conf->max)
+				{
+					ereport(elevel,
+							(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+							 errmsg("%lld is outside the valid range for parameter \"%s\" (%lld .. %lld)",
+									(long long) newval->int64val, name,
+									(long long) conf->min, (long long) conf->max)));
+					return false;
+				}
+
+				if (!call_int64_check_hook(conf, &newval->int64val, newextra,
+										   source, elevel))
 					return false;
 			}
 			break;
@@ -8061,6 +8261,96 @@ set_config_option_ext(const char *name, const char *value,
 #undef newval
 			}
 
+		case PGC_INT64:
+			{
+				struct config_int64 *conf = (struct config_int64 *) record;
+
+#define newval (newval_union.int64val)
+
+				if (value)
+				{
+					if (!parse_and_validate_value(record, name, value,
+												  source, elevel,
+												  &newval_union, &newextra))
+						return 0;
+				}
+				else if (source == PGC_S_DEFAULT)
+				{
+					newval = conf->boot_val;
+					if (!call_int64_check_hook(conf, &newval, &newextra,
+											   source, elevel))
+						return 0;
+				}
+				else
+				{
+					newval = conf->reset_val;
+					newextra = conf->reset_extra;
+					source = conf->gen.reset_source;
+					context = conf->gen.reset_scontext;
+				}
+
+				if (prohibitValueChange)
+				{
+					if (*conf->variable != newval)
+					{
+						record->status |= GUC_PENDING_RESTART;
+						ereport(elevel,
+								(errcode(ERRCODE_CANT_CHANGE_RUNTIME_PARAM),
+								 errmsg("parameter \"%s\" cannot be changed without restarting the server",
+										name)));
+						return 0;
+					}
+					record->status &= ~GUC_PENDING_RESTART;
+					return -1;
+				}
+
+				if (changeVal)
+				{
+					/* Save old value to support transaction abort */
+					if (!makeDefault)
+						push_old_value(&conf->gen, action);
+
+					if (conf->assign_hook)
+						(*conf->assign_hook) (newval, newextra);
+					*conf->variable = newval;
+					set_extra_field(&conf->gen, &conf->gen.extra,
+									newextra);
+					conf->gen.source = source;
+					conf->gen.scontext = context;
+				}
+				if (makeDefault)
+				{
+					GucStack   *stack;
+
+					if (conf->gen.reset_source <= source)
+					{
+						conf->reset_val = newval;
+						set_extra_field(&conf->gen, &conf->reset_extra,
+										newextra);
+						conf->gen.reset_source = source;
+						conf->gen.reset_scontext = context;
+					}
+					for (stack = conf->gen.stack; stack; stack = stack->prev)
+					{
+						if (stack->source <= source)
+						{
+							stack->prior.val.intval = newval;
+							set_extra_field(&conf->gen, &stack->prior.extra,
+											newextra);
+							stack->source = source;
+							stack->scontext = context;
+						}
+					}
+				}
+
+				/* Perhaps we didn't install newextra anywhere */
+				if (newextra && !extra_field_used(&conf->gen, newextra))
+					free(newextra);
+				break;
+
+#undef newval
+			}
+
 		case PGC_REAL:
 			{
 				struct config_real *conf = (struct config_real *) record;
@@ -8485,6 +8775,11 @@ GetConfigOption(const char *name, bool missing_ok, bool restrict_privileged)
 					 *((struct config_int *) record)->variable);
 			return buffer;
 
+		case PGC_INT64:
+			snprintf(buffer, sizeof(buffer), "%lld",
+					 (long long) *((struct config_int64 *) record)->variable);
+			return buffer;
+
 		case PGC_REAL:
 			snprintf(buffer, sizeof(buffer), "%g",
 					 *((struct config_real *) record)->variable);
@@ -8530,6 +8825,11 @@ GetConfigOptionResetString(const char *name)
 		case PGC_INT:
 			snprintf(buffer, sizeof(buffer), "%d",
 					 ((struct config_int *) record)->reset_val);
+			return buffer;
+
+		case PGC_INT64:
+			snprintf(buffer, sizeof(buffer), "%lld",
+					 (long long) ((struct config_int64 *) record)->reset_val);
 			return buffer;
 
 		case PGC_REAL:
@@ -9937,6 +10237,14 @@ get_explain_guc_options(int *num)
 				}
 				break;
 
+			case PGC_INT64:
+				{
+					struct config_int64 *lconf = (struct config_int64 *) conf;
+
+					modified = (lconf->boot_val != *(lconf->variable));
+				}
+				break;
+
 			case PGC_REAL:
 				{
 					struct config_real *lconf = (struct config_real *) conf;
@@ -10145,6 +10453,31 @@ GetConfigOptionByNum(int varnum, const char **values, bool *noshow)
 
 				/* reset_val */
 				snprintf(buffer, sizeof(buffer), "%d", lconf->reset_val);
+				values[13] = pstrdup(buffer);
+			}
+			break;
+
+		case PGC_INT64:
+			{
+				struct config_int64 *lconf = (struct config_int64 *) conf;
+
+				/* min_val */
+				snprintf(buffer, sizeof(buffer), "%lld", (long long) lconf->min);
+				values[9] = pstrdup(buffer);
+
+				/* max_val */
+				snprintf(buffer, sizeof(buffer), "%lld", (long long) lconf->max);
+				values[10] = pstrdup(buffer);
+
+				/* enumvals */
+				values[11] = NULL;
+
+				/* boot_val */
+				snprintf(buffer, sizeof(buffer), "%lld", (long long) lconf->boot_val);
+				values[12] = pstrdup(buffer);
+
+				/* reset_val */
+				snprintf(buffer, sizeof(buffer), "%lld", (long long) lconf->reset_val);
 				values[13] = pstrdup(buffer);
 			}
 			break;
@@ -10578,6 +10911,21 @@ _ShowOption(struct config_generic *record, bool use_units)
 			}
 			break;
 
+		case PGC_INT64:
+			{
+				struct config_int64 *conf = (struct config_int64 *) record;
+
+				if (conf->show_hook)
+					val = (*conf->show_hook) ();
+				else
+				{
+					snprintf(buffer, sizeof(buffer), "%lld",
+							 (long long) *conf->variable);
+					val = buffer;
+				}
+			}
+			break;
+
 		case PGC_REAL:
 			{
 				struct config_real *conf = (struct config_real *) record;
@@ -10678,6 +11026,14 @@ write_one_nondefault_variable(FILE *fp, struct config_generic *gconf)
 				struct config_int *conf = (struct config_int *) gconf;
 
 				fprintf(fp, "%d", *conf->variable);
+			}
+			break;
+
+		case PGC_INT64:
+			{
+				struct config_int64 *conf = (struct config_int64 *) gconf;
+
+				fprintf(fp, "%lld", (long long) *conf->variable);
 			}
 			break;
 
@@ -10956,6 +11312,24 @@ estimate_variable_size(struct config_generic *gconf)
 			}
 			break;
 
+		case PGC_INT64:
+			{
+				struct config_int64 *conf = (struct config_int64 *) gconf;
+
+				/*
+				 * Instead of getting the exact display length, use max
+				 * length.  Also reduce the max length for typical ranges of
+				 * small values.  Maximum value is 2^63, i.e. 20 chars.
+				 * Include one byte for sign.
+				 */
+#define ABS(x)			((x) >= 0 ? (x) : -(x))
+				if (ABS(*conf->variable) < 1000)
+					valsize = 3 + 1;
+				else
+					valsize = 20 + 1;
+			}
+			break;
+
 		case PGC_REAL:
 			{
 				/*
@@ -11111,6 +11485,14 @@ serialize_variable(char **destptr, Size *maxbytes,
 				struct config_int *conf = (struct config_int *) gconf;
 
 				do_serialize(destptr, maxbytes, "%d", *conf->variable);
+			}
+			break;
+
+		case PGC_INT64:
+			{
+				struct config_int64 *conf = (struct config_int64 *) gconf;
+
+				do_serialize(destptr, maxbytes, "%lld", (long long) *conf->variable);
 			}
 			break;
 
@@ -11321,6 +11703,14 @@ RestoreGUCState(void *gucstate)
 			case PGC_INT:
 				{
 					struct config_int *conf = (struct config_int *) gconf;
+
+					if (conf->reset_extra && conf->reset_extra != gconf->extra)
+						free(conf->reset_extra);
+					break;
+				}
+			case PGC_INT64:
+				{
+					struct config_int64 *conf = (struct config_int64 *) gconf;
 
 					if (conf->reset_extra && conf->reset_extra != gconf->extra)
 						free(conf->reset_extra);
@@ -11892,6 +12282,40 @@ call_int_check_hook(struct config_int *conf, int *newval, void **extra,
 				 errmsg_internal("%s", GUC_check_errmsg_string) :
 				 errmsg("invalid value for parameter \"%s\": %d",
 						conf->gen.name, *newval),
+				 GUC_check_errdetail_string ?
+				 errdetail_internal("%s", GUC_check_errdetail_string) : 0,
+				 GUC_check_errhint_string ?
+				 errhint("%s", GUC_check_errhint_string) : 0));
+		/* Flush any strings created in ErrorContext */
+		FlushErrorState();
+		return false;
+	}
+
+	return true;
+}
+
+static bool
+call_int64_check_hook(struct config_int64 *conf, int64 *newval, void **extra,
+					  GucSource source, int elevel)
+{
+	/* Quick success if no hook */
+	if (!conf->check_hook)
+		return true;
+
+	/* Reset variables that might be set by hook */
+	GUC_check_errcode_value = ERRCODE_INVALID_PARAMETER_VALUE;
+	GUC_check_errmsg_string = NULL;
+	GUC_check_errdetail_string = NULL;
+	GUC_check_errhint_string = NULL;
+
+	if (!(*conf->check_hook) (newval, extra, source))
+	{
+		ereport(elevel,
+				(errcode(GUC_check_errcode_value),
+				 GUC_check_errmsg_string ?
+				 errmsg_internal("%s", GUC_check_errmsg_string) :
+				 errmsg("invalid value for parameter \"%s\": %lld",
+						conf->gen.name, (long long) *newval),
 				 GUC_check_errdetail_string ?
 				 errdetail_internal("%s", GUC_check_errdetail_string) : 0,
 				 GUC_check_errhint_string ?

@@ -23,6 +23,7 @@ enum config_type
 {
 	PGC_BOOL,
 	PGC_INT,
+	PGC_INT64,
 	PGC_REAL,
 	PGC_STRING,
 	PGC_ENUM
@@ -32,6 +33,7 @@ union config_var_val
 {
 	bool		boolval;
 	int			intval;
+	int64		int64val;
 	double		realval;
 	char	   *stringval;
 	int			enumval;
@@ -211,6 +213,22 @@ struct config_int
 	void	   *reset_extra;
 };
 
+struct config_int64
+{
+	struct config_generic gen;
+	/* constant fields, must be set correctly in initial value: */
+	int64	   *variable;
+	int64		boot_val;
+	int64		min;
+	int64		max;
+	GucInt64CheckHook check_hook;
+	GucInt64AssignHook assign_hook;
+	GucShowHook show_hook;
+	/* variable fields, initialized at runtime: */
+	int64		reset_val;
+	void	   *reset_extra;
+};
+
 struct config_real
 {
 	struct config_generic gen;
@@ -261,6 +279,24 @@ extern PGDLLIMPORT const char *const config_group_names[];
 extern PGDLLIMPORT const char *const config_type_names[];
 extern PGDLLIMPORT const char *const GucContext_Names[];
 extern PGDLLIMPORT const char *const GucSource_Names[];
+
+/* data arrays defining all the built-in GUC variables */
+extern PGDLLIMPORT struct config_bool ConfigureNamesBool[];
+extern PGDLLIMPORT struct config_int ConfigureNamesInt[];
+extern PGDLLIMPORT struct config_int64 ConfigureNamesInt64[];
+extern PGDLLIMPORT struct config_real ConfigureNamesReal[];
+extern PGDLLIMPORT struct config_string ConfigureNamesString[];
+extern PGDLLIMPORT struct config_enum ConfigureNamesEnum[];
+
+/* lookup GUC variables, returning config_generic pointers */
+extern struct config_generic *find_option(const char *name,
+										  bool create_placeholders,
+										  bool skip_errors,
+										  int elevel);
+extern struct config_generic **get_explain_guc_options(int *num);
+
+/* get string value of variable */
+extern char *ShowGUCOption(struct config_generic *record, bool use_units);
 
 /* get the current set of variables */
 extern struct config_generic **get_guc_variables(void);
