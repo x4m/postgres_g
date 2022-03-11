@@ -59,6 +59,11 @@ RelationPutHeapTuple(Relation relation,
 	/* Add the tuple to the page */
 	pageHeader = BufferGetPage(buffer);
 
+	HeapTupleSetXmin(tuple, tuple->t_xmin);
+	HeapTupleHeaderSetXmin(pageHeader, tuple);
+	HeapTupleSetXmax(tuple, tuple->t_xmax);
+	HeapTupleHeaderSetXmax(pageHeader, tuple);
+
 	offnum = PageAddItem(pageHeader, (Item) tuple->t_data,
 						 tuple->t_len, InvalidOffsetNumber, false, true);
 
@@ -243,7 +248,7 @@ RelationAddExtraBlocks(Relation relation, BulkInsertState bistate)
 
 		/* we'll need this info below */
 		blockNum = BufferGetBlockNumber(buffer);
-		freespace = BufferGetPageSize(buffer) - SizeOfPageHeaderData;
+		freespace = BufferGetPageSize(buffer) - SizeOfPageHeaderData - MAXALIGN(sizeof(HeapPageSpecialData));
 
 		UnlockReleaseBuffer(buffer);
 
@@ -514,6 +519,9 @@ loop:
 		/*
 		 * Now we can check to see if there's enough free space here. If so,
 		 * we're done.
+		 *
+		 * "Double xmax" page is not suitable for any new tuple, since xmin
+		 * can't be set there.
 		 */
 		page = BufferGetPage(buffer);
 
@@ -525,12 +533,14 @@ loop:
 		 */
 		if (PageIsNew(page))
 		{
-			PageInit(page, BufferGetPageSize(buffer), 0);
+			PageInit(page, BufferGetPageSize(buffer), sizeof(HeapPageSpecialData));
+			HeapPageGetSpecial(page)->pd_xid_base = RecentXmin - FirstNormalTransactionId;
 			MarkBufferDirty(buffer);
 		}
 
 		pageFreeSpace = PageGetHeapFreeSpace(page);
-		if (targetFreeSpace <= pageFreeSpace)
+		if (targetFreeSpace <= pageFreeSpace &&
+			!HeapPageIsDoubleXmax(page))
 		{
 			/* use this page as future insert target, too */
 			RelationSetTargetBlock(relation, targetBlock);
@@ -635,7 +645,8 @@ loop:
 			 BufferGetBlockNumber(buffer),
 			 RelationGetRelationName(relation));
 
-	PageInit(page, BufferGetPageSize(buffer), 0);
+	PageInit(page, BufferGetPageSize(buffer), sizeof(HeapPageSpecialData));
+	HeapPageGetSpecial(page)->pd_xid_base = RecentXmin - FirstNormalTransactionId;
 	MarkBufferDirty(buffer);
 
 	/*

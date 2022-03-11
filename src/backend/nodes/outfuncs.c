@@ -219,6 +219,8 @@ _outList(StringInfo str, const List *node)
 
 	if (IsA(node, IntList))
 		appendStringInfoChar(str, 'i');
+	else if (IsA(node, Int64List))
+		appendStringInfoChar(str, 'I');
 	else if (IsA(node, OidList))
 		appendStringInfoChar(str, 'o');
 
@@ -237,6 +239,8 @@ _outList(StringInfo str, const List *node)
 		}
 		else if (IsA(node, IntList))
 			appendStringInfo(str, " %d", lfirst_int(lc));
+		else if (IsA(node, Int64List))
+			appendStringInfo(str, " %lld", (long long) lfirst_int64(lc));
 		else if (IsA(node, OidList))
 			appendStringInfo(str, " %u", lfirst_oid(lc));
 		else
@@ -2927,8 +2931,8 @@ _outIndexStmt(StringInfo str, const IndexStmt *node)
 	WRITE_STRING_FIELD(idxcomment);
 	WRITE_OID_FIELD(indexOid);
 	WRITE_OID_FIELD(oldNode);
-	WRITE_UINT_FIELD(oldCreateSubid);
-	WRITE_UINT_FIELD(oldFirstRelfilenodeSubid);
+	WRITE_UINT64_FIELD(oldCreateSubid);
+	WRITE_UINT64_FIELD(oldFirstRelfilenodeSubid);
 	WRITE_BOOL_FIELD(unique);
 	WRITE_BOOL_FIELD(nulls_not_distinct);
 	WRITE_BOOL_FIELD(primary);
@@ -4031,7 +4035,7 @@ outNode(StringInfo str, const void *obj)
 
 	if (obj == NULL)
 		appendStringInfoString(str, "<>");
-	else if (IsA(obj, List) || IsA(obj, IntList) || IsA(obj, OidList))
+	else if (IsA(obj, List) || IsA(obj, IntList) || IsA(obj, Int64List) || IsA(obj, OidList))
 		_outList(str, obj);
 	/* nodeRead does not want to see { } around these! */
 	else if (IsA(obj, Integer))

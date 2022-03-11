@@ -6020,6 +6020,7 @@ copyObjectImpl(const void *from)
 			 * perform a shallow copy via list_copy()
 			 */
 		case T_IntList:
+		case T_Int64List:
 		case T_OidList:
 			retval = list_copy(from);
 			break;

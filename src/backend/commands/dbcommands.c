@@ -361,6 +361,7 @@ ScanSourceDatabasePgClassPage(Page page, Buffer buf, Oid tbid, Oid dbid,
 		tuple.t_data = (HeapTupleHeader) PageGetItem(page, itemid);
 		tuple.t_len = ItemIdGetLength(itemid);
 		tuple.t_tableOid = RelationRelationId;
+		HeapTupleCopyBaseFromPage(&tuple, page);
 
 		/* Skip tuples that are not visible to this snapshot. */
 		if (HeapTupleSatisfiesVisibility(&tuple, snapshot, buf))
