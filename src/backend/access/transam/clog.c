@@ -89,24 +89,24 @@ static SlruCtlData XactCtlData;
 #define XactCtl (&XactCtlData)
 
 
-static int	ZeroCLOGPage(int pageno, bool writeXlog);
+static int	ZeroCLOGPage(int64 pageno, bool writeXlog);
 static bool CLOGPagePrecedes(int64 page1, int64 page2);
-static void WriteZeroPageXlogRec(int pageno);
-static void WriteTruncateXlogRec(int pageno, TransactionId oldestXact,
+static void WriteZeroPageXlogRec(int64 pageno);
+static void WriteTruncateXlogRec(int64 pageno, TransactionId oldestXact,
 								 Oid oldestXactDb);
 static void TransactionIdSetPageStatus(TransactionId xid, int nsubxids,
 									   TransactionId *subxids, XidStatus status,
-									   XLogRecPtr lsn, int pageno,
+									   XLogRecPtr lsn, int64 pageno,
 									   bool all_xact_same_page);
 static void TransactionIdSetStatusBit(TransactionId xid, XidStatus status,
 									  XLogRecPtr lsn, int slotno);
 static void set_status_by_pages(int nsubxids, TransactionId *subxids,
 								XidStatus status, XLogRecPtr lsn);
 static bool TransactionGroupUpdateXidStatus(TransactionId xid,
-											XidStatus status, XLogRecPtr lsn, int pageno);
+											XidStatus status, XLogRecPtr lsn, int64 pageno);
 static void TransactionIdSetPageStatusInternal(TransactionId xid, int nsubxids,
 											   TransactionId *subxids, XidStatus status,
-											   XLogRecPtr lsn, int pageno);
+											   XLogRecPtr lsn, int64 pageno);
 
 
 /*
@@ -164,7 +164,7 @@ void
 TransactionIdSetTreeStatus(TransactionId xid, int nsubxids,
 						   TransactionId *subxids, XidStatus status, XLogRecPtr lsn)
 {
-	int			pageno = TransactionIdToPage(xid);	/* get page of parent */
+	int64		pageno = TransactionIdToPage(xid);	/* get page of parent */
 	int			i;
 
 	Assert(status == TRANSACTION_STATUS_COMMITTED ||
@@ -238,7 +238,7 @@ static void
 set_status_by_pages(int nsubxids, TransactionId *subxids,
 					XidStatus status, XLogRecPtr lsn)
 {
-	int			pageno = TransactionIdToPage(subxids[0]);
+	int64		pageno = TransactionIdToPage(subxids[0]);
 	int			offset = 0;
 	int			i = 0;
 
@@ -247,7 +247,7 @@ set_status_by_pages(int nsubxids, TransactionId *subxids,
 	while (i < nsubxids)
 	{
 		int			num_on_page = 0;
-		int			nextpageno;
+		int64		nextpageno;
 
 		do
 		{
@@ -273,7 +273,7 @@ set_status_by_pages(int nsubxids, TransactionId *subxids,
 static void
 TransactionIdSetPageStatus(TransactionId xid, int nsubxids,
 						   TransactionId *subxids, XidStatus status,
-						   XLogRecPtr lsn, int pageno,
+						   XLogRecPtr lsn, int64 pageno,
 						   bool all_xact_same_page)
 {
 	/* Can't use group update when PGPROC overflows. */
@@ -339,7 +339,7 @@ TransactionIdSetPageStatus(TransactionId xid, int nsubxids,
 static void
 TransactionIdSetPageStatusInternal(TransactionId xid, int nsubxids,
 								   TransactionId *subxids, XidStatus status,
-								   XLogRecPtr lsn, int pageno)
+								   XLogRecPtr lsn, int64 pageno)
 {
 	int			slotno;
 	int			i;
@@ -413,7 +413,7 @@ TransactionIdSetPageStatusInternal(TransactionId xid, int nsubxids,
  */
 static bool
 TransactionGroupUpdateXidStatus(TransactionId xid, XidStatus status,
-								XLogRecPtr lsn, int pageno)
+								XLogRecPtr lsn, int64 pageno)
 {
 	volatile PROC_HDR *procglobal = ProcGlobal;
 	PGPROC	   *proc = MyProc;
@@ -639,7 +639,7 @@ TransactionIdSetStatusBit(TransactionId xid, XidStatus status, XLogRecPtr lsn, i
 XidStatus
 TransactionIdGetStatus(TransactionId xid, XLogRecPtr *lsn)
 {
-	int			pageno = TransactionIdToPage(xid);
+	int64		pageno = TransactionIdToPage(xid);
 	int			byteno = TransactionIdToByte(xid);
 	int			bshift = TransactionIdToBIndex(xid) * CLOG_BITS_PER_XACT;
 	int			slotno;
@@ -736,7 +736,7 @@ BootStrapCLOG(void)
  * Control lock must be held at entry, and will be held at exit.
  */
 static int
-ZeroCLOGPage(int pageno, bool writeXlog)
+ZeroCLOGPage(int64 pageno, bool writeXlog)
 {
 	int			slotno;
 
@@ -756,7 +756,7 @@ void
 StartupCLOG(void)
 {
 	TransactionId xid = XidFromFullTransactionId(ShmemVariableCache->nextXid);
-	int			pageno = TransactionIdToPage(xid);
+	int64		pageno = TransactionIdToPage(xid);
 
 	LWLockAcquire(XactSLRULock, LW_EXCLUSIVE);
 
@@ -775,7 +775,7 @@ void
 TrimCLOG(void)
 {
 	TransactionId xid = XidFromFullTransactionId(ShmemVariableCache->nextXid);
-	int			pageno = TransactionIdToPage(xid);
+	int64		pageno = TransactionIdToPage(xid);
 
 	LWLockAcquire(XactSLRULock, LW_EXCLUSIVE);
 
@@ -840,7 +840,7 @@ CheckPointCLOG(void)
 void
 ExtendCLOG(TransactionId newestXact)
 {
-	int			pageno;
+	int64		pageno;
 
 	/*
 	 * No work except at first XID of a page.  But beware: just after
@@ -879,7 +879,7 @@ ExtendCLOG(TransactionId newestXact)
 void
 TruncateCLOG(TransactionId oldestXact, Oid oldestxid_datoid)
 {
-	int			cutoffPage;
+	int64		cutoffPage;
 
 	/*
 	 * The cutoff point is the start of the segment containing oldestXact. We
@@ -946,15 +946,14 @@ CLOGPagePrecedes(int64 page1, int64 page2)
 			TransactionIdPrecedes(xid1, xid2 + CLOG_XACTS_PER_PAGE - 1));
 }
 
-
 /*
  * Write a ZEROPAGE xlog record
  */
 static void
-WriteZeroPageXlogRec(int pageno)
+WriteZeroPageXlogRec(int64 pageno)
 {
 	XLogBeginInsert();
-	XLogRegisterData((char *) (&pageno), sizeof(int));
+	XLogRegisterData((char *) (&pageno), sizeof(pageno));
 	(void) XLogInsert(RM_CLOG_ID, CLOG_ZEROPAGE);
 }
 
@@ -965,7 +964,7 @@ WriteZeroPageXlogRec(int pageno)
  * in TruncateCLOG().
  */
 static void
-WriteTruncateXlogRec(int pageno, TransactionId oldestXact, Oid oldestXactDb)
+WriteTruncateXlogRec(int64 pageno, TransactionId oldestXact, Oid oldestXactDb)
 {
 	XLogRecPtr	recptr;
 	xl_clog_truncate xlrec;
@@ -993,10 +992,10 @@ clog_redo(XLogReaderState *record)
 
 	if (info == CLOG_ZEROPAGE)
 	{
-		int			pageno;
+		int64		pageno;
 		int			slotno;
 
-		memcpy(&pageno, XLogRecGetData(record), sizeof(int));
+		memcpy(&pageno, XLogRecGetData(record), sizeof(pageno));
 
 		LWLockAcquire(XactSLRULock, LW_EXCLUSIVE);
 
