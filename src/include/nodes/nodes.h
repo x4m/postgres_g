@@ -316,6 +316,7 @@ typedef enum NodeTag
 	 */
 	T_List,
 	T_IntList,
+	T_Int64List,
 	T_OidList,
 
 	/*
