@@ -30,7 +30,7 @@ static void check_for_reg_data_type_usage(ClusterInfo *cluster);
 static void check_for_jsonb_9_4_usage(ClusterInfo *cluster);
 static void check_for_pg_role_prefix(ClusterInfo *cluster);
 static void check_for_new_tablespace_dir(ClusterInfo *new_cluster);
-static void check_for_user_defined_encoding_conversions(ClusterInfo *cluster);
+static void check_for_user_defined_encoding_conversions_aggregates_and_operators(ClusterInfo *cluster);
 static char *get_canonical_locale_name(int category, const char *locale);
 
 
@@ -113,7 +113,7 @@ check_and_dump_old_cluster(bool live_check)
 	 * need to be changed to match the new signature.
 	 */
 	if (GET_MAJOR_VERSION(old_cluster.major_version) <= 1300)
-		check_for_user_defined_encoding_conversions(&old_cluster);
+		check_for_user_defined_encoding_conversions_aggregates_and_operators(&old_cluster);
 
 	/*
 	 * Pre-PG 14 allowed user defined postfix operators, which are not
@@ -1253,32 +1253,47 @@ check_for_pg_role_prefix(ClusterInfo *cluster)
 	check_ok();
 }
 
+
 /*
  * Verify that no user-defined encoding conversions exist.
+ * Also check that there are no aggregates and operators that use functions with
+ * pre-anycompatible prototypes.
  */
 static void
-check_for_user_defined_encoding_conversions(ClusterInfo *cluster)
+check_for_user_defined_encoding_conversions_aggregates_and_operators(ClusterInfo *cluster)
 {
 	int			dbnum;
-	FILE	   *script = NULL;
-	bool		found = false;
-	char		output_path[MAXPGPATH];
+	FILE	   *encodings_script = NULL;
+	bool		encodings_found = false;
+	char		encodings_output_path[MAXPGPATH];
+	FILE	   *aggregates_script = NULL;
+	bool		aggregates_found = false;
+	char		aggregates_output_path[MAXPGPATH];
+	FILE	   *operators_script = NULL;
+	bool		operators_found = false;
+	char		operators_output_path[MAXPGPATH];
 
-	prep_status("Checking for user-defined encoding conversions");
+	prep_status("Checking for user-defined encoding conversions,  aggregates and operators");
 
-	snprintf(output_path, sizeof(output_path), "%s/%s",
+	snprintf(encodings_output_path, sizeof(encodings_output_path), "%s/%s",
 			 log_opts.basedir,
 			 "encoding_conversions.txt");
+	snprintf(aggregates_output_path, sizeof(aggregates_output_path), "%s/%s",
+			 log_opts.basedir,
+			 "aggregates.txt");
+	snprintf(operators_output_path, sizeof(operators_output_path), "%s/%s",
+			 log_opts.basedir,
+			 "operators.txt");
 
-	/* Find any user defined encoding conversions */
+	/* Find any user defined encoding conversions, aggregates and operators */
 	for (dbnum = 0; dbnum < cluster->dbarr.ndbs; dbnum++)
 	{
 		PGresult   *res;
 		bool		db_used = false;
 		int			ntups;
 		int			rowno;
-		int			i_conoid,
-					i_conname,
+		int			i_oid,
+					i_name,
 					i_nspname;
 		DbInfo	   *active_db = &cluster->dbarr.dbs[dbnum];
 		PGconn	   *conn = connectToServer(cluster, active_db->db_name);
@@ -1296,25 +1311,103 @@ check_for_user_defined_encoding_conversions(ClusterInfo *cluster)
 								"WHERE c.connamespace = n.oid AND "
 								"      c.oid >= 16384");
 		ntups = PQntuples(res);
-		i_conoid = PQfnumber(res, "conoid");
-		i_conname = PQfnumber(res, "conname");
+		i_oid = PQfnumber(res, "conoid");
+		i_name = PQfnumber(res, "conname");
 		i_nspname = PQfnumber(res, "nspname");
 		for (rowno = 0; rowno < ntups; rowno++)
 		{
-			found = true;
-			if (script == NULL &&
-				(script = fopen_priv(output_path, "w")) == NULL)
+			encodings_found = true;
+			if (encodings_script == NULL &&
+				(encodings_script = fopen_priv(encodings_output_path, "w")) == NULL)
 				pg_fatal("could not open file \"%s\": %s\n",
-						 output_path, strerror(errno));
+						 encodings_output_path, strerror(errno));
 			if (!db_used)
 			{
-				fprintf(script, "In database: %s\n", active_db->db_name);
+				fprintf(encodings_script, "In database: %s\n", active_db->db_name);
 				db_used = true;
 			}
-			fprintf(script, "  (oid=%s) %s.%s\n",
-					PQgetvalue(res, rowno, i_conoid),
+			fprintf(encodings_script, "  (oid=%s) %s.%s\n",
+					PQgetvalue(res, rowno, i_oid),
 					PQgetvalue(res, rowno, i_nspname),
-					PQgetvalue(res, rowno, i_conname));
+					PQgetvalue(res, rowno, i_name));
+		}
+
+		PQclear(res);
+
+		db_used = false;
+
+		res = executeQueryOrDie(conn,
+								"SELECT a.aggfnoid::oid, p1.proname, n.nspname "
+								"FROM pg_catalog.pg_aggregate a, "
+								"	pg_catalog.pg_proc p, "
+								"	pg_catalog.pg_proc p1, "
+								"	pg_catalog.pg_namespace n  "
+								"WHERE "
+								"	a.aggtransfn = p.oid AND "
+								"	p1.oid = a.aggfnoid AND "
+								"	p1.pronamespace = n.oid AND"
+								"	a.aggfnoid >= 16384 AND"
+								"	p.proname in ('array_append', 'array_prepend',"
+								"	'array_cat', 'array_position','array_positions', "
+								"	'array_remove', 'array_replace', 'width_bucket')");
+		ntups = PQntuples(res);
+		i_oid = PQfnumber(res, "aggfnoid");
+		i_name = PQfnumber(res, "proname");
+		i_nspname = PQfnumber(res, "nspname");
+		for (rowno = 0; rowno < ntups; rowno++)
+		{
+			aggregates_found = true;
+			if (aggregates_script == NULL &&
+				(aggregates_script = fopen_priv(aggregates_output_path, "w")) == NULL)
+				pg_fatal("could not open file \"%s\": %s\n",
+						 aggregates_output_path, strerror(errno));
+			if (!db_used)
+			{
+				fprintf(aggregates_script, "In database: %s\n", active_db->db_name);
+				db_used = true;
+			}
+			fprintf(aggregates_script, "  (oid=%s) %s.%s\n",
+					PQgetvalue(res, rowno, i_oid),
+					PQgetvalue(res, rowno, i_nspname),
+					PQgetvalue(res, rowno, i_name));
+		}
+
+		PQclear(res);
+
+		db_used = false;
+
+		res = executeQueryOrDie(conn,
+								"SELECT o.oid::oid, o.oprname, n.nspname "
+								"FROM pg_catalog.pg_operator o, "
+								"	pg_catalog.pg_proc p, "
+								"	pg_catalog.pg_namespace n  "
+								"WHERE "
+								"	o.oprcode = p.oid AND "
+								"	o.oprnamespace = n.oid AND"
+								"	o.oid >= 16384 AND"
+								"	p.proname in ('array_append', 'array_prepend',"
+								"	'array_cat', 'array_position','array_positions', "
+								"	'array_remove', 'array_replace', 'width_bucket')");
+		ntups = PQntuples(res);
+		i_oid = PQfnumber(res, "oid");
+		i_name = PQfnumber(res, "oprname");
+		i_nspname = PQfnumber(res, "nspname");
+		for (rowno = 0; rowno < ntups; rowno++)
+		{
+			operators_found = true;
+			if (operators_script == NULL &&
+				(operators_script = fopen_priv(operators_output_path, "w")) == NULL)
+				pg_fatal("could not open file \"%s\": %s\n",
+						 operators_output_path, strerror(errno));
+			if (!db_used)
+			{
+				fprintf(operators_script, "In database: %s\n", active_db->db_name);
+				db_used = true;
+			}
+			fprintf(operators_script, "  (oid=%s) %s in %s\n",
+					PQgetvalue(res, rowno, i_oid),
+					PQgetvalue(res, rowno, i_name),
+					PQgetvalue(res, rowno, i_nspname));
 		}
 
 		PQclear(res);
@@ -1322,10 +1415,14 @@ check_for_user_defined_encoding_conversions(ClusterInfo *cluster)
 		PQfinish(conn);
 	}
 
-	if (script)
-		fclose(script);
+	if (encodings_script)
+		fclose(encodings_script);
+	if (aggregates_script)
+		fclose(aggregates_script);
+	if (operators_script)
+		fclose(operators_script);
 
-	if (found)
+	if (encodings_found)
 	{
 		pg_log(PG_REPORT, "fatal\n");
 		pg_fatal("Your installation contains user-defined encoding conversions.\n"
@@ -1333,9 +1430,34 @@ check_for_user_defined_encoding_conversions(ClusterInfo *cluster)
 				 "so this cluster cannot currently be upgraded.  You can remove the\n"
 				 "encoding conversions in the old cluster and restart the upgrade.\n"
 				 "A list of user-defined encoding conversions is in the file:\n"
-				 "    %s\n\n", output_path);
+				 "    %s\n\n", encodings_output_path);
 	}
-	else
+
+	if (aggregates_found)
+	{
+		pg_log(PG_REPORT, "fatal\n");
+		pg_fatal("Your installation contains user-defined aggreagates.\n"
+				 "HERE WE NEED A GOOD EXPLANATION OF WHAT IS GOING ON\n"
+				 "The conversion function parameters changed in PostgreSQL version 14\n"
+				 "so this cluster cannot currently be upgraded.  You can remove the\n"
+				 "encoding conversions in the old cluster and restart the upgrade.\n"
+				 "A list of user-defined encoding conversions is in the file:\n"
+				 "    %s\n\n", aggregates_output_path);
+	}
+	
+	if (operators_found)
+	{
+		pg_log(PG_REPORT, "fatal\n");
+		pg_fatal("Your installation contains user-defined operators.\n"
+				 "HERE WE NEED A GOOD EXPLANATION OF WHAT IS GOING ON\n"
+				 "The conversion function parameters changed in PostgreSQL version 14\n"
+				 "so this cluster cannot currently be upgraded.  You can remove the\n"
+				 "encoding conversions in the old cluster and restart the upgrade.\n"
+				 "A list of user-defined encoding conversions is in the file:\n"
+				 "    %s\n\n", operators_output_path);
+	}
+	
+	if (!(encodings_found || aggregates_found || operators_found))
 		check_ok();
 }
 
