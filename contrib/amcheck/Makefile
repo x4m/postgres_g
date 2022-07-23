@@ -4,13 +4,14 @@ MODULE_big	= amcheck
 OBJS = \
 	$(WIN32RES) \
 	amcheck.o \
+	verify_gist.o \
 	verify_nbtree.o
 
 EXTENSION = amcheck
-DATA = amcheck--1.1--1.2.sql amcheck--1.0--1.1.sql amcheck--1.0.sql
+DATA = amcheck--1.1--1.2.sql amcheck--1.0--1.1.sql amcheck--1.0.sql amcheck--1.2--1.4.sql
 PGFILEDESC = "amcheck - function for verifying relation integrity"
 
-REGRESS = check check_btree
+REGRESS = check check_btree check_gist
 
 TAP_TESTS = 1
 
