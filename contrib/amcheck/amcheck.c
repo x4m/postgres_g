@@ -83,7 +83,7 @@ amcheck_lock_relation_and_check(Oid indrelid, IndexCheckableCallback checkable,
 	else
 	{
 		heaprel = NULL;
-		/* for "gcc -Og" https://gcc.gnu.org/bugzilla/show_bug.cgi?id=78394 */
+		/* Set these just to suppress "uninitialized variable" warnings */
 		save_userid = InvalidOid;
 		save_sec_context = -1;
 		save_nestlevel = -1;
