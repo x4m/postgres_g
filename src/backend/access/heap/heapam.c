@@ -7949,6 +7949,14 @@ heap_tuple_would_freeze(HeapTuple htup, TransactionId cutoff_xid,
 		if (TransactionIdPrecedes(xid, cutoff_xid))
 			would_freeze = true;
 	}
+	else if ((tuple->t_infomask & HEAP_XMAX_INVALID) &&
+			 TransactionIdIsNormal(xid))
+	{
+		/*
+		 * To reset xmax without reading clog.
+		 */
+		would_freeze = true;
+	}
 	else if (!MultiXactIdIsValid(multi))
 	{
 		/* xmax is a permanent XID or invalid MultiXactId/XID */
