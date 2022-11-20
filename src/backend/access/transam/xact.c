@@ -402,7 +402,6 @@ IsAbortedTransactionBlockState(void)
 	return false;
 }
 
-
 /*
  *	GetTopTransactionId
  *
