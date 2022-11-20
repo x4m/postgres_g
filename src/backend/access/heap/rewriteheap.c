@@ -619,8 +619,8 @@ raw_heap_insert(RewriteState state, HeapTuple tup)
 	Size		len;
 	OffsetNumber newoff;
 	HeapTuple	heaptup;
-	TransactionId xmin,
-				xmax;
+	TransactionId xmin;
+	bool        immutable_tuple;
 
 	/*
 	 * If the new tuple is too big for storage or contains already toasted
@@ -655,9 +655,19 @@ raw_heap_insert(RewriteState state, HeapTuple tup)
 	len = MAXALIGN(heaptup->t_len); /* be conservative */
 
 	/*
-	 * If we're gonna fail for oversize tuple, do it right away
+	 * Due to update to 64-xid maximum plain tuple size was decreased due to adding
+	 * PageSpecial to a heap page. Pages with tuple that became too large to fit,
+	 * should remain in Double Xmax format (read only). Inserting plain tuples with
+	 * size over new MaxHeapTupleSizs is prohibited anyway, but vaccum full will
+	 * transfer this page to a rebuild relation unmodified.
 	 */
-	if (len > MaxHeapTupleSize)
+	immutable_tuple = len <= MaxHeapTupleSize_32 && len > MaxHeapTupleSize;
+
+	/*
+	 * If we're gonna fail for oversize tuple, do it right away. But allow to process
+	 * immutable_tuple (see above).
+	 */
+	if (len > MaxHeapTupleSize && !immutable_tuple)
 		ereport(ERROR,
 				(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
 				 errmsg("row is too big: size %zu, maximum size %zu",
@@ -706,17 +716,32 @@ raw_heap_insert(RewriteState state, HeapTuple tup)
 	if (!state->rs_buffer_valid)
 	{
 		/* Initialize a new empty page */
-		PageInit(page, BLCKSZ, sizeof(HeapPageSpecialData));
+		if (immutable_tuple)
+			/* Initialize DoubleXmax page */
+			PageInit(page, BLCKSZ, 0);
+		else
+			PageInit(page, BLCKSZ, sizeof(HeapPageSpecialData));
 		state->rs_buffer_valid = true;
 	}
 
 	rewrite_page_prepare_for_xid(page, heaptup);
 
+	/*
+	 * Tuple with HEAP_XMIN_FROZEN in t_infomask should have xmin set
+	 * to FrozenTransactionId to avoid these tuples be treated like normal.
+	 */
 	xmin = HeapTupleGetXmin(heaptup);
-	xmax = HeapTupleGetRawXmax(heaptup);
 	HeapTupleSetXmin(heaptup, xmin);
-	HeapTupleHeaderSetXmin(page, heaptup);
-	HeapTupleSetXmax(heaptup, xmax);
+
+	/*
+	 * Tuples on DoubleXmax page could not appear modified after they had been
+	 * frozen by pg_upgrade. Just check this to be safe.
+	 */
+	Assert(!immutable_tuple || xmin == FrozenTransactionId);
+
+	if (!immutable_tuple)
+		HeapTupleHeaderSetXmin(page, heaptup);
+
 	HeapTupleHeaderSetXmax(page, heaptup);
 
 	/* And now we can insert the tuple into the page */
