@@ -2177,7 +2177,12 @@ heapam_scan_bitmap_next_block(TableScanDesc scan,
 			ItemPointerSet(&tid, page, offnum);
 			if (heap_hot_search_buffer(&tid, scan->rs_rd, buffer, snapshot,
 									   &heapTuple, NULL, true))
-				hscan->rs_vistuples[ntup++] = ItemPointerGetOffsetNumber(&tid);
+			{
+				hscan->rs_vistuples[ntup] = ItemPointerGetOffsetNumber(&tid);
+				hscan->rs_xmin[ntup] = heapTuple.t_xmin;
+				hscan->rs_xmax[ntup] = heapTuple.t_xmax;
+				++ntup;
+			}
 		}
 	}
 	else
@@ -2207,7 +2212,10 @@ heapam_scan_bitmap_next_block(TableScanDesc scan,
 			valid = HeapTupleSatisfiesVisibility(&loctup, snapshot, buffer);
 			if (valid)
 			{
-				hscan->rs_vistuples[ntup++] = offnum;
+				hscan->rs_vistuples[ntup] = offnum;
+				hscan->rs_xmin[ntup] = loctup.t_xmin;
+				hscan->rs_xmax[ntup] = loctup.t_xmax;
+				++ntup;
 				PredicateLockTID(scan->rs_rd, &loctup.t_self, snapshot,
 								 HeapTupleGetXmin(&loctup));
 			}
@@ -2255,7 +2263,8 @@ heapam_scan_bitmap_next_tuple(TableScanDesc scan,
 	hscan->rs_ctup.t_data = (HeapTupleHeader) PageGetItem((Page) dp, lp);
 	hscan->rs_ctup.t_len = ItemIdGetLength(lp);
 	hscan->rs_ctup.t_tableOid = scan->rs_rd->rd_id;
-	HeapTupleSetInvalid(&hscan->rs_ctup);
+	hscan->rs_ctup.t_xmin = hscan->rs_xmin[hscan->rs_cindex];
+	hscan->rs_ctup.t_xmax = hscan->rs_xmax[hscan->rs_cindex];
 	ItemPointerSet(&hscan->rs_ctup.t_self, hscan->rs_cblock, targoffset);
 
 	pgstat_count_heap_fetch(scan->rs_rd);
