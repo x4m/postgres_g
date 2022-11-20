@@ -19,6 +19,7 @@
 #include "access/tupdesc.h"
 #include "access/tupmacs.h"
 #include "storage/bufpage.h"
+#include "storage/bufmgr.h"
 
 /*
  * MaxTupleAttributeNumber limits the number of (user) columns in a tuple.
@@ -754,10 +755,11 @@ struct MinimalTupleData
  * to correctly read tuple xmin and xmax.
  */
 static inline void
-HeapTupleCopyBaseFromPage(HeapTuple tup, void *page)
+HeapTupleCopyBaseFromPage(Buffer buffer, HeapTuple tup, void *page)
 {
 	TransactionId		base;
 	HeapTupleHeader		tup_hdr = tup->t_data;
+	Assert(IsBufferLocked(buffer));
 
 	if (HeapPageIsDoubleXmax(page))
 	{

@@ -1656,7 +1656,7 @@ retry:
 		tuple.t_data = (HeapTupleHeader) PageGetItem(page, itemid);
 		tuple.t_len = ItemIdGetLength(itemid);
 		tuple.t_tableOid = RelationGetRelid(rel);
-		HeapTupleCopyBaseFromPage(&tuple, page);
+		HeapTupleCopyBaseFromPage(buf, &tuple, page);
 
 		/*
 		 * DEAD tuples are almost always pruned into LP_DEAD line pointers by
@@ -2000,7 +2000,7 @@ lazy_scan_noprune(LVRelState *vacrel,
 		tuple.t_data = (HeapTupleHeader) PageGetItem(page, itemid);
 		tuple.t_len = ItemIdGetLength(itemid);
 		tuple.t_tableOid = RelationGetRelid(vacrel->rel);
-		HeapTupleCopyBaseFromPage(&tuple, page);
+		HeapTupleCopyBaseFromPage(buf, &tuple, page);
 
 		if (heap_tuple_would_freeze(&tuple,
 									vacrel->FreezeLimit,
@@ -3197,7 +3197,7 @@ heap_page_is_all_visible(LVRelState *vacrel, Buffer buf,
 		tuple.t_data = (HeapTupleHeader) PageGetItem(page, itemid);
 		tuple.t_len = ItemIdGetLength(itemid);
 		tuple.t_tableOid = RelationGetRelid(vacrel->rel);
-		HeapTupleCopyBaseFromPage(&tuple, page);
+		HeapTupleCopyBaseFromPage(buf, &tuple, page);
 
 		switch (HeapTupleSatisfiesVacuum(&tuple, vacrel->OldestXmin, buf))
 		{

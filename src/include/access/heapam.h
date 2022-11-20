@@ -199,7 +199,7 @@ extern void heap_page_prune_execute(Buffer buffer,
 									OffsetNumber *nowdead, int ndead,
 									OffsetNumber *nowunused, int nunused,
 									bool repairFragmentation);
-extern void heap_get_root_tuples(Page page, OffsetNumber *root_offsets);
+extern void heap_get_root_tuples(Page page, Buffer buffer, OffsetNumber *root_offsets);
 
 /* in heap/vacuumlazy.c */
 struct VacuumParams;

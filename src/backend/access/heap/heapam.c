@@ -484,7 +484,7 @@ heapgetpage(TableScanDesc sscan, BlockNumber page)
 			loctup.t_tableOid = RelationGetRelid(scan->rs_base.rs_rd);
 			loctup.t_data = (HeapTupleHeader) PageGetItem((Page) dp, lpp);
 			loctup.t_len = ItemIdGetLength(lpp);
-			HeapTupleCopyBaseFromPage(&loctup, dp);
+			HeapTupleCopyBaseFromPage(buffer, &loctup, dp);
 			ItemPointerSet(&(loctup.t_self), page, lineoff);
 
 			if (all_visible)
@@ -701,7 +701,7 @@ heapgettup(HeapScanDesc scan,
 
 		tuple->t_data = (HeapTupleHeader) PageGetItem((Page) dp, lpp);
 		tuple->t_len = ItemIdGetLength(lpp);
-		HeapTupleCopyBaseFromPage(tuple, dp);
+		HeapTupleCopyBaseFromPage(scan->rs_cbuf, tuple, dp);
 
 		return;
 	}
@@ -728,7 +728,7 @@ heapgettup(HeapScanDesc scan,
 
 				tuple->t_data = (HeapTupleHeader) PageGetItem((Page) dp, lpp);
 				tuple->t_len = ItemIdGetLength(lpp);
-				HeapTupleCopyBaseFromPage(tuple, dp);
+				HeapTupleCopyBaseFromPage(scan->rs_cbuf, tuple, dp);
 				ItemPointerSet(&(tuple->t_self), page, lineoff);
 
 				/*
@@ -1028,7 +1028,7 @@ heapgettup_pagemode(HeapScanDesc scan,
 
 		tuple->t_data = (HeapTupleHeader) PageGetItem((Page) dp, lpp);
 		tuple->t_len = ItemIdGetLength(lpp);
-		HeapTupleCopyBaseFromPage(tuple, dp);
+		HeapTupleCopyBaseFromPage(InvalidBuffer, tuple, dp);
 
 		/* check that rs_cindex is in sync */
 		Assert(scan->rs_cindex < scan->rs_ntuples);
@@ -1051,7 +1051,7 @@ heapgettup_pagemode(HeapScanDesc scan,
 
 			tuple->t_data = (HeapTupleHeader) PageGetItem((Page) dp, lpp);
 			tuple->t_len = ItemIdGetLength(lpp);
-			HeapTupleCopyBaseFromPage(tuple, dp);
+			HeapTupleCopyBaseFromPage(InvalidBuffer, tuple, dp);
 			ItemPointerSet(&(tuple->t_self), page, lineoff);
 
 			/*
@@ -1643,7 +1643,7 @@ heap_fetch(Relation relation,
 	tuple->t_data = (HeapTupleHeader) PageGetItem(page, lp);
 	tuple->t_len = ItemIdGetLength(lp);
 	tuple->t_tableOid = RelationGetRelid(relation);
-	HeapTupleCopyBaseFromPage(tuple, page);
+	HeapTupleCopyBaseFromPage(buffer, tuple, page);
 
 	/*
 	 * check tuple visibility, then release lock
@@ -1766,7 +1766,7 @@ heap_hot_search_buffer(ItemPointer tid, Relation relation, Buffer buffer,
 		heapTuple->t_data = (HeapTupleHeader) PageGetItem(dp, lp);
 		heapTuple->t_len = ItemIdGetLength(lp);
 		heapTuple->t_tableOid = RelationGetRelid(relation);
-		HeapTupleCopyBaseFromPage(heapTuple, dp);
+		HeapTupleCopyBaseFromPage(buffer, heapTuple, dp);
 		ItemPointerSet(&heapTuple->t_self, blkno, offnum);
 
 		/*
@@ -1924,7 +1924,7 @@ heap_get_latest_tid(TableScanDesc sscan,
 		tp.t_data = (HeapTupleHeader) PageGetItem(page, lp);
 		tp.t_len = ItemIdGetLength(lp);
 		tp.t_tableOid = RelationGetRelid(relation);
-		HeapTupleCopyBaseFromPage(&tp, page);
+		HeapTupleCopyBaseFromPage(buffer, &tp, page);
 
 		/*
 		 * After following a t_ctid link, we might arrive at an unrelated
@@ -2476,7 +2476,7 @@ freeze_single_heap_page(Relation relation, Buffer buffer)
 		tuple.t_data = (HeapTupleHeader) PageGetItem(page, itemid);
 		tuple.t_len = ItemIdGetLength(itemid);
 		tuple.t_tableOid = RelationGetRelid(relation);
-		HeapTupleCopyBaseFromPage(&tuple, page);
+		HeapTupleCopyBaseFromPage(buffer, &tuple, page);
 
 		/*
 		 * Each non-removable tuple must be checked to see if it needs
@@ -3246,7 +3246,7 @@ heap_delete(Relation relation, ItemPointer tid,
 	tp.t_data = (HeapTupleHeader) PageGetItem(page, lp);
 	tp.t_len = ItemIdGetLength(lp);
 	tp.t_self = *tid;
-	HeapTupleCopyBaseFromPage(&tp, page);
+	HeapTupleCopyBaseFromPage(buffer, &tp, page);
 
 l1:
 	/*
@@ -3317,7 +3317,7 @@ l1:
 				LockBuffer(buffer, BUFFER_LOCK_EXCLUSIVE);
 
 				/* Copy possibly updated xid base after relocking */
-				HeapTupleCopyBaseFromPage(&tp, page);
+				HeapTupleCopyBaseFromPage(buffer, &tp, page);
 
 				/*
 				 * If xwait had just locked the tuple then some other xact
@@ -3357,7 +3357,7 @@ l1:
 			LockBuffer(buffer, BUFFER_LOCK_EXCLUSIVE);
 
 			/* Copy possibly updated xid base after relocking */
-			HeapTupleCopyBaseFromPage(&tp, page);
+			HeapTupleCopyBaseFromPage(buffer, &tp, page);
 
 			/*
 			 * xwait is done, but if xwait had just locked the tuple then some
@@ -3458,7 +3458,7 @@ l1:
 
 	heap_page_prepare_for_xid(relation, buffer, new_xmax,
 							  (new_infomask & HEAP_XMAX_IS_MULTI) ? true : false);
-	HeapTupleCopyBaseFromPage(&tp, page);
+	HeapTupleCopyBaseFromPage(buffer, &tp, page);
 
 	START_CRIT_SECTION();
 
@@ -3490,7 +3490,7 @@ l1:
 	HeapTupleHeaderSetCmax(tp.t_data, cid, iscombo);
 	/* Make sure there is no forward chain link in t_ctid */
 	tp.t_data->t_ctid = tp.t_self;
-	HeapTupleCopyBaseFromPage(&tp, page);
+	HeapTupleCopyBaseFromPage(buffer, &tp, page);
 
 	/* Signal that this is actually a move into another partition */
 	if (changingPart)
@@ -3775,7 +3775,7 @@ heap_update(Relation relation, ItemPointer otid, HeapTuple newtup,
 	oldtup.t_data = (HeapTupleHeader) PageGetItem(page, lp);
 	oldtup.t_len = ItemIdGetLength(lp);
 	oldtup.t_self = *otid;
-	HeapTupleCopyBaseFromPage(&oldtup, page);
+	HeapTupleCopyBaseFromPage(buffer, &oldtup, page);
 
 	/* the new tuple is ready, except for this: */
 	newtup->t_tableOid = RelationGetRelid(relation);
@@ -3920,7 +3920,7 @@ l2:
 				checked_lockers = true;
 				locker_remains = remain != 0;
 				LockBuffer(buffer, BUFFER_LOCK_EXCLUSIVE);
-				HeapTupleCopyBaseFromPage(&oldtup, page);
+				HeapTupleCopyBaseFromPage(buffer, &oldtup, page);
 
 				/*
 				 * If xwait had just locked the tuple then some other xact
@@ -4003,7 +4003,7 @@ l2:
 			checked_lockers = true;
 			LockBuffer(buffer, BUFFER_LOCK_EXCLUSIVE);
 
-			HeapTupleCopyBaseFromPage(&oldtup, page);
+			HeapTupleCopyBaseFromPage(buffer, &oldtup, page);
 
 			/*
 			 * xwait is done, but if xwait had just locked the tuple then some
@@ -4081,7 +4081,7 @@ l2:
 		LockBuffer(buffer, BUFFER_LOCK_UNLOCK);
 		visibilitymap_pin(relation, block, &vmbuffer);
 		LockBuffer(buffer, BUFFER_LOCK_EXCLUSIVE);
-		HeapTupleCopyBaseFromPage(&oldtup, page);
+		HeapTupleCopyBaseFromPage(vmbuffer, &oldtup, page);
 		goto l2;
 	}
 
@@ -4217,7 +4217,7 @@ l2:
 
 		heap_page_prepare_for_xid(relation, buffer, xmax_lock_old_tuple,
 								  (infomask_lock_old_tuple & HEAP_XMAX_IS_MULTI) ? true : false);
-		HeapTupleCopyBaseFromPage(&oldtup, page);
+		HeapTupleCopyBaseFromPage(buffer, &oldtup, page);
 
 		START_CRIT_SECTION();
 
@@ -4232,7 +4232,7 @@ l2:
 		HeapTupleSetXmax(&oldtup, xmax_lock_old_tuple);
 		HeapTupleHeaderSetXmax(page, &oldtup);
 		HeapTupleHeaderSetCmax(oldtup.t_data, cid, iscombo);
-		HeapTupleCopyBaseFromPage(&oldtup, page);
+		HeapTupleCopyBaseFromPage(buffer, &oldtup, page);
 
 		/* temporarily make it look not-updated, but locked */
 		oldtup.t_data->t_ctid = oldtup.t_self;
@@ -4353,7 +4353,7 @@ l2:
 		}
 
 		/* Copy possibly updated xid base to old tuple after relocking */
-		HeapTupleCopyBaseFromPage(&oldtup, page);
+		HeapTupleCopyBaseFromPage(buffer, &oldtup, page);
 	}
 	else
 	{
@@ -4430,7 +4430,7 @@ l2:
 							  (heaptup->t_data->t_infomask & HEAP_XMAX_IS_MULTI) ? true : false);
 
 	/* Copy possibly updated Xid bases to the both tuples. */
-	HeapTupleCopyBaseFromPage(&oldtup, page);
+	HeapTupleCopyBaseFromPage(buffer, &oldtup, page);
 
 	/*
 	 * Set new tuple's Xmin/Xmax, old tuple's Xmin/Xmax were already shifted.
@@ -4487,7 +4487,7 @@ l2:
 	HeapTupleSetXmax(&oldtup, xmax_old_tuple);
 	HeapTupleHeaderSetXmax(page, &oldtup);
 	HeapTupleHeaderSetCmax(oldtup.t_data, cid, iscombo);
-	HeapTupleCopyBaseFromPage(&oldtup, page);
+	HeapTupleCopyBaseFromPage(buffer, &oldtup, page);
 
 	/* record address of new tuple in t_ctid of old one */
 	oldtup.t_data->t_ctid = heaptup->t_self;
@@ -4893,7 +4893,7 @@ heap_lock_tuple(Relation relation, HeapTuple tuple,
 	tuple->t_data = (HeapTupleHeader) PageGetItem(page, lp);
 	tuple->t_len = ItemIdGetLength(lp);
 	tuple->t_tableOid = RelationGetRelid(relation);
-	HeapTupleCopyBaseFromPage(tuple, page);
+	HeapTupleCopyBaseFromPage(*buffer, tuple, page);
 
 l3:
 	result = HeapTupleSatisfiesUpdate(tuple, cid, *buffer);
@@ -5078,13 +5078,13 @@ l3:
 						result = res;
 						/* recovery code expects to have buffer lock held */
 						LockBuffer(*buffer, BUFFER_LOCK_EXCLUSIVE);
-						HeapTupleCopyBaseFromPage(tuple, page);
+						HeapTupleCopyBaseFromPage(*buffer, tuple, page);
 						goto failed;
 					}
 				}
 
 				LockBuffer(*buffer, BUFFER_LOCK_EXCLUSIVE);
-				HeapTupleCopyBaseFromPage(tuple, page);
+				HeapTupleCopyBaseFromPage(*buffer, tuple, page);
 
 				/*
 				 * Make sure it's still an appropriate lock, else start over.
@@ -5120,7 +5120,7 @@ l3:
 				!HEAP_XMAX_IS_EXCL_LOCKED(infomask))
 			{
 				LockBuffer(*buffer, BUFFER_LOCK_EXCLUSIVE);
-				HeapTupleCopyBaseFromPage(tuple, page);
+				HeapTupleCopyBaseFromPage(*buffer, tuple, page);
 
 				/*
 				 * Make sure it's still an appropriate lock, else start over.
@@ -5149,7 +5149,7 @@ l3:
 					 * meantime, start over.
 					 */
 					LockBuffer(*buffer, BUFFER_LOCK_EXCLUSIVE);
-					HeapTupleCopyBaseFromPage(tuple, page);
+					HeapTupleCopyBaseFromPage(*buffer, tuple, page);
 
 					if (xmax_infomask_changed(tuple->t_data->t_infomask, infomask) ||
 						!TransactionIdEquals(HeapTupleGetRawXmax(tuple),
@@ -5163,7 +5163,7 @@ l3:
 			else if (HEAP_XMAX_IS_KEYSHR_LOCKED(infomask))
 			{
 				LockBuffer(*buffer, BUFFER_LOCK_EXCLUSIVE);
-				HeapTupleCopyBaseFromPage(tuple, page);
+				HeapTupleCopyBaseFromPage(*buffer, tuple, page);
 
 				/* if the xmax changed in the meantime, start over */
 				if (xmax_infomask_changed(tuple->t_data->t_infomask, infomask) ||
@@ -5192,7 +5192,7 @@ l3:
 		{
 			/* ... but if the xmax changed in the meantime, start over */
 			LockBuffer(*buffer, BUFFER_LOCK_EXCLUSIVE);
-			HeapTupleCopyBaseFromPage(tuple, page);
+			HeapTupleCopyBaseFromPage(*buffer, tuple, page);
 
 			if (xmax_infomask_changed(tuple->t_data->t_infomask, infomask) ||
 				!TransactionIdEquals(HeapTupleGetRawXmax(tuple),
@@ -5216,7 +5216,7 @@ l3:
 		if (require_sleep && (result == TM_Updated || result == TM_Deleted))
 		{
 			LockBuffer(*buffer, BUFFER_LOCK_EXCLUSIVE);
-			HeapTupleCopyBaseFromPage(tuple, page);
+			HeapTupleCopyBaseFromPage(*buffer, tuple, page);
 			goto failed;
 		}
 		else if (require_sleep)
@@ -5242,7 +5242,7 @@ l3:
 				result = TM_WouldBlock;
 				/* recovery code expects to have buffer lock held */
 				LockBuffer(*buffer, BUFFER_LOCK_EXCLUSIVE);
-				HeapTupleCopyBaseFromPage(tuple, page);
+				HeapTupleCopyBaseFromPage(*buffer, tuple, page);
 				goto failed;
 			}
 
@@ -5269,7 +5269,7 @@ l3:
 							result = TM_WouldBlock;
 							/* recovery code expects to have buffer lock held */
 							LockBuffer(*buffer, BUFFER_LOCK_EXCLUSIVE);
-							HeapTupleCopyBaseFromPage(tuple, page);
+							HeapTupleCopyBaseFromPage(*buffer, tuple, page);
 							goto failed;
 						}
 						break;
@@ -5310,7 +5310,7 @@ l3:
 							result = TM_WouldBlock;
 							/* recovery code expects to have buffer lock held */
 							LockBuffer(*buffer, BUFFER_LOCK_EXCLUSIVE);
-							HeapTupleCopyBaseFromPage(tuple, page);
+							HeapTupleCopyBaseFromPage(*buffer, tuple, page);
 							goto failed;
 						}
 						break;
@@ -5337,13 +5337,13 @@ l3:
 					result = res;
 					/* recovery code expects to have buffer lock held */
 					LockBuffer(*buffer, BUFFER_LOCK_EXCLUSIVE);
-					HeapTupleCopyBaseFromPage(tuple, page);
+					HeapTupleCopyBaseFromPage(*buffer, tuple, page);
 					goto failed;
 				}
 			}
 
 			LockBuffer(*buffer, BUFFER_LOCK_EXCLUSIVE);
-			HeapTupleCopyBaseFromPage(tuple, page);
+			HeapTupleCopyBaseFromPage(*buffer, tuple, page);
 
 			/*
 			 * xwait is done, but if xwait had just locked the tuple then some
@@ -5427,7 +5427,7 @@ failed:
 		LockBuffer(*buffer, BUFFER_LOCK_UNLOCK);
 		visibilitymap_pin(relation, block, &vmbuffer);
 		LockBuffer(*buffer, BUFFER_LOCK_EXCLUSIVE);
-		HeapTupleCopyBaseFromPage(tuple, page);
+		HeapTupleCopyBaseFromPage(*buffer, tuple, page);
 		goto l3;
 	}
 
@@ -5455,7 +5455,7 @@ failed:
 
 	heap_page_prepare_for_xid(relation, *buffer, xid,
 							  (new_infomask & HEAP_XMAX_IS_MULTI) ? true : false);
-	HeapTupleCopyBaseFromPage(tuple, page);
+	HeapTupleCopyBaseFromPage(*buffer, tuple, page);
 
 	START_CRIT_SECTION();
 
@@ -6074,7 +6074,7 @@ l4:
 		 * Copy xid base after buffer relocking, it could have changed since
 		 * heap_fetch().
 		 */
-		HeapTupleCopyBaseFromPage(&mytup, BufferGetPage(buf));
+		HeapTupleCopyBaseFromPage(buf, &mytup, BufferGetPage(buf));
 
 		/*
 		 * Check the tuple XMIN against prior XMAX, if any.  If we reached the
@@ -6257,7 +6257,7 @@ l4:
 
 		heap_page_prepare_for_xid(rel, buf, new_xmax,
 								  (new_infomask & HEAP_XMAX_IS_MULTI) ? true : false);
-		HeapTupleCopyBaseFromPage(&mytup, BufferGetPage(buf));
+		HeapTupleCopyBaseFromPage(buf, &mytup, BufferGetPage(buf));
 
 		START_CRIT_SECTION();
 
@@ -6515,7 +6515,7 @@ heap_abort_speculative(Relation relation, ItemPointer tid)
 	tp.t_data = (HeapTupleHeader) PageGetItem(page, lp);
 	tp.t_len = ItemIdGetLength(lp);
 	tp.t_self = *tid;
-	HeapTupleCopyBaseFromPage(&tp, page);
+	HeapTupleCopyBaseFromPage(InvalidBuffer, &tp, page);
 
 	/*
 	 * Sanity check that the tuple really is a speculatively inserted tuple,
@@ -8408,7 +8408,7 @@ heap_index_delete_tuples(Relation rel, TM_IndexDeleteOp *delstate)
 
 			htup.t_data = (HeapTupleHeader) PageGetItem(page, lp);
 			htup.t_len = ItemIdGetLength(lp);
-			HeapTupleCopyBaseFromPage(&htup, page);
+			HeapTupleCopyBaseFromPage(buf, &htup, page);
 
 			/*
 			 * Check the tuple XMIN against prior XMAX, if any
@@ -10155,7 +10155,7 @@ heap_xlog_update(XLogReaderState *record, bool hot_update)
 
 		oldtup.t_data = htup;
 		oldtup.t_len = ItemIdGetLength(lp);
-		HeapTupleCopyBaseFromPage(&oldtup, page);
+		HeapTupleCopyBaseFromPage(obuffer, &oldtup, page);
 
 		htup->t_infomask &= ~(HEAP_XMAX_BITS | HEAP_MOVED);
 		htup->t_infomask2 &= ~HEAP_KEYS_UPDATED;

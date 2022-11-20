@@ -220,7 +220,7 @@ heap_page_items(PG_FUNCTION_ARGS)
 
 			tuphdr = (HeapTupleHeader) PageGetItem(page, id);
 			tup.t_data = tuphdr;
-			HeapTupleCopyBaseFromPage(&tup, page);
+			HeapTupleCopyBaseFromPage(InvalidBuffer, &tup, page);
 
 			values[4] = TransactionIdGetDatum(HeapTupleGetXmin(&tup));
 			values[5] = TransactionIdGetDatum(HeapTupleGetRawXmax(&tup));

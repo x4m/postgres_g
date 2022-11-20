@@ -280,7 +280,7 @@ heap_force_common(FunctionCallInfo fcinfo, HeapTupleForceOption heap_force_opt)
 				tuple.t_data = htup;
 				tuple.t_len = ItemIdGetLength(itemid);
 				tuple.t_tableOid = RelationGetRelid(rel);
-				HeapTupleCopyBaseFromPage(&tuple, page);
+				HeapTupleCopyBaseFromPage(buf, &tuple, page);
 
 				/*
 				 * Reset all visibility-related fields of the tuple. This
