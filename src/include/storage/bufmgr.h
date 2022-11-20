@@ -232,6 +232,7 @@ extern bool IsBufferConverted(Buffer buffer);
 
 extern void UnlockBuffers(void);
 extern bool IsBufferLocked(Buffer buffer);
+extern bool IsBufferLockedExclusive(Buffer buffer);
 extern void LockBuffer(Buffer buffer, int mode);
 extern bool ConditionalLockBuffer(Buffer buffer);
 extern void LockBufferForCleanup(Buffer buffer);
