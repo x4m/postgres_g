@@ -349,12 +349,6 @@ TruncateSUBTRANS(TransactionId oldestXact)
 	 * one, we'd trigger SimpleLruTruncate's wraparound detection.
 	 */
 
-	if (oldestXact <= FirstNormalTransactionId)
-	{
-		SimpleLruTruncate(SubTransCtl, 0);
-		return;
-	}
-
 	TransactionIdRetreat(oldestXact);
 	cutoffPage = TransactionIdToPage(oldestXact);
 
