@@ -53,6 +53,7 @@
  */
 #define IsPointerList(l)		((l) == NIL || IsA((l), List))
 #define IsIntegerList(l)		((l) == NIL || IsA((l), IntList))
+#define IsInteger64List(l)		((l) == NIL || IsA((l), Int64List))
 #define IsOidList(l)			((l) == NIL || IsA((l), OidList))
 
 #ifdef USE_ASSERT_CHECKING
@@ -71,6 +72,7 @@ check_list_invariants(const List *list)
 
 	Assert(list->type == T_List ||
 		   list->type == T_IntList ||
+		   list->type == T_Int64List ||
 		   list->type == T_OidList);
 }
 #else
@@ -361,6 +363,24 @@ lappend_int(List *list, int datum)
 		new_tail_cell(list);
 
 	llast_int(list) = datum;
+	check_list_invariants(list);
+	return list;
+}
+
+/*
+ * Append an integer to the specified list. See lappend()
+ */
+List *
+lappend_int64(List *list, int64 datum)
+{
+	Assert(IsInteger64List(list));
+
+	if (list == NIL)
+		list = new_list(T_Int64List, 1);
+	else
+		new_tail_cell(list);
+
+	llast_int64(list) = datum;
 	check_list_invariants(list);
 	return list;
 }

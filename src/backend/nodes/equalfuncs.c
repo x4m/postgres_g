@@ -3149,6 +3149,13 @@ _equalList(const List *a, const List *b)
 					return false;
 			}
 			break;
+		case T_Int64List:
+			forboth(item_a, a, item_b, b)
+			{
+				if (lfirst_int64(item_a) != lfirst_int64(item_b))
+					return false;
+			}
+			break;
 		case T_OidList:
 			forboth(item_a, a, item_b, b)
 			{
@@ -3425,6 +3432,7 @@ equal(const void *a, const void *b)
 
 		case T_List:
 		case T_IntList:
+		case T_Int64List:
 		case T_OidList:
 			retval = _equalList(a, b);
 			break;

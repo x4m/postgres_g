@@ -1924,7 +1924,7 @@ get_schema_sent_in_streamed_txn(RelationSyncEntry *entry, TransactionId xid)
 
 	foreach(lc, entry->streamed_txns)
 	{
-		if (xid == (uint32) lfirst_int(lc))
+		if (xid == (uint64) lfirst_int64(lc))
 			return true;
 	}
 
@@ -1942,7 +1942,7 @@ set_schema_sent_in_streamed_txn(RelationSyncEntry *entry, TransactionId xid)
 
 	oldctx = MemoryContextSwitchTo(CacheMemoryContext);
 
-	entry->streamed_txns = lappend_int(entry->streamed_txns, xid);
+	entry->streamed_txns = lappend_int64(entry->streamed_txns, xid);
 
 	MemoryContextSwitchTo(oldctx);
 }
