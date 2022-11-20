@@ -496,7 +496,16 @@ heapgetpage(TableScanDesc sscan, BlockNumber page)
 												&loctup, buffer, snapshot);
 
 			if (valid)
-				scan->rs_vistuples[ntup++] = lineoff;
+			{
+				scan->rs_vistuples[ntup] = lineoff;
+				/*
+				 * Since there is no lock futher and xmin or xmax may be
+				 * changed while base shift, copy them here.
+				 */
+				scan->rs_xmin[ntup] = loctup.t_xmin;
+				scan->rs_xmax[ntup] = loctup.t_xmax;
+				++ntup;
+			}
 		}
 	}
 
@@ -1051,7 +1060,8 @@ heapgettup_pagemode(HeapScanDesc scan,
 
 			tuple->t_data = (HeapTupleHeader) PageGetItem((Page) dp, lpp);
 			tuple->t_len = ItemIdGetLength(lpp);
-			HeapTupleCopyBaseFromPage(InvalidBuffer, tuple, dp);
+			tuple->t_xmin = scan->rs_xmin[lineindex];
+			tuple->t_xmax = scan->rs_xmax[lineindex];
 			ItemPointerSet(&(tuple->t_self), page, lineoff);
 
 			/*
@@ -3494,7 +3504,6 @@ l1:
 	HeapTupleHeaderSetCmax(tp.t_data, cid, iscombo);
 	/* Make sure there is no forward chain link in t_ctid */
 	tp.t_data->t_ctid = tp.t_self;
-	HeapTupleCopyBaseFromPage(buffer, &tp, page);
 
 	/* Signal that this is actually a move into another partition */
 	if (changingPart)
@@ -4236,7 +4245,6 @@ l2:
 		HeapTupleSetXmax(&oldtup, xmax_lock_old_tuple);
 		HeapTupleHeaderSetXmax(page, &oldtup);
 		HeapTupleHeaderSetCmax(oldtup.t_data, cid, iscombo);
-		HeapTupleCopyBaseFromPage(buffer, &oldtup, page);
 
 		/* temporarily make it look not-updated, but locked */
 		oldtup.t_data->t_ctid = oldtup.t_self;
