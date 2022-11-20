@@ -2300,9 +2300,6 @@ heap_page_xid_min_max(Page page, bool multi,
 				xid_min_max(min, max, htup->t_choice.t_heap.t_xmin, &found);
 			}
 
-			if (htup->t_infomask & HEAP_XMAX_INVALID)
-				continue;
-
 			if ((htup->t_infomask & HEAP_XMAX_IS_MULTI) &&
 				(!(htup->t_infomask & HEAP_XMAX_LOCK_ONLY)))
 			{
@@ -2321,7 +2318,7 @@ heap_page_xid_min_max(Page page, bool multi,
 		if (!TransactionIdIsNormal(htup->t_choice.t_heap.t_xmax))
 			continue;
 
-		if (multi != (bool) (htup->t_infomask & HEAP_XMAX_IS_MULTI))
+		if (multi != ((htup->t_infomask & HEAP_XMAX_IS_MULTI) != 0))
 			continue;
 
 		xid_min_max(min, max, htup->t_choice.t_heap.t_xmax, &found);
@@ -2380,7 +2377,7 @@ heap_page_shift_base(Relation relation, Buffer buffer, Page page,
 		if (!TransactionIdIsNormal(htup->t_choice.t_heap.t_xmax))
 			continue;
 
-		if (multi != (bool) (htup->t_infomask & HEAP_XMAX_IS_MULTI))
+		if (multi != ((htup->t_infomask & HEAP_XMAX_IS_MULTI) != 0))
 			continue;
 
 		Assert(htup->t_choice.t_heap.t_xmax - delta >= FirstNormalTransactionId);
