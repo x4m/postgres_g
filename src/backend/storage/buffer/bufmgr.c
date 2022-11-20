@@ -4234,6 +4234,9 @@ UnlockBuffers(void)
 	}
 }
 
+/*
+ * Is shared buffer is locked?
+ */
 bool
 IsBufferLocked(Buffer buffer)
 {
@@ -4249,6 +4252,27 @@ IsBufferLocked(Buffer buffer)
 	buf = GetBufferDescriptor(buffer - 1);
 
 	return LWLockHeldByMe(BufferDescriptorGetContentLock(buf));
+}
+
+/*
+ * Is shared buffer is locked exclusive?
+ */
+bool
+IsBufferLockedExclusive(Buffer buffer)
+{
+	BufferDesc *buf;
+
+	if (buffer == InvalidBuffer)
+		return true;
+
+	Assert(BufferIsPinned(buffer));
+	if (BufferIsLocal(buffer))
+		return true;					/* local buffers need no lock */
+
+	buf = GetBufferDescriptor(buffer - 1);
+
+	return LWLockHeldByMeInMode(BufferDescriptorGetContentLock(buf),
+								LW_EXCLUSIVE);
 }
 
 /*

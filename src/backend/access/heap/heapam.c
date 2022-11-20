@@ -2345,6 +2345,8 @@ heap_page_shift_base(Relation relation, Buffer buffer, Page page,
 	ItemId				itemid;
 	HeapTupleHeader		htup;
 
+	Assert(IsBufferLockedExclusive(buffer));
+
 	START_CRIT_SECTION();
 	pageSpecial = HeapPageGetSpecial(page);
 
