@@ -425,6 +425,10 @@ heap_page_prune(Relation relation, Buffer buffer,
 			xlrec.latestRemovedXid = prstate.latestRemovedXid;
 			xlrec.nredirected = prstate.nredirected;
 			xlrec.ndead = prstate.ndead;
+			xlrec.flags = 0;
+
+			if (repairFragmentation)
+				xlrec.flags |= XLH_PRUNE_REPAIR_FRAGMENTATION;
 
 			XLogBeginInsert();
 			XLogRegisterData((char *) &xlrec, SizeOfHeapPrune);

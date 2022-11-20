@@ -9348,7 +9348,7 @@ heap_xlog_prune(XLogReaderState *record)
 								redirected, nredirected,
 								nowdead, ndead,
 								nowunused, nunused,
-								true);
+								xlrec->flags & XLH_PRUNE_REPAIR_FRAGMENTATION);
 
 		/*
 		 * Note: we don't worry about updating the page's prunability hints.
