@@ -2232,13 +2232,6 @@ heapam_scan_bitmap_next_block(TableScanDesc scan,
 	return ntup > 0;
 }
 
-static inline void
-HeapTupleSetInvalid(HeapTuple tuple)
-{
-	tuple->t_xmin = InvalidTransactionId;
-	tuple->t_xmax = InvalidTransactionId;
-}
-
 static bool
 heapam_scan_bitmap_next_tuple(TableScanDesc scan,
 							  TBMIterateResult *tbmres,
