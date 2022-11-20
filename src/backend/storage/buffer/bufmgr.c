@@ -4234,6 +4234,23 @@ UnlockBuffers(void)
 	}
 }
 
+bool
+IsBufferLocked(Buffer buffer)
+{
+	BufferDesc *buf;
+
+	if (buffer == InvalidBuffer)
+		return true;
+
+	Assert(BufferIsPinned(buffer));
+	if (BufferIsLocal(buffer))
+		return true;					/* local buffers need no lock */
+
+	buf = GetBufferDescriptor(buffer - 1);
+
+	return LWLockHeldByMe(BufferDescriptorGetContentLock(buf));
+}
+
 /*
  * Acquire or release the content_lock for the buffer.
  */

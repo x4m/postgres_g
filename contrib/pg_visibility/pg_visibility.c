@@ -657,7 +657,7 @@ collect_corrupt_items(Oid relid, bool all_visible, bool all_frozen)
 			tuple.t_data = (HeapTupleHeader) PageGetItem(page, itemid);
 			tuple.t_len = ItemIdGetLength(itemid);
 			tuple.t_tableOid = relid;
-			HeapTupleCopyBaseFromPage(&tuple, page);
+			HeapTupleCopyBaseFromPage(buffer, &tuple, page);
 
 			/*
 			 * If we're checking whether the page is all-visible, we expect

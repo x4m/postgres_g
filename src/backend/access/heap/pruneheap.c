@@ -340,7 +340,7 @@ heap_page_prune(Relation relation, Buffer buffer,
 		htup = (HeapTupleHeader) PageGetItem(page, itemid);
 		tup.t_data = htup;
 		tup.t_len = ItemIdGetLength(itemid);
-		HeapTupleCopyBaseFromPage(&tup, page);
+		HeapTupleCopyBaseFromPage(buffer, &tup, page);
 		ItemPointerSet(&(tup.t_self), blockno, offnum);
 
 		/*
@@ -626,7 +626,7 @@ heap_prune_chain(Buffer buffer, OffsetNumber rootoffnum, PruneState *prstate)
 		tup.t_data = htup;
 		tup.t_len = ItemIdGetLength(rootlp);
 		ItemPointerSet(&(tup.t_self), BufferGetBlockNumber(buffer), rootoffnum);
-		HeapTupleCopyBaseFromPage(&tup, dp);
+		HeapTupleCopyBaseFromPage(buffer, &tup, dp);
 
 		if (HeapTupleHeaderIsHeapOnly(htup))
 		{
@@ -721,7 +721,7 @@ heap_prune_chain(Buffer buffer, OffsetNumber rootoffnum, PruneState *prstate)
 
 		tup.t_data = htup;
 		tup.t_len = ItemIdGetLength(lp);
-		HeapTupleCopyBaseFromPage(&tup, dp);
+		HeapTupleCopyBaseFromPage(buffer, &tup, dp);
 		ItemPointerSet(&(tup.t_self), BufferGetBlockNumber(buffer), offnum);
 
 		/*
@@ -1131,7 +1131,7 @@ page_verify_redirects(Page page)
  * and reused by a completely unrelated tuple.
  */
 void
-heap_get_root_tuples(Page page, OffsetNumber *root_offsets)
+heap_get_root_tuples(Page page, Buffer buffer, OffsetNumber *root_offsets)
 {
 	OffsetNumber offnum,
 				maxoff;
@@ -1156,7 +1156,7 @@ heap_get_root_tuples(Page page, OffsetNumber *root_offsets)
 		{
 			htup = (HeapTupleHeader) PageGetItem(page, lp);
 			tup.t_data = htup;
-			HeapTupleCopyBaseFromPage(&tup, page);
+			HeapTupleCopyBaseFromPage(buffer, &tup, page);
 
 			/*
 			 * Check if this tuple is part of a HOT-chain rooted at some other
@@ -1218,7 +1218,7 @@ heap_get_root_tuples(Page page, OffsetNumber *root_offsets)
 
 			htup = (HeapTupleHeader) PageGetItem(page, lp);
 			tup.t_data = htup;
-			HeapTupleCopyBaseFromPage(&tup, page);
+			HeapTupleCopyBaseFromPage(buffer, &tup, page);
 
 			if (TransactionIdIsValid(priorXmax) &&
 				!TransactionIdEquals(priorXmax, HeapTupleGetXmin(&tup)))
