@@ -48,15 +48,20 @@
 #include "utils/syscache.h"
 #include "utils/varlena.h"
 
-#define SeqTupleHeaderSetXmin(tup, xid) \
-( \
-	(tup)->t_choice.t_heap.t_xmin = (xid) \
-)
+static inline void
+SeqTupleSetXmin(HeapTuple htup, TransactionId xid)
+{
+	htup->t_xmin = xid;
+	htup->t_data->t_choice.t_heap.t_xmin = xid;
+}
 
-#define SeqTupleHeaderSetXmax(tup, xid) \
-( \
-	(tup)->t_choice.t_heap.t_xmax = (xid) \
-)
+static inline void
+SeqTupleSetXmax(HeapTuple htup, TransactionId xid)
+{
+	htup->t_xmin = xid;
+	htup->t_data->t_choice.t_heap.t_xmax = xid;
+}
+ 
 
 #define SeqTupleHeaderGetRawXmax(tup) \
 ( \
@@ -411,10 +416,10 @@ fill_seq_fork_with_data(Relation rel, HeapTuple tuple, ForkNumber forkNum)
 	 * because if the current transaction aborts, no other xact will ever
 	 * examine the sequence tuple anyway.
 	 */
-	SeqTupleHeaderSetXmin(tuple->t_data, FrozenTransactionId);
+	SeqTupleSetXmin(tuple, FrozenTransactionId);
 	HeapTupleHeaderSetXminFrozen(tuple->t_data);
 	HeapTupleHeaderSetCmin(tuple->t_data, FirstCommandId);
-	SeqTupleHeaderSetXmax(tuple->t_data, InvalidTransactionId);
+	SeqTupleSetXmax(tuple, InvalidTransactionId);
 	tuple->t_data->t_infomask |= HEAP_XMAX_INVALID;
 	ItemPointerSet(&tuple->t_data->t_ctid, 0, FirstOffsetNumber);
 
@@ -1236,6 +1241,7 @@ read_seq_tuple(Relation rel, Buffer *buf, HeapTuple seqdatatuple)
 	/* Note we currently only bother to set these two fields of *seqdatatuple */
 	seqdatatuple->t_data = (HeapTupleHeader) PageGetItem(page, lp);
 	seqdatatuple->t_len = ItemIdGetLength(lp);
+	HeapTupleCopyHeaderXids(seqdatatuple);
 
 	/*
 	 * Previous releases of Postgres neglected to prevent SELECT FOR UPDATE on
@@ -1248,7 +1254,7 @@ read_seq_tuple(Relation rel, Buffer *buf, HeapTuple seqdatatuple)
 	Assert(!(seqdatatuple->t_data->t_infomask & HEAP_XMAX_IS_MULTI));
 	if (SeqTupleHeaderGetRawXmax(seqdatatuple->t_data) != InvalidTransactionId)
 	{
-		SeqTupleHeaderSetXmax(seqdatatuple->t_data, InvalidTransactionId);
+		SeqTupleSetXmax(seqdatatuple, InvalidTransactionId);
 		seqdatatuple->t_data->t_infomask &= ~HEAP_XMAX_COMMITTED;
 		seqdatatuple->t_data->t_infomask |= HEAP_XMAX_INVALID;
 		MarkBufferDirtyHint(*buf, true);
