@@ -338,7 +338,7 @@ ReadNextTransactionId(void)
 
 /* return transaction ID backed up by amount, handling wraparound correctly */
 static inline TransactionId
-TransactionIdRetreatedBy(TransactionId xid, uint32 amount)
+TransactionIdRetreatedBy(TransactionId xid, uint64 amount)
 {
 	xid -= amount;
 

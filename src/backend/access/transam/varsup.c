@@ -66,8 +66,8 @@ GetNewTransactionId(bool isSubXact)
 	if (IsBootstrapProcessingMode())
 	{
 		Assert(!isSubXact);
-		MyProc->xid = BootstrapTransactionId;
-		ProcGlobal->xids[MyProc->pgxactoff] = BootstrapTransactionId;
+		pg_atomic_write_u64(&MyProc->xid, BootstrapTransactionId);
+		pg_atomic_write_u64(&ProcGlobal->xids[MyProc->pgxactoff], BootstrapTransactionId);
 		return FullTransactionIdFromXid(BootstrapTransactionId);
 	}
 
@@ -181,8 +181,8 @@ GetNewTransactionId(bool isSubXact)
 		Assert(!MyProc->subxidStatus.overflowed);
 
 		/* LWLockRelease acts as barrier */
-		MyProc->xid = xid;
-		ProcGlobal->xids[MyProc->pgxactoff] = xid;
+		pg_atomic_write_u64(&MyProc->xid, xid);
+		pg_atomic_write_u64(&ProcGlobal->xids[MyProc->pgxactoff], xid);
 	}
 	else
 	{

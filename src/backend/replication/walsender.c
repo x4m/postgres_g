@@ -292,7 +292,7 @@ InitWalSender(void)
 	 */
 	if (MyDatabaseId == InvalidOid)
 	{
-		Assert(MyProc->xmin == InvalidTransactionId);
+		Assert(pg_atomic_read_u64(&MyProc->xmin) == InvalidTransactionId);
 		LWLockAcquire(ProcArrayLock, LW_EXCLUSIVE);
 		MyProc->statusFlags |= PROC_AFFECTS_ALL_HORIZONS;
 		ProcGlobal->statusFlags[MyProc->pgxactoff] = MyProc->statusFlags;
@@ -2182,7 +2182,7 @@ PhysicalReplicationSlotNewXmin(TransactionId feedbackXmin, TransactionId feedbac
 	ReplicationSlot *slot = MyReplicationSlot;
 
 	SpinLockAcquire(&slot->mutex);
-	MyProc->xmin = InvalidTransactionId;
+	pg_atomic_write_u64(&MyProc->xmin, InvalidTransactionId);
 
 	/*
 	 * For physical replication we don't need the interlock provided by xmin
@@ -2267,7 +2267,7 @@ ProcessStandbyHSFeedbackMessage(void)
 	if (!TransactionIdIsNormal(feedbackXmin)
 		&& !TransactionIdIsNormal(feedbackCatalogXmin))
 	{
-		MyProc->xmin = InvalidTransactionId;
+		pg_atomic_write_u64(&MyProc->xmin, InvalidTransactionId);
 		if (MyReplicationSlot != NULL)
 			PhysicalReplicationSlotNewXmin(feedbackXmin, feedbackCatalogXmin);
 		return;
@@ -2310,9 +2310,9 @@ ProcessStandbyHSFeedbackMessage(void)
 	{
 		if (TransactionIdIsNormal(feedbackCatalogXmin)
 			&& TransactionIdPrecedes(feedbackCatalogXmin, feedbackXmin))
-			MyProc->xmin = feedbackCatalogXmin;
+			pg_atomic_write_u64(&MyProc->xmin, feedbackCatalogXmin);
 		else
-			MyProc->xmin = feedbackXmin;
+			pg_atomic_write_u64(&MyProc->xmin, feedbackXmin);
 	}
 }
 
