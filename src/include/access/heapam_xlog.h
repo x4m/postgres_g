@@ -242,15 +242,17 @@ typedef struct xl_heap_update
  *
  * Acquires a full cleanup lock.
  */
+#define XLH_PRUNE_REPAIR_FRAGMENTATION	0x02
 typedef struct xl_heap_prune
 {
 	TransactionId latestRemovedXid;
 	uint16		nredirected;
 	uint16		ndead;
+	uint8		flags;
 	/* OFFSET NUMBERS are in the block reference 0 */
 } xl_heap_prune;
 
-#define SizeOfHeapPrune (offsetof(xl_heap_prune, ndead) + sizeof(uint16))
+#define SizeOfHeapPrune (offsetof(xl_heap_prune, flags) + sizeof(uint8))
 
 /*
  * The vacuum page record is similar to the prune record, but can only mark
