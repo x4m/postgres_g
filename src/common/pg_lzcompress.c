@@ -124,7 +124,7 @@
  *			lists of likely to be at least in the first 4 characters
  *			matching strings. This is done on the fly while the input
  *			is compressed into the output area.  Table entries are only
- *			kept for the last 4094 input positions, since we cannot use
+ *			kept for the last 4095 input positions, since we cannot use
  *			back-pointers larger than that anyway.  The size of the hash
  *			table is chosen based on the size of the input - a larger table
  *			has a larger startup cost, as it needs to be initialized to
@@ -190,7 +190,7 @@
  * ----------
  */
 #define PGLZ_MAX_HISTORY_LISTS	8192	/* must be power of 2 */
-#define PGLZ_HISTORY_SIZE		0x0fff	/* to avoid compare in iteration */
+#define PGLZ_HISTORY_SIZE		4096
 #define PGLZ_MAX_MATCH			273
 
 
@@ -200,13 +200,13 @@
  *		Linked list for the backward history lookup
  *
  * All the entries sharing a hash key are linked in a singly linked list.
- * Links are not changed during insertion in order to speed it up.
+ * Indexes are not changed during insertion in order to speed it up.
  * Instead more complicated stop condition is used during list iteration.
  * ----------
  */
 typedef struct PGLZ_HistEntry
 {
-	int16		next_id;		/* links for my hash key's list */
+	int16		next_id;		/* index of next entry with same hash */
 	uint16		hist_idx;		/* my current hash key */
 	const unsigned char *pos;	/* my input position */
 } PGLZ_HistEntry;
@@ -283,8 +283,7 @@ pglz_hist_idx(const unsigned char *s, uint16 mask)
 /* ----------
  * pglz_hist_add -
  *
- *		Adds a new entry to the history table
- *		and recalculates hash value.
+ *		Adds a new entry to the history table and recalculates hash value.
  * ----------
  */
 static inline int16
@@ -301,7 +300,7 @@ pglz_hist_add(int16 hist_next, uint16 *hist_idx, const unsigned char *s, uint16 
 	entry->pos = s;
 
 	/*
-	 * Update linked list head pointer.
+	 * Update linked list head index.
 	 */
 	*my_hist_start = hist_next;
 
@@ -311,7 +310,7 @@ pglz_hist_add(int16 hist_next, uint16 *hist_idx, const unsigned char *s, uint16 
 	*hist_idx = ((((*hist_idx) ^ (s[0] << 6)) << 2) ^ s[4]) & mask;
 
 	/*
-	 * Shift history pointer.
+	 * Shift history index.
 	 */
 	hist_next++;
 	if (hist_next == PGLZ_HISTORY_SIZE)
@@ -350,8 +349,7 @@ pglz_out_tag(unsigned char *dest_ptr, int32 match_len, int32 match_offset)
 /* ----------
  * pglz_compare -
  *
- *		Compares two sequences of bytes
- *		and returns position of first mismatch.
+ *		Compares two sequences of bytes and returns position of first mismatch.
  * ----------
  */
 static inline int32
@@ -393,9 +391,6 @@ pglz_find_match(uint16 hist_idx, const unsigned char *input, const unsigned char
 	int32		cur_len = 0;
 	int32		len_bound = Min(end - input, PGLZ_MAX_MATCH);
 
-	/*
-	 * Traverse the linked history list until a good enough match is found.
-	 */
 	hist_entry_number = &hist_start[hist_idx];
 	if (*hist_entry_number == INVALID_ENTRY)
 		return 0;
@@ -411,6 +406,9 @@ pglz_find_match(uint16 hist_idx, const unsigned char *input, const unsigned char
 		return 0;
 	}
 
+	/*
+	 * Traverse the linked history list until a good enough match is found.
+	 */
 	while (true)
 	{
 		const unsigned char *input_pos = input;
