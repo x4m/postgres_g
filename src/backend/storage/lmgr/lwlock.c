@@ -1744,6 +1744,13 @@ LWLockUpdateVar(LWLock *lock, pg_atomic_uint64 *valptr, uint64 val)
 	/* Update the lock's value atomically first. */
 	pg_atomic_write_u64(valptr, val);
 
+	/*
+	 * Quick exit when there are no waiters. This avoids unnecessary lwlock's
+	 * wait list lock acquisition and release.
+	 */
+	if ((pg_atomic_read_u32(&lock->state) & LW_FLAG_HAS_WAITERS) == 0)
+		return;
+
 	proclist_init(&wakeup);
 
 	LWLockWaitListLock(lock);
