@@ -377,7 +377,7 @@ typedef struct
 {
 	LWLock		lock;
 	pg_atomic_uint64	insertingAt;
-	XLogRecPtr	lastImportantAt;
+	pg_atomic_uint64	lastImportantAt;
 } WALInsertLock;
 
 /*
@@ -873,7 +873,7 @@ XLogInsertRecord(XLogRecData *rdata,
 		{
 			int			lockno = holdingAllLocks ? 0 : MyLockNo;
 
-			WALInsertLocks[lockno].l.lastImportantAt = StartPos;
+			pg_atomic_write_u64(&WALInsertLocks[lockno].l.lastImportantAt, StartPos);
 		}
 	}
 	else
@@ -4603,7 +4603,7 @@ XLOGShmemInit(void)
 	{
 		LWLockInitialize(&WALInsertLocks[i].l.lock, LWTRANCHE_WAL_INSERT);
 		pg_atomic_init_u64(&WALInsertLocks[i].l.insertingAt, InvalidXLogRecPtr);
-		WALInsertLocks[i].l.lastImportantAt = InvalidXLogRecPtr;
+		pg_atomic_write_u64(&WALInsertLocks[i].l.lastImportantAt, InvalidXLogRecPtr);
 	}
 
 	/*
@@ -6124,13 +6124,10 @@ GetLastImportantRecPtr(void)
 		XLogRecPtr	last_important;
 
 		/*
-		 * Need to take a lock to prevent torn reads of the LSN, which are
-		 * possible on some of the supported platforms. WAL insert locks only
-		 * support exclusive mode, so we have to use that.
+		 * We atomically read lastImportantAt which prevents torn reads. Hence
+		 * no need to take WAL insert lock here.
 		 */
-		LWLockAcquire(&WALInsertLocks[i].l.lock, LW_EXCLUSIVE);
-		last_important = WALInsertLocks[i].l.lastImportantAt;
-		LWLockRelease(&WALInsertLocks[i].l.lock);
+		last_important = pg_atomic_read_u64(&WALInsertLocks[i].l.lastImportantAt);
 
 		if (res < last_important)
 			res = last_important;
