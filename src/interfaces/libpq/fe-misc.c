@@ -51,11 +51,23 @@
 #include "pg_config_paths.h"
 #include "port/pg_bswap.h"
 
+#include  <common/zpq_stream.h>
+
 static int	pqPutMsgBytes(const void *buf, size_t len, PGconn *conn);
 static int	pqSendSome(PGconn *conn, int len);
 static int	pqSocketCheck(PGconn *conn, int forRead, int forWrite,
 						  time_t end_time);
 static int	pqSocketPoll(int sock, int forRead, int forWrite, time_t end_time);
+
+/*
+ * Use zpq_read if compression is switched on
+ */
+#define pq_read_conn(conn)												\
+	(conn->zpqStream													\
+	 ? zpq_read(conn->zpqStream, conn->inBuffer + conn->inEnd,			\
+				conn->inBufSize - conn->inEnd, false)							\
+	 : pqsecure_read(conn, conn->inBuffer + conn->inEnd,				\
+					 conn->inBufSize - conn->inEnd))
 
 /*
  * PQlibVersion: return the libpq version number
@@ -614,10 +626,17 @@ pqReadData(PGconn *conn)
 
 	/* OK, try to read some data */
 retry3:
-	nread = pqsecure_read(conn, conn->inBuffer + conn->inEnd,
-						  conn->inBufSize - conn->inEnd);
+	nread = pq_read_conn(conn);
 	if (nread < 0)
 	{
+		if (nread == ZS_DECOMPRESS_ERROR)
+		{
+			printfPQExpBuffer(&conn->errorMessage,
+							  libpq_gettext("decompress error: %s\n"),
+							  zpq_decompress_error(conn->zpqStream));
+			return -1;
+		}
+
 		switch (SOCK_ERRNO)
 		{
 			case EINTR:
@@ -709,10 +728,18 @@ retry3:
 	 * arrived.
 	 */
 retry4:
-	nread = pqsecure_read(conn, conn->inBuffer + conn->inEnd,
-						  conn->inBufSize - conn->inEnd);
+	nread = pq_read_conn(conn);
+
 	if (nread < 0)
 	{
+		if (nread == ZS_DECOMPRESS_ERROR)
+		{
+			printfPQExpBuffer(&conn->errorMessage,
+							  libpq_gettext("decompress error: %s\n"),
+							  zpq_decompress_error(conn->zpqStream));
+			return -1;
+		}
+
 		switch (SOCK_ERRNO)
 		{
 			case EINTR:
@@ -822,12 +849,18 @@ pqSendSome(PGconn *conn, int len)
 	}
 
 	/* while there's still data to send */
-	while (len > 0)
+	while (len > 0 || zpq_buffered_tx(conn->zpqStream))
 	{
 		int			sent;
+		size_t		processed = 0;
 
+		/*
+		 * Use zpq_write if compression is switched on
+		 */
+		sent = conn->zpqStream
+			? zpq_write(conn->zpqStream, ptr, len, &processed)
 #ifndef WIN32
-		sent = pqsecure_write(conn, ptr, len);
+			: pqsecure_write(conn, ptr, len);
 #else
 
 		/*
@@ -835,8 +868,11 @@ pqSendSome(PGconn *conn, int len)
 		 * failure-point appears to be different in different versions of
 		 * Windows, but 64k should always be safe.
 		 */
-		sent = pqsecure_write(conn, ptr, Min(len, 65536));
+:			pqsecure_write(conn, ptr, Min(len, 65536));
 #endif
+		ptr += processed;
+		len -= processed;
+		remaining -= processed;
 
 		if (sent < 0)
 		{
@@ -885,7 +921,7 @@ pqSendSome(PGconn *conn, int len)
 			remaining -= sent;
 		}
 
-		if (len > 0)
+		if (len > 0 || sent < 0 || zpq_buffered_tx(conn->zpqStream))
 		{
 			/*
 			 * We didn't send it all, wait till we can send more.
@@ -953,7 +989,7 @@ pqSendSome(PGconn *conn, int len)
 int
 pqFlush(PGconn *conn)
 {
-	if (conn->outCount > 0)
+	if (conn->outCount > 0 || zpq_buffered_tx(conn->zpqStream))
 	{
 		if (conn->Pfdebug)
 			fflush(conn->Pfdebug);
@@ -978,6 +1014,8 @@ pqFlush(PGconn *conn)
 int
 pqWait(int forRead, int forWrite, PGconn *conn)
 {
+	if (forRead && conn->inCursor < conn->inEnd)
+		return 0;
 	return pqWaitTimed(forRead, forWrite, conn, (time_t) -1);
 }
 
@@ -1034,6 +1072,9 @@ pqWriteReady(PGconn *conn)
  *
  * If SSL is in use, the SSL buffer is checked prior to checking the socket
  * for read data directly.
+ *
+ * If ZPQ stream is in use, the ZPQ buffer is checked prior to checking
+ * the socket for read data directly.
  */
 static int
 pqSocketCheck(PGconn *conn, int forRead, int forWrite, time_t end_time)
@@ -1048,14 +1089,10 @@ pqSocketCheck(PGconn *conn, int forRead, int forWrite, time_t end_time)
 		return -1;
 	}
 
-#ifdef USE_SSL
-	/* Check for SSL library buffering read bytes */
-	if (forRead && conn->ssl_in_use && pgtls_read_pending(conn))
+	if (forRead && (pqReadPending(conn) > 0))
 	{
-		/* short-circuit the select */
 		return 1;
 	}
-#endif
 
 	/* We will retry as long as we get EINTR */
 	do
@@ -1073,6 +1110,33 @@ pqSocketCheck(PGconn *conn, int forRead, int forWrite, time_t end_time)
 	return result;
 }
 
+/*
+ * Check if there is some data pending in ZPQ / SSL read buffers.
+ * Returns -1 on failure, 0 if no, 1 if yes.
+ */
+int
+pqReadPending(PGconn *conn)
+{
+	if (!conn)
+		return -1;
+
+	/* check for ZPQ stream buffered read bytes */
+	if (zpq_buffered_rx(conn->zpqStream))
+	{
+		/* short-circuit the select */
+		return 1;
+	}
+
+#ifdef USE_SSL
+	/* Check for SSL library buffering read bytes */
+	if (conn->ssl_in_use && pgtls_read_pending(conn))
+	{
+		/* short-circuit the select */
+		return 1;
+	}
+#endif
+	return 0;
+}
 
 /*
  * Check a file descriptor for read and/or write data, possibly waiting.

@@ -4414,6 +4414,16 @@ struct config_string ConfigureNamesString[] =
 	},
 
 	{
+		{"libpq_compression", PGC_SIGHUP, CLIENT_CONN_OTHER,
+			gettext_noop("Sets the list of allowed libpq compression algorithms."),
+			NULL
+		},
+		&libpq_compress_algorithms,
+		"off",
+		check_libpq_compression, NULL, NULL
+	},
+
+	{
 		{"application_name", PGC_USERSET, LOGGING_WHAT,
 			gettext_noop("Sets the application name to be reported in statistics and logs."),
 			NULL,

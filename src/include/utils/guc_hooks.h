@@ -144,6 +144,7 @@ extern void assign_timezone(const char *newval, void *extra);
 extern const char *show_timezone(void);
 extern bool check_timezone_abbreviations(char **newval, void **extra,
 										 GucSource source);
+extern bool check_libpq_compression(char **newval, void **extra, GucSource source);
 extern void assign_timezone_abbreviations(const char *newval, void *extra);
 extern bool check_transaction_deferrable(bool *newval, void **extra, GucSource source);
 extern bool check_transaction_isolation(int *newval, void **extra, GucSource source);

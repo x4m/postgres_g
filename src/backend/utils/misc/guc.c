@@ -49,6 +49,7 @@
 #include "utils/guc_tables.h"
 #include "utils/memutils.h"
 #include "utils/timestamp.h"
+#include "common/zpq_stream.h"
 
 
 #define CONFIG_FILENAME "postgresql.conf"
