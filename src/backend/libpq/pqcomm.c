@@ -111,7 +111,7 @@ int			Unix_socket_permissions;
 char	   *Unix_socket_group;
 
 /* GUC variable containing the allowed compression algorithms list (separated by comma) */
-char	   *libpq_compress_algorithms = "off";
+char	   *libpq_compress_algorithms = "zlib";
 
 /* Where the Unix socket files are (list of palloc'd strings) */
 static List *sock_paths = NIL;

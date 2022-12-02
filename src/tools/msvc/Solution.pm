@@ -923,7 +923,7 @@ sub AddProject
 	if ($self->{options}->{zlib})
 	{
 		$proj->AddIncludeDir($self->{options}->{zlib} . '\include');
-		$proj->AddLibrary($self->{options}->{zlib} . '\lib\zdll.lib');
+		$proj->AddLibrary($self->{options}->{zlib} . '\lib\zlibstatic.lib');
 	}
 	if ($self->{options}->{openssl})
 	{
