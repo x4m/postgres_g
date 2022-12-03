@@ -609,6 +609,8 @@ typedef double float8;
 
 /* typedef Oid is in postgres_ext.h */
 
+#define HAVE_INT64_XID
+
 /*
  * regproc is the type name used in the include/catalog headers, but
  * RegProcedure is the preferred name in C code.
