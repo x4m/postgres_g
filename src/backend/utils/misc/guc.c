@@ -2672,6 +2672,17 @@ static struct config_int ConfigureNamesInt[] =
 		0, 0, INT_MAX,
 		NULL, NULL, NULL
 	},
+ 
+	{
+		{"transaction_timeout", PGC_USERSET, CLIENT_CONN_STATEMENT,
+			gettext_noop("Sets the maximum allowed in a transaction."),
+			gettext_noop("A value of 0 turns off the timeout."),
+			GUC_UNIT_MS
+		},
+		&TransactionTimeout,
+		0, 0, INT_MAX,
+		NULL, NULL, NULL
+	},
 
 	{
 		{"idle_session_timeout", PGC_USERSET, CLIENT_CONN_STATEMENT,
