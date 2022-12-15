@@ -963,7 +963,7 @@ SerialAdd(TransactionId xid, SerCommitSeqNo minConflictCommitSeqNo)
 		slotno = SimpleLruReadPage(SerialSlruCtl, targetPage, true, xid);
 
 	SerialValue(slotno, xid) = minConflictCommitSeqNo;
-	SerialSlruCtl->shared->page_dirty[slotno] = true;
+	SerialSlruCtl->shared->page_entries[slotno].page_dirty = true;
 
 	LWLockRelease(SerialSLRULock);
 }

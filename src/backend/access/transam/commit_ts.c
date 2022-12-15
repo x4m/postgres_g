@@ -230,7 +230,7 @@ SetXidCommitTsInPage(TransactionId xid, int nsubxids,
 	for (i = 0; i < nsubxids; i++)
 		TransactionIdSetCommitTs(subxids[i], ts, nodeid, slotno);
 
-	CommitTsCtl->shared->page_dirty[slotno] = true;
+	CommitTsCtl->shared->page_entries[slotno].page_dirty = true;
 
 	LWLockRelease(CommitTsSLRULock);
 }
@@ -740,7 +740,7 @@ ActivateCommitTs(void)
 		LWLockAcquire(CommitTsSLRULock, LW_EXCLUSIVE);
 		slotno = ZeroCommitTsPage(pageno, false);
 		SimpleLruWritePage(CommitTsCtl, slotno);
-		Assert(!CommitTsCtl->shared->page_dirty[slotno]);
+		Assert(!CommitTsCtl->shared->page_entries[slotno].page_dirty);
 		LWLockRelease(CommitTsSLRULock);
 	}
 
@@ -1010,7 +1010,7 @@ commit_ts_redo(XLogReaderState *record)
 
 		slotno = ZeroCommitTsPage(pageno, false);
 		SimpleLruWritePage(CommitTsCtl, slotno);
-		Assert(!CommitTsCtl->shared->page_dirty[slotno]);
+		Assert(!CommitTsCtl->shared->page_entries[slotno].page_dirty);
 
 		LWLockRelease(CommitTsSLRULock);
 	}

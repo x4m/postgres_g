@@ -887,7 +887,7 @@ RecordNewMultiXact(MultiXactId multi, MultiXactOffset offset,
 
 	*offptr = offset;
 
-	MultiXactOffsetCtl->shared->page_dirty[slotno] = true;
+	MultiXactOffsetCtl->shared->page_entries[slotno].page_dirty = true;
 
 	/* Exchange our lock */
 	LWLockRelease(MultiXactOffsetSLRULock);
@@ -931,7 +931,7 @@ RecordNewMultiXact(MultiXactId multi, MultiXactOffset offset,
 		flagsval |= (members[i].status << bshift);
 		*flagsptr = flagsval;
 
-		MultiXactMemberCtl->shared->page_dirty[slotno] = true;
+		MultiXactMemberCtl->shared->page_entries[slotno].page_dirty = true;
 	}
 
 	LWLockRelease(MultiXactMemberSLRULock);
@@ -1902,7 +1902,7 @@ BootStrapMultiXact(void)
 
 	/* Make sure it's written out */
 	SimpleLruWritePage(MultiXactOffsetCtl, slotno);
-	Assert(!MultiXactOffsetCtl->shared->page_dirty[slotno]);
+	Assert(!MultiXactOffsetCtl->shared->page_entries[slotno].page_dirty);
 
 	LWLockRelease(MultiXactOffsetSLRULock);
 
@@ -1913,7 +1913,7 @@ BootStrapMultiXact(void)
 
 	/* Make sure it's written out */
 	SimpleLruWritePage(MultiXactMemberCtl, slotno);
-	Assert(!MultiXactMemberCtl->shared->page_dirty[slotno]);
+	Assert(!MultiXactMemberCtl->shared->page_entries[slotno].page_dirty);
 
 	LWLockRelease(MultiXactMemberSLRULock);
 }
@@ -2074,7 +2074,7 @@ TrimMultiXact(void)
 
 		MemSet(offptr, 0, BLCKSZ - (entryno * sizeof(MultiXactOffset)));
 
-		MultiXactOffsetCtl->shared->page_dirty[slotno] = true;
+		MultiXactOffsetCtl->shared->page_entries[slotno].page_dirty = true;
 	}
 
 	LWLockRelease(MultiXactOffsetSLRULock);
@@ -2112,7 +2112,7 @@ TrimMultiXact(void)
 		 * writing.
 		 */
 
-		MultiXactMemberCtl->shared->page_dirty[slotno] = true;
+		MultiXactMemberCtl->shared->page_entries[slotno].page_dirty = true;
 	}
 
 	LWLockRelease(MultiXactMemberSLRULock);
@@ -3251,7 +3251,7 @@ multixact_redo(XLogReaderState *record)
 
 		slotno = ZeroMultiXactOffsetPage(pageno, false);
 		SimpleLruWritePage(MultiXactOffsetCtl, slotno);
-		Assert(!MultiXactOffsetCtl->shared->page_dirty[slotno]);
+		Assert(!MultiXactOffsetCtl->shared->page_entries[slotno].page_dirty);
 
 		LWLockRelease(MultiXactOffsetSLRULock);
 	}
@@ -3266,7 +3266,7 @@ multixact_redo(XLogReaderState *record)
 
 		slotno = ZeroMultiXactMemberPage(pageno, false);
 		SimpleLruWritePage(MultiXactMemberCtl, slotno);
-		Assert(!MultiXactMemberCtl->shared->page_dirty[slotno]);
+		Assert(!MultiXactMemberCtl->shared->page_entries[slotno].page_dirty);
 
 		LWLockRelease(MultiXactMemberSLRULock);
 	}
