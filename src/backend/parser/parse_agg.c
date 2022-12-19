@@ -20,6 +20,7 @@
 #include "nodes/makefuncs.h"
 #include "nodes/nodeFuncs.h"
 #include "optimizer/optimizer.h"
+#include "parser/analyze.h"
 #include "parser/parse_agg.h"
 #include "parser/parse_clause.h"
 #include "parser/parse_coerce.h"
@@ -1072,7 +1073,27 @@ parseCheckAggregates(ParseState *pstate, Query *qry)
 	Node	   *clause;
 
 	/* This should only be called if we found aggregates or grouping */
-	Assert(pstate->p_hasAggs || qry->groupClause || qry->havingQual || qry->groupingSets);
+	Assert(pstate->p_hasAggs || qry->groupClause || qry->havingQual || qry->groupingSets || qry->groupAll);
+
+	Assert((!qry->groupAll) || (qry->groupClause == NULL));
+
+	if (qry->groupAll)
+	{
+		Index idx = 1;
+		Index sge_idx = 1;
+		foreach(l, qry->targetList)
+		{
+			TargetEntry *tle = lfirst(l);
+			if (IsA(tle->expr, Var))
+			{
+				Oid	restype = exprType((Node *) tle->expr);
+				SortGroupClause *sgc = makeSortGroupClauseForSetOp(restype, false);
+				sgc->tleSortGroupRef = sge_idx++;
+				qry->groupClause = lappend(qry->groupClause, sgc);
+				tle->ressortgroupref = idx++;
+			}
+		}
+	}
 
 	/*
 	 * If we have grouping sets, expand them and find the intersection of all

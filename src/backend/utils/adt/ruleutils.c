@@ -5959,6 +5959,9 @@ get_basic_select_query(Query *query, deparse_context *context,
 		if (query->groupDistinct)
 			appendStringInfoString(buf, "DISTINCT ");
 
+		if (query->groupAll)
+			appendStringInfoString(buf, "ALL ");
+
 		save_exprkind = context->special_exprkind;
 		context->special_exprkind = EXPR_KIND_GROUP_BY;
 
