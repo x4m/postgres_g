@@ -273,12 +273,8 @@ addLeafTuple(Relation index, SpGistState *state, SpGistLeafTuple leafTuple,
 		else if (head->tupstate == SPGIST_DEAD)
 		{
 			SGLT_SET_NEXTOFFSET(leafTuple, InvalidOffsetNumber);
-			PageIndexTupleDelete(current->page, current->offnum);
-			if (PageAddItem(current->page,
-							(Item) leafTuple, leafTuple->size,
-							current->offnum, false, false) != current->offnum)
-				elog(ERROR, "failed to add item of size %u to SPGiST index page",
-					 leafTuple->size);
+			PageIndexTupleOverwrite(current->page, current->offnum,
+									(Item) leafTuple, leafTuple->size);
 
 			/* WAL replay distinguishes this case by equal offnums */
 			xlrec.offnumLeaf = current->offnum;
@@ -1552,6 +1548,9 @@ spgAddNodeAction(Relation index, SpGistState *state,
 						current->offnum, false, false) != current->offnum)
 			elog(ERROR, "failed to add item of size %u to SPGiST index page",
 				 newInnerTuple->size);
+
+		PageIndexTupleOverwrite(current->page, current->offnum,
+									(Item) newInnerTuple, newInnerTuple->size);
 
 		MarkBufferDirty(current->buffer);
 
