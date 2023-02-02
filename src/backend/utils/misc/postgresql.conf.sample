@@ -391,6 +391,9 @@
 #enable_sort = on
 #enable_tidscan = on
 
+#enable prevent_unqualified_deletes = off
+#enable prevent_unqualified_updates = off
+
 # - Planner Cost Constants -
 
 #seq_page_cost = 1.0			# measured on an arbitrary scale

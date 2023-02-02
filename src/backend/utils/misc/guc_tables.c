@@ -876,6 +876,24 @@ struct config_bool ConfigureNamesBool[] =
 		NULL, NULL, NULL
 	},
 	{
+		{"prevent_unqualified_deletes", PGC_USERSET, UNGROUPED,
+			gettext_noop("Some proper description."),
+			NULL
+		},
+		&prevent_unqualified_deletes,
+		false,
+		NULL, NULL, NULL
+	},
+	{
+		{"prevent_unqualified_updates", PGC_USERSET, UNGROUPED,
+			gettext_noop("Some more proper description."),
+			NULL
+		},
+		&prevent_unqualified_updates,
+		false,
+		NULL, NULL, NULL
+	},
+	{
 		{"enable_memoize", PGC_USERSET, QUERY_TUNING_METHOD,
 			gettext_noop("Enables the planner's use of memoization."),
 			NULL,

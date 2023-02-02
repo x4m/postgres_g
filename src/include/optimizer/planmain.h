@@ -20,6 +20,8 @@
 /* GUC parameters */
 #define DEFAULT_CURSOR_TUPLE_FRACTION 0.1
 extern PGDLLIMPORT double cursor_tuple_fraction;
+extern PGDLLIMPORT bool prevent_unqualified_deletes;
+extern PGDLLIMPORT bool prevent_unqualified_updates;
 
 /* query_planner callback to compute query_pathkeys */
 typedef void (*query_pathkeys_callback) (PlannerInfo *root, void *extra);

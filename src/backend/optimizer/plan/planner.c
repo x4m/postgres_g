@@ -71,7 +71,9 @@
 /* GUC parameters */
 double		cursor_tuple_fraction = DEFAULT_CURSOR_TUPLE_FRACTION;
 int			force_parallel_mode = FORCE_PARALLEL_OFF;
-bool		parallel_leader_participation = true;
+bool           parallel_leader_participation = true;
+bool		prevent_unqualified_deletes = false;
+bool		prevent_unqualified_updates = false;
 
 /* Hook for plugins to get control in planner() */
 planner_hook_type planner_hook = NULL;
@@ -279,6 +281,25 @@ planner(Query *parse, const char *query_string, int cursorOptions,
 		result = (*planner_hook) (parse, query_string, cursorOptions, boundParams);
 	else
 		result = standard_planner(parse, query_string, cursorOptions, boundParams);
+	if (!superuser() && parse->jointree != NULL)
+	{
+		if (prevent_unqualified_deletes && parse->commandType == CMD_DELETE)
+		{
+			if (parse->jointree->quals == NULL)
+			{
+				elog(ERROR,"DELETE query with empty WHERE is forbidden by"
+							" some_fancy_guc");
+			}
+		}
+		if (prevent_unqualified_updates && parse->commandType == CMD_UPDATE)
+		{
+			if (parse->jointree->quals == NULL)
+			{
+				elog(ERROR,"UPDATE query with empty WHERE is forbidden by"
+							" some_fancy_guc");
+			}
+		}
+	}
 	return result;
 }
 
