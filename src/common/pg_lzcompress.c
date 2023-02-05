@@ -512,7 +512,7 @@ pglz_compress(const char *source, int32 slen, char *dest,
 	uint16		hist_idx;
 	const unsigned char *src_ptr = (const unsigned char *) source;
 	const unsigned char *src_end = (const unsigned char *) source + slen;
-	const unsigned char *compress_src_end = src_end - 4;
+	const unsigned char *compress_src_end = src_end;
 	unsigned char control_dummy = 0;
 	unsigned char *control_ptr = &control_dummy;
 	unsigned char control_byte = 0;
