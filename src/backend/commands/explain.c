@@ -3570,6 +3570,12 @@ show_buffer_usage(ExplainState *es, const BufferUsage *usage, bool planning)
 				if (usage->shared_blks_read > 0)
 					appendStringInfo(es->str, " read=%lld",
 									 (long long) usage->shared_blks_read);
+				if (usage->relKindUsage[RELKIND_INDEX].shared_blks_hit > 0)
+					appendStringInfo(es->str, " index hit=%lld",
+									 (long long) usage->relKindUsage[RELKIND_INDEX].shared_blks_hit);
+				if (usage->relKindUsage[RELKIND_INDEX].shared_blks_read > 0)
+					appendStringInfo(es->str, " index read=%lld",
+									 (long long) usage->relKindUsage[RELKIND_INDEX].shared_blks_read);
 				if (usage->shared_blks_dirtied > 0)
 					appendStringInfo(es->str, " dirtied=%lld",
 									 (long long) usage->shared_blks_dirtied);
@@ -3650,6 +3656,10 @@ show_buffer_usage(ExplainState *es, const BufferUsage *usage, bool planning)
 							   usage->shared_blks_hit, es);
 		ExplainPropertyInteger("Shared Read Blocks", NULL,
 							   usage->shared_blks_read, es);
+		ExplainPropertyInteger("Shared Hit Blocks (Indexes)", NULL,
+							   usage->relKindUsage[RELKIND_INDEX].shared_blks_hit, es);
+		ExplainPropertyInteger("Shared Read Blocks (Indexes)", NULL,
+							   usage->relKindUsage[RELKIND_INDEX].shared_blks_read, es);
 		ExplainPropertyInteger("Shared Dirtied Blocks", NULL,
 							   usage->shared_blks_dirtied, es);
 		ExplainPropertyInteger("Shared Written Blocks", NULL,

@@ -225,10 +225,20 @@ InstrAccumParallelQuery(BufferUsage *bufusage, WalUsage *walusage)
 static void
 BufferUsageAdd(BufferUsage *dst, const BufferUsage *add)
 {
+	int i;
 	dst->shared_blks_hit += add->shared_blks_hit;
 	dst->shared_blks_read += add->shared_blks_read;
 	dst->shared_blks_dirtied += add->shared_blks_dirtied;
 	dst->shared_blks_written += add->shared_blks_written;
+	for (i = 0; i < 255; i++)
+	{
+		dst->relKindUsage[i].shared_blks_hit += add->relKindUsage[i].shared_blks_hit;
+		if (add->relKindUsage[i].shared_blks_hit)
+			elog(WARNING,"Add %d hits", add->relKindUsage[i].shared_blks_hit);
+		dst->relKindUsage[i].shared_blks_read += add->relKindUsage[i].shared_blks_read;
+		dst->relKindUsage[i].shared_blks_dirtied += add->relKindUsage[i].shared_blks_dirtied;
+		dst->relKindUsage[i].shared_blks_written += add->relKindUsage[i].shared_blks_written;
+	}
 	dst->local_blks_hit += add->local_blks_hit;
 	dst->local_blks_read += add->local_blks_read;
 	dst->local_blks_dirtied += add->local_blks_dirtied;
@@ -247,10 +257,18 @@ BufferUsageAccumDiff(BufferUsage *dst,
 					 const BufferUsage *add,
 					 const BufferUsage *sub)
 {
+	int i;
 	dst->shared_blks_hit += add->shared_blks_hit - sub->shared_blks_hit;
 	dst->shared_blks_read += add->shared_blks_read - sub->shared_blks_read;
 	dst->shared_blks_dirtied += add->shared_blks_dirtied - sub->shared_blks_dirtied;
 	dst->shared_blks_written += add->shared_blks_written - sub->shared_blks_written;
+	for (i = 0; i < 255; i++)
+	{
+		dst->relKindUsage[i].shared_blks_hit += add->relKindUsage[i].shared_blks_hit - sub->relKindUsage[i].shared_blks_hit;
+		dst->relKindUsage[i].shared_blks_read += add->relKindUsage[i].shared_blks_read - sub->relKindUsage[i].shared_blks_read;
+		dst->relKindUsage[i].shared_blks_dirtied += add->relKindUsage[i].shared_blks_dirtied - sub->relKindUsage[i].shared_blks_dirtied;
+		dst->relKindUsage[i].shared_blks_written += add->relKindUsage[i].shared_blks_written - sub->relKindUsage[i].shared_blks_written;
+	}
 	dst->local_blks_hit += add->local_blks_hit - sub->local_blks_hit;
 	dst->local_blks_read += add->local_blks_read - sub->local_blks_read;
 	dst->local_blks_dirtied += add->local_blks_dirtied - sub->local_blks_dirtied;

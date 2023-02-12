@@ -16,6 +16,14 @@
 #include "portability/instr_time.h"
 
 
+typedef struct RelKindBufferUsage
+{
+	int64		shared_blks_hit;	/* # of shared buffer hits */
+	int64		shared_blks_read;	/* # of shared disk blocks read */
+	int64		shared_blks_dirtied;	/* # of shared blocks dirtied */
+	int64		shared_blks_written;	/* # of shared disk blocks written */
+} RelKindBufferUsage;
+
 /*
  * BufferUsage and WalUsage counters keep being incremented infinitely,
  * i.e., must never be reset to zero, so that we can calculate how much
@@ -27,6 +35,7 @@ typedef struct BufferUsage
 	int64		shared_blks_read;	/* # of shared disk blocks read */
 	int64		shared_blks_dirtied;	/* # of shared blocks dirtied */
 	int64		shared_blks_written;	/* # of shared disk blocks written */
+	RelKindBufferUsage relKindUsage[255];
 	int64		local_blks_hit; /* # of local buffer hits */
 	int64		local_blks_read;	/* # of local disk blocks read */
 	int64		local_blks_dirtied; /* # of local blocks dirtied */

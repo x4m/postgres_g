@@ -181,7 +181,7 @@ extern bool IsBufferCleanupOK(Buffer buffer);
 extern bool HoldingBufferPinThatDelaysRecovery(void);
 
 extern void AbortBufferIO(void);
-
+extern void FlushAllBuffers(void);
 extern void BufmgrCommit(void);
 extern bool BgBufferSync(struct WritebackContext *wb_context);
 

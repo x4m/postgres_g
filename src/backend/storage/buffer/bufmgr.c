@@ -453,7 +453,7 @@ ForgetPrivateRefCountEntry(PrivateRefCountEntry *ref)
 static Buffer ReadBuffer_common(SMgrRelation smgr, char relpersistence,
 								ForkNumber forkNum, BlockNumber blockNum,
 								ReadBufferMode mode, BufferAccessStrategy strategy,
-								bool *hit);
+								bool *hit, char relKind);
 static bool PinBuffer(BufferDesc *buf, BufferAccessStrategy strategy);
 static void PinBuffer_Locked(BufferDesc *buf);
 static void UnpinBuffer(BufferDesc *buf);
@@ -770,7 +770,7 @@ ReadBufferExtended(Relation reln, ForkNumber forkNum, BlockNumber blockNum,
 	 */
 	pgstat_count_buffer_read(reln);
 	buf = ReadBuffer_common(RelationGetSmgr(reln), reln->rd_rel->relpersistence,
-							forkNum, blockNum, mode, strategy, &hit);
+							forkNum, blockNum, mode, strategy, &hit, reln->rd_rel->relkind);
 	if (hit)
 		pgstat_count_buffer_hit(reln);
 	return buf;
@@ -798,7 +798,7 @@ ReadBufferWithoutRelcache(RelFileLocator rlocator, ForkNumber forkNum,
 
 	return ReadBuffer_common(smgr, permanent ? RELPERSISTENCE_PERMANENT :
 							 RELPERSISTENCE_UNLOGGED, forkNum, blockNum,
-							 mode, strategy, &hit);
+							 mode, strategy, &hit, 0);
 }
 
 
@@ -810,7 +810,7 @@ ReadBufferWithoutRelcache(RelFileLocator rlocator, ForkNumber forkNum,
 static Buffer
 ReadBuffer_common(SMgrRelation smgr, char relpersistence, ForkNumber forkNum,
 				  BlockNumber blockNum, ReadBufferMode mode,
-				  BufferAccessStrategy strategy, bool *hit)
+				  BufferAccessStrategy strategy, bool *hit, char relKind)
 {
 	BufferDesc *bufHdr;
 	Block		bufBlock;
@@ -874,12 +874,22 @@ ReadBuffer_common(SMgrRelation smgr, char relpersistence, ForkNumber forkNum,
 		bufHdr = BufferAlloc(smgr, relpersistence, forkNum, blockNum,
 							 strategy, &found, &io_context);
 		if (found)
+		{
 			pgBufferUsage.shared_blks_hit++;
+			pgBufferUsage.relKindUsage[relKind].shared_blks_hit++;
+			elog(WARNING, "shared_blks_hit++ for '%c'", relKind);
+		}
 		else if (isExtend)
+		{
 			pgBufferUsage.shared_blks_written++;
+			pgBufferUsage.relKindUsage[relKind].shared_blks_written++;
+		}
 		else if (mode == RBM_NORMAL || mode == RBM_NORMAL_NO_LOG ||
 				 mode == RBM_ZERO_ON_ERROR)
+		{
 			pgBufferUsage.shared_blks_read++;
+			pgBufferUsage.relKindUsage[relKind].shared_blks_read++;
+		 }
 	}
 
 	/* At this point we do NOT hold any locks. */
@@ -3973,6 +3983,39 @@ FlushDatabaseBuffers(Oid dbid)
 		}
 		else
 			UnlockBufHdr(bufHdr, buf_state);
+	}
+}
+
+void
+FlushAllBuffers()
+{
+	int			i;
+	BufferDesc *bufHdr;
+
+	/* Make sure we can handle the pin inside the loop */
+	ResourceOwnerEnlargeBuffers(CurrentResourceOwner);
+
+	for (i = 0; i < NBuffers; i++)
+	{
+		uint32		buf_state;
+
+		bufHdr = GetBufferDescriptor(i);
+
+		ReservePrivateRefCountEntry();
+
+		buf_state = LockBufHdr(bufHdr);
+		if ((buf_state & (BM_VALID | BM_DIRTY)) == (BM_VALID | BM_DIRTY))
+		{
+			PinBuffer_Locked(bufHdr);
+			LWLockAcquire(BufferDescriptorGetContentLock(bufHdr), LW_SHARED);
+			FlushBuffer(bufHdr, NULL, IOOBJECT_RELATION, IOCONTEXT_NORMAL);
+			buf_state = LockBufHdr(bufHdr);
+			UnpinBuffer(bufHdr);
+			InvalidateBuffer(bufHdr);
+			LWLockRelease(BufferDescriptorGetContentLock(bufHdr));
+		}
+		else
+			InvalidateBuffer(bufHdr);
 	}
 }
 

@@ -20,6 +20,7 @@
 #include "miscadmin.h"
 #include "pgstat.h"
 #include "postmaster/syslogger.h"
+#include "storage/bufmgr.h"
 #include "storage/pmsignal.h"
 #include "storage/proc.h"
 #include "storage/procarray.h"
@@ -252,6 +253,14 @@ pg_reload_conf(PG_FUNCTION_ARGS)
 				(errmsg("failed to send signal to postmaster: %m")));
 		PG_RETURN_BOOL(false);
 	}
+
+	PG_RETURN_BOOL(true);
+}
+
+Datum
+pg_flush_shared_buffers(PG_FUNCTION_ARGS)
+{
+	FlushAllBuffers();
 
 	PG_RETURN_BOOL(true);
 }
