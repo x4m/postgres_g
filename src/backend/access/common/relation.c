@@ -215,3 +215,96 @@ relation_close(Relation relation, LOCKMODE lockmode)
 	if (lockmode != NoLock)
 		UnlockRelationId(&relid, lockmode);
 }
+
+int
+relkind_id(unsigned char relkind)
+{
+	switch (relkind)
+	{
+		case RELKIND_RELATION:
+			return 0;
+		case RELKIND_INDEX:
+			return 1;
+		case RELKIND_SEQUENCE:
+			return 2;
+		case RELKIND_TOASTVALUE:
+			return 3;
+		case RELKIND_VIEW:
+			return 4;
+		case RELKIND_MATVIEW:
+			return 5;
+		case RELKIND_COMPOSITE_TYPE:
+			return 6;
+		case RELKIND_FOREIGN_TABLE:
+			return 7;
+		case RELKIND_PARTITIONED_TABLE:
+			return 8;
+		case RELKIND_PARTITIONED_INDEX:
+			return 9;
+		default:
+			/* map all unknown to RELKIND_RELATION */
+			return 0;
+	}
+}
+
+unsigned char
+relkind_by_id(int id)
+{
+	switch (id)
+	{
+		case 0:
+			return RELKIND_RELATION;
+		case 1:
+			return RELKIND_INDEX;
+		case 2:
+			return RELKIND_SEQUENCE;
+		case 3:
+			return RELKIND_TOASTVALUE;
+		case 4:
+			return RELKIND_VIEW;
+		case 5:
+			return RELKIND_MATVIEW;
+		case 6:
+			return RELKIND_COMPOSITE_TYPE;
+		case 7:
+			return RELKIND_FOREIGN_TABLE;
+		case 8:
+			return RELKIND_PARTITIONED_TABLE;
+		case 9:
+			return RELKIND_PARTITIONED_INDEX;
+		default:
+			elog(ERROR, "unrecognized relkind id: %d", id);
+			return 0;
+	}
+}
+
+char*
+relkind_name(unsigned char relkind)
+{
+	switch (relkind)
+	{
+		case RELKIND_RELATION:
+			return "relation";
+		case RELKIND_INDEX:
+			return "index";
+		case RELKIND_SEQUENCE:
+			return "sequence";
+		case RELKIND_TOASTVALUE:
+			return "toastvalue";
+		case RELKIND_VIEW:
+			return "view";
+		case RELKIND_MATVIEW:
+			return "matview";
+		case RELKIND_COMPOSITE_TYPE:
+			return "composite type";
+		case RELKIND_FOREIGN_TABLE:
+			return "foreign table";
+		case RELKIND_PARTITIONED_TABLE:
+			return "partitioned table";
+		case RELKIND_PARTITIONED_INDEX:
+			return "partitioned index";
+		default:
+			elog(ERROR, "unrecognized relkind: '%c'", relkind);
+			return 0;
+	}
+}

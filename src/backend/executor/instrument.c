@@ -225,10 +225,17 @@ InstrAccumParallelQuery(BufferUsage *bufusage, WalUsage *walusage)
 static void
 BufferUsageAdd(BufferUsage *dst, const BufferUsage *add)
 {
+	int i;
 	dst->shared_blks_hit += add->shared_blks_hit;
 	dst->shared_blks_read += add->shared_blks_read;
 	dst->shared_blks_dirtied += add->shared_blks_dirtied;
 	dst->shared_blks_written += add->shared_blks_written;
+	for (i = 0; i < MAX_RELKIND_ID; i++)
+	{
+		dst->relKindUsage[i].blks_hit += add->relKindUsage[i].blks_hit;
+		dst->relKindUsage[i].blks_read += add->relKindUsage[i].blks_read;
+		dst->relKindUsage[i].blks_evicted += add->relKindUsage[i].blks_evicted;
+	}
 	dst->local_blks_hit += add->local_blks_hit;
 	dst->local_blks_read += add->local_blks_read;
 	dst->local_blks_dirtied += add->local_blks_dirtied;
@@ -247,10 +254,17 @@ BufferUsageAccumDiff(BufferUsage *dst,
 					 const BufferUsage *add,
 					 const BufferUsage *sub)
 {
+	int i;
 	dst->shared_blks_hit += add->shared_blks_hit - sub->shared_blks_hit;
 	dst->shared_blks_read += add->shared_blks_read - sub->shared_blks_read;
 	dst->shared_blks_dirtied += add->shared_blks_dirtied - sub->shared_blks_dirtied;
 	dst->shared_blks_written += add->shared_blks_written - sub->shared_blks_written;
+	for (i = 0; i < MAX_RELKIND_ID; i++)
+	{
+		dst->relKindUsage[i].blks_hit += add->relKindUsage[i].blks_hit - sub->relKindUsage[i].blks_hit;
+		dst->relKindUsage[i].blks_read += add->relKindUsage[i].blks_read - sub->relKindUsage[i].blks_read;
+		dst->relKindUsage[i].blks_evicted += add->relKindUsage[i].blks_evicted - sub->relKindUsage[i].blks_evicted;
+	}
 	dst->local_blks_hit += add->local_blks_hit - sub->local_blks_hit;
 	dst->local_blks_read += add->local_blks_read - sub->local_blks_read;
 	dst->local_blks_dirtied += add->local_blks_dirtied - sub->local_blks_dirtied;

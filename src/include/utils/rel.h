@@ -706,4 +706,9 @@ RelationCloseSmgr(Relation relation)
 extern void RelationIncrementReferenceCount(Relation rel);
 extern void RelationDecrementReferenceCount(Relation rel);
 
+
+#define MAX_RELKIND_ID 10
+extern int relkind_id(unsigned char relkind);
+extern char* relkind_name(unsigned char relkind);
+extern unsigned char relkind_by_id(int id);
 #endif							/* REL_H */

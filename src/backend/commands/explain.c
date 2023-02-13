@@ -3563,19 +3563,66 @@ show_buffer_usage(ExplainState *es, const BufferUsage *usage, bool planning)
 
 			if (has_shared)
 			{
+				int i;
 				appendStringInfoString(es->str, " shared");
 				if (usage->shared_blks_hit > 0)
+				{
 					appendStringInfo(es->str, " hit=%lld",
 									 (long long) usage->shared_blks_hit);
+					if (es->verbose)
+					{
+						appendStringInfo(es->str, "(");
+						for (i = 0; i < MAX_RELKIND_ID; i++)
+						{
+							if (usage->relKindUsage[i].blks_hit > 0)
+							{
+								if (i)
+									appendStringInfo(es->str, ", ");
+								appendStringInfo(es->str, "%s %lld",
+											relkind_name(relkind_by_id(i)),
+											(long long) usage->relKindUsage[i].blks_hit);
+							}
+						}
+						appendStringInfo(es->str, ")");
+					}
+				}
 				if (usage->shared_blks_read > 0)
+				{
 					appendStringInfo(es->str, " read=%lld",
 									 (long long) usage->shared_blks_read);
+					if (es->verbose)
+					{
+						appendStringInfo(es->str, "(");
+						for (i = 0; i < MAX_RELKIND_ID; i++)
+						{
+							if (usage->relKindUsage[i].blks_read > 0)
+							{
+								if (i)
+									appendStringInfo(es->str, ", ");
+								appendStringInfo(es->str, "%s %lld",
+											relkind_name(relkind_by_id(i)),
+											(long long) usage->relKindUsage[i].blks_read);
+							}
+						}
+						appendStringInfo(es->str, ")");
+					}
+				}
 				if (usage->shared_blks_dirtied > 0)
 					appendStringInfo(es->str, " dirtied=%lld",
 									 (long long) usage->shared_blks_dirtied);
 				if (usage->shared_blks_written > 0)
 					appendStringInfo(es->str, " written=%lld",
 									 (long long) usage->shared_blks_written);
+				if (es->verbose)
+				{
+					for (i = 0; i < MAX_RELKIND_ID; i++)
+					{
+						if (usage->relKindUsage[i].blks_evicted > 0)
+							appendStringInfo(es->str, " %s evicted=%lld",
+										relkind_name(relkind_by_id(i)),
+										(long long) usage->relKindUsage[i].blks_evicted);
+					}
+				}
 				if (has_local || has_temp)
 					appendStringInfoChar(es->str, ',');
 			}

@@ -14,7 +14,15 @@
 #define INSTRUMENT_H
 
 #include "portability/instr_time.h"
+#include "utils/rel.h"
 
+
+typedef struct RelKindBufferUsage
+{
+	int64	blks_hit;	/* # of shared buffer hits */
+	int64	blks_read;	/* # of shared disk blocks read */
+	int64	blks_evicted;	/* # of shared disk blocks evicted to accomodate */
+} RelKindBufferUsage;
 
 /*
  * BufferUsage and WalUsage counters keep being incremented infinitely,
@@ -27,6 +35,7 @@ typedef struct BufferUsage
 	int64		shared_blks_read;	/* # of shared disk blocks read */
 	int64		shared_blks_dirtied;	/* # of shared blocks dirtied */
 	int64		shared_blks_written;	/* # of shared disk blocks written */
+	RelKindBufferUsage relKindUsage[MAX_RELKIND_ID];
 	int64		local_blks_hit; /* # of local buffer hits */
 	int64		local_blks_read;	/* # of local disk blocks read */
 	int64		local_blks_dirtied; /* # of local blocks dirtied */

@@ -453,7 +453,7 @@ ForgetPrivateRefCountEntry(PrivateRefCountEntry *ref)
 static Buffer ReadBuffer_common(SMgrRelation smgr, char relpersistence,
 								ForkNumber forkNum, BlockNumber blockNum,
 								ReadBufferMode mode, BufferAccessStrategy strategy,
-								bool *hit);
+								bool *hit, unsigned char relKind);
 static bool PinBuffer(BufferDesc *buf, BufferAccessStrategy strategy);
 static void PinBuffer_Locked(BufferDesc *buf);
 static void UnpinBuffer(BufferDesc *buf);
@@ -770,7 +770,7 @@ ReadBufferExtended(Relation reln, ForkNumber forkNum, BlockNumber blockNum,
 	 */
 	pgstat_count_buffer_read(reln);
 	buf = ReadBuffer_common(RelationGetSmgr(reln), reln->rd_rel->relpersistence,
-							forkNum, blockNum, mode, strategy, &hit);
+							forkNum, blockNum, mode, strategy, &hit, reln->rd_rel->relkind);
 	if (hit)
 		pgstat_count_buffer_hit(reln);
 	return buf;
@@ -798,7 +798,7 @@ ReadBufferWithoutRelcache(RelFileLocator rlocator, ForkNumber forkNum,
 
 	return ReadBuffer_common(smgr, permanent ? RELPERSISTENCE_PERMANENT :
 							 RELPERSISTENCE_UNLOGGED, forkNum, blockNum,
-							 mode, strategy, &hit);
+							 mode, strategy, &hit, 0);
 }
 
 
@@ -810,7 +810,7 @@ ReadBufferWithoutRelcache(RelFileLocator rlocator, ForkNumber forkNum,
 static Buffer
 ReadBuffer_common(SMgrRelation smgr, char relpersistence, ForkNumber forkNum,
 				  BlockNumber blockNum, ReadBufferMode mode,
-				  BufferAccessStrategy strategy, bool *hit)
+				  BufferAccessStrategy strategy, bool *hit, unsigned char relKind)
 {
 	BufferDesc *bufHdr;
 	Block		bufBlock;
@@ -873,13 +873,23 @@ ReadBuffer_common(SMgrRelation smgr, char relpersistence, ForkNumber forkNum,
 		 */
 		bufHdr = BufferAlloc(smgr, relpersistence, forkNum, blockNum,
 							 strategy, &found, &io_context);
+		relKind = relkind_id(relKind);
 		if (found)
+		{
 			pgBufferUsage.shared_blks_hit++;
+			pgBufferUsage.relKindUsage[relKind].blks_hit++;
+		}
 		else if (isExtend)
+		{
 			pgBufferUsage.shared_blks_written++;
+			pgBufferUsage.relKindUsage[relKind].blks_evicted++;
+		}
 		else if (mode == RBM_NORMAL || mode == RBM_NORMAL_NO_LOG ||
 				 mode == RBM_ZERO_ON_ERROR)
+		{
 			pgBufferUsage.shared_blks_read++;
+			pgBufferUsage.relKindUsage[relKind].blks_read++;
+		 }
 	}
 
 	/* At this point we do NOT hold any locks. */
