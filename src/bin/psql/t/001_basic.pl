@@ -366,5 +366,15 @@ psql_fails_like(
 	'SELECT 1;\watch 10e400',
 	qr/incorrect interval value '10e400'/,
 	'\watch out-of-range interval');
+psql_fails_like(
+	$node,
+	'SELECT 1;\watch i=-10',
+	qr/incorrect interval value '-10'/,
+	'\watch, negative interval');
+psql_fails_like(
+	$node,
+	'SELECT 1;\watch c=-10',
+	qr/incorrect iteration count '-10'/,
+	'\watch, negative count');
 
 done_testing();
