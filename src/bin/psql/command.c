@@ -162,7 +162,7 @@ static bool do_connect(enum trivalue reuse_previous_specification,
 static bool do_edit(const char *filename_arg, PQExpBuffer query_buf,
 					int lineno, bool discard_on_quit, bool *edited);
 static bool do_shell(const char *command);
-static bool do_watch(PQExpBuffer query_buf, double sleep);
+static bool do_watch(PQExpBuffer query_buf, double sleep, int iter);
 static bool lookup_object_oid(EditableObjectType obj_type, const char *desc,
 							  Oid *obj_oid);
 static bool get_create_object_cmd(EditableObjectType obj_type, Oid oid,
@@ -2759,7 +2759,8 @@ exec_command_write(PsqlScanState scan_state, bool active_branch,
 }
 
 /*
- * \watch -- execute a query every N seconds
+ * \watch -- execute a query every N seconds.
+ * Optionally for M iteration.
  */
 static backslashResult
 exec_command_watch(PsqlScanState scan_state, bool active_branch,
@@ -2772,6 +2773,7 @@ exec_command_watch(PsqlScanState scan_state, bool active_branch,
 		char	   *opt = psql_scan_slash_option(scan_state,
 												 OT_NORMAL, NULL, true);
 		double		sleep = 2;
+		int			iter = 0;
 
 		/* Convert optional sleep-length argument */
 		if (opt)
@@ -2780,18 +2782,35 @@ exec_command_watch(PsqlScanState scan_state, bool active_branch,
 			sleep = strtod(opt, &opt_end);
 			if (sleep <= 0 || *opt_end)
 			{
-				pg_log_error("Watch period must be positive number, but argument is '%s'", opt);
+				pg_log_error("Watch period must be positive number, but "
+							 "argument is '%s'", opt);
 				free(opt);
 				resetPQExpBuffer(query_buf);
 				return PSQL_CMD_ERROR;
 			}
 			free(opt);
+
+			/* Check if iteration count is given */
+			opt = psql_scan_slash_option(scan_state,
+												 OT_NORMAL, NULL, true);
+			if (opt)
+			{
+				iter = strtol(opt, &opt_end, 10);
+				if (iter <= 0 || *opt_end)
+				{
+					pg_log_error("Watch iteration count must be positive "
+								 "integer, but argument is '%s'", opt);
+					resetPQExpBuffer(query_buf);
+					return PSQL_CMD_ERROR;
+				}
+				free(opt);
+			}
 		}
 
 		/* If query_buf is empty, recall and execute previous query */
 		(void) copy_previous_query(query_buf, previous_buf);
 
-		success = do_watch(query_buf, sleep);
+		success = do_watch(query_buf, sleep, iter);
 
 		/* Reset the query buffer as though for \r */
 		resetPQExpBuffer(query_buf);
@@ -5053,7 +5072,7 @@ do_shell(const char *command)
  * onto a bunch of exec_command's variables to silence stupider compilers.
  */
 static bool
-do_watch(PQExpBuffer query_buf, double sleep)
+do_watch(PQExpBuffer query_buf, double sleep, int iter)
 {
 	long		sleep_ms = (long) (sleep * 1000);
 	printQueryOpt myopt = pset.popt;
@@ -5155,7 +5174,7 @@ do_watch(PQExpBuffer query_buf, double sleep)
 	title_len = (user_title ? strlen(user_title) : 0) + 256;
 	title = pg_malloc(title_len);
 
-	for (;;)
+	for (int i = 1;;)
 	{
 		time_t		timer;
 		char		timebuf[128];
@@ -5188,6 +5207,12 @@ do_watch(PQExpBuffer query_buf, double sleep)
 
 		if (pagerpipe && ferror(pagerpipe))
 			break;
+
+		/* If we have iteration count - check that it's not exceeded yet */
+		if (iter && (i++ == iter))
+		{
+			break;
+		}
 
 #ifdef WIN32
 
