@@ -350,6 +350,13 @@ psql_like(
 	'\copy from with DEFAULT'
 );
 
+# Check \watch
+psql_like(
+	$node,
+	'SELECT 1;\watch c=3 i=0',
+	qr/1\n1\n1/,
+	'\watch with 3 iterations');
+
 # Check \watch errors
 psql_fails_like(
 	$node,
