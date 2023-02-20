@@ -325,4 +325,7 @@ is($row_count, '10',
 	'client-side error commits transaction, no ON_ERROR_STOP and multiple -c switches'
 );
 
+psql_fails_like($node, 'SELECT 1;\watch -10', qr/watch interval must be non-negative number/, '\watch negative interval');
+psql_fails_like($node, 'SELECT 1;\watch 10ab', qr/watch interval must be non-negative number, but argument is '10ab'/, '\watch incorrect interval');
+
 done_testing();
