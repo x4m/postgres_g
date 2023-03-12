@@ -13,6 +13,7 @@
  */
 #include "postgres.h"
 
+#include "common/percentrepl.h"
 #include "miscadmin.h"
 #include "tcop/cmdtag.h"
 #include "utils/builtins.h"
@@ -107,6 +108,8 @@ GetCommandTagEnum(const char *commandname)
 	return CMDTAG_UNKNOWN;
 }
 
+char* CommandTagFormat = NULL;
+
 /*
  * BuildQueryCompletionString
  *		Build a string containing the command tag name with the
@@ -126,6 +129,19 @@ BuildQueryCompletionString(char *buff, const QueryCompletion *qc,
 	Size		taglen;
 	const char *tagname = GetCommandTagNameAndLen(tag, &taglen);
 	char	   *bufp;
+
+	if(CommandTagFormat != NULL && qc != NULL)
+	{
+		char *relname = "";
+		char *format;
+		if (qc->relation_names != NULL)
+			relname = qc->relation_names;
+		elog(WARNING,"BuildQueryCompletionString %s relnames %s", tagname,relname);
+		format = replace_percent_placeholders(CommandTagFormat,
+				"command_tag_format", "nr", tagname, relname);
+		strcpy(buff, format);
+		return strlen(buff);
+	}
 
 	/*
 	 * We assume the tagname is plain ASCII and therefore requires no encoding

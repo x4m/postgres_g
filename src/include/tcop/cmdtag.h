@@ -31,6 +31,7 @@ typedef struct QueryCompletion
 {
 	CommandTag	commandTag;
 	uint64		nprocessed;
+	char	   *relation_names;
 } QueryCompletion;
 
 
@@ -59,5 +60,7 @@ extern bool command_tag_table_rewrite_ok(CommandTag commandTag);
 extern CommandTag GetCommandTagEnum(const char *commandname);
 extern Size BuildQueryCompletionString(char *buff, const QueryCompletion *qc,
 									   bool nameonly);
+
+extern char* CommandTagFormat;
 
 #endif							/* CMDTAG_H */

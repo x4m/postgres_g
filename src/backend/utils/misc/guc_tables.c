@@ -3769,6 +3769,16 @@ struct config_string ConfigureNamesString[] =
 	},
 
 	{
+		{"command_tag_format", PGC_USERSET, CLIENT_CONN_OTHER,
+			gettext_noop("TODO."),
+			gettext_noop("TODO.")
+		},
+		&CommandTagFormat,
+		"",
+		NULL, NULL, NULL
+	},
+
+	{
 		{"archive_library", PGC_SIGHUP, WAL_ARCHIVING,
 			gettext_noop("Sets the library that will be called to archive a WAL file."),
 			gettext_noop("An empty string indicates that \"archive_command\" should be used.")

@@ -25,6 +25,7 @@
 #include "tcop/pquery.h"
 #include "tcop/utility.h"
 #include "utils/memutils.h"
+#include "utils/rel.h"
 #include "utils/snapmgr.h"
 
 
@@ -115,6 +116,24 @@ FreeQueryDesc(QueryDesc *qdesc)
 	pfree(qdesc);
 }
 
+static char*
+formatRelationsNames(QueryDesc *queryDesc)
+{
+	StringInfoData result;
+	int i;
+
+	initStringInfo(&result);
+	for (i = 0; i < queryDesc->estate->es_range_table_size; i++)
+	{
+		if (queryDesc->estate->es_relations[i])
+		{
+			Relation rel = queryDesc->estate->es_relations[i];
+			appendStringInfoString(&result, RelationGetRelationName(rel));
+		}
+	}
+	return result.data;
+}
+
 
 /*
  * ProcessQuery
@@ -171,6 +190,7 @@ ProcessQuery(PlannedStmt *plan,
 				break;
 			case CMD_INSERT:
 				SetQueryCompletion(qc, CMDTAG_INSERT, queryDesc->estate->es_processed);
+				qc->relation_names = formatRelationsNames(queryDesc);
 				break;
 			case CMD_UPDATE:
 				SetQueryCompletion(qc, CMDTAG_UPDATE, queryDesc->estate->es_processed);
