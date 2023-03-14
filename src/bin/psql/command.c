@@ -2776,9 +2776,16 @@ exec_command_watch(PsqlScanState scan_state, bool active_branch,
 		/* Convert optional sleep-length argument */
 		if (opt)
 		{
-			sleep = strtod(opt, NULL);
-			if (sleep <= 0)
-				sleep = 1;
+			char *opt_end;
+			sleep = strtod(opt, &opt_end);
+			if (sleep < 0 || *opt_end || errno == ERANGE)
+			{
+				pg_log_error("\\watch: incorrect interval value '%s'", opt);
+				free(opt);
+				resetPQExpBuffer(query_buf);
+				psql_scan_reset(scan_state);
+				return PSQL_CMD_ERROR;
+			}
 			free(opt);
 		}
 
@@ -5182,6 +5189,9 @@ do_watch(PQExpBuffer query_buf, double sleep)
 
 		if (pagerpipe && ferror(pagerpipe))
 			break;
+
+		if (sleep == 0)
+			continue;
 
 #ifdef WIN32
 
