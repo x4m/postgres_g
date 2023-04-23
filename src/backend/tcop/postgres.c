@@ -170,6 +170,24 @@ static ProcSignalReason RecoveryConflictReason;
 static MemoryContext row_description_context = NULL;
 static StringInfoData row_description_buf;
 
+extern void init_row_description_buf(void); /* keep patch minimal */
+void init_row_description_buf()
+{
+	MemoryContext old_context = CurrentMemoryContext;
+	/*
+	 * Create memory context and buffer used for RowDescription messages. As
+	 * SendRowDescriptionMessage(), via exec_describe_statement_message(), is
+	 * frequently executed for ever single statement, we don't want to
+	 * allocate a separate buffer every time.
+	 */
+	row_description_context = AllocSetContextCreate(TopMemoryContext,
+													"RowDescriptionContext",
+													ALLOCSET_DEFAULT_SIZES);
+	MemoryContextSwitchTo(row_description_context);
+	initStringInfo(&row_description_buf);
+	MemoryContextSwitchTo(old_context);
+}
+
 /* ----------------------------------------------------------------
  *		decls for routines only used in this file
  * ----------------------------------------------------------------
@@ -185,8 +203,6 @@ static int	errdetail_execute(List *raw_parsetree_list);
 static int	errdetail_params(ParamListInfo params);
 static int	errdetail_abort(void);
 static int	errdetail_recovery_conflict(void);
-static void start_xact_command(void);
-static void finish_xact_command(void);
 static bool IsTransactionExitStmt(Node *parsetree);
 static bool IsTransactionExitStmtList(List *pstmts);
 static bool IsTransactionStmtList(List *pstmts);
@@ -979,8 +995,8 @@ pg_plan_queries(List *querytrees, int cursorOptions, ParamListInfo boundParams)
  *
  * Execute a "simple Query" protocol message.
  */
-static void
-exec_simple_query(const char *query_string)
+void
+exec_simple_query(const char *query_string, int16 format)
 {
 	CommandDest dest = whereToSendOutput;
 	MemoryContext oldcontext;
@@ -1073,7 +1089,6 @@ exec_simple_query(const char *query_string)
 				   *plantree_list;
 		Portal		portal;
 		DestReceiver *receiver;
-		int16		format;
 
 		/*
 		 * Get the command name for use in status display (it also becomes the
@@ -1174,6 +1189,8 @@ exec_simple_query(const char *query_string)
 		 */
 		PortalStart(portal, NULL, 0, InvalidSnapshot);
 
+		if (format < 0)
+		{
 		/*
 		 * Select the appropriate output format: text unless we are doing a
 		 * FETCH from a binary cursor.  (Pretty grotty to have to do this here
@@ -1193,6 +1210,7 @@ exec_simple_query(const char *query_string)
 					(fportal->cursorOptions & CURSOR_OPT_BINARY))
 					format = 1; /* BINARY */
 			}
+		}
 		}
 		PortalSetResultFormat(portal, 1, &format);
 
@@ -1316,11 +1334,12 @@ exec_simple_query(const char *query_string)
  *
  * Execute a "Parse" protocol message.
  */
-static void
+void
 exec_parse_message(const char *query_string,	/* string to execute */
 				   const char *stmt_name,	/* name for prepared stmt */
 				   Oid *paramTypes, /* parameter types */
-				   int numParams)	/* number of parameters */
+				   int numParams,	/* number of parameters */
+				   const char *paramNames[])
 {
 	MemoryContext unnamed_stmt_context = NULL;
 	MemoryContext oldcontext;
@@ -1459,7 +1478,8 @@ exec_parse_message(const char *query_string,	/* string to execute */
 		query = parse_analyze_varparams(raw_parse_tree,
 										query_string,
 										&paramTypes,
-										&numParams);
+										&numParams,
+										paramNames);
 
 		/*
 		 * Check all parameter types got determined.
@@ -1578,7 +1598,7 @@ exec_parse_message(const char *query_string,	/* string to execute */
  *
  * Process a "Bind" message to create a portal from a prepared statement
  */
-static void
+void
 exec_bind_message(StringInfo input_message)
 {
 	const char *portal_name;
@@ -1948,7 +1968,7 @@ exec_bind_message(StringInfo input_message)
  *
  * Process an "Execute" message for a portal
  */
-static void
+void
 exec_execute_message(const char *portal_name, long max_rows)
 {
 	CommandDest dest;
@@ -2412,7 +2432,7 @@ errdetail_recovery_conflict(void)
  *
  * Process a "Describe" message for a prepared statement
  */
-static void
+void
 exec_describe_statement_message(const char *stmt_name)
 {
 	CachedPlanSource *psrc;
@@ -2559,7 +2579,7 @@ exec_describe_portal_message(const char *portal_name)
 /*
  * Convenience routines for starting/committing a single command.
  */
-static void
+void
 start_xact_command(void)
 {
 	if (!xact_started)
@@ -2579,7 +2599,7 @@ start_xact_command(void)
 	enable_statement_timeout();
 }
 
-static void
+void
 finish_xact_command(void)
 {
 	/* cancel active statement timeout after each command */
@@ -2744,6 +2764,34 @@ quickdie(SIGNAL_ARGS)
 	 * being doubly sure.)
 	 */
 	_exit(2);
+}
+
+
+#include "execinfo.h"
+static void
+print_backtrace(char *place)
+{
+  StringInfoData errtrace;
+
+  initStringInfo(&errtrace);
+
+
+  {
+    void     *buf[100];
+    int     nframes;
+    char    **strfrms;
+
+    nframes = backtrace(buf, lengthof(buf));
+    strfrms = backtrace_symbols(buf, nframes);
+    if (strfrms == NULL)
+      return;
+
+    for (int i = 0; i < nframes; i++)
+      appendStringInfo(&errtrace, "\n%s", strfrms[i]);
+    free(strfrms);
+  }
+
+  elog(WARNING, "Backtrace %s : %s", place,errtrace.data);
 }
 
 /*
@@ -3974,18 +4022,7 @@ PostgresMain(int argc, char *argv[],
 										   "MessageContext",
 										   ALLOCSET_DEFAULT_SIZES);
 
-	/*
-	 * Create memory context and buffer used for RowDescription messages. As
-	 * SendRowDescriptionMessage(), via exec_describe_statement_message(), is
-	 * frequently executed for ever single statement, we don't want to
-	 * allocate a separate buffer every time.
-	 */
-	row_description_context = AllocSetContextCreate(TopMemoryContext,
-													"RowDescriptionContext",
-													ALLOCSET_DEFAULT_SIZES);
-	MemoryContextSwitchTo(row_description_context);
-	initStringInfo(&row_description_buf);
-	MemoryContextSwitchTo(TopMemoryContext);
+	init_row_description_buf();
 
 	/*
 	 * Remember stand-alone backend startup time
@@ -4287,10 +4324,10 @@ PostgresMain(int argc, char *argv[],
 					if (am_walsender)
 					{
 						if (!exec_replication_command(query_string))
-							exec_simple_query(query_string);
+							exec_simple_query(query_string, -1);
 					}
 					else
-						exec_simple_query(query_string);
+						exec_simple_query(query_string, -1);
 
 					send_ready_for_query = true;
 				}
@@ -4320,7 +4357,7 @@ PostgresMain(int argc, char *argv[],
 					pq_getmsgend(&input_message);
 
 					exec_parse_message(query_string, stmt_name,
-									   paramTypes, numParams);
+									   paramTypes, numParams, NULL);
 				}
 				break;
 
