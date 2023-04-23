@@ -36,6 +36,7 @@
 #include "parser/parse_type.h"
 #include "parser/scansup.h"
 #include "storage/proc.h"
+#include "tcop/autonomous.h"
 #include "tcop/pquery.h"
 #include "tcop/tcopprot.h"
 #include "tcop/utility.h"
@@ -1570,6 +1571,9 @@ exec_stmt_block(PLpgSQL_execstate *estate, PLpgSQL_stmt_block *block)
 	volatile int rc = -1;
 	int			i;
 
+	if (block->autonomous)
+		estate->autonomous_session = AutonomousSessionStart();
+
 	/*
 	 * First initialize all variables declared in this block
 	 */
@@ -1854,6 +1858,9 @@ exec_stmt_block(PLpgSQL_execstate *estate, PLpgSQL_stmt_block *block)
 	}
 
 	estate->err_text = NULL;
+
+	if (block->autonomous)
+		AutonomousSessionEnd(estate->autonomous_session);
 
 	/*
 	 * Handle the return code.  This is intentionally different from
@@ -3936,6 +3943,8 @@ plpgsql_estate_setup(PLpgSQL_execstate *estate,
 	}
 	estate->rsi = rsi;
 
+	estate->autonomous_session = NULL;
+
 	estate->found_varno = func->found_varno;
 	estate->ndatums = func->ndatums;
 	estate->datums = NULL;
@@ -4115,6 +4124,66 @@ exec_prepare_plan(PLpgSQL_execstate *estate,
 }
 
 
+static
+void build_symbol_table(PLpgSQL_execstate *estate,
+					   PLpgSQL_nsitem *ns_start,
+					   int *ret_nitems,
+					   const char ***ret_names,
+					   Oid **ret_types)
+{
+	PLpgSQL_nsitem *nsitem;
+	List *names = NIL;
+	List *types = NIL;
+	ListCell *lc1, *lc2;
+	int i, nitems;
+	const char **names_vector;
+	Oid *types_vector;
+
+	for (nsitem = ns_start;
+		 nsitem;
+		 nsitem = nsitem->prev)
+	{
+		if (nsitem->itemtype == PLPGSQL_NSTYPE_VAR)
+		{
+			PLpgSQL_datum *datum;
+			PLpgSQL_var *var;
+			Oid		typoid;
+			Value  *name;
+
+			if (strcmp(nsitem->name, "found") == 0)
+				continue;  // XXX
+			elog(LOG, "namespace item variable itemno %d, name %s",
+				 nsitem->itemno, nsitem->name);
+			datum = estate->datums[nsitem->itemno];
+			Assert(datum->dtype == PLPGSQL_DTYPE_VAR);
+			var = (PLpgSQL_var *) datum;
+			name = makeString(nsitem->name);
+			typoid = var->datatype->typoid;
+			if (!list_member(names, name))
+			{
+				names = lappend(names, name);
+				types = lappend_oid(types, typoid);
+			}
+		}
+	}
+
+	Assert(list_length(names) == list_length(types));
+	nitems = list_length(names);
+	names_vector = palloc(nitems * sizeof(char *));
+	types_vector = palloc(nitems * sizeof(Oid));
+	i = 0;
+	forboth(lc1, names, lc2, types)
+	{
+		names_vector[i] = pstrdup(strVal(lfirst(lc1)));
+		types_vector[i] = lfirst_oid(lc2);
+		i++;
+	}
+
+	*ret_nitems = nitems;
+	*ret_names = names_vector;
+	*ret_types = types_vector;
+}
+
 /* ----------
  * exec_stmt_execsql			Execute an SQL statement (possibly with INTO).
  *
@@ -4130,6 +4199,32 @@ exec_stmt_execsql(PLpgSQL_execstate *estate,
 	long		tcount;
 	int			rc;
 	PLpgSQL_expr *expr = stmt->sqlstmt;
+
+	if (estate->autonomous_session)
+	{
+		int		nparams = 0;
+		int		i;
+		const char **param_names = NULL;
+		Oid	   *param_types = NULL;
+		AutonomousPreparedStatement *astmt;
+		Datum  *values;
+		bool   *nulls;
+		AutonomousResult *aresult;
+
+		build_symbol_table(estate, stmt->sqlstmt->ns, &nparams, &param_names, &param_types);
+		astmt = AutonomousSessionPrepare(estate->autonomous_session, stmt->sqlstmt->query, nparams, param_types, param_names);
+
+		values = palloc(nparams * sizeof(*values));
+		nulls = palloc(nparams * sizeof(*nulls));
+		for (i = 0; i < nparams; i++)
+		{
+			nulls[i] = true;
+			//values[i] = TODO;
+		}
+		aresult = AutonomousSessionExecutePrepared(astmt, nparams, values, nulls);
+		exec_set_found(estate, (list_length(aresult->tuples) != 0));
+		return PLPGSQL_RC_OK;
+	}
 
 	/*
 	 * On the first call for this statement generate the plan, and detect
@@ -4371,6 +4466,12 @@ exec_stmt_dynexecute(PLpgSQL_execstate *estate,
 	querystr = MemoryContextStrdup(stmt_mcontext, querystr);
 
 	exec_eval_cleanup(estate);
+
+	if (estate->autonomous_session)
+	{
+		AutonomousSessionExecute(estate->autonomous_session, querystr);
+		return PLPGSQL_RC_OK;
+	}
 
 	/*
 	 * Execute the query without preparing a saved plan.
@@ -4852,7 +4953,13 @@ exec_stmt_close(PLpgSQL_execstate *estate, PLpgSQL_stmt_close *stmt)
 static int
 exec_stmt_commit(PLpgSQL_execstate *estate, PLpgSQL_stmt_commit *stmt)
 {
-	SPI_commit();
+	if (estate->autonomous_session)
+	{
+		AutonomousSessionExecute(estate->autonomous_session, "COMMIT");
+		return PLPGSQL_RC_OK;
+	}
+	else
+		SPI_commit();
 
 	/*
 	 * We need to build new simple-expression infrastructure, since the old
@@ -4872,7 +4979,13 @@ exec_stmt_commit(PLpgSQL_execstate *estate, PLpgSQL_stmt_commit *stmt)
 static int
 exec_stmt_rollback(PLpgSQL_execstate *estate, PLpgSQL_stmt_rollback *stmt)
 {
-	SPI_rollback();
+	if (estate->autonomous_session)
+	{
+		AutonomousSessionExecute(estate->autonomous_session, "ROLLBACK");
+		return PLPGSQL_RC_OK;
+	}
+	else
+		SPI_rollback();
 
 	/*
 	 * We need to build new simple-expression infrastructure, since the old
