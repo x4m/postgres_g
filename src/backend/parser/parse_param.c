@@ -49,8 +49,10 @@ typedef struct VarParamState
 {
 	Oid		  **paramTypes;		/* array of parameter type OIDs */
 	int		   *numParams;		/* number of array entries */
+	const char **paramNames;
 } VarParamState;
 
+static Node *variable_post_column_ref_hook(ParseState *pstate, ColumnRef *cref, Node *var);
 static Node *fixed_paramref_hook(ParseState *pstate, ParamRef *pref);
 static Node *variable_paramref_hook(ParseState *pstate, ParamRef *pref);
 static Node *variable_coerce_param_hook(ParseState *pstate, Param *param,
@@ -81,15 +83,56 @@ parse_fixed_parameters(ParseState *pstate,
  */
 void
 parse_variable_parameters(ParseState *pstate,
-						  Oid **paramTypes, int *numParams)
+						  Oid **paramTypes, int *numParams, const char *paramNames[])
 {
 	VarParamState *parstate = palloc(sizeof(VarParamState));
 
 	parstate->paramTypes = paramTypes;
 	parstate->numParams = numParams;
+	parstate->paramNames = paramNames;
+	pstate->p_post_columnref_hook = variable_post_column_ref_hook;
 	pstate->p_ref_hook_state = (void *) parstate;
 	pstate->p_paramref_hook = variable_paramref_hook;
 	pstate->p_coerce_param_hook = variable_coerce_param_hook;
+}
+
+static Node *
+variable_post_column_ref_hook(ParseState *pstate, ColumnRef *cref, Node *var)
+{
+	VarParamState *parstate = (VarParamState *) pstate->p_ref_hook_state;
+
+	/* already resolved */
+	if (var != NULL)
+		return NULL;
+
+	/* did not supply parameter names */
+	if (!parstate->paramNames)
+		return NULL;
+
+	if (list_length(cref->fields) == 1)
+	{
+		Node	   *field1 = (Node *) linitial(cref->fields);
+		char	   *name1;
+		int			i;
+		Param	   *param;
+
+		Assert(IsA(field1, String));
+		name1 = strVal(field1);
+		for (i = 0; i < *parstate->numParams; i++)
+			if (strcmp(name1, parstate->paramNames[i]) == 0)
+			{
+				param = makeNode(Param);
+				param->paramkind = PARAM_EXTERN;
+				param->paramid = i + 1;
+				param->paramtype = *parstate->paramTypes[i];
+				param->paramtypmod = -1;
+				param->paramcollid = InvalidOid;
+				param->location = -1;
+				return (Node *) param;
+			}
+	}
+
+	return NULL;
 }
 
 /*

@@ -23,6 +23,7 @@
 #include "utils/expandedrecord.h"
 #include "utils/typcache.h"
 
+#include "tcop/autonomous.h"
 
 /**********************************************************************
  * Definitions
@@ -499,6 +500,7 @@ typedef struct PLpgSQL_stmt_block
 	PLpgSQL_stmt_type cmd_type;
 	int			lineno;
 	char	   *label;
+	bool		autonomous;
 	List	   *body;			/* List of statements */
 	int			n_initvars;		/* Length of initvarnos[] */
 	int		   *initvarnos;		/* dnos of variables declared in this block */
@@ -1020,6 +1022,9 @@ typedef struct PLpgSQL_execstate
 	ResourceOwner tuple_store_owner;
 	ReturnSetInfo *rsi;
 
+	AutonomousSession *autonomous_session;
+
+	/* the datums representing the function's local variables */
 	int			found_varno;
 
 	/*
