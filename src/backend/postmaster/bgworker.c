@@ -31,6 +31,7 @@
 #include "storage/proc.h"
 #include "storage/procsignal.h"
 #include "storage/shmem.h"
+#include "tcop/autonomous.h"
 #include "tcop/tcopprot.h"
 #include "utils/ascii.h"
 #include "utils/ps_status.h"
@@ -128,6 +129,9 @@ static const struct
 	},
 	{
 		"ApplyWorkerMain", ApplyWorkerMain
+	},
+	{
+		"autonomous_worker_main", (bgworker_main_type)autonomous_worker_main
 	}
 };
 

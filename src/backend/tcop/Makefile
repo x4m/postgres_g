@@ -13,6 +13,7 @@ top_builddir = ../../..
 include $(top_builddir)/src/Makefile.global
 
 OBJS = \
+	autonomous.o \
 	cmdtag.o \
 	dest.o \
 	fastpath.o \

@@ -116,7 +116,7 @@ PrepareQuery(ParseState *pstate, PrepareStmt *stmt,
 	 * information about unknown parameters to be deduced from context.
 	 */
 	query = parse_analyze_varparams(rawstmt, pstate->p_sourcetext,
-									&argtypes, &nargs);
+									&argtypes, &nargs, NULL);
 
 	/*
 	 * Check that all parameter types were determined.
