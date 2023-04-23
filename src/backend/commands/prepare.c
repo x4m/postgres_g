@@ -117,7 +117,7 @@ PrepareQuery(ParseState *pstate, PrepareStmt *stmt,
 	 * Rewrite the query. The result could be 0, 1, or many queries.
 	 */
 	query_list = pg_analyze_and_rewrite_varparams(rawstmt, pstate->p_sourcetext,
-												  &argtypes, &nargs, NULL);
+												  &argtypes, &nargs, NULL, NULL);
 
 	/* Finish filling in the CachedPlanSource */
 	CompleteCachedPlan(plansource,

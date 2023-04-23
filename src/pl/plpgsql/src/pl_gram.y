@@ -110,6 +110,8 @@ static	PLpgSQL_expr	*read_cursor_args(PLpgSQL_var *cursor,
 static	List			*read_raise_options(void);
 static	void			check_raise_parameters(PLpgSQL_stmt_raise *stmt);
 
+static bool last_pragma;
+
 %}
 
 %expect 0
@@ -146,6 +148,7 @@ static	void			check_raise_parameters(PLpgSQL_stmt_raise *stmt);
 		char	   *label;
 		int			n_initvars;
 		int		   *initvarnos;
+		bool	autonomous;
 	}			declhdr;
 	struct
 	{
@@ -325,6 +328,7 @@ static	void			check_raise_parameters(PLpgSQL_stmt_raise *stmt);
 %token <keyword>	K_PG_EXCEPTION_CONTEXT
 %token <keyword>	K_PG_EXCEPTION_DETAIL
 %token <keyword>	K_PG_EXCEPTION_HINT
+%token <keyword>	K_PRAGMA
 %token <keyword>	K_PRINT_STRICT_PARAMS
 %token <keyword>	K_PRIOR
 %token <keyword>	K_QUERY
@@ -418,6 +422,7 @@ pl_block		: decl_sect K_BEGIN proc_sect exception_sect K_END opt_label
 						new->lineno		= plpgsql_location_to_lineno(@2);
 						new->stmtid		= ++plpgsql_curr_compile->nstatements;
 						new->label		= $1.label;
+						new->autonomous = $1.autonomous;
 						new->n_initvars = $1.n_initvars;
 						new->initvarnos = $1.initvarnos;
 						new->body		= $3;
@@ -438,6 +443,7 @@ decl_sect		: opt_block_label
 						$$.label	  = $1;
 						$$.n_initvars = 0;
 						$$.initvarnos = NULL;
+						$$.autonomous = false;
 					}
 				| opt_block_label decl_start
 					{
@@ -445,6 +451,7 @@ decl_sect		: opt_block_label
 						$$.label	  = $1;
 						$$.n_initvars = 0;
 						$$.initvarnos = NULL;
+						$$.autonomous = false;
 					}
 				| opt_block_label decl_start decl_stmts
 					{
@@ -452,6 +459,8 @@ decl_sect		: opt_block_label
 						$$.label	  = $1;
 						/* Remember variables declared in decl_stmts */
 						$$.n_initvars = plpgsql_add_initdatums(&($$.initvarnos));
+						$$.autonomous = last_pragma;
+						last_pragma = false;
 					}
 				;
 
@@ -459,6 +468,7 @@ decl_start		: K_DECLARE
 					{
 						/* Forget any variables created before block */
 						plpgsql_add_initdatums(NULL);
+						last_pragma = false;
 						/*
 						 * Disable scanner lookup of identifiers while
 						 * we process the decl_stmts
@@ -582,6 +592,13 @@ decl_statement	: decl_varname decl_const decl_datatype decl_collate decl_notnull
 						else
 							new->cursor_explicit_argrow = $5->dno;
 						new->cursor_options = CURSOR_OPT_FAST_PLAN | $2;
+					}
+				| K_PRAGMA any_identifier ';'
+					{
+						if (pg_strcasecmp($2, "autonomous_transaction") == 0)
+							last_pragma = true;
+						else
+							elog(ERROR, "invalid pragma");
 					}
 				;
 
