@@ -22,6 +22,7 @@
 #include "commands/event_trigger.h"
 #include "commands/trigger.h"
 #include "executor/spi.h"
+#include "tcop/autonomous.h"
 
 /**********************************************************************
  * Definitions
@@ -383,6 +384,7 @@ typedef struct
 	int			cmd_type;
 	int			lineno;
 	char	   *label;
+	bool		autonomous;
 	List	   *body;			/* List of statements */
 	int			n_initvars;
 	int		   *initvarnos;
@@ -802,6 +804,8 @@ typedef struct PLpgSQL_execstate
 	MemoryContext tuple_store_cxt;
 	ResourceOwner tuple_store_owner;
 	ReturnSetInfo *rsi;
+
+	AutonomousSession *autonomous_session;
 
 	/* the datums representing the function's local variables */
 	int			found_varno;

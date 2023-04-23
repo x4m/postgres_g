@@ -124,7 +124,7 @@ parse_analyze(Node *parseTree, const char *sourceText,
  */
 Query *
 parse_analyze_varparams(Node *parseTree, const char *sourceText,
-						Oid **paramTypes, int *numParams)
+						Oid **paramTypes, int *numParams, const char *paramNames[])
 {
 	ParseState *pstate = make_parsestate(NULL);
 	Query	   *query;
@@ -133,7 +133,7 @@ parse_analyze_varparams(Node *parseTree, const char *sourceText,
 
 	pstate->p_sourcetext = sourceText;
 
-	parse_variable_parameters(pstate, paramTypes, numParams);
+	parse_variable_parameters(pstate, paramTypes, numParams, paramNames);
 
 	query = transformTopLevelStmt(pstate, parseTree);
 

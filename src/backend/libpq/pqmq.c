@@ -47,6 +47,11 @@ static PQcommMethods PqCommMqMethods = {
 	mq_endcopyout
 };
 
+static PQcommMethods *save_PqCommMethods;
+static CommandDest save_whereToSendOutput;
+static ProtocolVersion save_FrontendProtocol;
+static dsm_segment *save_seg;
+
 /*
  * Arrange to redirect frontend/backend protocol messages to a shared-memory
  * message queue.
@@ -54,12 +59,30 @@ static PQcommMethods PqCommMqMethods = {
 void
 pq_redirect_to_shm_mq(dsm_segment *seg, shm_mq_handle *mqh)
 {
+	save_PqCommMethods = PqCommMethods;
+	save_whereToSendOutput = whereToSendOutput;
+	save_FrontendProtocol = FrontendProtocol;
+
 	PqCommMethods = &PqCommMqMethods;
 	pq_mq = shm_mq_get_queue(mqh);
 	pq_mq_handle = mqh;
 	whereToSendOutput = DestRemote;
 	FrontendProtocol = PG_PROTOCOL_LATEST;
 	on_dsm_detach(seg, pq_cleanup_redirect_to_shm_mq, (Datum) 0);
+
+	save_seg = seg;
+}
+
+void
+pq_stop_redirect_to_shm_mq(void)
+{
+	cancel_on_dsm_detach(save_seg, pq_cleanup_redirect_to_shm_mq, (Datum) 0);
+	PqCommMethods = save_PqCommMethods;
+	whereToSendOutput = save_whereToSendOutput;
+	FrontendProtocol = save_FrontendProtocol;
+	pq_mq = NULL;
+	pq_mq_handle = NULL;
+	save_seg = NULL;
 }
 
 /*

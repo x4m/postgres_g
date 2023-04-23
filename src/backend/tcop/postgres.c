@@ -173,8 +173,6 @@ static int	errdetail_execute(List *raw_parsetree_list);
 static int	errdetail_params(ParamListInfo params);
 static int	errdetail_abort(void);
 static int	errdetail_recovery_conflict(void);
-static void start_xact_command(void);
-static void finish_xact_command(void);
 static bool IsTransactionExitStmt(Node *parsetree);
 static bool IsTransactionExitStmtList(List *parseTrees);
 static bool IsTransactionStmtList(List *parseTrees);
@@ -884,8 +882,8 @@ pg_plan_queries(List *querytrees, int cursorOptions, ParamListInfo boundParams)
  *
  * Execute a "simple Query" protocol message.
  */
-static void
-exec_simple_query(const char *query_string)
+void
+exec_simple_query(const char *query_string, int16 format)
 {
 	CommandDest dest = whereToSendOutput;
 	MemoryContext oldcontext;
@@ -978,7 +976,6 @@ exec_simple_query(const char *query_string)
 				   *plantree_list;
 		Portal		portal;
 		DestReceiver *receiver;
-		int16		format;
 
 		/*
 		 * Get the command name for use in status display (it also becomes the
@@ -1069,6 +1066,8 @@ exec_simple_query(const char *query_string)
 		 */
 		PortalStart(portal, NULL, 0, InvalidSnapshot);
 
+		if (format < 0)
+		{
 		/*
 		 * Select the appropriate output format: text unless we are doing a
 		 * FETCH from a binary cursor.  (Pretty grotty to have to do this here
@@ -1088,6 +1087,7 @@ exec_simple_query(const char *query_string)
 					(fportal->cursorOptions & CURSOR_OPT_BINARY))
 					format = 1; /* BINARY */
 			}
+		}
 		}
 		PortalSetResultFormat(portal, 1, &format);
 
@@ -1200,11 +1200,12 @@ exec_simple_query(const char *query_string)
  *
  * Execute a "Parse" protocol message.
  */
-static void
+void
 exec_parse_message(const char *query_string,	/* string to execute */
 				   const char *stmt_name,		/* name for prepared stmt */
-				   Oid *paramTypes,		/* parameter types */
-				   int numParams)		/* number of parameters */
+				   Oid paramTypes[],		/* parameter types */
+				   int numParams,		/* number of parameters */
+				   const char *paramNames[])
 {
 	MemoryContext unnamed_stmt_context = NULL;
 	MemoryContext oldcontext;
@@ -1343,7 +1344,8 @@ exec_parse_message(const char *query_string,	/* string to execute */
 		query = parse_analyze_varparams(raw_parse_tree,
 										query_string,
 										&paramTypes,
-										&numParams);
+										&numParams,
+										paramNames);
 
 		/*
 		 * Check all parameter types got determined.
@@ -1462,7 +1464,7 @@ exec_parse_message(const char *query_string,	/* string to execute */
  *
  * Process a "Bind" message to create a portal from a prepared statement
  */
-static void
+void
 exec_bind_message(StringInfo input_message)
 {
 	const char *portal_name;
@@ -1844,7 +1846,7 @@ exec_bind_message(StringInfo input_message)
  *
  * Process an "Execute" message for a portal
  */
-static void
+void
 exec_execute_message(const char *portal_name, long max_rows)
 {
 	CommandDest dest;
@@ -2293,7 +2295,7 @@ errdetail_recovery_conflict(void)
  *
  * Process a "Describe" message for a prepared statement
  */
-static void
+void
 exec_describe_statement_message(const char *stmt_name)
 {
 	CachedPlanSource *psrc;
@@ -2437,7 +2439,7 @@ exec_describe_portal_message(const char *portal_name)
 /*
  * Convenience routines for starting/committing a single command.
  */
-static void
+void
 start_xact_command(void)
 {
 	if (!xact_started)
@@ -2457,7 +2459,7 @@ start_xact_command(void)
 	}
 }
 
-static void
+void
 finish_xact_command(void)
 {
 	if (xact_started)
@@ -4133,7 +4135,7 @@ PostgresMain(int argc, char *argv[],
 					if (am_walsender)
 						exec_replication_command(query_string);
 					else
-						exec_simple_query(query_string);
+						exec_simple_query(query_string, -1);
 
 					send_ready_for_query = true;
 				}
@@ -4165,7 +4167,7 @@ PostgresMain(int argc, char *argv[],
 					pq_getmsgend(&input_message);
 
 					exec_parse_message(query_string, stmt_name,
-									   paramTypes, numParams);
+									   paramTypes, numParams, NULL);
 				}
 				break;
 

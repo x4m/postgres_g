@@ -114,7 +114,7 @@ PrepareQuery(PrepareStmt *stmt, const char *queryString)
 	 */
 	query = parse_analyze_varparams((Node *) copyObject(stmt->query),
 									queryString,
-									&argtypes, &nargs);
+									&argtypes, &nargs, NULL);
 
 	/*
 	 * Check that all parameter types were determined.
