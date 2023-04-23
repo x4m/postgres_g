@@ -36,6 +36,7 @@
 #include "storage/predicate.h"
 #include "storage/sinval.h"
 #include "storage/spin.h"
+#include "tcop/autonomous.h"
 #include "tcop/tcopprot.h"
 #include "utils/combocid.h"
 #include "utils/guc.h"
@@ -145,7 +146,10 @@ static const struct
 	},
 	{
 		"parallel_vacuum_main", parallel_vacuum_main
-	}
+	},
+	{
+		"autonomous_worker_main", (parallel_worker_main_type)autonomous_worker_main //TODO
+	},
 };
 
 /* Private functions. */
