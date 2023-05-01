@@ -70,3 +70,4 @@ SELECT * FROM test1;
   
 (5 rows)
 
+DROP TABLE test1;

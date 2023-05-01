@@ -4953,7 +4953,13 @@ exec_stmt_close(PLpgSQL_execstate *estate, PLpgSQL_stmt_close *stmt)
 static int
 exec_stmt_commit(PLpgSQL_execstate *estate, PLpgSQL_stmt_commit *stmt)
 {
-	SPI_commit();
+	if (estate->autonomous_session)
+	{
+		AutonomousSessionExecute(estate->autonomous_session, "COMMIT");
+		return PLPGSQL_RC_OK;
+	}
+	else
+		SPI_commit();
 
 	/*
 	 * We need to build new simple-expression infrastructure, since the old
@@ -4973,7 +4979,13 @@ exec_stmt_commit(PLpgSQL_execstate *estate, PLpgSQL_stmt_commit *stmt)
 static int
 exec_stmt_rollback(PLpgSQL_execstate *estate, PLpgSQL_stmt_rollback *stmt)
 {
-	SPI_rollback();
+	if (estate->autonomous_session)
+	{
+		AutonomousSessionExecute(estate->autonomous_session, "ROLLBACK");
+		return PLPGSQL_RC_OK;
+	}
+	else
+		SPI_rollback();
 
 	/*
 	 * We need to build new simple-expression infrastructure, since the old

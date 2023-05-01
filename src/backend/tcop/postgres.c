@@ -2712,6 +2712,34 @@ quickdie(SIGNAL_ARGS)
 	_exit(2);
 }
 
+
+#include "execinfo.h"
+static void
+print_backtrace(char *place)
+{
+  StringInfoData errtrace;
+
+  initStringInfo(&errtrace);
+
+
+  {
+    void     *buf[100];
+    int     nframes;
+    char    **strfrms;
+
+    nframes = backtrace(buf, lengthof(buf));
+    strfrms = backtrace_symbols(buf, nframes);
+    if (strfrms == NULL)
+      return;
+
+    for (int i = 0; i < nframes; i++)
+      appendStringInfo(&errtrace, "\n%s", strfrms[i]);
+    free(strfrms);
+  }
+
+  elog(WARNING, "Backtrace %s : %s", place,errtrace.data);
+}
+
 /*
  * Shutdown signal from postmaster: abort transaction and exit
  * at soonest convenient time

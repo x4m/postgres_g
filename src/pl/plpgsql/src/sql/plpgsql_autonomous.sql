@@ -52,3 +52,5 @@ $$;
 SELECT autonomous_test2();
 
 SELECT * FROM test1;
+
+DROP TABLE test1;

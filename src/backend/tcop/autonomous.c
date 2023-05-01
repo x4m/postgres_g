@@ -556,6 +556,7 @@ autonomous_worker_main(Datum main_arg)
 	char		msgtype;
 
 	pqsignal(SIGTERM, die);
+
 	BackgroundWorkerUnblockSignals();
 	//elog(WARNING,"1");
 
