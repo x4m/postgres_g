@@ -63,6 +63,7 @@
 #include "tcop/tcopprot.h"
 #include "utils/lsyscache.h"
 #include "utils/memutils.h"
+#include "utils/snapmgr.h"
 #include "utils/resowner.h"
 
 /* Table-of-contents constants for our dynamic shared memory segment. */
@@ -106,8 +107,8 @@ static void autonomous_check_client_encoding_hook(void);
 static TupleDesc TupleDesc_from_RowDescription(StringInfo msg);
 static HeapTuple HeapTuple_from_DataRow(TupleDesc tupdesc, StringInfo msg);
 static void forward_NotifyResponse(StringInfo msg);
-static void rethrow_errornotice(StringInfo msg);
-static void invalid_protocol_message(char msgtype) pg_attribute_noreturn();
+static void rethrow_errornotice(StringInfo msg, int min_elevel);
+static void invalid_protocol_message(char msgtype, char phase) pg_attribute_noreturn();
 
 
 AutonomousSession *
@@ -204,15 +205,17 @@ AutonomousSessionStart(void)
 		switch (msgtype)
 		{
 			case 'E':
+				rethrow_errornotice(&msg, ERROR);
+				break;
 			case 'N':
-				rethrow_errornotice(&msg);
+				rethrow_errornotice(&msg, NOTICE);
 				break;
 			case 'Z':
 				session->transaction_status = pq_getmsgbyte(&msg);
 				pq_getmsgend(&msg);
 				break;
 			default:
-				invalid_protocol_message(msgtype);
+				invalid_protocol_message(msgtype, 1);
 				break;
 		}
 	}
@@ -282,8 +285,10 @@ AutonomousSessionExecute(AutonomousSession *session, const char *sql)
 				pq_getmsgend(&msg);
 				break;
 			case 'E':
+				rethrow_errornotice(&msg, ERROR);
+				break;
 			case 'N':
-				rethrow_errornotice(&msg);
+				rethrow_errornotice(&msg, NOTICE);
 				break;
 			case 'T':
 				if (result->tupdesc)
@@ -296,7 +301,7 @@ AutonomousSessionExecute(AutonomousSession *session, const char *sql)
 				pq_getmsgend(&msg);
 				break;
 			default:
-				invalid_protocol_message(msgtype);
+				invalid_protocol_message(msgtype, 2);
 				break;
 		}
 	}
@@ -341,10 +346,13 @@ AutonomousSessionPrepare(AutonomousSession *session, const char *sql, int16 narg
 		case '1':
 			break;
 		case 'E':
-			rethrow_errornotice(&msg);
+			rethrow_errornotice(&msg, ERROR);
+			break;
+		case 'N':
+			rethrow_errornotice(&msg, NOTICE);
 			break;
 		default:
-			invalid_protocol_message(msgtype);
+			invalid_protocol_message(msgtype, 3);
 			break;
 	}
 
@@ -366,11 +374,16 @@ AutonomousSessionPrepare(AutonomousSession *session, const char *sql, int16 narg
 				forward_NotifyResponse(&msg);
 				break;
 			case 'E':
-				rethrow_errornotice(&msg);
+				rethrow_errornotice(&msg, ERROR);
+				break;
+			case 'N':
+				rethrow_errornotice(&msg, NOTICE);
 				break;
 			case 'n':
 				break;
 			case 't':
+			case '1':
+			case 'Z':
 				/* ignore for now */
 				break;
 			case 'T':
@@ -380,7 +393,7 @@ AutonomousSessionPrepare(AutonomousSession *session, const char *sql, int16 narg
 				pq_getmsgend(&msg);
 				break;
 			default:
-				invalid_protocol_message(msgtype);
+				invalid_protocol_message(msgtype, 4);
 				break;
 		}
 	}
@@ -438,10 +451,13 @@ AutonomousSessionExecutePrepared(AutonomousPreparedStatement *stmt, int16 nargs,
 		case '2':
 			break;
 		case 'E':
-			rethrow_errornotice(&msg);
+			rethrow_errornotice(&msg, ERROR);
+			break;
+		case 'N':
+			rethrow_errornotice(&msg, NOTICE);
 			break;
 		default:
-			invalid_protocol_message(msgtype);
+			invalid_protocol_message(msgtype, 5);
 			break;
 	}
 
@@ -465,6 +481,8 @@ AutonomousSessionExecutePrepared(AutonomousPreparedStatement *stmt, int16 nargs,
 			case 'A':
 				forward_NotifyResponse(&msg);
 				break;
+			case '2':
+				break;
 			case 'C':
 				{
 					const char *tag = pq_getmsgstring(&msg);
@@ -479,11 +497,13 @@ AutonomousSessionExecutePrepared(AutonomousPreparedStatement *stmt, int16 nargs,
 				pq_getmsgend(&msg);
 				break;
 			case 'E':
+				rethrow_errornotice(&msg, ERROR);
+				break;
 			case 'N':
-				rethrow_errornotice(&msg);
+				rethrow_errornotice(&msg, NOTICE);
 				break;
 			default:
-				invalid_protocol_message(msgtype);
+				invalid_protocol_message(msgtype, 6);
 				break;
 		}
 	}
@@ -505,14 +525,21 @@ AutonomousSessionExecutePrepared(AutonomousPreparedStatement *stmt, int16 nargs,
 			session->transaction_status = pq_getmsgbyte(&msg);
 			pq_getmsgend(&msg);
 			break;
+		case 'E':
+			rethrow_errornotice(&msg, ERROR);
+			break;
+		case 'N':
+			rethrow_errornotice(&msg, NOTICE);
+			break;
 		default:
-			invalid_protocol_message(msgtype);
+			invalid_protocol_message(msgtype, 7);
 			break;
 	}
 
 	return result;
 }
 
+extern void init_row_description_buf();
 
 void
 autonomous_worker_main(Datum main_arg)
@@ -530,6 +557,7 @@ autonomous_worker_main(Datum main_arg)
 
 	pqsignal(SIGTERM, die);
 	BackgroundWorkerUnblockSignals();
+	//elog(WARNING,"1");
 
 	/* Set up a memory context and resource owner. */
 	Assert(CurrentResourceOwner == NULL);
@@ -539,6 +567,8 @@ autonomous_worker_main(Datum main_arg)
 												 ALLOCSET_DEFAULT_MINSIZE,
 												 ALLOCSET_DEFAULT_INITSIZE,
 												 ALLOCSET_DEFAULT_MAXSIZE);
+
+	init_row_description_buf();
 
 	seg = dsm_attach(DatumGetInt32(main_arg));
 	if (seg == NULL)
@@ -551,6 +581,7 @@ autonomous_worker_main(Datum main_arg)
 		ereport(ERROR,
 				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
 				 errmsg("bad magic number in dynamic shared memory segment")));
+	//elog(WARNING,"2");
 
 	/* Find data structures in dynamic shared memory. */
 	fdata = shm_toc_lookup(toc, AUTONOMOUS_KEY_FIXED_DATA, false);
@@ -568,6 +599,7 @@ autonomous_worker_main(Datum main_arg)
 	pq_redirect_to_shm_mq(seg, response_qh);
 	BackgroundWorkerInitializeConnectionByOid(fdata->database_id,
 											  fdata->authenticated_user_id, 0);
+	//elog(WARNING,"3");
 
 	SetClientEncoding(GetDatabaseEncoding());
 
@@ -587,23 +619,29 @@ autonomous_worker_main(Datum main_arg)
 										   ALLOCSET_DEFAULT_MINSIZE,
 										   ALLOCSET_DEFAULT_INITSIZE,
 										   ALLOCSET_DEFAULT_MAXSIZE);
+	//elog(WARNING,"4");
 
 	do
 	{
 		MemoryContextSwitchTo(MessageContext);
 		MemoryContextResetAndDeleteChildren(MessageContext);
+		InvalidateCatalogSnapshotConditionally();
 
 		ProcessCompletedNotifies();
 		pgstat_report_stat(false);
 		pgstat_report_activity(STATE_IDLE, NULL);
 
+		//elog(WARNING,"5");
 		shm_mq_receive_stringinfo(command_qh, &msg);
+		//elog(WARNING,"5a");
 		msgtype = pq_getmsgbyte(&msg);
+		//elog(WARNING,"5b");
 
 		switch (msgtype)
 		{
 			case 'B':
 				{
+					//elog(WARNING,"5c");
 					SetCurrentStatementStartTimestamp();
 					exec_bind_message(&msg);
 					break;
@@ -612,6 +650,7 @@ autonomous_worker_main(Datum main_arg)
 				{
 					int         describe_type;
 					const char *describe_target;
+					//elog(WARNING,"5d");
 
 					SetCurrentStatementStartTimestamp();
 
@@ -622,10 +661,12 @@ autonomous_worker_main(Datum main_arg)
 					switch (describe_type)
 					{
 						case 'S':
+						//elog(WARNING,"5e %c %s", (char)describe_type, describe_target);
 							exec_describe_statement_message(describe_target);
 							break;
 #ifdef TODO
 						case 'P':
+						//elog(WARNING,"5f");
 							exec_describe_portal_message(describe_target);
 							break;
 #endif
@@ -642,6 +683,7 @@ autonomous_worker_main(Datum main_arg)
 				{
 					const char *portal_name;
 					int			max_rows;
+					//elog(WARNING,"5g");
 
 					SetCurrentStatementStartTimestamp();
 
@@ -660,6 +702,7 @@ autonomous_worker_main(Datum main_arg)
 					int			numParams;
 					Oid		   *paramTypes = NULL;
 					const char **paramNames = NULL;
+					//elog(WARNING,"5h");
 
 					SetCurrentStatementStartTimestamp();
 
@@ -691,6 +734,7 @@ autonomous_worker_main(Datum main_arg)
 				}
 			case 'Q':
 				{
+					//elog(WARNING,"5h1");
 					const char *sql;
 					int save_log_statement;
 					bool save_log_duration;
@@ -710,7 +754,9 @@ autonomous_worker_main(Datum main_arg)
 					log_min_duration_statement = -1;
 
 					SetCurrentStatementStartTimestamp();
+					//elog(WARNING,"5h1a %s", sql);
 					exec_simple_query(sql, 1);
+					//elog(WARNING,"5h1b");
 
 					log_statement = save_log_statement;
 					log_duration = save_log_duration;
@@ -722,6 +768,7 @@ autonomous_worker_main(Datum main_arg)
 				}
 			case 'S':
 				{
+					//elog(WARNING,"5i");
 					pq_getmsgend(&msg);
 					finish_xact_command();
 					ReadyForQuery(whereToSendOutput);
@@ -863,21 +910,21 @@ forward_NotifyResponse(StringInfo msg)
 
 
 static void
-rethrow_errornotice(StringInfo msg)
+rethrow_errornotice(StringInfo msg, int min_elevel)
 {
 	ErrorData   edata;
 
 	pq_parse_errornotice(msg, &edata);
-	edata.elevel = Min(edata.elevel, ERROR);
+	edata.elevel = Min(edata.elevel, min_elevel);
 	ThrowErrorData(&edata);
 }
 
 
 static void
-invalid_protocol_message(char msgtype)
+invalid_protocol_message(char msgtype, char phase)
 {
 	ereport(ERROR,
 			(errcode(ERRCODE_PROTOCOL_VIOLATION),
-			 errmsg("invalid protocol message type from autonomous session: %c",
-					msgtype)));
+			 errmsg("invalid protocol message type %c from autonomous session during phase %c",
+					msgtype, phase)));
 }
