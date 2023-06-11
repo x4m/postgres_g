@@ -54,5 +54,6 @@ extern Query *inline_set_returning_function(PlannerInfo *root,
 											RangeTblEntry *rte);
 
 extern Bitmapset *pull_paramids(Expr *expr);
+extern double find_var_dependency(PlannerInfo *root, Index relid, Var *var, Bitmapset *attnums);
 
 #endif							/* CLAUSES_H */

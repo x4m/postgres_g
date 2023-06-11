@@ -16,15 +16,19 @@
 
 #include "nodes/makefuncs.h"
 #include "nodes/nodeFuncs.h"
+#include "nodes/pathnodes.h"
 #include "optimizer/clauses.h"
 #include "optimizer/cost.h"
 #include "optimizer/optimizer.h"
 #include "optimizer/pathnode.h"
 #include "optimizer/plancat.h"
+#include "parser/parsetree.h"
 #include "statistics/statistics.h"
 #include "utils/fmgroids.h"
 #include "utils/lsyscache.h"
 #include "utils/selfuncs.h"
+#include "statistics/statistics.h"
+#include "catalog/pg_statistic_ext.h"
 
 /*
  * Data structure for accumulating info about possible range-query
@@ -51,9 +55,133 @@ static Selectivity clauselist_selectivity_or(PlannerInfo *root,
 											 SpecialJoinInfo *sjinfo,
 											 bool use_extended_stats);
 
+/*
+ * choose_best_statistics
+ *		Look for and return statistics with the specified 'requiredkind' which
+ *		have keys that match at least two of the given attnums.  Return NULL if
+ *		there's no match.
+ *
+ * The current selection criteria is very simple - we choose the statistics
+ * object referencing the most attributes in covered (and still unestimated
+ * clauses), breaking ties in favor of objects with fewer keys overall.
+ *
+ * The clause_attnums is an array of bitmaps, storing attnums for individual
+ * clauses. A NULL element means the clause is either incompatible or already
+ * estimated.
+ *
+ * XXX If multiple statistics objects tie on both criteria, then which object
+ * is chosen depends on the order that they appear in the stats list. Perhaps
+ * further tiebreakers are needed.
+ */
+static StatisticExtInfo *
+choose_best_statistics_old(List *stats, char requiredkind,
+					   Bitmapset **clause_attnums, int nclauses)
+{
+	ListCell   *lc;
+	StatisticExtInfo *best_match = NULL;
+	int			best_num_matched = 2;	/* goal #1: maximize */
+	int			best_match_keys = (STATS_MAX_DIMENSIONS + 1);	/* goal #2: minimize */
+
+	foreach(lc, stats)
+	{
+		int			i;
+		StatisticExtInfo *info = (StatisticExtInfo *) lfirst(lc);
+		Bitmapset  *matched = NULL;
+		int			num_matched;
+		int			numkeys;
+
+		/* skip statistics that are not of the correct type */
+		if (info->kind != requiredkind)
+			continue;
+
+		/*
+		 * Collect attributes in remaining (unestimated) clauses fully covered
+		 * by this statistic object.
+		 */
+		for (i = 0; i < nclauses; i++)
+		{
+			/* ignore incompatible/estimated clauses */
+			if (!clause_attnums[i])
+				continue;
+
+			/* ignore clauses that are not covered by this object */
+			if (!bms_is_subset(clause_attnums[i], info->keys))
+				continue;
+
+			matched = bms_add_members(matched, clause_attnums[i]);
+		}
+
+		num_matched = bms_num_members(matched);
+		bms_free(matched);
+
+		/*
+		 * save the actual number of keys in the stats so that we can choose
+		 * the narrowest stats with the most matching keys.
+		 */
+		numkeys = bms_num_members(info->keys);
+
+		/*
+		 * Use this object when it increases the number of matched clauses or
+		 * when it matches the same number of attributes but these stats have
+		 * fewer keys than any previous match.
+		 */
+		if (num_matched > best_num_matched ||
+			(num_matched == best_num_matched && numkeys < best_match_keys))
+		{
+			best_match = info;
+			best_num_matched = num_matched;
+			best_match_keys = numkeys;
+		}
+	}
+
+	return best_match;
+}
+
 /****************************************************************************
  *		ROUTINES TO COMPUTE SELECTIVITIES
  ****************************************************************************/
+
+/*
+ * Find functional dependency between attributes using multicolumn statistic.
+ * relid:   index of relation to which all considered attributes belong
+ * var:     variable which dependencies are inspected
+ * attnums: set of considered attributes included specified variables
+ * This function return degree of strongest dependency between some subset of this attributes
+ * and specified variable or 0.0 if on dependency is found.
+ */
+double
+find_var_dependency(PlannerInfo *root, Index relid, Var *var, Bitmapset *attnums)
+{
+	RelOptInfo* rel = find_base_rel(root, relid);
+	RangeTblEntry *rte = planner_rt_fetch(rel->relid, root);
+	if (rel->rtekind == RTE_RELATION && rel->statlist != NIL)
+	{
+		StatisticExtInfo *stat = choose_best_statistics_old(rel->statlist, STATS_EXT_DEPENDENCIES,
+														&attnums, 1);
+		if (stat != NULL)
+		{
+			MVDependencies *dependencies = statext_dependencies_load(stat->statOid, rte->inh);
+			MVDependency *strongest = NULL;
+			int i;
+			for (i = 0; i < dependencies->ndeps; i++)
+			{
+				MVDependency *dependency = dependencies->deps[i];
+				int n_dep_vars = dependency->nattributes - 1;
+				/* Dependency implies attribute */
+				if (var->varattno == dependency->attributes[n_dep_vars])
+				{
+					while (--n_dep_vars >= 0
+						   && bms_is_member(dependency->attributes[n_dep_vars], attnums));
+					if (n_dep_vars < 0 && (!strongest || strongest->degree < dependency->degree))
+						strongest = dependency;
+				}
+			}
+			if (strongest)
+				return strongest->degree;
+		}
+	}
+	return 0.0;
+}
 
 /*
  * clauselist_selectivity -
@@ -129,6 +257,9 @@ clauselist_selectivity_ext(PlannerInfo *root,
 	RangeQueryClause *rqlist = NULL;
 	ListCell   *l;
 	int			listidx;
+	Bitmapset  *clauses_attnums = NULL;
+	int			n_clauses_attnums = 0;
+	int         innerRelid = varRelid;
 
 	/*
 	 * If there's exactly one clause, just go directly to
@@ -138,6 +269,9 @@ clauselist_selectivity_ext(PlannerInfo *root,
 		return clause_selectivity_ext(root, (Node *) linitial(clauses),
 									  varRelid, jointype, sjinfo,
 									  use_extended_stats);
+
+	if (innerRelid == 0 && sjinfo)
+		bms_get_singleton_member(sjinfo->min_righthand, &innerRelid);
 
 	/*
 	 * Determine if these clauses reference a single relation.  If so, and if
@@ -171,7 +305,6 @@ clauselist_selectivity_ext(PlannerInfo *root,
 		Node	   *clause = (Node *) lfirst(l);
 		RestrictInfo *rinfo;
 		Selectivity s2;
-
 		listidx++;
 
 		/*
@@ -204,6 +337,7 @@ clauselist_selectivity_ext(PlannerInfo *root,
 		else
 			rinfo = NULL;
 
+
 		/*
 		 * See if it looks like a restriction clause with a pseudoconstant on
 		 * one side.  (Anything more complicated than that might not behave in
@@ -215,6 +349,42 @@ clauselist_selectivity_ext(PlannerInfo *root,
 			OpExpr	   *expr = (OpExpr *) clause;
 			bool		varonleft = true;
 			bool		ok;
+			int         oprrest = get_oprrest(expr->opno);
+
+			/* Try to take in account functional dependencies between attributes */
+			if (oprrest == F_EQSEL && rinfo != NULL && innerRelid != 0)
+			{
+				Var* var = (Var*)linitial(expr->args);
+				if (!IsA(var, Var) || var->varno != innerRelid)
+				{
+					var = (Var*)lsecond(expr->args);
+				}
+				if (IsA(var, Var) && var->varattno >= 0 && var->varno == innerRelid)
+				{
+					clauses_attnums = bms_add_member(clauses_attnums, var->varattno);
+					if (n_clauses_attnums++ != 0)
+					{
+						double dep = find_var_dependency(root, innerRelid, var, clauses_attnums);
+						if (dep != 0.0)
+						{
+							/*
+							 * Replace s2 with the conditional probability s2 given s1, computed
+							 * using the formula P(b|a) = P(a,b) / P(a), which simplifies to
+							 *
+							 * P(b|a) = f * Min(P(a), P(b)) / P(a) + (1-f) * P(b)
+							 *
+							 * where P(a) = s1, the selectivity of the implying attributes, and
+							 * P(b) = s2, the selectivity of the implied attribute.
+							 */
+							if (s1 <= s2)
+								s1 *= dep + (1 - dep) * s2;
+							else
+								s1 *= dep * s2 / s1 + (1 - dep) * s2;
+							continue;
+						}
+					}
+				}
+			}
 
 			if (rinfo)
 			{
@@ -240,7 +410,7 @@ clauselist_selectivity_ext(PlannerInfo *root,
 				 * selectivity in generically.  But if it's the right oprrest,
 				 * add the clause to rqlist for later processing.
 				 */
-				switch (get_oprrest(expr->opno))
+				switch (oprrest)
 				{
 					case F_SCALARLTSEL:
 					case F_SCALARLESEL:
