@@ -1593,7 +1593,7 @@ statext_is_compatible_clause_internal(PlannerInfo *root, Node *clause,
  * Returns false if there is something we definitively can't handle.
  * On true return, we can proceed to match the *exprs against statistics.
  */
-static bool
+bool
 statext_is_compatible_clause(PlannerInfo *root, Node *clause, Index relid,
 							 Bitmapset **attnums, List **exprs)
 {

@@ -25,6 +25,8 @@
 #include "utils/fmgroids.h"
 #include "utils/lsyscache.h"
 #include "utils/selfuncs.h"
+#include "catalog/pg_statistic_ext.h"
+#include "parser/parsetree.h"
 
 /*
  * Data structure for accumulating info about possible range-query
@@ -129,6 +131,15 @@ clauselist_selectivity_ext(PlannerInfo *root,
 	RangeQueryClause *rqlist = NULL;
 	ListCell   *l;
 	int			listidx;
+	Bitmapset  *clauses_attnums = NULL;
+	int			n_clauses_attnums = 0;
+	int         innerRelid = varRelid;
+
+	Bitmapset **list_attnums = (Bitmapset **) palloc(sizeof(Bitmapset *) *
+										 list_length(clauses));
+
+	/* expressions extracted from complex expressions */
+	List	  **list_exprs = (List **) palloc(sizeof(Node *) * list_length(clauses));
 
 	/*
 	 * If there's exactly one clause, just go directly to
@@ -156,6 +167,42 @@ clauselist_selectivity_ext(PlannerInfo *root,
 											jointype, sjinfo, rel,
 											&estimatedclauses, false);
 	}
+
+	/*
+	 * Pre-process the clauses list to extract the attnums and expressions
+	 * seen in each item.  We need to determine if there are any clauses which
+	 * will be useful for selectivity estimations with extended stats.  Along
+	 * the way we'll record all of the attnums and expressions for each clause
+	 * in lists which we'll reference later so we don't need to repeat the
+	 * same work again.
+	 *
+	 * We also skip clauses that we already estimated using different types of
+	 * statistics (we treat them as incompatible).
+	 */
+	listidx = 0;
+	foreach(l, clauses)
+	{
+		Node	   *clause = (Node *) lfirst(l);
+
+		if (!bms_is_member(listidx, estimatedclauses)
+		//&&	statext_is_compatible_clause(root, clause, rel->relid, &attnums, &exprs)
+		)
+		{
+			list_attnums[listidx] = estimatedclauses;
+			list_exprs[listidx] = clauses;
+		}
+		else
+		{
+			list_attnums[listidx] = NULL;
+			list_exprs[listidx] = NIL;
+		}
+
+		listidx++;
+	}
+
+	if (innerRelid == 0 && sjinfo)
+		bms_get_singleton_member(sjinfo->min_righthand, &innerRelid);
+
 
 	/*
 	 * Apply normal selectivity estimates for remaining clauses. We'll be
@@ -216,6 +263,72 @@ clauselist_selectivity_ext(PlannerInfo *root,
 			bool		varonleft = true;
 			bool		ok;
 
+			int         oprrest = get_oprrest(expr->opno);
+
+			/* Try to take in account functional dependencies between attributes */
+			if (oprrest == F_EQSEL && rinfo != NULL && innerRelid != 0)
+			{
+				Var* var = (Var*)linitial(expr->args);
+				if (!IsA(var, Var) || var->varno != innerRelid)
+				{
+					var = (Var*)lsecond(expr->args);
+				}
+				if (IsA(var, Var) && var->varno == innerRelid)
+				{
+					clauses_attnums = bms_add_member(clauses_attnums, var->varattno);
+					if (n_clauses_attnums++ != 0)
+					{
+						RelOptInfo* rel = find_base_rel(root, innerRelid);
+						RangeTblEntry *rte = planner_rt_fetch(rel->relid, root);
+
+						if (!bms_is_member(listidx, clauses_attnums)
+//						&& statext_is_compatible_clause(root, clause, rel->relid, &attnums, &exprs)
+						)
+						{
+							list_attnums[listidx] = clauses_attnums;
+							list_exprs[listidx] = clauses;
+						}
+						else
+						{
+							list_attnums[listidx] = NULL;
+							list_exprs[listidx] = NIL;
+						}
+
+						if (rel->rtekind == RTE_RELATION && rel->statlist != NIL)
+						{
+							StatisticExtInfo *stat = choose_best_statistics(rel->statlist, STATS_EXT_DEPENDENCIES, rte->inh,
+																			list_attnums, list_exprs,
+																			list_length(clauses));
+							if (stat != NULL)
+							{
+								MVDependencies *dependencies = statext_dependencies_load(stat->statOid, rte->inh);
+								MVDependency *strongest = NULL;
+								int i;
+								for (i = 0; i < dependencies->ndeps; i++)
+								{
+									MVDependency *dependency = dependencies->deps[i];
+									int n_dep_vars = dependency->nattributes - 1;
+									/* Dependency implies attribute */
+									if (var->varattno == dependency->attributes[n_dep_vars])
+									{
+										while (--n_dep_vars >= 0
+											   && bms_is_member(dependency->attributes[n_dep_vars], clauses_attnums));
+										if (n_dep_vars < 0 && (!strongest || strongest->degree < dependency->degree))
+											strongest = dependency;
+									}
+								}
+								if (strongest)
+								{
+									Selectivity dep_sel = (strongest->degree + (1 - strongest->degree) * s1);
+									s1 = Min(dep_sel, s2);
+									continue;
+								}
+							}
+						}
+					}
+				}
+			}
+
 			if (rinfo)
 			{
 				ok = (bms_membership(rinfo->clause_relids) == BMS_SINGLETON) &&
@@ -240,7 +353,7 @@ clauselist_selectivity_ext(PlannerInfo *root,
 				 * selectivity in generically.  But if it's the right oprrest,
 				 * add the clause to rqlist for later processing.
 				 */
-				switch (get_oprrest(expr->opno))
+				switch (oprrest)
 				{
 					case F_SCALARLTSEL:
 					case F_SCALARLESEL:

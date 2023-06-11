@@ -125,6 +125,8 @@ extern StatisticExtInfo *choose_best_statistics(List *stats, char requiredkind,
 												Bitmapset **clause_attnums,
 												List **clause_exprs,
 												int nclauses);
+extern bool statext_is_compatible_clause(PlannerInfo *root, Node *clause, Index relid,
+											Bitmapset **attnums, List **exprs);
 extern HeapTuple statext_expressions_load(Oid stxoid, bool inh, int idx);
 
 #endif							/* STATISTICS_H */
