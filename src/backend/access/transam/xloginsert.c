@@ -584,6 +584,8 @@ XLogRecordAssemble(RmgrId rmid, uint8 info,
 		bool		samerel;
 		bool		is_compressed = false;
 		bool		include_image;
+		if (block_id > 0)
+			elog(WARNING, "Block ID %d", block_id);
 
 		if (!regbuf->in_use)
 			continue;

@@ -256,6 +256,11 @@ typedef struct BTWriteState
 	BlockNumber btws_pages_alloced; /* # pages allocated */
 	BlockNumber btws_pages_written; /* # pages written out */
 	Page		btws_zeropage;	/* workspace for filling zeroes */
+
+
+	Page		deferred_pages[XLR_MAX_BLOCK_ID + 1];
+	BlockNumber deferred_blockno[XLR_MAX_BLOCK_ID + 1];
+	int deferred_pages_count;
 } BTWriteState;
 
 
@@ -574,6 +579,7 @@ _bt_leafbuild(BTSpool *btspool, BTSpool *btspool2)
 	/* reserve the metapage */
 	wstate.btws_pages_alloced = BTREE_METAPAGE + 1;
 	wstate.btws_pages_written = 0;
+	wstate.deferred_pages_count = 0;
 	wstate.btws_zeropage = NULL;	/* until needed */
 
 	pgstat_progress_update_param(PROGRESS_CREATEIDX_SUBPHASE,
@@ -641,56 +647,74 @@ _bt_blnewpage(uint32 level)
  * emit a completed btree page, and release the working storage.
  */
 static void
-_bt_blwritepage(BTWriteState *wstate, Page page, BlockNumber blkno)
+_bt_blwritepage(BTWriteState *wstate, Page page, BlockNumber blkno, bool force)
 {
+	int i = 0;
+	wstate->deferred_blockno[wstate->deferred_pages_count] = blkno;
+	wstate->deferred_pages[wstate->deferred_pages_count] = page;
+	wstate->deferred_pages_count++;
+	if (!force && wstate->deferred_pages_count < XLR_MAX_BLOCK_ID)
+	{
+		return;
+	}
+
+	
 	/* XLOG stuff */
 	if (wstate->btws_use_wal)
 	{
 		/* We use the XLOG_FPI record type for this */
-		log_newpage(&wstate->index->rd_locator, MAIN_FORKNUM, blkno, page, true);
+		log_newpages(&wstate->index->rd_locator, MAIN_FORKNUM, wstate->deferred_pages_count,
+					wstate->deferred_blockno, wstate->deferred_pages, true);
 	}
 
-	/*
-	 * If we have to write pages nonsequentially, fill in the space with
-	 * zeroes until we come back and overwrite.  This is not logically
-	 * necessary on standard Unix filesystems (unwritten space will read as
-	 * zeroes anyway), but it should help to avoid fragmentation. The dummy
-	 * pages aren't WAL-logged though.
-	 */
-	while (blkno > wstate->btws_pages_written)
+
+	for (i = 0; i < wstate->deferred_pages_count; i++)
 	{
-		if (!wstate->btws_zeropage)
-			wstate->btws_zeropage = (Page) palloc_aligned(BLCKSZ,
-														  PG_IO_ALIGN_SIZE,
-														  MCXT_ALLOC_ZERO);
-		/* don't set checksum for all-zero page */
-		smgrextend(RelationGetSmgr(wstate->index), MAIN_FORKNUM,
-				   wstate->btws_pages_written++,
-				   wstate->btws_zeropage,
-				   true);
-	}
+		blkno = wstate->deferred_blockno[i];
+		page = wstate->deferred_pages[i];
+		/*
+		 * If we have to write pages nonsequentially, fill in the space with
+		 * zeroes until we come back and overwrite.  This is not logically
+		 * necessary on standard Unix filesystems (unwritten space will read as
+		 * zeroes anyway), but it should help to avoid fragmentation. The dummy
+		 * pages aren't WAL-logged though.
+		 */
+		while (blkno > wstate->btws_pages_written)
+		{
+			if (!wstate->btws_zeropage)
+				wstate->btws_zeropage = (Page) palloc_aligned(BLCKSZ,
+															PG_IO_ALIGN_SIZE,
+															MCXT_ALLOC_ZERO);
+			/* don't set checksum for all-zero page */
+			smgrextend(RelationGetSmgr(wstate->index), MAIN_FORKNUM,
+					wstate->btws_pages_written++,
+					wstate->btws_zeropage,
+					true);
+		}
 
-	PageSetChecksumInplace(page, blkno);
+		PageSetChecksumInplace(page, blkno);
 
-	/*
-	 * Now write the page.  There's no need for smgr to schedule an fsync for
-	 * this write; we'll do it ourselves before ending the build.
-	 */
-	if (blkno == wstate->btws_pages_written)
-	{
-		/* extending the file... */
-		smgrextend(RelationGetSmgr(wstate->index), MAIN_FORKNUM, blkno,
-				   page, true);
-		wstate->btws_pages_written++;
-	}
-	else
-	{
-		/* overwriting a block we zero-filled before */
-		smgrwrite(RelationGetSmgr(wstate->index), MAIN_FORKNUM, blkno,
-				  page, true);
-	}
+		/*
+		 * Now write the page.  There's no need for smgr to schedule an fsync for
+		 * this write; we'll do it ourselves before ending the build.
+		 */
+		if (blkno == wstate->btws_pages_written)
+		{
+			/* extending the file... */
+			smgrextend(RelationGetSmgr(wstate->index), MAIN_FORKNUM, blkno,
+					page, true);
+			wstate->btws_pages_written++;
+		}
+		else
+		{
+			/* overwriting a block we zero-filled before */
+			smgrwrite(RelationGetSmgr(wstate->index), MAIN_FORKNUM, blkno,
+					page, true);
+		}
 
-	pfree(page);
+		pfree(page);
+	}
+	wstate->deferred_pages_count = 0;
 }
 
 /*
@@ -1031,7 +1055,7 @@ _bt_buildadd(BTWriteState *wstate, BTPageState *state, IndexTuple itup,
 		 * Write out the old page.  We never need to touch it again, so we can
 		 * free the opage workspace too.
 		 */
-		_bt_blwritepage(wstate, opage, oblkno);
+		_bt_blwritepage(wstate, opage, oblkno, false);
 
 		/*
 		 * Reset last_off to point to new page
@@ -1162,7 +1186,7 @@ _bt_uppershutdown(BTWriteState *wstate, BTPageState *state)
 		 * back one slot.  Then we can dump out the page.
 		 */
 		_bt_slideleft(s->btps_page);
-		_bt_blwritepage(wstate, s->btps_page, s->btps_blkno);
+		_bt_blwritepage(wstate, s->btps_page, s->btps_blkno, true);
 		s->btps_page = NULL;	/* writepage freed the workspace */
 	}
 
@@ -1175,7 +1199,7 @@ _bt_uppershutdown(BTWriteState *wstate, BTPageState *state)
 	metapage = (Page) palloc_aligned(BLCKSZ, PG_IO_ALIGN_SIZE, 0);
 	_bt_initmetapage(metapage, rootblkno, rootlevel,
 					 wstate->inskey->allequalimage);
-	_bt_blwritepage(wstate, metapage, BTREE_METAPAGE);
+	_bt_blwritepage(wstate, metapage, BTREE_METAPAGE, true);
 }
 
 /*
