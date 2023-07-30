@@ -82,12 +82,12 @@ typedef struct
 
 	XLogRecData bkp_rdatas[2];	/* temporary rdatas used to hold references to
 								 * backup block data in XLogRecordAssemble() */
-
-	/* buffer to store a compressed version of backup block image */
-	char		compressed_page[COMPRESS_BUFSIZE];
 } registered_buffer;
 
 static registered_buffer *registered_buffers;
+char		*compressed_pages;
+char		*not_compressed_pages;
+static int not_compressed_pages_size;
 static int	max_registered_buffers; /* allocated size */
 static int	max_registered_block_id = 0;	/* highest block_id + 1 currently
 											 * registered */
@@ -199,6 +199,8 @@ XLogEnsureRecordSpace(int max_block_id, int ndatas)
 	{
 		registered_buffers = (registered_buffer *)
 			repalloc(registered_buffers, sizeof(registered_buffer) * nbuffers);
+		compressed_pages = repalloc(compressed_pages, COMPRESS_BUFSIZE * nbuffers);
+		not_compressed_pages = repalloc(not_compressed_pages, BLCKSZ * nbuffers);
 
 		/*
 		 * At least the padding bytes in the structs must be zeroed, because
@@ -544,6 +546,7 @@ XLogRecordAssemble(RmgrId rmid, uint8 info,
 	XLogRecData *rdt_datas_last;
 	XLogRecord *rechdr;
 	char	   *scratch = hdr_scratch;
+	not_compressed_pages_size = 0;
 
 	/*
 	 * Note: this function can be called multiple times for the same record.
@@ -584,8 +587,6 @@ XLogRecordAssemble(RmgrId rmid, uint8 info,
 		bool		samerel;
 		bool		is_compressed = false;
 		bool		include_image;
-		if (block_id > 0)
-			elog(WARNING, "Block ID %d", block_id);
 
 		if (!regbuf->in_use)
 			continue;
@@ -652,7 +653,7 @@ XLogRecordAssemble(RmgrId rmid, uint8 info,
 
 				if (lower >= SizeOfPageHeaderData &&
 					upper > lower &&
-					upper <= BLCKSZ)
+					upper <= BLCKSZ && wal_compression == WAL_COMPRESSION_NONE)
 				{
 					bimg.hole_offset = lower;
 					cbimg.hole_length = upper - lower;
@@ -676,11 +677,13 @@ XLogRecordAssemble(RmgrId rmid, uint8 info,
 			 */
 			if (wal_compression != WAL_COMPRESSION_NONE)
 			{
-				is_compressed =
+				is_compressed = true;
+				memcpy(not_compressed_pages+not_compressed_pages_size, page, BLCKSZ);
 					XLogCompressBackupBlock(page, bimg.hole_offset,
 											cbimg.hole_length,
 											regbuf->compressed_page,
-											&compressed_len);
+											&compressed_len);*/
+
 			}
 
 			/*
@@ -695,8 +698,11 @@ XLogRecordAssemble(RmgrId rmid, uint8 info,
 			/*
 			 * Construct XLogRecData entries for the page content.
 			 */
-			rdt_datas_last->next = &regbuf->bkp_rdatas[0];
-			rdt_datas_last = rdt_datas_last->next;
+			if (wal_compression != WAL_COMPRESSION_NONE)
+			{
+				rdt_datas_last->next = &regbuf->bkp_rdatas[0];
+				rdt_datas_last = rdt_datas_last->next;
+			}
 
 			bimg.bimg_info = (cbimg.hole_length == 0) ? 0 : BKPIMAGE_HAS_HOLE;
 
@@ -742,9 +748,6 @@ XLogRecordAssemble(RmgrId rmid, uint8 info,
 						break;
 						/* no default case, so that compiler will warn */
 				}
-
-				rdt_datas_last->data = regbuf->compressed_page;
-				rdt_datas_last->len = compressed_len;
 			}
 			else
 			{
