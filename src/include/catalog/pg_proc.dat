@@ -9174,6 +9174,12 @@
 { oid => '3432', descr => 'generate random UUID',
   proname => 'gen_random_uuid', proleakproof => 't', provolatile => 'v',
   prorettype => 'uuid', proargtypes => '', prosrc => 'gen_random_uuid' },
+{ oid => '9895', descr => 'generate UUID version 7',
+  proname => 'gen_uuid_v7', proleakproof => 't', provolatile => 'v',
+  prorettype => 'uuid', proargtypes => '', prosrc => 'gen_uuid_v7' },
+{ oid => '9896', descr => 'extract timestamp from UUID version 7',
+  proname => 'get_uuid_v7_time', proleakproof => 't', provolatile => 'i',
+  prorettype => 'timestamptz', proargtypes => 'uuid', prosrc => 'get_uuid_v7_time' },
 
 # pg_lsn
 { oid => '3229', descr => 'I/O',

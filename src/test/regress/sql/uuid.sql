@@ -85,5 +85,19 @@ INSERT INTO guid1 (guid_field) VALUES (gen_random_uuid());
 INSERT INTO guid1 (guid_field) VALUES (gen_random_uuid());
 SELECT count(DISTINCT guid_field) FROM guid1;
 
+-- generation test for v7
+TRUNCATE guid1;
+INSERT INTO guid1 (guid_field) VALUES (gen_uuid_v7());
+INSERT INTO guid1 (guid_field) VALUES (gen_uuid_v7());
+SELECT count(DISTINCT guid_field) FROM guid1;
+
+-- check that timestamp is extracted correctly
+WITH uuid_time_extraction AS
+(SELECT get_uuid_v7_time(gen_uuid_v7())-now() d)
+SELECT (d <= '100ms') AND (d >= '-100ms') FROM uuid_time_extraction;
+
+-- get_uuid_v7_time() must refuse to accept non-UUIDv7
+select get_uuid_v7_time(gen_random_uuid());
+
 -- clean up
 DROP TABLE guid1, guid2 CASCADE;
