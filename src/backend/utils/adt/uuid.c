@@ -428,7 +428,7 @@ gen_random_uuid(PG_FUNCTION_ARGS)
 {
 	pg_uuid_t  *uuid = palloc(UUID_LEN);
 
-	if (!pg_strong_random(uuid, UUID_LEN))
+	if (!cached_strong_random(uuid, UUID_LEN))
 		ereport(ERROR,
 				(errcode(ERRCODE_INTERNAL_ERROR),
 				 errmsg("could not generate random values")));
