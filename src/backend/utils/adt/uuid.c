@@ -405,6 +405,24 @@ uuid_hash_extended(PG_FUNCTION_ARGS)
 	return hash_any_extended(key->data, UUID_LEN, PG_GETARG_INT64(1));
 }
 
+#define UUID_RND_CACHE_LEN 512
+int rnd_cache_ptr = UUID_RND_CACHE_LEN;
+unsigned char random_cache[UUID_RND_CACHE_LEN];
+
+static bool
+cached_strong_random(void *buf, size_t len)
+{
+	if (len + rnd_cache_ptr >= UUID_RND_CACHE_LEN)
+	{
+		if (!pg_strong_random(random_cache, UUID_RND_CACHE_LEN))
+			return false;
+		rnd_cache_ptr = 0;
+	}
+	memcpy(buf, &random_cache[rnd_cache_ptr], len);
+	rnd_cache_ptr += len;
+	return true;
+}
+
 Datum
 gen_random_uuid(PG_FUNCTION_ARGS)
 {
@@ -427,7 +445,6 @@ gen_random_uuid(PG_FUNCTION_ARGS)
 
 static uint32_t sequence_counter;
 static uint64_t previous_timestamp = 0;
-
 
 Datum
 gen_uuid_v7(PG_FUNCTION_ARGS)
@@ -455,7 +472,7 @@ gen_uuid_v7(PG_FUNCTION_ARGS)
 		tms = previous_timestamp;
 
 		/* fill everything after the timestamp and counter with random bytes */
-		if (!pg_strong_random(&uuid->data[8], UUID_LEN - 8))
+		if (!cached_strong_random(&uuid->data[8], UUID_LEN - 8))
 			ereport(ERROR,
 					(errcode(ERRCODE_INTERNAL_ERROR),
 					errmsg("could not generate random values")));
@@ -470,7 +487,7 @@ gen_uuid_v7(PG_FUNCTION_ARGS)
 	else
 	{
 		/* fill everything after the timestamp with random bytes */
-		if (!pg_strong_random(&uuid->data[6], UUID_LEN - 6))
+		if (!cached_strong_random(&uuid->data[6], UUID_LEN - 6))
 			ereport(ERROR,
 					(errcode(ERRCODE_INTERNAL_ERROR),
 					errmsg("could not generate random values")));
