@@ -3379,6 +3379,8 @@ ViewStmt
 VirtualTransactionId
 VirtualTupleTableSlot
 VolatileFunctionStatus
+VolatileRelnEntry
+VolatileRelnKey
 Vsrt
 WAIT_ORDER
 WALAvailability
