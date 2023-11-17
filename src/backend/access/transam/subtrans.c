@@ -78,12 +78,14 @@ SubTransSetParent(TransactionId xid, TransactionId parent)
 	int			pageno = TransactionIdToPage(xid);
 	int			entryno = TransactionIdToEntry(xid);
 	int			slotno;
+	LWLock	   *lock;
 	TransactionId *ptr;
 
 	Assert(TransactionIdIsValid(parent));
 	Assert(TransactionIdFollows(xid, parent));
 
-	LWLockAcquire(SubtransSLRULock, LW_EXCLUSIVE);
+	lock = SimpleLruGetSLRUBankLock(SubTransCtl, pageno);
+	LWLockAcquire(lock, LW_EXCLUSIVE);
 
 	slotno = SimpleLruReadPage(SubTransCtl, pageno, true, xid);
 	ptr = (TransactionId *) SubTransCtl->shared->page_buffer[slotno];
@@ -101,7 +103,7 @@ SubTransSetParent(TransactionId xid, TransactionId parent)
 		SubTransCtl->shared->page_dirty[slotno] = true;
 	}
 
-	LWLockRelease(SubtransSLRULock);
+	LWLockRelease(lock);
 }
 
 /*
@@ -131,7 +133,7 @@ SubTransGetParent(TransactionId xid)
 
 	parent = *ptr;
 
-	LWLockRelease(SubtransSLRULock);
+	LWLockRelease(SimpleLruGetSLRUBankLock(SubTransCtl, pageno));
 
 	return parent;
 }
@@ -194,8 +196,9 @@ SUBTRANSShmemInit(void)
 {
 	SubTransCtl->PagePrecedes = SubTransPagePrecedes;
 	SimpleLruInit(SubTransCtl, "Subtrans", subtrans_buffers, 0,
-				  SubtransSLRULock, "pg_subtrans",
-				  LWTRANCHE_SUBTRANS_BUFFER, SYNC_HANDLER_NONE);
+				  "pg_subtrans", LWTRANCHE_SUBTRANS_BUFFER,
+				  LWTRANCHE_SUBTRANS_SLRU,
+				  SYNC_HANDLER_NONE);
 	SlruPagePrecedesUnitTests(SubTransCtl, SUBTRANS_XACTS_PER_PAGE);
 }
 
@@ -213,8 +216,9 @@ void
 BootStrapSUBTRANS(void)
 {
 	int			slotno;
+	LWLock	   *lock = SimpleLruGetSLRUBankLock(SubTransCtl, 0);
 
-	LWLockAcquire(SubtransSLRULock, LW_EXCLUSIVE);
+	LWLockAcquire(lock, LW_EXCLUSIVE);
 
 	/* Create and zero the first page of the subtrans log */
 	slotno = ZeroSUBTRANSPage(0);
@@ -223,7 +227,7 @@ BootStrapSUBTRANS(void)
 	SimpleLruWritePage(SubTransCtl, slotno);
 	Assert(!SubTransCtl->shared->page_dirty[slotno]);
 
-	LWLockRelease(SubtransSLRULock);
+	LWLockRelease(lock);
 }
 
 /*
@@ -253,6 +257,8 @@ StartupSUBTRANS(TransactionId oldestActiveXID)
 	FullTransactionId nextXid;
 	int			startPage;
 	int			endPage;
+	LWLock	   *prevlock;
+	LWLock	   *lock;
 
 	/*
 	 * Since we don't expect pg_subtrans to be valid across crashes, we
@@ -260,23 +266,47 @@ StartupSUBTRANS(TransactionId oldestActiveXID)
 	 * Whenever we advance into a new page, ExtendSUBTRANS will likewise zero
 	 * the new page without regard to whatever was previously on disk.
 	 */
-	LWLockAcquire(SubtransSLRULock, LW_EXCLUSIVE);
-
 	startPage = TransactionIdToPage(oldestActiveXID);
 	nextXid = ShmemVariableCache->nextXid;
 	endPage = TransactionIdToPage(XidFromFullTransactionId(nextXid));
 
+	prevlock = SimpleLruGetSLRUBankLock(SubTransCtl, startPage);
+	LWLockAcquire(prevlock, LW_EXCLUSIVE);
 	while (startPage != endPage)
 	{
+		lock = SimpleLruGetSLRUBankLock(SubTransCtl, startPage);
+
+		/*
+		 * Check if we need to acquire the lock on the new bank then release
+		 * the lock on the old bank and acquire on the new bank.
+		 */
+		if (prevlock != lock)
+		{
+			LWLockRelease(prevlock);
+			LWLockAcquire(lock, LW_EXCLUSIVE);
+			prevlock = lock;
+		}
+
 		(void) ZeroSUBTRANSPage(startPage);
 		startPage++;
 		/* must account for wraparound */
 		if (startPage > TransactionIdToPage(MaxTransactionId))
 			startPage = 0;
 	}
-	(void) ZeroSUBTRANSPage(startPage);
 
-	LWLockRelease(SubtransSLRULock);
+	lock = SimpleLruGetSLRUBankLock(SubTransCtl, startPage);
+
+	/*
+	 * Check if we need to acquire the lock on the new bank then release the
+	 * lock on the old bank and acquire on the new bank.
+	 */
+	if (prevlock != lock)
+	{
+		LWLockRelease(prevlock);
+		LWLockAcquire(lock, LW_EXCLUSIVE);
+	}
+	(void) ZeroSUBTRANSPage(startPage);
+	LWLockRelease(lock);
 }
 
 /*
@@ -310,6 +340,7 @@ void
 ExtendSUBTRANS(TransactionId newestXact)
 {
 	int			pageno;
+	LWLock	   *lock;
 
 	/*
 	 * No work except at first XID of a page.  But beware: just after
@@ -321,12 +352,13 @@ ExtendSUBTRANS(TransactionId newestXact)
 
 	pageno = TransactionIdToPage(newestXact);
 
-	LWLockAcquire(SubtransSLRULock, LW_EXCLUSIVE);
+	lock = SimpleLruGetSLRUBankLock(SubTransCtl, pageno);
+	LWLockAcquire(lock, LW_EXCLUSIVE);
 
 	/* Zero the page */
 	ZeroSUBTRANSPage(pageno);
 
-	LWLockRelease(SubtransSLRULock);
+	LWLockRelease(lock);
 }
 
 

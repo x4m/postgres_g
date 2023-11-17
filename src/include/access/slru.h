@@ -21,6 +21,7 @@
  * SLRU bank size for slotno hash banks
  */
 #define SLRU_BANK_SIZE		16
+#define	SLRU_MAX_BANKLOCKS	128
 
 /*
  * To avoid overflowing internal arithmetic and the size_t data type, the
@@ -62,8 +63,6 @@ typedef enum
  */
 typedef struct SlruSharedData
 {
-	LWLock	   *ControlLock;
-
 	/* Number of buffers managed by this SLRU structure */
 	int			num_slots;
 
@@ -76,7 +75,34 @@ typedef struct SlruSharedData
 	bool	   *page_dirty;
 	int		   *page_number;
 	int		   *page_lru_count;
+
+	/* The buffer_locks protects the I/O on each buffer slots */
 	LWLockPadded *buffer_locks;
+
+	/*
+	 * Locks to protect the in memory buffer slot access in SLRU bank.  If the
+	 * number of banks are <= SLRU_MAX_BANKLOCKS then there will be one lock
+	 * per bank otherwise each lock will protect multiple banks depends upon
+	 * the number of banks.
+	 */
+	LWLockPadded *bank_locks;
+
+	/*----------
+	 * Instead of global counter we maintain a bank-wise lru counter because
+	 * a) we are doing the victim buffer selection as bank level so there is
+	 * no point of having a global counter b) manipulating a global counter
+	 * will have frequent cpu cache invalidation and that will affect the
+	 * performance.
+	 *
+	 * We mark a page "most recently used" by setting
+	 *		page_lru_count[slotno] = ++bank_cur_lru_count[bankno];
+	 * The oldest page is therefore the one with the highest value of
+	 *		bank_cur_lru_count[bankno] - page_lru_count[slotno]
+	 * The counts will eventually wrap around, but this calculation still
+	 * works as long as no page's age exceeds INT_MAX counts.
+	 *----------
+	 */
+	int		   *bank_cur_lru_count;
 
 	/*
 	 * Optional array of WAL flush LSNs associated with entries in the SLRU
@@ -89,23 +115,12 @@ typedef struct SlruSharedData
 	XLogRecPtr *group_lsn;
 	int			lsn_groups_per_page;
 
-	/*----------
-	 * We mark a page "most recently used" by setting
-	 *		page_lru_count[slotno] = ++cur_lru_count;
-	 * The oldest page is therefore the one with the highest value of
-	 *		cur_lru_count - page_lru_count[slotno]
-	 * The counts will eventually wrap around, but this calculation still
-	 * works as long as no page's age exceeds INT_MAX counts.
-	 *----------
-	 */
-	int			cur_lru_count;
-
 	/*
 	 * latest_page_number is the page number of the current end of the log;
 	 * this is not critical data, since we use it only to avoid swapping out
 	 * the latest page.
 	 */
-	int			latest_page_number;
+	pg_atomic_uint32 latest_page_number;
 
 	/* SLRU's index for statistics purposes (might not be unique) */
 	int			slru_stats_idx;
@@ -153,11 +168,24 @@ typedef struct SlruCtlData
 
 typedef SlruCtlData *SlruCtl;
 
+/*
+ * Get the SLRU bank lock for given SlruCtl and the pageno.
+ *
+ * This lock needs to be acquire in order to access the slru buffer slots in
+ * the respective bank.  For more details refer comments in SlruSharedData.
+ */
+static inline LWLock *
+SimpleLruGetSLRUBankLock(SlruCtl ctl, int pageno)
+{
+	int			banklockno = (pageno & ctl->bank_mask) % SLRU_MAX_BANKLOCKS;
+
+	return &(ctl->shared->bank_locks[banklockno].lock);
+}
 
 extern Size SimpleLruShmemSize(int nslots, int nlsns);
 extern void SimpleLruInit(SlruCtl ctl, const char *name, int nslots, int nlsns,
-						  LWLock *ctllock, const char *subdir, int tranche_id,
-						  SyncRequestHandler sync_handler);
+						  const char *subdir, int buffer_tranche_id,
+						  int bank_tranche_id, SyncRequestHandler sync_handler);
 extern int	SimpleLruZeroPage(SlruCtl ctl, int pageno);
 extern int	SimpleLruReadPage(SlruCtl ctl, int pageno, bool write_ok,
 							  TransactionId xid);
@@ -185,5 +213,8 @@ extern bool SlruScanDirCbReportPresence(SlruCtl ctl, char *filename,
 										int segpage, void *data);
 extern bool SlruScanDirCbDeleteAll(SlruCtl ctl, char *filename, int segpage,
 								   void *data);
+extern LWLock *SimpleLruGetSLRUBankLock(SlruCtl ctl, int pageno);
 extern bool check_slru_buffers(const char *name, int *newval);
+extern void SimpleLruAcquireAllBankLock(SlruCtl ctl, LWLockMode mode);
+extern void SimpleLruReleaseAllBankLock(SlruCtl ctl);
 #endif							/* SLRU_H */

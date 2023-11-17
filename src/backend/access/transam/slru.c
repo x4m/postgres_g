@@ -72,6 +72,21 @@
  */
 #define MAX_WRITEALL_BUFFERS	16
 
+/*
+ * Macro to get the index of lock for a given slotno in bank_lock array in
+ * SlruSharedData.
+ *
+ * Basically, the slru buffer pool is divided into banks of buffer and there is
+ * total SLRU_MAX_BANKLOCKS number of locks to protect access to buffer in the
+ * banks.  Since we have max limit on the number of locks we can not always have
+ * one lock for each bank.  So until the number of banks are
+ * <= SLRU_MAX_BANKLOCKS then there would be one lock protecting each bank
+ * otherwise one lock might protect multiple banks based on the number of
+ * banks.
+ */
+#define SLRU_SLOTNO_GET_BANKLOCKNO(slotno) \
+	(((slotno) / SLRU_BANK_SIZE) % SLRU_MAX_BANKLOCKS)
+
 typedef struct SlruWriteAllData
 {
 	int			num_files;		/* # files actually open */
@@ -92,34 +107,6 @@ typedef struct SlruWriteAllData *SlruWriteAll;
 	(a).handler = (xx_handler), \
 	(a).segno = (xx_segno) \
 )
-
-/*
- * Macro to mark a buffer slot "most recently used".  Note multiple evaluation
- * of arguments!
- *
- * The reason for the if-test is that there are often many consecutive
- * accesses to the same page (particularly the latest page).  By suppressing
- * useless increments of cur_lru_count, we reduce the probability that old
- * pages' counts will "wrap around" and make them appear recently used.
- *
- * We allow this code to be executed concurrently by multiple processes within
- * SimpleLruReadPage_ReadOnly().  As long as int reads and writes are atomic,
- * this should not cause any completely-bogus values to enter the computation.
- * However, it is possible for either cur_lru_count or individual
- * page_lru_count entries to be "reset" to lower values than they should have,
- * in case a process is delayed while it executes this macro.  With care in
- * SlruSelectLRUPage(), this does little harm, and in any case the absolute
- * worst possible consequence is a nonoptimal choice of page to evict.  The
- * gain from allowing concurrent reads of SLRU pages seems worth it.
- */
-#define SlruRecentlyUsed(shared, slotno)	\
-	do { \
-		int		new_lru_count = (shared)->cur_lru_count; \
-		if (new_lru_count != (shared)->page_lru_count[slotno]) { \
-			(shared)->cur_lru_count = ++new_lru_count; \
-			(shared)->page_lru_count[slotno] = new_lru_count; \
-		} \
-	} while (0)
 
 /* Saved info for SlruReportIOError */
 typedef enum
@@ -147,6 +134,7 @@ static int	SlruSelectLRUPage(SlruCtl ctl, int pageno);
 static bool SlruScanDirCbDeleteCutoff(SlruCtl ctl, char *filename,
 									  int segpage, void *data);
 static void SlruInternalDeleteSegment(SlruCtl ctl, int segno);
+static inline void SlruRecentlyUsed(SlruShared shared, int slotno);
 
 /*
  * Initialization of shared memory
@@ -156,6 +144,8 @@ Size
 SimpleLruShmemSize(int nslots, int nlsns)
 {
 	Size		sz;
+	int			nbanks = nslots / SLRU_BANK_SIZE;
+	int			nbanklocks = Min(nbanks, SLRU_MAX_BANKLOCKS);
 
 	/* we assume nslots isn't so large as to risk overflow */
 	sz = MAXALIGN(sizeof(SlruSharedData));
@@ -165,6 +155,8 @@ SimpleLruShmemSize(int nslots, int nlsns)
 	sz += MAXALIGN(nslots * sizeof(int));	/* page_number[] */
 	sz += MAXALIGN(nslots * sizeof(int));	/* page_lru_count[] */
 	sz += MAXALIGN(nslots * sizeof(LWLockPadded));	/* buffer_locks[] */
+	sz += MAXALIGN(nbanklocks * sizeof(LWLockPadded));	/* bank_locks[] */
+	sz += MAXALIGN(nbanks * sizeof(int));	/* bank_cur_lru_count[] */
 
 	if (nlsns > 0)
 		sz += MAXALIGN(nslots * nlsns * sizeof(XLogRecPtr));	/* group_lsn[] */
@@ -181,16 +173,19 @@ SimpleLruShmemSize(int nslots, int nlsns)
  * nlsns: number of LSN groups per page (set to zero if not relevant).
  * ctllock: LWLock to use to control access to the shared control structure.
  * subdir: PGDATA-relative subdirectory that will contain the files.
- * tranche_id: LWLock tranche ID to use for the SLRU's per-buffer LWLocks.
+ * buffer_tranche_id: tranche ID to use for the SLRU's per-buffer LWLocks.
+ * bank_tranche_id: tranche ID to use for the bank LWLocks.
  * sync_handler: which set of functions to use to handle sync requests
  */
 void
 SimpleLruInit(SlruCtl ctl, const char *name, int nslots, int nlsns,
-			  LWLock *ctllock, const char *subdir, int tranche_id,
+			  const char *subdir, int buffer_tranche_id, int bank_tranche_id,
 			  SyncRequestHandler sync_handler)
 {
 	SlruShared	shared;
 	bool		found;
+	int			nbanks = nslots / SLRU_BANK_SIZE;
+	int			nbanklocks = Min(nbanks, SLRU_MAX_BANKLOCKS);
 
 	shared = (SlruShared) ShmemInitStruct(name,
 										  SimpleLruShmemSize(nslots, nlsns),
@@ -202,17 +197,15 @@ SimpleLruInit(SlruCtl ctl, const char *name, int nslots, int nlsns,
 		char	   *ptr;
 		Size		offset;
 		int			slotno;
+		int			bankno;
+		int			banklockno;
 
 		Assert(!found);
 
 		memset(shared, 0, sizeof(SlruSharedData));
 
-		shared->ControlLock = ctllock;
-
 		shared->num_slots = nslots;
 		shared->lsn_groups_per_page = nlsns;
-
-		shared->cur_lru_count = 0;
 
 		/* shared->latest_page_number will be set later */
 
@@ -234,6 +227,10 @@ SimpleLruInit(SlruCtl ctl, const char *name, int nslots, int nlsns,
 		/* Initialize LWLocks */
 		shared->buffer_locks = (LWLockPadded *) (ptr + offset);
 		offset += MAXALIGN(nslots * sizeof(LWLockPadded));
+		shared->bank_locks = (LWLockPadded *) (ptr + offset);
+		offset += MAXALIGN(nbanklocks * sizeof(LWLockPadded));
+		shared->bank_cur_lru_count = (int *) (ptr + offset);
+		offset += MAXALIGN(nbanks * sizeof(int));
 
 		if (nlsns > 0)
 		{
@@ -245,7 +242,7 @@ SimpleLruInit(SlruCtl ctl, const char *name, int nslots, int nlsns,
 		for (slotno = 0; slotno < nslots; slotno++)
 		{
 			LWLockInitialize(&shared->buffer_locks[slotno].lock,
-							 tranche_id);
+							 buffer_tranche_id);
 
 			shared->page_buffer[slotno] = ptr;
 			shared->page_status[slotno] = SLRU_PAGE_EMPTY;
@@ -253,6 +250,15 @@ SimpleLruInit(SlruCtl ctl, const char *name, int nslots, int nlsns,
 			shared->page_lru_count[slotno] = 0;
 			ptr += BLCKSZ;
 		}
+
+		/* Initialize the bank locks. */
+		for (banklockno = 0; banklockno < nbanklocks; banklockno++)
+			LWLockInitialize(&shared->bank_locks[banklockno].lock,
+							 bank_tranche_id);
+
+		/* Initialize the bank lru counters. */
+		for (bankno = 0; bankno < nbanks; bankno++)
+			shared->bank_cur_lru_count[bankno] = 0;
 
 		/* Should fit to estimated shmem size */
 		Assert(ptr - (char *) shared <= SimpleLruShmemSize(nslots, nlsns));
@@ -307,7 +313,7 @@ SimpleLruZeroPage(SlruCtl ctl, int pageno)
 	SimpleLruZeroLSNs(ctl, slotno);
 
 	/* Assume this page is now the latest active page */
-	shared->latest_page_number = pageno;
+	pg_atomic_write_u32(&shared->latest_page_number, pageno);
 
 	/* update the stats counter of zeroed pages */
 	pgstat_count_slru_page_zeroed(shared->slru_stats_idx);
@@ -346,12 +352,13 @@ static void
 SimpleLruWaitIO(SlruCtl ctl, int slotno)
 {
 	SlruShared	shared = ctl->shared;
+	int			banklockno = SLRU_SLOTNO_GET_BANKLOCKNO(slotno);
 
 	/* See notes at top of file */
-	LWLockRelease(shared->ControlLock);
+	LWLockRelease(&shared->bank_locks[banklockno].lock);
 	LWLockAcquire(&shared->buffer_locks[slotno].lock, LW_SHARED);
 	LWLockRelease(&shared->buffer_locks[slotno].lock);
-	LWLockAcquire(shared->ControlLock, LW_EXCLUSIVE);
+	LWLockAcquire(&shared->bank_locks[banklockno].lock, LW_EXCLUSIVE);
 
 	/*
 	 * If the slot is still in an io-in-progress state, then either someone
@@ -406,6 +413,7 @@ SimpleLruReadPage(SlruCtl ctl, int pageno, bool write_ok,
 	for (;;)
 	{
 		int			slotno;
+		int			banklockno;
 		bool		ok;
 
 		/* See if page already is in memory; if not, pick victim slot */
@@ -448,9 +456,10 @@ SimpleLruReadPage(SlruCtl ctl, int pageno, bool write_ok,
 
 		/* Acquire per-buffer lock (cannot deadlock, see notes at top) */
 		LWLockAcquire(&shared->buffer_locks[slotno].lock, LW_EXCLUSIVE);
+		banklockno = SLRU_SLOTNO_GET_BANKLOCKNO(slotno);
 
 		/* Release control lock while doing I/O */
-		LWLockRelease(shared->ControlLock);
+		LWLockRelease(&shared->bank_locks[banklockno].lock);
 
 		/* Do the read */
 		ok = SlruPhysicalReadPage(ctl, pageno, slotno);
@@ -459,7 +468,7 @@ SimpleLruReadPage(SlruCtl ctl, int pageno, bool write_ok,
 		SimpleLruZeroLSNs(ctl, slotno);
 
 		/* Re-acquire control lock and update page state */
-		LWLockAcquire(shared->ControlLock, LW_EXCLUSIVE);
+		LWLockAcquire(&shared->bank_locks[banklockno].lock, LW_EXCLUSIVE);
 
 		Assert(shared->page_number[slotno] == pageno &&
 			   shared->page_status[slotno] == SLRU_PAGE_READ_IN_PROGRESS &&
@@ -503,9 +512,10 @@ SimpleLruReadPage_ReadOnly(SlruCtl ctl, int pageno, TransactionId xid)
 	int			slotno;
 	int			bankstart = (pageno & ctl->bank_mask) * SLRU_BANK_SIZE;
 	int			bankend = bankstart + SLRU_BANK_SIZE;
+	int			banklockno = SLRU_SLOTNO_GET_BANKLOCKNO(bankstart);
 
 	/* Try to find the page while holding only shared lock */
-	LWLockAcquire(shared->ControlLock, LW_SHARED);
+	LWLockAcquire(&shared->bank_locks[banklockno].lock, LW_SHARED);
 
 	/*
 	 * See if the page is already in a buffer pool.  The buffer pool is
@@ -529,8 +539,8 @@ SimpleLruReadPage_ReadOnly(SlruCtl ctl, int pageno, TransactionId xid)
 	}
 
 	/* No luck, so switch to normal exclusive lock and do regular read */
-	LWLockRelease(shared->ControlLock);
-	LWLockAcquire(shared->ControlLock, LW_EXCLUSIVE);
+	LWLockRelease(&shared->bank_locks[banklockno].lock);
+	LWLockAcquire(&shared->bank_locks[banklockno].lock, LW_EXCLUSIVE);
 
 	return SimpleLruReadPage(ctl, pageno, true, xid);
 }
@@ -552,6 +562,7 @@ SlruInternalWritePage(SlruCtl ctl, int slotno, SlruWriteAll fdata)
 	SlruShared	shared = ctl->shared;
 	int			pageno = shared->page_number[slotno];
 	bool		ok;
+	int			banklockno = SLRU_SLOTNO_GET_BANKLOCKNO(slotno);
 
 	/* If a write is in progress, wait for it to finish */
 	while (shared->page_status[slotno] == SLRU_PAGE_WRITE_IN_PROGRESS &&
@@ -580,7 +591,7 @@ SlruInternalWritePage(SlruCtl ctl, int slotno, SlruWriteAll fdata)
 	LWLockAcquire(&shared->buffer_locks[slotno].lock, LW_EXCLUSIVE);
 
 	/* Release control lock while doing I/O */
-	LWLockRelease(shared->ControlLock);
+	LWLockRelease(&shared->bank_locks[banklockno].lock);
 
 	/* Do the write */
 	ok = SlruPhysicalWritePage(ctl, pageno, slotno, fdata);
@@ -595,7 +606,7 @@ SlruInternalWritePage(SlruCtl ctl, int slotno, SlruWriteAll fdata)
 	}
 
 	/* Re-acquire control lock and update page state */
-	LWLockAcquire(shared->ControlLock, LW_EXCLUSIVE);
+	LWLockAcquire(&shared->bank_locks[banklockno].lock, LW_EXCLUSIVE);
 
 	Assert(shared->page_number[slotno] == pageno &&
 		   shared->page_status[slotno] == SLRU_PAGE_WRITE_IN_PROGRESS);
@@ -1039,7 +1050,8 @@ SlruSelectLRUPage(SlruCtl ctl, int pageno)
 		int			bestinvalidslot = 0;	/* keep compiler quiet */
 		int			best_invalid_delta = -1;
 		int			best_invalid_page_number = 0;	/* keep compiler quiet */
-		int			bankstart = (pageno & ctl->bank_mask) * SLRU_BANK_SIZE;
+		int			bankno = pageno & ctl->bank_mask;
+		int			bankstart = bankno * SLRU_BANK_SIZE;
 		int			bankend = bankstart + SLRU_BANK_SIZE;
 
 		/*
@@ -1081,7 +1093,7 @@ SlruSelectLRUPage(SlruCtl ctl, int pageno)
 		 * That gets us back on the path to having good data when there are
 		 * multiple pages with the same lru_count.
 		 */
-		cur_count = (shared->cur_lru_count)++;
+		cur_count = (shared->bank_cur_lru_count[bankno])++;
 		for (slotno = bankstart; slotno < bankend; slotno++)
 		{
 			int			this_delta;
@@ -1103,7 +1115,7 @@ SlruSelectLRUPage(SlruCtl ctl, int pageno)
 				this_delta = 0;
 			}
 			this_page_number = shared->page_number[slotno];
-			if (this_page_number == shared->latest_page_number)
+			if (this_page_number == pg_atomic_read_u32(&shared->latest_page_number))
 				continue;
 			if (shared->page_status[slotno] == SLRU_PAGE_VALID)
 			{
@@ -1177,6 +1189,7 @@ SimpleLruWriteAll(SlruCtl ctl, bool allow_redirtied)
 	int			slotno;
 	int			pageno = 0;
 	int			i;
+	int			prevlockno = SLRU_SLOTNO_GET_BANKLOCKNO(0);
 	bool		ok;
 
 	/* update the stats counter of flushes */
@@ -1187,10 +1200,23 @@ SimpleLruWriteAll(SlruCtl ctl, bool allow_redirtied)
 	 */
 	fdata.num_files = 0;
 
-	LWLockAcquire(shared->ControlLock, LW_EXCLUSIVE);
+	LWLockAcquire(&shared->bank_locks[prevlockno].lock, LW_EXCLUSIVE);
 
 	for (slotno = 0; slotno < shared->num_slots; slotno++)
 	{
+		int			curlockno = SLRU_SLOTNO_GET_BANKLOCKNO(slotno);
+
+		/*
+		 * If the current bank lock is not same as the previous bank lock then
+		 * release the previous lock and acquire the new lock.
+		 */
+		if (curlockno != prevlockno)
+		{
+			LWLockRelease(&shared->bank_locks[prevlockno].lock);
+			LWLockAcquire(&shared->bank_locks[curlockno].lock, LW_EXCLUSIVE);
+			prevlockno = curlockno;
+		}
+
 		SlruInternalWritePage(ctl, slotno, &fdata);
 
 		/*
@@ -1204,7 +1230,7 @@ SimpleLruWriteAll(SlruCtl ctl, bool allow_redirtied)
 				!shared->page_dirty[slotno]));
 	}
 
-	LWLockRelease(shared->ControlLock);
+	LWLockRelease(&shared->bank_locks[prevlockno].lock);
 
 	/*
 	 * Now close any files that were open
@@ -1244,6 +1270,7 @@ SimpleLruTruncate(SlruCtl ctl, int cutoffPage)
 {
 	SlruShared	shared = ctl->shared;
 	int			slotno;
+	int			prevlockno;
 
 	/* update the stats counter of truncates */
 	pgstat_count_slru_truncate(shared->slru_stats_idx);
@@ -1254,25 +1281,38 @@ SimpleLruTruncate(SlruCtl ctl, int cutoffPage)
 	 * or just after a checkpoint, any dirty pages should have been flushed
 	 * already ... we're just being extra careful here.)
 	 */
-	LWLockAcquire(shared->ControlLock, LW_EXCLUSIVE);
-
 restart:
 
 	/*
 	 * While we are holding the lock, make an important safety check: the
 	 * current endpoint page must not be eligible for removal.
 	 */
-	if (ctl->PagePrecedes(shared->latest_page_number, cutoffPage))
+	if (ctl->PagePrecedes(pg_atomic_read_u32(&shared->latest_page_number),
+						  cutoffPage))
 	{
-		LWLockRelease(shared->ControlLock);
 		ereport(LOG,
 				(errmsg("could not truncate directory \"%s\": apparent wraparound",
 						ctl->Dir)));
 		return;
 	}
 
+	prevlockno = SLRU_SLOTNO_GET_BANKLOCKNO(0);
+	LWLockAcquire(&shared->bank_locks[prevlockno].lock, LW_EXCLUSIVE);
 	for (slotno = 0; slotno < shared->num_slots; slotno++)
 	{
+		int			curlockno = SLRU_SLOTNO_GET_BANKLOCKNO(slotno);
+
+		/*
+		 * If the current bank lock is not same as the previous bank lock then
+		 * release the previous lock and acquire the new lock.
+		 */
+		if (curlockno != prevlockno)
+		{
+			LWLockRelease(&shared->bank_locks[prevlockno].lock);
+			LWLockAcquire(&shared->bank_locks[curlockno].lock, LW_EXCLUSIVE);
+			prevlockno = curlockno;
+		}
+
 		if (shared->page_status[slotno] == SLRU_PAGE_EMPTY)
 			continue;
 		if (!ctl->PagePrecedes(shared->page_number[slotno], cutoffPage))
@@ -1302,10 +1342,12 @@ restart:
 			SlruInternalWritePage(ctl, slotno, NULL);
 		else
 			SimpleLruWaitIO(ctl, slotno);
+
+		LWLockRelease(&shared->bank_locks[prevlockno].lock);
 		goto restart;
 	}
 
-	LWLockRelease(shared->ControlLock);
+	LWLockRelease(&shared->bank_locks[prevlockno].lock);
 
 	/* Now we can remove the old segment(s) */
 	(void) SlruScanDirectory(ctl, SlruScanDirCbDeleteCutoff, &cutoffPage);
@@ -1346,15 +1388,29 @@ SlruDeleteSegment(SlruCtl ctl, int segno)
 	SlruShared	shared = ctl->shared;
 	int			slotno;
 	bool		did_write;
+	int			prevlockno = SLRU_SLOTNO_GET_BANKLOCKNO(0);
 
 	/* Clean out any possibly existing references to the segment. */
-	LWLockAcquire(shared->ControlLock, LW_EXCLUSIVE);
+	LWLockAcquire(&shared->bank_locks[prevlockno].lock, LW_EXCLUSIVE);
 restart:
 	did_write = false;
 	for (slotno = 0; slotno < shared->num_slots; slotno++)
 	{
-		int			pagesegno = shared->page_number[slotno] / SLRU_PAGES_PER_SEGMENT;
+		int			pagesegno;
+		int			curlockno = SLRU_SLOTNO_GET_BANKLOCKNO(slotno);
 
+		/*
+		 * If the current bank lock is not same as the previous bank lock then
+		 * release the previous lock and acquire the new lock.
+		 */
+		if (curlockno != prevlockno)
+		{
+			LWLockRelease(&shared->bank_locks[prevlockno].lock);
+			LWLockAcquire(&shared->bank_locks[curlockno].lock, LW_EXCLUSIVE);
+			prevlockno = curlockno;
+		}
+
+		pagesegno = shared->page_number[slotno] / SLRU_PAGES_PER_SEGMENT;
 		if (shared->page_status[slotno] == SLRU_PAGE_EMPTY)
 			continue;
 
@@ -1388,7 +1444,7 @@ restart:
 
 	SlruInternalDeleteSegment(ctl, segno);
 
-	LWLockRelease(shared->ControlLock);
+	LWLockRelease(&shared->bank_locks[prevlockno].lock);
 }
 
 /*
@@ -1631,6 +1687,38 @@ SlruSyncFileTag(SlruCtl ctl, const FileTag *ftag, char *path)
 }
 
 /*
+ * Function to mark a buffer slot "most recently used".  Note multiple
+ * evaluation of arguments!
+ *
+ * The reason for the if-test is that there are often many consecutive
+ * accesses to the same page (particularly the latest page).  By suppressing
+ * useless increments of bank_cur_lru_count, we reduce the probability that old
+ * pages' counts will "wrap around" and make them appear recently used.
+ *
+ * We allow this code to be executed concurrently by multiple processes within
+ * SimpleLruReadPage_ReadOnly().  As long as int reads and writes are atomic,
+ * this should not cause any completely-bogus values to enter the computation.
+ * However, it is possible for either bank_cur_lru_count or individual
+ * page_lru_count entries to be "reset" to lower values than they should have,
+ * in case a process is delayed while it executes this macro.  With care in
+ * SlruSelectLRUPage(), this does little harm, and in any case the absolute
+ * worst possible consequence is a nonoptimal choice of page to evict.  The
+ * gain from allowing concurrent reads of SLRU pages seems worth it.
+ */
+static inline void
+SlruRecentlyUsed(SlruShared shared, int slotno)
+{
+	int			bankno = slotno / SLRU_BANK_SIZE;
+	int			new_lru_count = shared->bank_cur_lru_count[bankno];
+
+	if (new_lru_count != shared->page_lru_count[slotno])
+	{
+		shared->bank_cur_lru_count[bankno] = ++new_lru_count;
+		shared->page_lru_count[slotno] = new_lru_count;
+	}
+}
+
+/*
  * Helper function for GUC check_hook to check whether slru buffers are in
  * multiples of SLRU_BANK_SIZE.
  */
@@ -1645,4 +1733,38 @@ check_slru_buffers(const char *name, int *newval)
 	GUC_check_errdetail("\"%s\" must be in multiple of %d", name,
 						SLRU_BANK_SIZE);
 	return false;
+}
+
+/*
+ * Function to acquire all bank's lock of the given SlruCtl
+ */
+void
+SimpleLruAcquireAllBankLock(SlruCtl ctl, LWLockMode mode)
+{
+	SlruShared	shared = ctl->shared;
+	int			banklockno;
+	int			nbanklocks;
+
+	/* Compute number of bank locks. */
+	nbanklocks = Min(shared->num_slots / SLRU_BANK_SIZE, SLRU_MAX_BANKLOCKS);
+
+	for (banklockno = 0; banklockno < nbanklocks; banklockno++)
+		LWLockAcquire(&shared->bank_locks[banklockno].lock, mode);
+}
+
+/*
+ * Function to release all bank's lock of the given SlruCtl
+ */
+void
+SimpleLruReleaseAllBankLock(SlruCtl ctl)
+{
+	SlruShared	shared = ctl->shared;
+	int			banklockno;
+	int			nbanklocks;
+
+	/* Compute number of bank locks. */
+	nbanklocks = Min(shared->num_slots / SLRU_BANK_SIZE, SLRU_MAX_BANKLOCKS);
+
+	for (banklockno = 0; banklockno < nbanklocks; banklockno++)
+		LWLockRelease(&shared->bank_locks[banklockno].lock);
 }
