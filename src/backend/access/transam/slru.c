@@ -59,6 +59,7 @@
 #include "pgstat.h"
 #include "storage/fd.h"
 #include "storage/shmem.h"
+#include "utils/guc_hooks.h"
 
 #define SlruFileName(ctl, path, seg) \
 	snprintf(path, MAXPGPATH, "%s/%04X", (ctl)->Dir, seg)
@@ -133,7 +134,6 @@ typedef enum
 
 static SlruErrorCause slru_errcause;
 static int	slru_errno;
-
 
 static void SimpleLruZeroLSNs(SlruCtl ctl, int slotno);
 static void SimpleLruWaitIO(SlruCtl ctl, int slotno);
@@ -258,7 +258,10 @@ SimpleLruInit(SlruCtl ctl, const char *name, int nslots, int nlsns,
 		Assert(ptr - (char *) shared <= SimpleLruShmemSize(nslots, nlsns));
 	}
 	else
+	{
 		Assert(found);
+		Assert(shared->num_slots == nslots);
+	}
 
 	/*
 	 * Initialize the unshared control struct, including directory path. We
@@ -266,6 +269,7 @@ SimpleLruInit(SlruCtl ctl, const char *name, int nslots, int nlsns,
 	 */
 	ctl->shared = shared;
 	ctl->sync_handler = sync_handler;
+	ctl->bank_mask = (nslots / SLRU_BANK_SIZE) - 1;
 	strlcpy(ctl->Dir, subdir, sizeof(ctl->Dir));
 }
 
@@ -497,12 +501,18 @@ SimpleLruReadPage_ReadOnly(SlruCtl ctl, int pageno, TransactionId xid)
 {
 	SlruShared	shared = ctl->shared;
 	int			slotno;
+	int			bankstart = (pageno & ctl->bank_mask) * SLRU_BANK_SIZE;
+	int			bankend = bankstart + SLRU_BANK_SIZE;
 
 	/* Try to find the page while holding only shared lock */
 	LWLockAcquire(shared->ControlLock, LW_SHARED);
 
-	/* See if page is already in a buffer */
-	for (slotno = 0; slotno < shared->num_slots; slotno++)
+	/*
+	 * See if the page is already in a buffer pool.  The buffer pool is
+	 * divided into banks of buffers and each pageno may reside only in one
+	 * bank so limit the search within the bank.
+	 */
+	for (slotno = bankstart; slotno < bankend; slotno++)
 	{
 		if (shared->page_number[slotno] == pageno &&
 			shared->page_status[slotno] != SLRU_PAGE_EMPTY &&
@@ -1029,9 +1039,15 @@ SlruSelectLRUPage(SlruCtl ctl, int pageno)
 		int			bestinvalidslot = 0;	/* keep compiler quiet */
 		int			best_invalid_delta = -1;
 		int			best_invalid_page_number = 0;	/* keep compiler quiet */
+		int			bankstart = (pageno & ctl->bank_mask) * SLRU_BANK_SIZE;
+		int			bankend = bankstart + SLRU_BANK_SIZE;
 
-		/* See if page already has a buffer assigned */
-		for (slotno = 0; slotno < shared->num_slots; slotno++)
+		/*
+		 * See if the page is already in a buffer pool.  The buffer pool is
+		 * divided into banks of buffers and each pageno may reside only in one
+		 * bank so limit the search within the bank.
+		 */
+		for (slotno = bankstart; slotno < bankend; slotno++)
 		{
 			if (shared->page_number[slotno] == pageno &&
 				shared->page_status[slotno] != SLRU_PAGE_EMPTY)
@@ -1066,7 +1082,7 @@ SlruSelectLRUPage(SlruCtl ctl, int pageno)
 		 * multiple pages with the same lru_count.
 		 */
 		cur_count = (shared->cur_lru_count)++;
-		for (slotno = 0; slotno < shared->num_slots; slotno++)
+		for (slotno = bankstart; slotno < bankend; slotno++)
 		{
 			int			this_delta;
 			int			this_page_number;
@@ -1612,4 +1628,21 @@ SlruSyncFileTag(SlruCtl ctl, const FileTag *ftag, char *path)
 
 	errno = save_errno;
 	return result;
+}
+
+/*
+ * Helper function for GUC check_hook to check whether slru buffers are in
+ * multiples of SLRU_BANK_SIZE.
+ */
+bool
+check_slru_buffers(const char *name, int *newval)
+{
+	/* Value upper and lower hard limits are inclusive */
+	if (*newval % SLRU_BANK_SIZE == 0)
+		return true;
+
+	/* Value does not fall within any allowable range */
+	GUC_check_errdetail("\"%s\" must be in multiple of %d", name,
+						SLRU_BANK_SIZE);
+	return false;
 }

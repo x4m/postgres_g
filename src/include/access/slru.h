@@ -18,6 +18,11 @@
 #include "storage/sync.h"
 
 /*
+ * SLRU bank size for slotno hash banks
+ */
+#define SLRU_BANK_SIZE		16
+
+/*
  * To avoid overflowing internal arithmetic and the size_t data type, the
  * number of buffers should not exceed this number.
  */
@@ -139,6 +144,11 @@ typedef struct SlruCtlData
 	 * it's always the same, it doesn't need to be in shared memory.
 	 */
 	char		Dir[64];
+
+	/*
+	 * Mask for slotno banks
+	 */
+	Size		bank_mask;
 } SlruCtlData;
 
 typedef SlruCtlData *SlruCtl;
@@ -175,5 +185,5 @@ extern bool SlruScanDirCbReportPresence(SlruCtl ctl, char *filename,
 										int segpage, void *data);
 extern bool SlruScanDirCbDeleteAll(SlruCtl ctl, char *filename, int segpage,
 								   void *data);
-
+extern bool check_slru_buffers(const char *name, int *newval);
 #endif							/* SLRU_H */
