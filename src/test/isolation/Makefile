@@ -62,7 +62,7 @@ installcheck: all
 	$(pg_isolation_regress_installcheck) --schedule=$(srcdir)/isolation_schedule
 
 check: all
-	$(pg_isolation_regress_check) --schedule=$(srcdir)/isolation_schedule
+	$(pg_isolation_regress_check) timeouts
 
 # Non-default tests.  It only makes sense to run these if set up to use
 # prepared transactions, via TEMP_CONFIG for the check case, or via the
@@ -72,3 +72,6 @@ installcheck-prepared-txns: all temp-install
 
 check-prepared-txns: all temp-install
 	$(pg_isolation_regress_check) --schedule=$(srcdir)/isolation_schedule prepared-transactions prepared-transactions-cic
+
+check-timeouts: all temp-install
+	$(pg_isolation_regress_check) timeouts
