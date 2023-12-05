@@ -117,6 +117,7 @@
 #include "storage/proc.h"
 #include "tcop/backend_startup.h"
 #include "tcop/tcopprot.h"
+#include "utils/builtins.h"
 #include "utils/datetime.h"
 #include "utils/memutils.h"
 #include "utils/pidfile.h"
@@ -1333,6 +1334,7 @@ PostmasterMain(int argc, char *argv[])
 	 * Remember postmaster startup time
 	 */
 	PgStartTime = GetCurrentTimestamp();
+	PgStartLSN = GetXLogInsertRecPtr();
 
 	/*
 	 * Report postmaster status in the postmaster.pid file, to allow pg_ctl to
