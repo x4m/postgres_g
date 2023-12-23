@@ -4509,6 +4509,11 @@ PostgresMain(const char *dbname, const char *username)
 					enable_timeout_after(IDLE_IN_TRANSACTION_SESSION_TIMEOUT,
 										 IdleInTransactionSessionTimeout);
 				}
+
+				/* Schedule or reschedule transaction timeout */
+				if (TransactionTimeout > 0 && !get_timeout_active(TRANSACTION_TIMEOUT))
+					enable_timeout_after(TRANSACTION_TIMEOUT,
+										 TransactionTimeout);
 			}
 			else if (IsTransactionOrTransactionBlock())
 			{
@@ -4523,6 +4528,11 @@ PostgresMain(const char *dbname, const char *username)
 					enable_timeout_after(IDLE_IN_TRANSACTION_SESSION_TIMEOUT,
 										 IdleInTransactionSessionTimeout);
 				}
+
+				/* Schedule or reschedule transaction timeout */
+				if (TransactionTimeout > 0 && !get_timeout_active(TRANSACTION_TIMEOUT))
+					enable_timeout_after(TRANSACTION_TIMEOUT,
+										 TransactionTimeout);
 			}
 			else
 			{
