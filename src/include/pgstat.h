@@ -11,6 +11,7 @@
 #ifndef PGSTAT_H
 #define PGSTAT_H
 
+#include "access/xlogdefs.h"
 #include "datatype/timestamp.h"
 #include "portability/instr_time.h"
 #include "postmaster/pgarch.h"	/* for MAX_XFN_CHARS */
@@ -427,6 +428,49 @@ typedef struct PgStat_StatTabEntry
 	TimestampTz last_autoanalyze_time;	/* autovacuum initiated */
 	PgStat_Counter autoanalyze_count;
 } PgStat_StatTabEntry;
+
+/*
+ * The elements of an LSNTimeline. Each LSNTime represents one or more time,
+ * LSN pairs. The LSN is typically the insert LSN recorded at the time. Members
+ * is the number of logical members -- each a time, LSN pair -- represented in
+ * the LSNTime.
+ */
+typedef struct LSNTime
+{
+	TimestampTz time;
+	XLogRecPtr	lsn;
+	uint64		members;
+} LSNTime;
+
+#define LSNTIMELINE_VOLUME 64
+/*
+ * A timeline consists of LSNTimes from most to least recent. The array is
+ * filled from end to start before the contents of any elements are merged.
+ * Once the LSNTimeline length == volume (the array is full), old elements are
+ * merged to make space for new elements at index 0. When merging logical
+ * members, each element of the array in the timeline may represent twice as
+ * many logical members as the preceding element.
+ *
+ * This gives more recent times greater precision than less recent ones. An
+ * array of size 64 and an unsigned 64-bit number for the number of members
+ * should provide sufficient capacity without accounting for what to do when
+ * all elements of the array are at capacity.
+ *
+ * After every element has at least one logical member, when a new LSNTime is
+ * inserted, the oldest array element whose logical membership is < 2x its
+ * predecessor is the merge target. Its preceding element is merged into it.
+ * Then all of the intervening elements are moved down by one and the new
+ * LSNTime is inserted at index 0.
+ *
+ * Merging two elements is combining their members and assigning the lesser
+ * LSNTime. Use the timeline for LSN <-> time conversion using linear
+ * interpolation.
+ */
+typedef struct LSNTimeline
+{
+	int			length;
+	LSNTime		data[LSNTIMELINE_VOLUME];
+} LSNTimeline;
 
 typedef struct PgStat_WalStats
 {
