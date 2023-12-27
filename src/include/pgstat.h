@@ -11,6 +11,7 @@
 #ifndef PGSTAT_H
 #define PGSTAT_H
 
+#include "access/xlogdefs.h"
 #include "datatype/timestamp.h"
 #include "portability/instr_time.h"
 #include "postmaster/pgarch.h"	/* for MAX_XFN_CHARS */
@@ -427,6 +428,37 @@ typedef struct PgStat_StatTabEntry
 	TimestampTz last_autoanalyze_time;	/* autovacuum initiated */
 	PgStat_Counter autoanalyze_count;
 } PgStat_StatTabEntry;
+
+/*
+ * The elements of an LSNTimeStream. Each LSNTime represents one or more time,
+ * LSN pairs. The LSN is typically the insert LSN recorded at the time.
+ */
+typedef struct LSNTime
+{
+	TimestampTz time;
+	XLogRecPtr	lsn;
+} LSNTime;
+
+#define LSNTIMESTREAM_VOLUME 64
+
+/*
+ * An LSN time stream is an array consisting of LSNTimes from least to most
+ * recent. The array is filled before any element is dropped. Once the
+ * LSNTimeStream length == volume (the array is full), an LSNTime is dropped,
+ * the subsequent LSNTimes are moved down by 1, and the new LSNTime is inserted
+ * at the tail.
+ *
+ * When dropping an LSNTime, we attempt to pick the member which would
+ * introduce the least error into the stream. See lsntime_to_drop() for more
+ * details.
+ *
+ * Use the stream for LSN <-> time conversion using linear interpolation.
+ */
+typedef struct LSNTimeStream
+{
+	int			length;
+	LSNTime		data[LSNTIMESTREAM_VOLUME];
+} LSNTimeStream;
 
 typedef struct PgStat_WalStats
 {
