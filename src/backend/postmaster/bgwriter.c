@@ -273,6 +273,7 @@ BackgroundWriterMain(char *startup_data, size_t startup_data_len)
 		{
 			TimestampTz timeout = 0;
 			TimestampTz now = GetCurrentTimestamp();
+			XLogRecPtr	current_lsn;
 
 			timeout = TimestampTzPlusMilliseconds(last_snapshot_ts,
 												  LOG_SNAPSHOT_INTERVAL_MS);
@@ -284,11 +285,23 @@ BackgroundWriterMain(char *startup_data, size_t startup_data_len)
 			 * start of a record, whereas last_snapshot_lsn points just past
 			 * the end of the record.
 			 */
-			if (now >= timeout &&
-				last_snapshot_lsn <= GetLastImportantRecPtr())
+			if (now >= timeout)
 			{
-				last_snapshot_lsn = LogStandbySnapshot();
-				last_snapshot_ts = now;
+				current_lsn = GetLastImportantRecPtr();
+				if (last_snapshot_lsn <= current_lsn)
+				{
+					last_snapshot_lsn = LogStandbySnapshot();
+					last_snapshot_ts = now;
+
+					/*
+					 * After a restart GetXLogInsertRecPtr() may return 0. We
+					 * don't want the timeline to move backwards, though, so
+					 * get the insert LSN instead.
+					 */
+					if (current_lsn == 0)
+						current_lsn = GetXLogInsertRecPtr();
+					pgstat_wal_update_lsntime_stream(now, current_lsn);
+				}
 			}
 		}
 
