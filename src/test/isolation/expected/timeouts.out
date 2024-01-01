@@ -145,10 +145,10 @@ starting permutation: s6_begin s6_tt s6_sleep s6_check
 step s6_begin: BEGIN ISOLATION LEVEL READ COMMITTED;
 step s6_tt: SET statement_timeout = '1s'; SET transaction_timeout = '1ms';
 step s6_sleep: SELECT pg_sleep(0.1);
-pg_sleep
---------
-        
-(1 row)
+FATAL:  terminating connection due to transaction timeout
+server closed the connection unexpectedly
+	This probably means the server terminated abnormally
+	before or while processing the request.
 
 step s6_check: SELECT count(*) FROM pg_stat_activity WHERE application_name = 'isolation/timeouts/s6';
 count
