@@ -23,6 +23,7 @@
 #include "utils/builtins.h"
 #include "utils/guc.h"
 #include "utils/sortsupport.h"
+#include "utils/timestamp.h"
 #include "utils/uuid.h"
 
 /* sortsupport for uuid */
@@ -526,4 +527,27 @@ gen_uuid_v7(PG_FUNCTION_ARGS)
 	uuid->data[8] = (uuid->data[8] & 0x3f) | 0x80;
 
 	PG_RETURN_UUID_P(uuid);
+}
+
+Datum
+get_uuid_v7_time(PG_FUNCTION_ARGS)
+{
+	pg_uuid_t  *uuid = PG_GETARG_UUID_P(0);
+	TimestampTz ts;
+
+	if (((uuid->data[6] & 0xf0) != 0x70)
+		|| ((uuid->data[8] & 0xc0) != 0x80))
+		elog(ERROR,"get_uuid_v7_time() can only extract timestamp from UUID v7");
+
+	uint64_t tms =	  uuid->data[5];
+	tms += ((uint64_t)uuid->data[4]) << 8;
+	tms += ((uint64_t)uuid->data[3]) << 16;
+	tms += ((uint64_t)uuid->data[2]) << 24;
+	tms += ((uint64_t)uuid->data[1]) << 32;
+	tms += ((uint64_t)uuid->data[0]) << 40;
+
+	ts = (TimestampTz) (tms * 1000) - /* convert ms to us, than adjust */
+		(POSTGRES_EPOCH_JDATE - UNIX_EPOCH_JDATE) * SECS_PER_DAY * USECS_PER_SEC;
+
+	PG_RETURN_TIMESTAMPTZ(ts);
 }

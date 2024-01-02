@@ -91,5 +91,13 @@ INSERT INTO guid1 (guid_field) VALUES (gen_uuid_v7());
 INSERT INTO guid1 (guid_field) VALUES (gen_uuid_v7());
 SELECT count(DISTINCT guid_field) FROM guid1;
 
+-- check that timestamp is extracted correctly
+WITH uuid_time_extraction AS
+(SELECT get_uuid_v7_time(gen_uuid_v7())-now() d)
+SELECT (d <= '1ms') AND (d >= '-1ms') FROM uuid_time_extraction;
+
+-- get_uuid_v7_time() must refuse to accept non-UUIDv7
+select get_uuid_v7_time(gen_random_uuid());
+
 -- clean up
 DROP TABLE guid1, guid2 CASCADE;

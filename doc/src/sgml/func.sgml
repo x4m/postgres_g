@@ -14134,8 +14134,12 @@ CREATE TYPE rainbow AS ENUM ('red', 'orange', 'yellow', 'green', 'blue', 'purple
    <primary>gen_uuid_v7</primary>
   </indexterm>
 
+  <indexterm>
+   <primary>get_uuid_v7_time</primary>
+  </indexterm>
+
   <para>
-   <productname>PostgreSQL</productname> includes three functions to generate a UUID:
+   <productname>PostgreSQL</productname> includes two functions to generate a UUID:
 <synopsis>
 <function>gen_random_uuid</function> () <returnvalue>uuid</returnvalue>
 </synopsis>
@@ -14145,6 +14149,10 @@ CREATE TYPE rainbow AS ENUM ('red', 'orange', 'yellow', 'green', 'blue', 'purple
 <function>gen_uuid_v7</function> () <returnvalue>uuid</returnvalue>
 </synopsis>
    This function returns a version 7 (time-ordered + random) UUID.
+<synopsis>
+<function>get_uuid_v7_time</function> (uuid) <returnvalue>timestamptz</returnvalue>
+</synopsis>
+   This function extracts a timestamptz from UUID version 7.
   </para>
 
   <para>
