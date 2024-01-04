@@ -872,7 +872,7 @@ xid8ge(xid8,xid8)
 xid8eq(xid8,xid8)
 xid8ne(xid8,xid8)
 xid8cmp(xid8,xid8)
-gen_uuid_v7()
+gen_uuid_v7(bigint)
 get_uuid_v7_time(uuid)
 -- restore normal output mode
 \a\t

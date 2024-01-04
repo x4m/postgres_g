@@ -23,6 +23,7 @@
 #include "postgres.h"
 
 #include "libpq/pqformat.h"
+#include "miscadmin.h"
 #include "utils/array.h"
 #include "utils/builtins.h"
 #include "utils/rangetypes.h"
@@ -334,8 +335,15 @@ shell_out(PG_FUNCTION_ARGS)
  * that operate on the type are not secure against malformed input.
  * We do want to allow output, though.
  */
-PSEUDOTYPE_DUMMY_INPUT_FUNC(pg_node_tree);
 PSEUDOTYPE_DUMMY_RECEIVE_FUNC(pg_node_tree);
+
+Datum
+pg_node_tree_in(PG_FUNCTION_ARGS)
+{
+	if (!IsBootstrapProcessingMode())
+		elog(ERROR, "Don't do this");
+	return textin(fcinfo);
+}
 
 Datum
 pg_node_tree_out(PG_FUNCTION_ARGS)

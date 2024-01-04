@@ -91,6 +91,12 @@ INSERT INTO guid1 (guid_field) VALUES (gen_uuid_v7());
 INSERT INTO guid1 (guid_field) VALUES (gen_uuid_v7());
 SELECT count(DISTINCT guid_field) FROM guid1;
 
+-- generation test for v7 with same unix_ts_ms
+TRUNCATE guid1;
+INSERT INTO guid1 (guid_field) VALUES (gen_uuid_v7(12345));
+INSERT INTO guid1 (guid_field) VALUES (gen_uuid_v7(12345));
+SELECT count(DISTINCT guid_field) FROM guid1;
+
 -- check that timestamp is extracted correctly
 WITH uuid_time_extraction AS
 (SELECT get_uuid_v7_time(gen_uuid_v7())-now() d)

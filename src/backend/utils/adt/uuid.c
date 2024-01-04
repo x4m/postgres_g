@@ -436,12 +436,26 @@ gen_uuid_v7(PG_FUNCTION_ARGS)
 	pg_uuid_t  *uuid = palloc(UUID_LEN);
 	uint64_t tms;
 	struct timeval tp;
+	bool increment_counter;
 
-	gettimeofday(&tp, NULL);
+	if (PG_NARGS() == 0 || PG_ARGISNULL(0))
+	{
+		gettimeofday(&tp, NULL);
+		tms = ((uint64_t)tp.tv_sec) * 1000 + (tp.tv_usec) / 1000;
+		/* time from clock is protected from backward leaps */
+		increment_counter = tms <= previous_timestamp;
+	}
+	else
+	{
+		tms = PG_GETARG_INT64(0);
+		/*
+		 * The time can leap backwards when provided by the user, so we use
+		 * counter only when called with exactly same unix_ts_ms argument.
+		 */
+		increment_counter = (tms == previous_timestamp);
+	}
 
-	tms = ((uint64_t)tp.tv_sec) * 1000 + (tp.tv_usec) / 1000;
-
-	if (tms <= previous_timestamp)
+	if (increment_counter)
 	{
 		/* Time did not increment from the previous generation, we must increment counter */
 		++sequence_counter;
