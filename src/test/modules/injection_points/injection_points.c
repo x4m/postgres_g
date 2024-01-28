@@ -109,3 +109,32 @@ injection_points_detach(PG_FUNCTION_ARGS)
 
 	PG_RETURN_VOID();
 }
+
+#include "access/multixact.h"
+#include "access/xact.h"
+
+PG_FUNCTION_INFO_V1(create_test_multixact);
+Datum
+create_test_multixact(PG_FUNCTION_ARGS)
+{
+	MultiXactId id;
+	MultiXactIdSetOldestMember();
+	id = MultiXactIdCreate(GetCurrentTransactionId(), MultiXactStatusUpdate,
+						GetCurrentTransactionId(), MultiXactStatusForShare);
+	PG_RETURN_TRANSACTIONID(id);
+}
+
+PG_FUNCTION_INFO_V1(read_test_multixact);
+Datum
+read_test_multixact(PG_FUNCTION_ARGS)
+{
+	MultiXactId id = PG_GETARG_TRANSACTIONID(0);
+	MultiXactMember *members;
+	INJECTION_POINT("read_test_multixact");
+	/* discard caches */
+	AtEOXact_MultiXact();
+
+	if (GetMultiXactIdMembers(id,&members,false, false) == -1)
+		elog(ERROR, "MultiXactId not found");
+	PG_RETURN_VOID();
+}
