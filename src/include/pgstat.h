@@ -470,6 +470,7 @@ typedef struct PgStat_WalStats
 	PgStat_Counter wal_sync;
 	PgStat_Counter wal_write_time;
 	PgStat_Counter wal_sync_time;
+	LSNTimeStream stream;
 	TimestampTz stat_reset_timestamp;
 } PgStat_WalStats;
 
@@ -751,6 +752,9 @@ extern void pgstat_execute_transactional_drops(int ndrops, struct xl_xact_stats_
 
 extern void pgstat_report_wal(bool force);
 extern PgStat_WalStats *pgstat_fetch_stat_wal(void);
+
+/* Helpers for maintaining the LSNTimeStream */
+extern void pgstat_wal_update_lsntime_stream(TimestampTz time, XLogRecPtr lsn);
 
 
 /*
