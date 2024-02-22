@@ -411,6 +411,11 @@ SELECT (n_tup_ins + n_tup_upd) > 0 AS has_data FROM pg_stat_all_tables
 -- Test that various stats views are being properly populated
 -----
 
+SELECT pg_estimate_time_at_lsn(pg_current_wal_insert_lsn()) >
+                              now() - make_interval(years=> 100);
+
+SELECT pg_estimate_lsn_at_time(now()) - '0/0' > 0;
+
 -- Test that sessions is incremented when a new session is started in pg_stat_database
 SELECT sessions AS db_stat_sessions FROM pg_stat_database WHERE datname = (SELECT current_database()) \gset
 \c

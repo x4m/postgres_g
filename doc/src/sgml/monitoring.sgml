@@ -3195,6 +3195,72 @@ description | Waiting for a newly initialized WAL file to reach durable storage
    </tgroup>
   </table>
 
+  <para>
+  In addition to these WAL stats, a stream of LSN-time pairs is accessible
+  via the functions shown in <xref linkend="functions-lsn-time-stream"/>.
+  </para>
+
+  <table id="functions-lsn-time-stream">
+   <title>LSN Time Stream Information Functions</title>
+   <tgroup cols="1">
+    <thead>
+     <row>
+      <entry role="func_table_entry"><para role="func_signature">
+       Function
+      </para>
+      <para>
+       Description
+      </para></entry>
+     </row>
+    </thead>
+
+    <tbody>
+     <row>
+      <entry role="func_table_entry"><para role="func_signature">
+       <indexterm>
+        <primary>pg_estimate_lsn_at_time</primary>
+       </indexterm>
+       <function>pg_estimate_lsn_at_time</function> ( <type>timestamp with time zone</type> )
+       <returnvalue>pg_lsn</returnvalue>
+      </para>
+      <para>
+       Returns the estimated lsn at the provided time.
+      </para></entry>
+     </row>
+
+     <row>
+      <entry role="func_table_entry"><para role="func_signature">
+       <indexterm>
+        <primary>pg_estimate_lsn_at_time</primary>
+       </indexterm>
+       <function>pg_estimate_lsn_at_time</function> ( <type>pg_lsn</type> )
+       <returnvalue>timestamp with time zone</returnvalue>
+      </para>
+      <para>
+        Returns the estimated time at the provided lsn.
+      </para></entry>
+     </row>
+
+     <row>
+      <entry role="func_table_entry"><para role="func_signature">
+       <indexterm>
+        <primary>pg_lsntime_stream</primary>
+       </indexterm>
+       <function>pg_lsntime_stream</function> ()
+       <returnvalue>record</returnvalue>
+       ( <parameter>time</parameter> <type>timestamp with time zone</type>,
+       <parameter>lsn</parameter> <type>pg_lsnwith time zone</type>)
+      </para>
+      <para>
+       Returns all of the LSN-time pairs in the current LSN time stream.
+      </para></entry>
+     </row>
+    </tbody>
+   </tgroup>
+  </table>
+
+
+
 </sect2>
 
  <sect2 id="monitoring-pg-stat-database-view">
