@@ -408,3 +408,13 @@ stop:
 	result = (double) (lsn - start.lsn) / lsns_elapsed * time_elapsed + start.time;
 	return Max(result, 0);
 }
+
+void
+pgstat_wal_update_lsntimeline(TimestampTz time, XLogRecPtr lsn)
+{
+	PgStatShared_Wal *stats_shmem = &pgStatLocal.shmem->wal;
+
+	LWLockAcquire(&stats_shmem->lock, LW_EXCLUSIVE);
+	lsntime_insert(&stats_shmem->stats.timeline, time, lsn);
+	LWLockRelease(&stats_shmem->lock);
+}
