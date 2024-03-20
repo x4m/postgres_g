@@ -194,4 +194,45 @@ GetTimerFrequency(void)
 #define INSTR_TIME_GET_MICROSEC(t) \
 	(INSTR_TIME_GET_NANOSEC(t) / NS_PER_US)
 
+#ifdef WIN32
+
+#include <sysinfoapi.h>
+
+#include <sys/time.h>
+
+/* FILETIME of Jan 1 1970 00:00:00, the PostgreSQL epoch */
+static const unsigned __int64 epoch = UINT64CONST(116444736000000000);
+
+#define FILETIME_UNITS_TO_NS	100L
+
+/*
+ * Read real time with high resolution. Trimmed to 100ns.
+ */
+static inline uint64 get_real_time_ns()
+{
+	FILETIME	file_time;
+	ULARGE_INTEGER ularge;
+
+	GetSystemTimePreciseAsFileTime(&file_time);
+	ularge.LowPart = file_time.dwLowDateTime;
+	ularge.HighPart = file_time.dwHighDateTime;
+
+	return (ularge.QuadPart - epoch) * FILETIME_UNITS_TO_NS;
+}
+
+#else /* not WIN32 */
+
+/*
+ * Read real time with high resolution. Trimmed to microseconds on MacOS.
+ */
+static inline uint64 get_real_time_ns()
+{
+	struct timespec tmp;
+
+	clock_gettime(CLOCK_REALTIME, &tmp);
+	return tmp.tv_sec * 1000000000L + tmp.tv_nsec;
+}
+
+#endif
+
 #endif							/* INSTR_TIME_H */
