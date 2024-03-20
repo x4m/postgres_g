@@ -186,6 +186,17 @@
 extern int	gettimeofday(struct timeval *tp, void *tzp);
 #endif
 
+/*
+ * Windows implementation is limited to CLOCK_REALTIME
+ */
+typedef enum {
+	CLOCK_REALTIME
+} clockid_t;
+
+#include <time.h> /* for timespec */
+
+extern int clock_gettime(clockid_t clock_id, struct timespec *tp);
+
 /* for setitimer in backend/port/win32/timer.c */
 #define ITIMER_REAL 0
 struct itimerval
