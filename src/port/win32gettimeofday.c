@@ -42,7 +42,6 @@ static const unsigned __int64 epoch = UINT64CONST(116444736000000000);
 #define FILETIME_UNITS_PER_SEC	10000000L
 #define FILETIME_UNITS_PER_USEC 10
 
-
 /*
  * timezone information is stored outside the kernel so tzp isn't used anymore.
  *
