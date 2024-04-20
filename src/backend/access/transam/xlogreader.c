@@ -2087,14 +2087,14 @@ RestoreBlockImage(XLogReaderState *record, uint8 block_id, char *page)
 		if ((bkpb->bimg_info & BKPIMAGE_COMPRESS_PGLZ) != 0)
 		{
 			if (pglz_decompress(ptr, bkpb->bimg_len, tmp.data,
-								BLCKSZ - bkpb->hole_length, true) < 0)
+								BLCKSZ, true) < 0)
 				decomp_success = false;
 		}
 		else if ((bkpb->bimg_info & BKPIMAGE_COMPRESS_LZ4) != 0)
 		{
 #ifdef USE_LZ4
 			if (LZ4_decompress_safe(ptr, tmp.data,
-									bkpb->bimg_len, BLCKSZ - bkpb->hole_length) <= 0)
+									bkpb->bimg_len, BLCKSZ) <= 0)
 				decomp_success = false;
 #else
 			report_invalid_record(record, "could not restore image at %X/%X compressed with %s not supported by build, block %d",
@@ -2108,7 +2108,7 @@ RestoreBlockImage(XLogReaderState *record, uint8 block_id, char *page)
 		{
 #ifdef USE_ZSTD
 			size_t		decomp_result = ZSTD_decompress(tmp.data,
-														BLCKSZ - bkpb->hole_length,
+														BLCKSZ,
 														ptr, bkpb->bimg_len);
 
 			if (ZSTD_isError(decomp_result))

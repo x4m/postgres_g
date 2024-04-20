@@ -138,8 +138,7 @@ static XLogRecData *XLogRecordAssemble(RmgrId rmid, uint8 info,
 									   XLogRecPtr RedoRecPtr, bool doPageWrites,
 									   XLogRecPtr *fpw_lsn, int *num_fpi,
 									   bool *topxid_included);
-static bool XLogCompressBackupBlock(char *page, uint16 hole_offset,
-									uint16 hole_length, char *dest, uint16 *dlen);
+static bool XLogCompressBackupBlocks(char *page, char *dest, uint32 size, uint16 *dlen);
 
 /*
  * Begin constructing a WAL record. This must be called before the
@@ -688,10 +687,10 @@ XLogRecordAssemble(RmgrId rmid, uint8 info,
 			if (wal_compression != WAL_COMPRESSION_NONE)
 			{
 				is_compressed =
-					XLogCompressBackupBlock(page, bimg.hole_offset,
-											cbimg.hole_length,
-											regbuf->compressed_page,
-											&compressed_len);
+					XLogCompressBackupBlocks(page,
+											 regbuf->compressed_page,
+											 BLCKSZ,
+											 &compressed_len);
 			}
 
 			/*
@@ -722,6 +721,10 @@ XLogRecordAssemble(RmgrId rmid, uint8 info,
 
 			if (is_compressed)
 			{
+				/* Skipping hole is pointless for compressed page */
+				bimg.hole_offset = 0;
+				cbimg.hole_length = 0;
+
 				/* The current compression is stored in the WAL record */
 				bimg.length = compressed_len;
 
@@ -941,42 +944,21 @@ XLogRecordAssemble(RmgrId rmid, uint8 info,
  * the length of compressed block image.
  */
 static bool
-XLogCompressBackupBlock(char *page, uint16 hole_offset, uint16 hole_length,
-						char *dest, uint16 *dlen)
+XLogCompressBackupBlocks(char *page, char *dest, uint32 size, uint16 *dlen)
 {
-	int32		orig_len = BLCKSZ - hole_length;
+	int32		orig_len = size;
 	int32		len = -1;
 	int32		extra_bytes = 0;
-	char	   *source;
-	PGAlignedBlock tmp;
-
-	if (hole_length != 0)
-	{
-		/* must skip the hole */
-		source = tmp.data;
-		memcpy(source, page, hole_offset);
-		memcpy(source + hole_offset,
-			   page + (hole_offset + hole_length),
-			   BLCKSZ - (hole_length + hole_offset));
-
-		/*
-		 * Extra data needs to be stored in WAL record for the compressed
-		 * version of block image if the hole exists.
-		 */
-		extra_bytes = SizeOfXLogRecordBlockCompressHeader;
-	}
-	else
-		source = page;
 
 	switch ((WalCompression) wal_compression)
 	{
 		case WAL_COMPRESSION_PGLZ:
-			len = pglz_compress(source, orig_len, dest, PGLZ_strategy_default);
+			len = pglz_compress(page, orig_len, dest, PGLZ_strategy_default);
 			break;
 
 		case WAL_COMPRESSION_LZ4:
 #ifdef USE_LZ4
-			len = LZ4_compress_default(source, dest, orig_len,
+			len = LZ4_compress_default(page, dest, orig_len,
 									   COMPRESS_BUFSIZE);
 			if (len <= 0)
 				len = -1;		/* failure */
@@ -987,7 +969,7 @@ XLogCompressBackupBlock(char *page, uint16 hole_offset, uint16 hole_length,
 
 		case WAL_COMPRESSION_ZSTD:
 #ifdef USE_ZSTD
-			len = ZSTD_compress(dest, COMPRESS_BUFSIZE, source, orig_len,
+			len = ZSTD_compress(dest, COMPRESS_BUFSIZE, page, orig_len,
 								ZSTD_CLEVEL_DEFAULT);
 			if (ZSTD_isError(len))
 				len = -1;		/* failure */
