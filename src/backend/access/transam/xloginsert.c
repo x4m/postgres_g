@@ -81,9 +81,6 @@ typedef struct
 
 	XLogRecData bkp_rdatas[2];	/* temporary rdatas used to hold references to
 								 * backup block data in XLogRecordAssemble() */
-
-	/* buffer to store a compressed version of backup block image */
-	char		compressed_page[COMPRESS_BUFSIZE];
 } registered_buffer;
 
 static registered_buffer *registered_buffers;
@@ -138,7 +135,6 @@ static XLogRecData *XLogRecordAssemble(RmgrId rmid, uint8 info,
 									   XLogRecPtr RedoRecPtr, bool doPageWrites,
 									   XLogRecPtr *fpw_lsn, int *num_fpi,
 									   bool *topxid_included);
-static bool XLogCompressBackupBlocks(char *page, char *dest, uint32 size, uint16 *dlen);
 
 /*
  * Begin constructing a WAL record. This must be called before the
@@ -592,9 +588,8 @@ XLogRecordAssemble(RmgrId rmid, uint8 info,
 		bool		needs_data;
 		XLogRecordBlockHeader bkpb;
 		XLogRecordBlockImageHeader bimg;
-		XLogRecordBlockCompressHeader cbimg = {0};
+		uint16		hole_length;
 		bool		samerel;
-		bool		is_compressed = false;
 		bool		include_image;
 
 		if (!regbuf->in_use)
@@ -648,7 +643,6 @@ XLogRecordAssemble(RmgrId rmid, uint8 info,
 		if (include_image)
 		{
 			Page		page = regbuf->page;
-			uint16		compressed_len = 0;
 
 			/*
 			 * The page needs to be backed up, so calculate its hole length
@@ -665,32 +659,20 @@ XLogRecordAssemble(RmgrId rmid, uint8 info,
 					upper <= BLCKSZ)
 				{
 					bimg.hole_offset = lower;
-					cbimg.hole_length = upper - lower;
+					hole_length = upper - lower;
 				}
 				else
 				{
 					/* No "hole" to remove */
 					bimg.hole_offset = 0;
-					cbimg.hole_length = 0;
+					hole_length = 0;
 				}
 			}
 			else
 			{
 				/* Not a standard page header, don't try to eliminate "hole" */
 				bimg.hole_offset = 0;
-				cbimg.hole_length = 0;
-			}
-
-			/*
-			 * Try to compress a block image if wal_compression is enabled
-			 */
-			if (wal_compression != WAL_COMPRESSION_NONE)
-			{
-				is_compressed =
-					XLogCompressBackupBlocks(page,
-											 regbuf->compressed_page,
-											 BLCKSZ,
-											 &compressed_len);
+				hole_length = 0;
 			}
 
 			/*
@@ -708,7 +690,7 @@ XLogRecordAssemble(RmgrId rmid, uint8 info,
 			rdt_datas_last->next = &regbuf->bkp_rdatas[0];
 			rdt_datas_last = rdt_datas_last->next;
 
-			bimg.bimg_info = (cbimg.hole_length == 0) ? 0 : BKPIMAGE_HAS_HOLE;
+			bimg.bimg_info = (hole_length == 0) ? 0 : BKPIMAGE_HAS_HOLE;
 
 			/*
 			 * If WAL consistency checking is enabled for the resource manager
@@ -719,70 +701,26 @@ XLogRecordAssemble(RmgrId rmid, uint8 info,
 			if (needs_backup)
 				bimg.bimg_info |= BKPIMAGE_APPLY;
 
-			if (is_compressed)
+			bimg.length = BLCKSZ - hole_length;
+
+			if (hole_length == 0)
 			{
-				/* Skipping hole is pointless for compressed page */
-				bimg.hole_offset = 0;
-				cbimg.hole_length = 0;
-
-				/* The current compression is stored in the WAL record */
-				bimg.length = compressed_len;
-
-				/* Set the compression method used for this block */
-				switch ((WalCompression) wal_compression)
-				{
-					case WAL_COMPRESSION_PGLZ:
-						bimg.bimg_info |= BKPIMAGE_COMPRESS_PGLZ;
-						break;
-
-					case WAL_COMPRESSION_LZ4:
-#ifdef USE_LZ4
-						bimg.bimg_info |= BKPIMAGE_COMPRESS_LZ4;
-#else
-						elog(ERROR, "LZ4 is not supported by this build");
-#endif
-						break;
-
-					case WAL_COMPRESSION_ZSTD:
-#ifdef USE_ZSTD
-						bimg.bimg_info |= BKPIMAGE_COMPRESS_ZSTD;
-#else
-						elog(ERROR, "zstd is not supported by this build");
-#endif
-						break;
-
-					case WAL_COMPRESSION_NONE:
-						Assert(false);	/* cannot happen */
-						break;
-						/* no default case, so that compiler will warn */
-				}
-
-				rdt_datas_last->data = regbuf->compressed_page;
-				rdt_datas_last->len = compressed_len;
+				rdt_datas_last->data = page;
+				rdt_datas_last->len = BLCKSZ;
 			}
 			else
 			{
-				bimg.length = BLCKSZ - cbimg.hole_length;
+				/* must skip the hole */
+				rdt_datas_last->data = page;
+				rdt_datas_last->len = bimg.hole_offset;
 
-				if (cbimg.hole_length == 0)
-				{
-					rdt_datas_last->data = page;
-					rdt_datas_last->len = BLCKSZ;
-				}
-				else
-				{
-					/* must skip the hole */
-					rdt_datas_last->data = page;
-					rdt_datas_last->len = bimg.hole_offset;
+				rdt_datas_last->next = &regbuf->bkp_rdatas[1];
+				rdt_datas_last = rdt_datas_last->next;
 
-					rdt_datas_last->next = &regbuf->bkp_rdatas[1];
-					rdt_datas_last = rdt_datas_last->next;
-
-					rdt_datas_last->data =
-						page + (bimg.hole_offset + cbimg.hole_length);
-					rdt_datas_last->len =
-						BLCKSZ - (bimg.hole_offset + cbimg.hole_length);
-				}
+				rdt_datas_last->data =
+					page + (bimg.hole_offset + hole_length);
+				rdt_datas_last->len =
+					BLCKSZ - (bimg.hole_offset + hole_length);
 			}
 
 			total_len += bimg.length;
@@ -824,12 +762,6 @@ XLogRecordAssemble(RmgrId rmid, uint8 info,
 		{
 			memcpy(scratch, &bimg, SizeOfXLogRecordBlockImageHeader);
 			scratch += SizeOfXLogRecordBlockImageHeader;
-			if (cbimg.hole_length != 0 && is_compressed)
-			{
-				memcpy(scratch, &cbimg,
-					   SizeOfXLogRecordBlockCompressHeader);
-				scratch += SizeOfXLogRecordBlockCompressHeader;
-			}
 		}
 		if (!samerel)
 		{
@@ -936,67 +868,55 @@ XLogRecordAssemble(RmgrId rmid, uint8 info,
 	return &hdr_rdt;
 }
 
-/*
- * Create a compressed version of a backup block image.
- *
- * Returns false if compression fails (i.e., compressed result is actually
- * bigger than original). Otherwise, returns true and sets 'dlen' to
- * the length of compressed block image.
- */
-static bool
-XLogCompressBackupBlocks(char *page, char *dest, uint32 size, uint16 *dlen)
-{
-	int32		orig_len = size;
-	int32		len = -1;
-	int32		extra_bytes = 0;
+// /*
+//  * Create a compressed version of a backup block image.
+//  *
+//  * Returns false if compression fails (i.e., compressed result is actually
+//  * bigger than original). Otherwise, returns true and sets 'dlen' to
+//  * the length of compressed block image.
+//  */
+// static void
+// XLogCompressBackupBlocks(char *page, char *dest, uint32 size, uint16 *dlen)
+// {
+// 	int32		orig_len = size;
+// 	int32		len = -1;
 
-	switch ((WalCompression) wal_compression)
-	{
-		case WAL_COMPRESSION_PGLZ:
-			len = pglz_compress(page, orig_len, dest, PGLZ_strategy_default);
-			break;
+// 	switch ((WalCompression) wal_compression)
+// 	{
+// 		case WAL_COMPRESSION_PGLZ:
+// 			len = pglz_compress(page, orig_len, dest, PGLZ_strategy_default);
+// 			break;
 
-		case WAL_COMPRESSION_LZ4:
-#ifdef USE_LZ4
-			len = LZ4_compress_default(page, dest, orig_len,
-									   COMPRESS_BUFSIZE);
-			if (len <= 0)
-				len = -1;		/* failure */
-#else
-			elog(ERROR, "LZ4 is not supported by this build");
-#endif
-			break;
+// 		case WAL_COMPRESSION_LZ4:
+// #ifdef USE_LZ4
+// 			len = LZ4_compress_default(page, dest, orig_len,
+// 									   COMPRESS_BUFSIZE);
+// 			if (len <= 0)
+// 				elog(ERROR,"Compression error");
+// #else
+// 			elog(ERROR, "LZ4 is not supported by this build");
+// #endif
+// 			break;
 
-		case WAL_COMPRESSION_ZSTD:
-#ifdef USE_ZSTD
-			len = ZSTD_compress(dest, COMPRESS_BUFSIZE, page, orig_len,
-								ZSTD_CLEVEL_DEFAULT);
-			if (ZSTD_isError(len))
-				len = -1;		/* failure */
-#else
-			elog(ERROR, "zstd is not supported by this build");
-#endif
-			break;
+// 		case WAL_COMPRESSION_ZSTD:
+// #ifdef USE_ZSTD
+// 			len = ZSTD_compress(dest, COMPRESS_BUFSIZE, page, orig_len,
+// 								ZSTD_CLEVEL_DEFAULT);
+// 			if (ZSTD_isError(len))
+// 				elog(ERROR,"Compression error");
+// #else
+// 			elog(ERROR, "zstd is not supported by this build");
+// #endif
+// 			break;
 
-		case WAL_COMPRESSION_NONE:
-			Assert(false);		/* cannot happen */
-			break;
-			/* no default case, so that compiler will warn */
-	}
+// 		case WAL_COMPRESSION_NONE:
+// 			Assert(false);		/* cannot happen */
+// 			break;
+// 			/* no default case, so that compiler will warn */
+// 	}
 
-	/*
-	 * We recheck the actual size even if compression reports success and see
-	 * if the number of bytes saved by compression is larger than the length
-	 * of extra data needed for the compressed version of block image.
-	 */
-	if (len >= 0 &&
-		len + extra_bytes < orig_len)
-	{
-		*dlen = (uint16) len;	/* successful compression */
-		return true;
-	}
-	return false;
-}
+// 	*dlen = (uint16) len;	/* successful compression */
+// }
 
 /*
  * Determine whether the buffer referenced has to be backed up.

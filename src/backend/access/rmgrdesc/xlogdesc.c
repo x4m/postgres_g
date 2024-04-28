@@ -252,46 +252,16 @@ XLogRecGetBlockRefInfo(XLogReaderState *record, bool pretty,
 
 			if (XLogRecHasBlockImage(record, block_id))
 			{
-				uint8		bimg_info = XLogRecGetBlock(record, block_id)->bimg_info;
-
 				/* Calculate the amount of FPI data in the record. */
 				if (fpi_len)
 					*fpi_len += XLogRecGetBlock(record, block_id)->bimg_len;
 
-				if (BKPIMAGE_COMPRESSED(bimg_info))
-				{
-					const char *method;
-
-					if ((bimg_info & BKPIMAGE_COMPRESS_PGLZ) != 0)
-						method = "pglz";
-					else if ((bimg_info & BKPIMAGE_COMPRESS_LZ4) != 0)
-						method = "lz4";
-					else if ((bimg_info & BKPIMAGE_COMPRESS_ZSTD) != 0)
-						method = "zstd";
-					else
-						method = "unknown";
-
-					appendStringInfo(buf,
-									 " (FPW%s); hole: offset: %u, length: %u, "
-									 "compression saved: %u, method: %s",
-									 XLogRecBlockImageApply(record, block_id) ?
-									 "" : " for WAL verification",
-									 XLogRecGetBlock(record, block_id)->hole_offset,
-									 XLogRecGetBlock(record, block_id)->hole_length,
-									 BLCKSZ -
-									 XLogRecGetBlock(record, block_id)->hole_length -
-									 XLogRecGetBlock(record, block_id)->bimg_len,
-									 method);
-				}
-				else
-				{
-					appendStringInfo(buf,
-									 " (FPW%s); hole: offset: %u, length: %u",
-									 XLogRecBlockImageApply(record, block_id) ?
-									 "" : " for WAL verification",
-									 XLogRecGetBlock(record, block_id)->hole_offset,
-									 XLogRecGetBlock(record, block_id)->hole_length);
-				}
+				appendStringInfo(buf,
+									" (FPW%s); hole: offset: %u, length: %u",
+									XLogRecBlockImageApply(record, block_id) ?
+									"" : " for WAL verification",
+									XLogRecGetBlock(record, block_id)->hole_offset,
+									XLogRecGetBlock(record, block_id)->hole_length);
 			}
 
 			if (pretty)
