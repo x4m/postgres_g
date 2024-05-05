@@ -2568,6 +2568,10 @@ ReleaseAndReadBuffer(Buffer buffer,
 	return ReadBuffer(relation, blockNum);
 }
 
+
+int hitcount = 0;
+int misscount = 0;
+
 Buffer
 ReleaseAndReadBufferWithCandidate(Buffer buffer,
 					 Relation relation,
@@ -2583,20 +2587,11 @@ ReleaseAndReadBufferWithCandidate(Buffer buffer,
 		if (BufferIsLocal(buffer))
 		{
 			bufHdr = GetLocalBufferDescriptor(-buffer - 1);
-			if (bufHdr->tag.blockNum == blockNum &&
-				BufTagMatchesRelFileLocator(&bufHdr->tag, &relation->rd_locator) &&
-				BufTagGetForkNum(&bufHdr->tag) == forkNum)
-				return buffer;
 			UnpinLocalBuffer(buffer);
 		}
 		else
 		{
 			bufHdr = GetBufferDescriptor(buffer - 1);
-			/* we have pin, so it's ok to examine tag without spinlock */
-			if (bufHdr->tag.blockNum == blockNum &&
-				BufTagMatchesRelFileLocator(&bufHdr->tag, &relation->rd_locator) &&
-				BufTagGetForkNum(&bufHdr->tag) == forkNum)
-				return buffer;
 			UnpinBuffer(bufHdr);
 		}
 	}
@@ -2620,7 +2615,13 @@ ReleaseAndReadBufferWithCandidate(Buffer buffer,
 			if (bufHdr->tag.blockNum == blockNum &&
 				BufTagMatchesRelFileLocator(&bufHdr->tag, &relation->rd_locator) &&
 				BufTagGetForkNum(&bufHdr->tag) == forkNum)
+				{
+					// hitcount++;
+					// if(hitcount%(1024*128) ==0)
+					// 	elog(WARNING,"hitcount %d misscount %d", hitcount, misscount);
 				return candidate;
+				}
+				//misscount++;
 			UnpinBuffer(bufHdr);
 		}
 	}

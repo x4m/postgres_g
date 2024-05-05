@@ -1014,6 +1014,7 @@ _bt_relandgetbuf(Relation rel, Buffer obuf, BlockNumber blkno, int access)
 	return buf;
 }
 
+
 Buffer
 _bt_relandgetbuf_with_candidate(Relation rel, Buffer obuf, BlockNumber blkno, int access, Buffer candidate)
 {
