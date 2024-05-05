@@ -1251,6 +1251,8 @@ extern Buffer _bt_getbuf(Relation rel, BlockNumber blkno, int access);
 extern Buffer _bt_allocbuf(Relation rel, Relation heaprel);
 extern Buffer _bt_relandgetbuf(Relation rel, Buffer obuf,
 							   BlockNumber blkno, int access);
+extern Buffer _bt_relandgetbuf_with_candidate(Relation rel, Buffer obuf,
+							   BlockNumber blkno, int access, Buffer candidate);
 extern void _bt_relbuf(Relation rel, Buffer buf);
 extern void _bt_lockbuf(Relation rel, Buffer buf, int access);
 extern void _bt_unlockbuf(Relation rel, Buffer buf);

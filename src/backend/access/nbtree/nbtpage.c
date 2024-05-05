@@ -1014,6 +1014,21 @@ _bt_relandgetbuf(Relation rel, Buffer obuf, BlockNumber blkno, int access)
 	return buf;
 }
 
+Buffer
+_bt_relandgetbuf_with_candidate(Relation rel, Buffer obuf, BlockNumber blkno, int access, Buffer candidate)
+{
+	Buffer		buf;
+
+	Assert(BlockNumberIsValid(blkno));
+	if (BufferIsValid(obuf))
+		_bt_unlockbuf(rel, obuf);
+	buf = ReleaseAndReadBuffer(obuf, rel, blkno);
+	_bt_lockbuf(rel, buf, access);
+
+	_bt_checkpage(rel, buf);
+	return buf;
+}
+
 /*
  *	_bt_relbuf() -- release a locked buffer.
  *

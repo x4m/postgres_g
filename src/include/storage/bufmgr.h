@@ -238,6 +238,8 @@ extern void IncrBufferRefCount(Buffer buffer);
 extern void CheckBufferIsPinnedOnce(Buffer buffer);
 extern Buffer ReleaseAndReadBuffer(Buffer buffer, Relation relation,
 								   BlockNumber blockNum);
+extern Buffer ReleaseAndReadBufferWithCandidate(Buffer buffer, Relation relation,
+								   BlockNumber blockNum, Buffer candidate);
 
 extern Buffer ExtendBufferedRel(BufferManagerRelation bmr,
 								ForkNumber forkNum,

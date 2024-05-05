@@ -2568,6 +2568,53 @@ ReleaseAndReadBuffer(Buffer buffer,
 	return ReadBuffer(relation, blockNum);
 }
 
+Buffer
+ReleaseAndReadBufferWithCandidate(Buffer buffer,
+					 Relation relation,
+					 BlockNumber blockNum,
+					 Buffer candidate)
+{
+	ForkNumber	forkNum = MAIN_FORKNUM;
+	BufferDesc *bufHdr;
+
+	if (BufferIsValid(buffer))
+	{
+		Assert(BufferIsPinned(buffer));
+		if (BufferIsLocal(buffer))
+		{
+			bufHdr = GetLocalBufferDescriptor(-buffer - 1);
+			if (bufHdr->tag.blockNum == blockNum &&
+				BufTagMatchesRelFileLocator(&bufHdr->tag, &relation->rd_locator) &&
+				BufTagGetForkNum(&bufHdr->tag) == forkNum)
+				return buffer;
+			UnpinLocalBuffer(buffer);
+		}
+		else
+		{
+			bufHdr = GetBufferDescriptor(buffer - 1);
+			/* we have pin, so it's ok to examine tag without spinlock */
+			if (bufHdr->tag.blockNum == blockNum &&
+				BufTagMatchesRelFileLocator(&bufHdr->tag, &relation->rd_locator) &&
+				BufTagGetForkNum(&bufHdr->tag) == forkNum)
+				return buffer;
+			UnpinBuffer(bufHdr);
+		}
+	}
+
+	if (BufferIsValid(candidate))
+	{
+		bufHdr = GetBufferDescriptor(candidate - 1);
+		PinBuffer(bufHdr, NULL);
+		if (bufHdr->tag.blockNum == blockNum &&
+			BufTagMatchesRelFileLocator(&bufHdr->tag, &relation->rd_locator) &&
+			BufTagGetForkNum(&bufHdr->tag) == forkNum)
+			return buffer;
+		UnpinBuffer(bufHdr);
+	}
+
+	return ReadBuffer(relation, blockNum);
+}
+
 /*
  * PinBuffer -- make buffer unavailable for replacement.
  *
