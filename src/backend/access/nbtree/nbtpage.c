@@ -1022,7 +1022,7 @@ _bt_relandgetbuf_with_candidate(Relation rel, Buffer obuf, BlockNumber blkno, in
 	Assert(BlockNumberIsValid(blkno));
 	if (BufferIsValid(obuf))
 		_bt_unlockbuf(rel, obuf);
-	buf = ReleaseAndReadBuffer(obuf, rel, blkno);
+	buf = ReleaseAndReadBufferWithCandidate(obuf, rel, blkno, candidate);
 	_bt_lockbuf(rel, buf, access);
 
 	_bt_checkpage(rel, buf);

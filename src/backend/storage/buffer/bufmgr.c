@@ -2603,13 +2603,26 @@ ReleaseAndReadBufferWithCandidate(Buffer buffer,
 
 	if (BufferIsValid(candidate))
 	{
-		bufHdr = GetBufferDescriptor(candidate - 1);
-		PinBuffer(bufHdr, NULL);
-		if (bufHdr->tag.blockNum == blockNum &&
-			BufTagMatchesRelFileLocator(&bufHdr->tag, &relation->rd_locator) &&
-			BufTagGetForkNum(&bufHdr->tag) == forkNum)
-			return buffer;
-		UnpinBuffer(bufHdr);
+		if (BufferIsLocal(candidate))
+		{
+			bufHdr = GetLocalBufferDescriptor(-candidate - 1);
+			PinLocalBuffer(bufHdr, NULL);
+			if (bufHdr->tag.blockNum == blockNum &&
+				BufTagMatchesRelFileLocator(&bufHdr->tag, &relation->rd_locator) &&
+				BufTagGetForkNum(&bufHdr->tag) == forkNum)
+				return candidate;
+			UnpinLocalBuffer(candidate);
+		}
+		else
+		{
+			bufHdr = GetBufferDescriptor(candidate - 1);
+			PinBuffer(bufHdr, NULL);
+			if (bufHdr->tag.blockNum == blockNum &&
+				BufTagMatchesRelFileLocator(&bufHdr->tag, &relation->rd_locator) &&
+				BufTagGetForkNum(&bufHdr->tag) == forkNum)
+				return candidate;
+			UnpinBuffer(bufHdr);
+		}
 	}
 
 	return ReadBuffer(relation, blockNum);
