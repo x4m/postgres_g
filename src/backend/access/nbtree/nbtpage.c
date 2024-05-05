@@ -2217,7 +2217,7 @@ _bt_mark_page_halfdead(Relation rel, Relation heaprel, Buffer leafbuf,
 
 	itemid = PageGetItemId(page, poffset);
 	itup = (IndexTuple) PageGetItem(page, itemid);
-	BTreeTupleSetDownLink(itup, topparentrightsib);
+	BTreeTupleSetDownLink(itup, topparentrightsib, subtreeparent);
 
 	nextoffset = OffsetNumberNext(poffset);
 	PageIndexTupleDelete(page, nextoffset);

@@ -2180,7 +2180,7 @@ _bt_insert_parent(Relation rel,
 
 		/* form an index tuple that points at the new right page */
 		new_item = CopyIndexTuple(ritem);
-		BTreeTupleSetDownLink(new_item, rbknum);
+		BTreeTupleSetDownLink(new_item, rbknum, rbuf);
 
 		/*
 		 * Re-find and write lock the parent of buf.
@@ -2484,7 +2484,7 @@ _bt_newlevel(Relation rel, Relation heaprel, Buffer lbuf, Buffer rbuf)
 	left_item_sz = sizeof(IndexTupleData);
 	left_item = (IndexTuple) palloc(left_item_sz);
 	left_item->t_info = left_item_sz;
-	BTreeTupleSetDownLink(left_item, lbkno);
+	BTreeTupleSetDownLink(left_item, lbkno, lbuf);
 	BTreeTupleSetNAtts(left_item, 0, false);
 
 	/*
@@ -2495,7 +2495,7 @@ _bt_newlevel(Relation rel, Relation heaprel, Buffer lbuf, Buffer rbuf)
 	right_item_sz = ItemIdGetLength(itemid);
 	item = (IndexTuple) PageGetItem(lpage, itemid);
 	right_item = CopyIndexTuple(item);
-	BTreeTupleSetDownLink(right_item, rbkno);
+	BTreeTupleSetDownLink(right_item, rbkno, rbuf);
 
 	/* NO EREPORT(ERROR) from here till newroot op is logged */
 	START_CRIT_SECTION();

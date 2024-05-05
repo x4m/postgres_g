@@ -559,9 +559,10 @@ BTreeTupleGetDownLink(IndexTuple pivot)
 }
 
 static inline void
-BTreeTupleSetDownLink(IndexTuple pivot, BlockNumber blkno)
+BTreeTupleSetDownLink(IndexTuple pivot, BlockNumber blkno, Buffer buf)
 {
 	ItemPointerSetBlockNumber(&pivot->t_tid, blkno);
+	pivot->buffer = buf;
 }
 
 /*

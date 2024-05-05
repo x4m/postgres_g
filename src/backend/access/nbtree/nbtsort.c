@@ -954,7 +954,7 @@ _bt_buildadd(BTWriteState *wstate, BTPageState *state, IndexTuple itup,
 			   P_LEFTMOST(BTPageGetOpaque(opage)));
 		Assert(BTreeTupleGetNAtts(state->btps_lowkey, wstate->index) == 0 ||
 			   !P_LEFTMOST(BTPageGetOpaque(opage)));
-		BTreeTupleSetDownLink(state->btps_lowkey, oblkno);
+		BTreeTupleSetDownLink(state->btps_lowkey, oblkno, InvalidBuffer);
 		_bt_buildadd(wstate, state->btps_next, state->btps_lowkey, 0);
 		pfree(state->btps_lowkey);
 
@@ -1100,7 +1100,7 @@ _bt_uppershutdown(BTWriteState *wstate, BTPageState *state)
 				   P_LEFTMOST(opaque));
 			Assert(BTreeTupleGetNAtts(s->btps_lowkey, wstate->index) == 0 ||
 				   !P_LEFTMOST(opaque));
-			BTreeTupleSetDownLink(s->btps_lowkey, blkno);
+			BTreeTupleSetDownLink(s->btps_lowkey, blkno, InvalidBuffer);
 			_bt_buildadd(wstate, s->btps_next, s->btps_lowkey, 0);
 			pfree(s->btps_lowkey);
 			s->btps_lowkey = NULL;
