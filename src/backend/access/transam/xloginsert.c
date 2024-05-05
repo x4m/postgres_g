@@ -524,6 +524,12 @@ XLogInsert(RmgrId rmid, uint8 info)
 	return EndPos;
 }
 
+static uint64 XLogRecordCompress(XLogRecData *rdt, uint64 total_len)
+{
+	if (wal_compression != WAL_COMPRESSION_ZSTD)
+		return total_len;
+}
+
 /*
  * Assemble a WAL record from the registered data and buffers into an
  * XLogRecData chain, ready for insertion with XLogInsertRecord().
@@ -826,6 +832,11 @@ XLogRecordAssemble(RmgrId rmid, uint8 info,
 
 	hdr_rdt.len = (scratch - hdr_scratch);
 	total_len += hdr_rdt.len;
+
+	if (wal_compression != WAL_COMPRESSION_NONE && total_len > 128)
+	{
+		total_len = XLogRecordCompress(hdr);
+	}
 
 	/*
 	 * Calculate CRC of the data
