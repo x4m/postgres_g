@@ -22,6 +22,8 @@ typedef struct
 	int			num_ranges;		/* number of ranges */
 } GISTIntArrayOptions;
 
+extern void sort_int32(int32 *base, size_t nel, bool ascending);
+
 /* useful macros for accessing int4 arrays */
 #define ARRPTR(x)  ( (int32 *) ARR_DATA_PTR(x) )
 #define ARRNELEMS(x)  ArrayGetNItems(ARR_NDIM(x), ARR_DIMS(x))
@@ -42,7 +44,7 @@ typedef struct
 	do { \
 		int		_nelems_ = ARRNELEMS(x); \
 		if (_nelems_ > 1) \
-			isort(ARRPTR(x), _nelems_); \
+			sort_int32(ARRPTR(x), _nelems_, true); \
 	} while(0)
 
 /* sort the elements of the array and remove duplicates */
@@ -50,8 +52,10 @@ typedef struct
 	do { \
 		int		_nelems_ = ARRNELEMS(x); \
 		if (_nelems_ > 1) \
-			if (isort(ARRPTR(x), _nelems_)) \
-				(x) = _int_unique(x); \
+		{ \
+			sort_int32(ARRPTR(x), _nelems_, true); \
+			(x) = _int_unique(x); \
+		} \
 	} while(0)
 
 /* "wish" function */
@@ -109,7 +113,6 @@ typedef struct
 /*
  * useful functions
  */
-bool		isort(int32 *a, int len);
 ArrayType  *new_intArrayType(int num);
 ArrayType  *copy_intArrayType(ArrayType *a);
 ArrayType  *resize_intArrayType(ArrayType *a, int num);
@@ -176,16 +179,12 @@ bool		execconsistent(QUERYTYPE *query, ArrayType *array, bool calcnot);
 bool		gin_bool_consistent(QUERYTYPE *query, bool *check);
 bool		query_has_required_values(QUERYTYPE *query);
 
-int			compASC(const void *a, const void *b);
-int			compDESC(const void *a, const void *b);
-
 /* sort, either ascending or descending */
 #define QSORT(a, direction) \
 	do { \
 		int		_nelems_ = ARRNELEMS(a); \
 		if (_nelems_ > 1) \
-			qsort((void*) ARRPTR(a), _nelems_, sizeof(int32), \
-				  (direction) ? compASC : compDESC ); \
+			sort_int32(ARRPTR(a), _nelems_, direction); \
 	} while(0)
 
 #endif							/* ___INT_H__ */
