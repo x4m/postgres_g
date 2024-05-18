@@ -164,6 +164,7 @@ _int_inter(PG_FUNCTION_ARGS)
 PG_FUNCTION_INFO_V1(intset);
 PG_FUNCTION_INFO_V1(icount);
 PG_FUNCTION_INFO_V1(sort);
+PG_FUNCTION_INFO_V1(sort1);
 PG_FUNCTION_INFO_V1(sort_asc);
 PG_FUNCTION_INFO_V1(sort_desc);
 PG_FUNCTION_INFO_V1(uniq);
@@ -220,6 +221,33 @@ sort(PG_FUNCTION_ARGS)
 				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
 				 errmsg("second parameter must be \"ASC\" or \"DESC\"")));
 	QSORT(a, dir);
+	PG_RETURN_POINTER(a);
+}
+static inline int
+pg_cmp_s32(int32* a, int32* b)
+{
+	if (*a < *b)
+ 		return -1;
+ 	if (*a > *b)
+ 		return 1;
+ 	return 0;
+}
+#define ST_SORT intsort
+#define ST_ELEMENT_TYPE int32
+#define ST_COMPARE pg_cmp_s32
+#define ST_SCOPE
+#define ST_DECLARE
+#define ST_DEFINE
+#include "lib/sort_template.h"
+
+Datum
+sort1(PG_FUNCTION_ARGS)
+{
+	ArrayType  *a = PG_GETARG_ARRAYTYPE_P_COPY(0);
+	int		_nelems_ = ARRNELEMS(a);
+
+	CHECKARRVALID(a);
+	intsort(ARRPTR(a), _nelems_);
 	PG_RETURN_POINTER(a);
 }
 
