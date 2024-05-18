@@ -42,7 +42,7 @@ typedef struct
 	do { \
 		int		_nelems_ = ARRNELEMS(x); \
 		if (_nelems_ > 1) \
-			isort(ARRPTR(x), _nelems_); \
+			sort_int32(ARRPTR(x), _nelems_, true); \
 	} while(0)
 
 /* sort the elements of the array and remove duplicates */
@@ -176,16 +176,12 @@ bool		execconsistent(QUERYTYPE *query, ArrayType *array, bool calcnot);
 bool		gin_bool_consistent(QUERYTYPE *query, bool *check);
 bool		query_has_required_values(QUERYTYPE *query);
 
-int			compASC(const void *a, const void *b);
-int			compDESC(const void *a, const void *b);
-
 /* sort, either ascending or descending */
 #define QSORT(a, direction) \
 	do { \
 		int		_nelems_ = ARRNELEMS(a); \
 		if (_nelems_ > 1) \
-			qsort((void*) ARRPTR(a), _nelems_, sizeof(int32), \
-				  (direction) ? compASC : compDESC ); \
+			sort_int32(ARRPTR(a), _nelems_, direction); \
 	} while(0)
 
 #endif							/* ___INT_H__ */
