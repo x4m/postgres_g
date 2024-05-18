@@ -10,6 +10,9 @@
 #include "common/int.h"
 #include "lib/qunique.h"
 
+static inline int compASC(const void *a, const void *b);
+static inline int compDESC(const void *a, const void *b);
+
 /* arguments are assumed sorted & unique-ified */
 bool
 inner_int_contains(ArrayType *a, ArrayType *b)
@@ -186,37 +189,6 @@ rt__int_size(ArrayType *a, float *size)
 	*size = (float) ARRNELEMS(a);
 }
 
-/* qsort_arg comparison function for isort() */
-static int
-isort_cmp(const void *a, const void *b, void *arg)
-{
-	int32		aval = *((const int32 *) a);
-	int32		bval = *((const int32 *) b);
-
-	if (aval < bval)
-		return -1;
-	if (aval > bval)
-		return 1;
-
-	/*
-	 * Report if we have any duplicates.  If there are equal keys, qsort must
-	 * compare them at some point, else it wouldn't know whether one should go
-	 * before or after the other.
-	 */
-	*((bool *) arg) = true;
-	return 0;
-}
-
-/* Sort the given data (len >= 2).  Return true if any duplicates found */
-bool
-isort(int32 *a, int len)
-{
-	bool		r = false;
-
-	qsort_arg(a, len, sizeof(int32), isort_cmp, &r);
-	return r;
-}
-
 /* Create a new int array with room for "num" elements */
 ArrayType *
 new_intArrayType(int num)
@@ -306,15 +278,37 @@ internal_size(int *a, int len)
 	return (int) size;
 }
 
+#define ST_SORT sort_int32_asc_impl
+#define ST_ELEMENT_TYPE int32
+#define ST_COMPARE(a, b) compASC(a, b)
+#define ST_SCOPE static
+#define ST_DECLARE
+#define ST_DEFINE
+#include "lib/sort_template.h"
+
+#define ST_SORT sort_int32_desc_impl
+#define ST_ELEMENT_TYPE int32
+#define ST_COMPARE(a, b) compDESC(a, b)
+#define ST_SCOPE static
+#define ST_DECLARE
+#define ST_DEFINE
+#include "lib/sort_template.h"
+
+void sort_int32(int32 *base, size_t nel, bool ascending)
+{
+	if (ascending)
+		sort_int32_asc_impl(base, nel);
+	else
+		sort_int32_desc_impl(base, nel);
+}
+
 /* unique-ify elements of r in-place ... r must be sorted already */
 ArrayType *
 _int_unique(ArrayType *r)
 {
 	int			num = ARRNELEMS(r);
-	bool		duplicates_found;	/* not used */
 
-	num = qunique_arg(ARRPTR(r), num, sizeof(int), isort_cmp,
-					  &duplicates_found);
+	num = qunique(ARRPTR(r), num, sizeof(int), compASC);
 
 	return resize_intArrayType(r, num);
 }
@@ -394,13 +388,13 @@ int_to_intset(int32 elem)
 	return result;
 }
 
-int
+static inline int
 compASC(const void *a, const void *b)
 {
 	return pg_cmp_s32(*(const int32 *) a, *(const int32 *) b);
 }
 
-int
+static inline int
 compDESC(const void *a, const void *b)
 {
 	return pg_cmp_s32(*(const int32 *) b, *(const int32 *) a);
