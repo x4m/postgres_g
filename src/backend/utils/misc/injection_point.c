@@ -56,6 +56,9 @@ typedef struct InjectionPointEntry
 	 * callbacks, registered when attached.
 	 */
 	char		private_data[INJ_PRIVATE_MAXLEN];
+
+	/* Number of arguments used by the callback */
+	int			num_args;
 } InjectionPointEntry;
 
 #define INJECTION_POINT_HASH_INIT_SIZE	16
@@ -69,7 +72,12 @@ typedef struct InjectionPointCacheEntry
 {
 	char		name[INJ_NAME_MAXLEN];
 	char		private_data[INJ_PRIVATE_MAXLEN];
-	InjectionPointCallback callback;
+	int			num_args;
+	union
+	{
+		InjectionPointCallback callback;
+		InjectionPointCallback1Arg callback_1arg;
+	} data;
 } InjectionPointCacheEntry;
 
 static HTAB *InjectionPointCache = NULL;
@@ -81,8 +89,9 @@ static HTAB *InjectionPointCache = NULL;
  */
 static void
 injection_point_cache_add(const char *name,
-						  InjectionPointCallback callback,
-						  const void *private_data)
+						  void *callback,
+						  const void *private_data,
+						  int num_args)
 {
 	InjectionPointCacheEntry *entry;
 	bool		found;
@@ -107,7 +116,14 @@ injection_point_cache_add(const char *name,
 
 	Assert(!found);
 	strlcpy(entry->name, name, sizeof(entry->name));
-	entry->callback = callback;
+	entry->num_args = num_args;
+	if (num_args == 0)
+		entry->data.callback = (InjectionPointCallback) callback;
+	else if (num_args == 1)
+		entry->data.callback_1arg = (InjectionPointCallback1Arg) callback;
+	else
+		elog(ERROR, "unsupported number of arguments for injection point \"%s\"",
+			 name);
 	if (private_data != NULL)
 		memcpy(entry->private_data, private_data, INJ_PRIVATE_MAXLEN);
 }
@@ -134,14 +150,11 @@ injection_point_cache_remove(const char *name)
  *
  * Retrieve an injection point from the local cache, if any.
  */
-static InjectionPointCallback
-injection_point_cache_get(const char *name, const void **private_data)
+static InjectionPointCacheEntry *
+injection_point_cache_get(const char *name)
 {
 	bool		found;
 	InjectionPointCacheEntry *entry;
-
-	if (private_data)
-		*private_data = NULL;
 
 	/* no callback if no cache yet */
 	if (InjectionPointCache == NULL)
@@ -151,11 +164,7 @@ injection_point_cache_get(const char *name, const void **private_data)
 		hash_search(InjectionPointCache, name, HASH_FIND, &found);
 
 	if (found)
-	{
-		if (private_data)
-			*private_data = entry->private_data;
-		return entry->callback;
-	}
+		return entry;
 
 	return NULL;
 }
@@ -206,7 +215,8 @@ InjectionPointAttach(const char *name,
 					 const char *library,
 					 const char *function,
 					 const void *private_data,
-					 int private_data_size)
+					 int private_data_size,
+					 int num_args)
 {
 #ifdef USE_INJECTION_POINTS
 	InjectionPointEntry *entry_by_name;
@@ -248,6 +258,7 @@ InjectionPointAttach(const char *name,
 	entry_by_name->function[INJ_FUNC_MAXLEN - 1] = '\0';
 	if (private_data != NULL)
 		memcpy(entry_by_name->private_data, private_data, private_data_size);
+	entry_by_name->num_args = num_args;
 
 	LWLockRelease(InjectionPointLock);
 
@@ -282,19 +293,18 @@ InjectionPointDetach(const char *name)
 }
 
 /*
- * Execute an injection point, if defined.
+ * Workhorse for execution of an injection point, if defined.
  *
  * Check first the shared hash table, and adapt the local cache depending
  * on that as it could be possible that an entry to run has been removed.
  */
-void
-InjectionPointRun(const char *name)
+static inline void
+InjectionPointRunInternal(const char *name, int num_args, void *arg1)
 {
 #ifdef USE_INJECTION_POINTS
 	InjectionPointEntry *entry_by_name;
 	bool		found;
-	InjectionPointCallback injection_callback;
-	const void *private_data;
+	InjectionPointCacheEntry *cache_entry;
 
 	LWLockAcquire(InjectionPointLock, LW_SHARED);
 	entry_by_name = (InjectionPointEntry *)
@@ -316,10 +326,10 @@ InjectionPointRun(const char *name)
 	 * Check if the callback exists in the local cache, to avoid unnecessary
 	 * external loads.
 	 */
-	if (injection_point_cache_get(name, NULL) == NULL)
+	if (injection_point_cache_get(name) == NULL)
 	{
 		char		path[MAXPGPATH];
-		InjectionPointCallback injection_callback_local;
+		void	   *injection_callback_local;
 
 		/* not found in local cache, so load and register */
 		snprintf(path, MAXPGPATH, "%s/%s%s", pkglib_path,
@@ -329,7 +339,7 @@ InjectionPointRun(const char *name)
 			elog(ERROR, "could not find library \"%s\" for injection point \"%s\"",
 				 path, name);
 
-		injection_callback_local = (InjectionPointCallback)
+		injection_callback_local = (void *)
 			load_external_function(path, entry_by_name->function, false, NULL);
 
 		if (injection_callback_local == NULL)
@@ -338,13 +348,43 @@ InjectionPointRun(const char *name)
 
 		/* add it to the local cache when found */
 		injection_point_cache_add(name, injection_callback_local,
-								  entry_by_name->private_data);
+								  entry_by_name->private_data,
+								  entry_by_name->num_args);
 	}
 
 	/* Now loaded, so get it. */
-	injection_callback = injection_point_cache_get(name, &private_data);
-	injection_callback(name, private_data);
+	cache_entry = injection_point_cache_get(name);
+
+	/* Check the number of arguments with the cache. */
+	if (cache_entry->num_args != num_args)
+		elog(ERROR, "incorrect number of arguments for injection point \"%s\": defined %d but expected %d",
+			 name, cache_entry->num_args, num_args);
+
+	if (cache_entry->num_args == 0)
+		cache_entry->data.callback(name, cache_entry->private_data);
+	else if (cache_entry->num_args == 1)
+		cache_entry->data.callback_1arg(name, cache_entry->private_data, arg1);
+	else
+	{
+		/* cannot be reached */
+		Assert(false);
+	}
 #else
 	elog(ERROR, "Injection points are not supported by this build");
 #endif
+}
+
+/*
+ * Execute an injection point, with no arguments.
+ */
+void
+InjectionPointRun(const char *name)
+{
+	InjectionPointRunInternal(name, 0, NULL);
+}
+/* 1-argument version */
+void
+InjectionPointRun1Arg(const char *name, void *arg1)
+{
+	InjectionPointRunInternal(name, 1, arg1);
 }
