@@ -50,6 +50,13 @@ SELECT injection_points_run_1arg('TestInjectionLogArg1', 'foobar'); -- notice
 SELECT injection_points_detach('TestInjectionLog2');
 SELECT injection_points_detach('TestInjectionLogArg1');
 
+-- Preloading
+SELECT injection_points_preload('TestInjectionLogPreload'); -- nothing
+SELECT injection_points_attach('TestInjectionLogPreload', 'notice');
+SELECT injection_points_preload('TestInjectionLogPreload'); -- nothing happens
+SELECT injection_points_run('TestInjectionLogPreload'); -- runs from cache
+SELECT injection_points_detach('TestInjectionLogPreload');
+
 -- Runtime conditions
 SELECT injection_points_attach('TestConditionError', 'error');
 -- Any follow-up injection point attached will be local to this process.

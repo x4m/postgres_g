@@ -325,6 +325,20 @@ injection_points_attach(PG_FUNCTION_ARGS)
 }
 
 /*
+ * SQL function for preloading an injection point.
+ */
+PG_FUNCTION_INFO_V1(injection_points_preload);
+Datum
+injection_points_preload(PG_FUNCTION_ARGS)
+{
+	char	   *name = text_to_cstring(PG_GETARG_TEXT_PP(0));
+
+	INJECTION_POINT_PRELOAD(name);
+
+	PG_RETURN_VOID();
+}
+
+/*
  * SQL function for triggering an injection point.
  */
 PG_FUNCTION_INFO_V1(injection_points_run);

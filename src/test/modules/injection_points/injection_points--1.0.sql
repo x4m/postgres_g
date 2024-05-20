@@ -15,6 +15,16 @@ AS 'MODULE_PATHNAME', 'injection_points_attach'
 LANGUAGE C STRICT PARALLEL UNSAFE;
 
 --
+-- injection_points_preload()
+--
+-- Preload an injection point already attached.
+--
+CREATE FUNCTION injection_points_preload(IN point_name TEXT)
+RETURNS void
+AS 'MODULE_PATHNAME', 'injection_points_preload'
+LANGUAGE C STRICT PARALLEL UNSAFE;
+
+--
 -- injection_points_run()
 --
 -- Executes the action attached to the injection point.

@@ -159,6 +159,38 @@ SELECT injection_points_detach('TestInjectionLogArg1');
  
 (1 row)
 
+-- Preloading
+SELECT injection_points_preload('TestInjectionLogPreload'); -- nothing
+ injection_points_preload 
+--------------------------
+ 
+(1 row)
+
+SELECT injection_points_attach('TestInjectionLogPreload', 'notice');
+ injection_points_attach 
+-------------------------
+ 
+(1 row)
+
+SELECT injection_points_preload('TestInjectionLogPreload'); -- nothing happens
+ injection_points_preload 
+--------------------------
+ 
+(1 row)
+
+SELECT injection_points_run('TestInjectionLogPreload'); -- runs from cache
+NOTICE:  notice triggered for injection point TestInjectionLogPreload
+ injection_points_run 
+----------------------
+ 
+(1 row)
+
+SELECT injection_points_detach('TestInjectionLogPreload');
+ injection_points_detach 
+-------------------------
+ 
+(1 row)
+
 -- Runtime conditions
 SELECT injection_points_attach('TestConditionError', 'error');
  injection_points_attach 

@@ -146,6 +146,37 @@ injection_point_cache_remove(const char *name)
 }
 
 /*
+ * injection_point_cache_load
+ *
+ * Load an injection point into the local cache.
+ */
+static void
+injection_point_cache_load(InjectionPointEntry *entry_by_name)
+{
+	char		path[MAXPGPATH];
+	void	   *injection_callback_local;
+
+	snprintf(path, MAXPGPATH, "%s/%s%s", pkglib_path,
+			 entry_by_name->library, DLSUFFIX);
+
+	if (!pg_file_exists(path))
+		elog(ERROR, "could not find library \"%s\" for injection point \"%s\"",
+			 path, entry_by_name->name);
+
+	injection_callback_local = (void *)
+		load_external_function(path, entry_by_name->function, false, NULL);
+
+	if (injection_callback_local == NULL)
+		elog(ERROR, "could not find function \"%s\" in library \"%s\" for injection point \"%s\"",
+			 entry_by_name->function, path, entry_by_name->name);
+
+	/* add it to the local cache when found */
+	injection_point_cache_add(entry_by_name->name, injection_callback_local,
+							  entry_by_name->private_data,
+							  entry_by_name->num_args);
+}
+
+/*
  * injection_point_cache_get
  *
  * Retrieve an injection point from the local cache, if any.
@@ -293,6 +324,47 @@ InjectionPointDetach(const char *name)
 }
 
 /*
+ * Preload an injection point into the local cache.
+ *
+ * This is useful to be able to load a function pointer at a stage earlier
+ * than it would be run, especially if the injection point is called in a code
+ * path where memory allocations cannot happen, like critical sections.
+ */
+void
+InjectionPointPreload(const char *name)
+{
+#ifdef USE_INJECTION_POINTS
+	InjectionPointEntry *entry_by_name;
+	bool		found;
+
+	LWLockAcquire(InjectionPointLock, LW_SHARED);
+	entry_by_name = (InjectionPointEntry *)
+		hash_search(InjectionPointHash, name,
+					HASH_FIND, &found);
+	LWLockRelease(InjectionPointLock);
+
+	/*
+	 * If not found, do nothing and remove it from the local cache if it
+	 * existed there.
+	 */
+	if (!found)
+	{
+		injection_point_cache_remove(name);
+		return;
+	}
+
+	/* Check first the local cache, and leave if this entry exists. */
+	if (injection_point_cache_get(name) != NULL)
+		return;
+
+	/* Nothing?  Then load it and leave */
+	injection_point_cache_load(entry_by_name);
+#else
+	elog(ERROR, "Injection points are not supported by this build");
+#endif
+}
+
+/*
  * Workhorse for execution of an injection point, if defined.
  *
  * Check first the shared hash table, and adapt the local cache depending
@@ -328,28 +400,8 @@ InjectionPointRunInternal(const char *name, int num_args, void *arg1)
 	 */
 	if (injection_point_cache_get(name) == NULL)
 	{
-		char		path[MAXPGPATH];
-		void	   *injection_callback_local;
-
-		/* not found in local cache, so load and register */
-		snprintf(path, MAXPGPATH, "%s/%s%s", pkglib_path,
-				 entry_by_name->library, DLSUFFIX);
-
-		if (!pg_file_exists(path))
-			elog(ERROR, "could not find library \"%s\" for injection point \"%s\"",
-				 path, name);
-
-		injection_callback_local = (void *)
-			load_external_function(path, entry_by_name->function, false, NULL);
-
-		if (injection_callback_local == NULL)
-			elog(ERROR, "could not find function \"%s\" in library \"%s\" for injection point \"%s\"",
-				 entry_by_name->function, path, name);
-
-		/* add it to the local cache when found */
-		injection_point_cache_add(name, injection_callback_local,
-								  entry_by_name->private_data,
-								  entry_by_name->num_args);
+		/* not found in local cache, so load and register it */
+		injection_point_cache_load(entry_by_name);
 	}
 
 	/* Now loaded, so get it. */
