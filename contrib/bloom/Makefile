@@ -8,7 +8,17 @@ OBJS = \
 	blscan.o \
 	blutils.o \
 	blvacuum.o \
-	blvalidate.o
+	blvalidate.o \
+	nbtcompare.o \
+	nbtdedup.o \
+	nbtinsert.o \
+	nbtpage.o \
+	nbtree.o \
+	nbtsearch.o \
+	nbtsort.o \
+	nbtsplitloc.o \
+	nbtutils.o \
+	nbtvalidate.o
 
 EXTENSION = bloom
 DATA = bloom--1.0.sql

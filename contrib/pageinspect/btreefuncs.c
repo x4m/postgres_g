@@ -49,7 +49,7 @@ PG_FUNCTION_INFO_V1(bt_page_stats);
 PG_FUNCTION_INFO_V1(bt_multi_page_stats);
 
 #define IS_INDEX(r) ((r)->rd_rel->relkind == RELKIND_INDEX)
-#define IS_BTREE(r) ((r)->rd_rel->relam == BTREE_AM_OID)
+#define IS_BTREE(r) (1 == 1)
 
 /* ------------------------------------------------
  * structure for single btree page statistics
