@@ -76,6 +76,7 @@
 #include <sys/param.h>
 #include <netdb.h>
 #include <limits.h>
+#include <utils/builtins.h>
 
 #ifdef USE_BONJOUR
 #include <dns_sd.h>
