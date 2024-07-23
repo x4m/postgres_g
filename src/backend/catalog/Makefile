@@ -46,8 +46,8 @@ OBJS = \
 	pg_subscription.o \
 	pg_type.o \
 	storage.o \
-	toasting.o
-
+	toasting.o \
+	pg_index_partitions.o
 include $(top_srcdir)/src/backend/common.mk
 
 .PHONY: install-data

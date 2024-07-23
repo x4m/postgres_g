@@ -266,3 +266,5 @@ NOTICE:  checking pg_subscription {subdbid} => pg_database {oid}
 NOTICE:  checking pg_subscription {subowner} => pg_authid {oid}
 NOTICE:  checking pg_subscription_rel {srsubid} => pg_subscription {oid}
 NOTICE:  checking pg_subscription_rel {srrelid} => pg_class {oid}
+NOTICE:  checking pg_index_partitions {indexoid} => pg_class {oid}
+NOTICE:  checking pg_index_partitions {reloid} => pg_class {oid}

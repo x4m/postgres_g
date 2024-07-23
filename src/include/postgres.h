@@ -536,6 +536,25 @@ Float8GetDatum(float8 X)
 extern Datum Float8GetDatum(float8 X);
 #endif
 
+/*
+ * DatumGetPartitionId
+ *		Returns partition identifier value of a datum.
+ */
+static inline PartitionId
+DatumGetPartitionId(Datum X)
+{
+	return (PartitionId) X;
+}
+
+/*
+ * PartitionIdGetDatum
+ *		Returns datum representation for a partition identifier.
+ */
+static inline Datum
+PartitionIdGetDatum(PartitionId X)
+{
+	return (Datum) X;
+}
 
 /*
  * Int64GetDatumFast

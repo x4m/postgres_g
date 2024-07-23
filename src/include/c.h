@@ -617,6 +617,22 @@ typedef uint32 MultiXactOffset;
 
 typedef uint32 CommandId;
 
+/*
+ * This is a new type used for global indexes. Global indexes store data
+ * from multiple partitions, so along with the heap TID, we also need a new
+ * identifier to identify the heap. We could store the reloid as well, but
+ * if the partition is detached, it becomes very hard to identify that we
+ * don't need to access data from this particular relation. It becomes even
+ * more problematic if the partition is dropped and later reloid is reused by
+ * another relation, making it difficult to distinguish whether a particular
+ * index  tuple belongs to the old relation or the new relation. To handle
+ * this, we use a new identifier called partition id. Whenever a relation is
+ * detached  from the global index, the partition id is invalidated, allowing
+ * us to easily identify that we don't need to access the tuple of this
+ * partition id.
+ */
+typedef	uint32 PartitionId;
+
 #define FirstCommandId	((CommandId) 0)
 #define InvalidCommandId	(~(CommandId)0)
 
