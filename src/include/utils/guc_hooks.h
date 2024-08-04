@@ -87,6 +87,7 @@ extern bool check_max_slot_wal_keep_size(int *newval, void **extra,
 extern void assign_max_wal_size(int newval, void *extra);
 extern bool check_max_stack_depth(int *newval, void **extra, GucSource source);
 extern void assign_max_stack_depth(int newval, void *extra);
+extern void assign_num_buffer_partitions_log2(int newval, void *extra);
 extern bool check_multixact_member_buffers(int *newval, void **extra,
 										   GucSource source);
 extern bool check_multixact_offset_buffers(int *newval, void **extra,

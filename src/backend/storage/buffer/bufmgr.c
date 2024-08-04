@@ -57,6 +57,7 @@
 #include "storage/read_stream.h"
 #include "storage/smgr.h"
 #include "storage/standby.h"
+#include "utils/guc_hooks.h"
 #include "utils/memdebug.h"
 #include "utils/ps_status.h"
 #include "utils/rel.h"
@@ -168,6 +169,13 @@ bool		zero_damaged_pages = false;
 int			bgwriter_lru_maxpages = 100;
 double		bgwriter_lru_multiplier = 2.0;
 bool		track_io_timing = false;
+
+/* GUC assign hook for num_buffer_partitions_log2 */
+void
+assign_num_buffer_partitions_log2(int newval, void *extra)
+{
+	num_buffer_partitions_mask = (1 << newval) - 1;
+}
 
 /*
  * How many buffers PrefetchBuffer callers should try to stay ahead of their

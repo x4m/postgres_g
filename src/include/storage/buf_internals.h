@@ -180,7 +180,7 @@ static inline LWLock *
 BufMappingPartitionLock(uint32 hashcode)
 {
 	return &MainLWLockArray[BUFFER_MAPPING_LWLOCK_OFFSET +
-							hashcode % NUM_BUFFER_PARTITIONS].lock;
+							(hashcode & num_buffer_partitions_mask)].lock;
 }
 
 /*

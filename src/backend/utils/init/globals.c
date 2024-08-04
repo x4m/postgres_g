@@ -168,3 +168,7 @@ int			notify_buffers = 16;
 int			serializable_buffers = 32;
 int			subtransaction_buffers = 0;
 int			transaction_buffers = 0;
+
+/* shared buffers partitions number and mask */
+int			num_buffer_partitions_log2 = 7;
+int			num_buffer_partitions_mask = 127;

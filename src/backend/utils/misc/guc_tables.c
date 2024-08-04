@@ -2549,6 +2549,16 @@ struct config_int ConfigureNamesInt[] =
 	},
 
 	{
+		{"num_buffer_partitions_log2", PGC_POSTMASTER, RESOURCES_MEM,
+			gettext_noop("Sets number of partitions for shared buffers mapping hashtable."),
+			NULL,
+		},
+		&num_buffer_partitions_log2,
+		7, 5, 16,
+		NULL, assign_num_buffer_partitions_log2, NULL
+	},
+
+	{
 		{"temp_file_limit", PGC_SUSET, RESOURCES_DISK,
 			gettext_noop("Limits the total size of all temporary files used by each process."),
 			gettext_noop("-1 means no limit."),

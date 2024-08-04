@@ -143,6 +143,7 @@
 #autovacuum_work_mem = -1		# min 1MB, or -1 to use maintenance_work_mem
 #logical_decoding_work_mem = 64MB	# min 64kB
 #max_stack_depth = 2MB			# min 100kB
+#num_buffer_partitions_log2 = 7	# number of partitions in shared buffer mapping hashtable
 #shared_memory_type = mmap		# the default is the first option
 					# supported by the operating system:
 					#   mmap
