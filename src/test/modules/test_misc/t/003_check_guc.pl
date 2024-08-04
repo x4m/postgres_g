@@ -58,6 +58,7 @@ while (my $line = <$contents>)
 	# with one space before and after the equal sign.
 	if ($line =~ m/^#?([_[:alnum:]]+) = .*/)
 	{
+		print "da";
 		# Lower-case conversion matters for some of the GUCs.
 		my $param_name = lc($1);
 
