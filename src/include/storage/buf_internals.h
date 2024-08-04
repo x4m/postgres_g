@@ -176,23 +176,11 @@ BufTagMatchesRelFileLocator(const BufferTag *tag,
  * hash code with BufTableHashCode(), then apply BufMappingPartitionLock().
  * NB: NUM_BUFFER_PARTITIONS must be a power of 2!
  */
-static inline uint32
-BufTableHashPartition(uint32 hashcode)
-{
-	return hashcode % NUM_BUFFER_PARTITIONS;
-}
-
 static inline LWLock *
 BufMappingPartitionLock(uint32 hashcode)
 {
 	return &MainLWLockArray[BUFFER_MAPPING_LWLOCK_OFFSET +
-							BufTableHashPartition(hashcode)].lock;
-}
-
-static inline LWLock *
-BufMappingPartitionLockByIndex(uint32 index)
-{
-	return &MainLWLockArray[BUFFER_MAPPING_LWLOCK_OFFSET + index].lock;
+							hashcode % NUM_BUFFER_PARTITIONS].lock;
 }
 
 /*
