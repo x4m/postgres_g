@@ -51,7 +51,7 @@ struct dshash_table_item
 };
 
 /*
- * The number of partitions for locking purposes.  This is set to match
+ * The number of partitions for locking purposes.  This is set to match default
  * NUM_BUFFER_PARTITIONS for now, on the basis that whatever's good enough for
  * the buffer pool must be good enough for any other purpose.  This could
  * become a runtime parameter in future.
