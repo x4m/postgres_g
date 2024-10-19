@@ -34,6 +34,7 @@
 #include "storage/smgr.h"
 #include "utils/fmgrprotos.h"
 #include "utils/index_selfuncs.h"
+#include "utils/injection_point.h"
 #include "utils/memutils.h"
 
 
@@ -88,7 +89,7 @@ typedef struct BTParallelScanDescData *BTParallelScanDesc;
 static void btvacuumscan(IndexVacuumInfo *info, IndexBulkDeleteResult *stats,
 						 IndexBulkDeleteCallback callback, void *callback_state,
 						 BTCycleId cycleid);
-static void btvacuumpage(BTVacState *vstate, BlockNumber scanblkno);
+static void btvacuumpage(BTVacState *vstate, Buffer buf);
 static BTVacuumPosting btreevacuumposting(BTVacState *vstate,
 										  IndexTuple posting,
 										  OffsetNumber updatedoffset,
@@ -969,8 +970,9 @@ btvacuumscan(IndexVacuumInfo *info, IndexBulkDeleteResult *stats,
 	Relation	rel = info->index;
 	BTVacState	vstate;
 	BlockNumber num_pages;
-	BlockNumber scanblkno;
 	bool		needLock;
+	BlockRangeReadStreamPrivate p;
+	ReadStream *stream = NULL;
 
 	/*
 	 * Reset fields that track information about the entire index now.  This
@@ -1039,7 +1041,14 @@ btvacuumscan(IndexVacuumInfo *info, IndexBulkDeleteResult *stats,
 	 */
 	needLock = !RELATION_IS_LOCAL(rel);
 
-	scanblkno = BTREE_METAPAGE + 1;
+	p.current_blocknum = BTREE_METAPAGE + 1;
+	stream = read_stream_begin_relation(READ_STREAM_FULL,
+										info->strategy,
+										rel,
+										MAIN_FORKNUM,
+										block_range_read_stream_cb,
+										&p,
+										0);
 	for (;;)
 	{
 		/* Get the current relation length */
@@ -1054,17 +1063,37 @@ btvacuumscan(IndexVacuumInfo *info, IndexBulkDeleteResult *stats,
 										 num_pages);
 
 		/* Quit if we've scanned the whole relation */
-		if (scanblkno >= num_pages)
+		if (p.current_blocknum >= num_pages)
 			break;
+
+		/* In 007_vacuum_btree test we need to coordinate two points here */
+		INJECTION_POINT("nbtree-vacuum-1");
+		INJECTION_POINT("nbtree-vacuum-2");
+
+		p.last_exclusive = num_pages;
+
 		/* Iterate over pages, then loop back to recheck length */
-		for (; scanblkno < num_pages; scanblkno++)
+		while(true)
 		{
-			btvacuumpage(&vstate, scanblkno);
+			BlockNumber current_block;
+			Buffer buf = read_stream_next_buffer(stream, NULL);
+			if (!BufferIsValid(buf))
+				break;
+
+			current_block = BufferGetBlockNumber(buf);
+			btvacuumpage(&vstate, buf);
 			if (info->report_progress)
 				pgstat_progress_update_param(PROGRESS_SCAN_BLOCKS_DONE,
-											 scanblkno);
+											 current_block);
 		}
+		Assert(read_stream_next_buffer(stream, NULL) == InvalidBuffer);
+		/*
+		 * After reaching the end we have to reset stream to use it again.
+		 * Extra restart in case of just one iteration does not cost us much.
+		 */
+		read_stream_reset(stream);
 	}
+	read_stream_end(stream);
 
 	/* Set statistics num_pages field to final size of index */
 	stats->num_pages = num_pages;
@@ -1096,7 +1125,7 @@ btvacuumscan(IndexVacuumInfo *info, IndexBulkDeleteResult *stats,
  * recycled (i.e. before the page split).
  */
 static void
-btvacuumpage(BTVacState *vstate, BlockNumber scanblkno)
+btvacuumpage(BTVacState *vstate, Buffer buf)
 {
 	IndexVacuumInfo *info = vstate->info;
 	IndexBulkDeleteResult *stats = vstate->stats;
@@ -1107,7 +1136,7 @@ btvacuumpage(BTVacState *vstate, BlockNumber scanblkno)
 	bool		attempt_pagedel;
 	BlockNumber blkno,
 				backtrack_to;
-	Buffer		buf;
+	BlockNumber scanblkno = BufferGetBlockNumber(buf);
 	Page		page;
 	BTPageOpaque opaque;
 
@@ -1121,14 +1150,6 @@ backtrack:
 	/* call vacuum_delay_point while not holding any buffer lock */
 	vacuum_delay_point();
 
-	/*
-	 * We can't use _bt_getbuf() here because it always applies
-	 * _bt_checkpage(), which will barf on an all-zero page. We want to
-	 * recycle all-zero pages, not fail.  Also, we want to use a nondefault
-	 * buffer access strategy.
-	 */
-	buf = ReadBufferExtended(rel, MAIN_FORKNUM, blkno, RBM_NORMAL,
-							 info->strategy);
 	_bt_lockbuf(rel, buf, BT_READ);
 	page = BufferGetPage(buf);
 	opaque = NULL;
@@ -1415,6 +1436,15 @@ backtrack:
 	if (backtrack_to != P_NONE)
 	{
 		blkno = backtrack_to;
+
+		/*
+		 * We can't use _bt_getbuf() here because it always applies
+		 * _bt_checkpage(), which will barf on an all-zero page. We want to
+		 * recycle all-zero pages, not fail.  Also, we want to use a nondefault
+		 * buffer access strategy.
+		 */
+		buf = ReadBufferExtended(rel, MAIN_FORKNUM, blkno, RBM_NORMAL,
+								info->strategy);
 		goto backtrack;
 	}
 }
