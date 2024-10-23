@@ -34,6 +34,7 @@
 #include "storage/smgr.h"
 #include "utils/fmgrprotos.h"
 #include "utils/index_selfuncs.h"
+#include "utils/injection_point.h"
 #include "utils/memutils.h"
 
 
@@ -1065,6 +1066,10 @@ btvacuumscan(IndexVacuumInfo *info, IndexBulkDeleteResult *stats,
 		/* Quit if we've scanned the whole relation */
 		if (scanblkno >= num_pages)
 			break;
+
+		/* In 007_vacuum_btree test we need to coordinate two points here */
+		INJECTION_POINT("nbtree-vacuum-1");
+		INJECTION_POINT("nbtree-vacuum-2");
 
 		p.current_blocknum = scanblkno;
 		p.last_exclusive = num_pages;
