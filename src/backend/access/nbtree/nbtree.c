@@ -1073,11 +1073,6 @@ btvacuumscan(IndexVacuumInfo *info, IndexBulkDeleteResult *stats,
 
 		p.current_blocknum = scanblkno;
 		p.last_exclusive = num_pages;
-		/*
-		 * After reaching the end we have to reset stream to use it again.
-		 * Extra restart in case of just one iteration does not cost us much.
-		 */
-		read_stream_reset(stream);
 
 		/* Iterate over pages, then loop back to recheck length */
 		for (; scanblkno < num_pages; scanblkno++)
@@ -1090,6 +1085,11 @@ btvacuumscan(IndexVacuumInfo *info, IndexBulkDeleteResult *stats,
 				pgstat_progress_update_param(PROGRESS_SCAN_BLOCKS_DONE,
 											 scanblkno);
 		}
+		/*
+		 * After reaching the end we have to reset stream to use it again.
+		 * Extra restart in case of just one iteration does not cost us much.
+		 */
+		read_stream_reset(stream);
 		Assert(read_stream_next_buffer(stream, NULL) == InvalidBuffer);
 	}
 	read_stream_end(stream);
