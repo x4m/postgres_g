@@ -1083,6 +1083,8 @@ btvacuumscan(IndexVacuumInfo *info, IndexBulkDeleteResult *stats,
 		for (; scanblkno < num_pages; scanblkno++)
 		{
 			Buffer buf = read_stream_next_buffer(stream, NULL);
+			Assert(BufferIsValid(buf));
+			Assert(BufferGetBlockNumber(buf) == scanblkno);
 			btvacuumpage(&vstate, buf);
 			if (info->report_progress)
 				pgstat_progress_update_param(PROGRESS_SCAN_BLOCKS_DONE,
