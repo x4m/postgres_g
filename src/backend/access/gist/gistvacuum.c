@@ -22,6 +22,7 @@
 #include "miscadmin.h"
 #include "storage/indexfsm.h"
 #include "storage/lmgr.h"
+#include "storage/read_stream.h"
 #include "utils/memutils.h"
 
 /* Working state needed by gistbulkdelete */
@@ -44,8 +45,7 @@ typedef struct
 
 static void gistvacuumscan(IndexVacuumInfo *info, IndexBulkDeleteResult *stats,
 						   IndexBulkDeleteCallback callback, void *callback_state);
-static void gistvacuumpage(GistVacState *vstate, BlockNumber blkno,
-						   BlockNumber orig_blkno);
+static void gistvacuumpage(GistVacState *vstate, Buffer buffer);
 static void gistvacuum_delete_empty_pages(IndexVacuumInfo *info,
 										  GistVacState *vstate);
 static bool gistdeletepage(IndexVacuumInfo *info, IndexBulkDeleteResult *stats,
@@ -129,8 +129,9 @@ gistvacuumscan(IndexVacuumInfo *info, IndexBulkDeleteResult *stats,
 	GistVacState vstate;
 	BlockNumber num_pages;
 	bool		needLock;
-	BlockNumber blkno;
 	MemoryContext oldctx;
+	BlockRangeReadStreamPrivate p;
+	ReadStream *stream = NULL;
 
 	/*
 	 * Reset fields that track information about the entire index now.  This
@@ -208,9 +209,17 @@ gistvacuumscan(IndexVacuumInfo *info, IndexBulkDeleteResult *stats,
 	 */
 	needLock = !RELATION_IS_LOCAL(rel);
 
-	blkno = GIST_ROOT_BLKNO;
+	p.current_blocknum = GIST_ROOT_BLKNO;
+	stream = read_stream_begin_relation(READ_STREAM_FULL,
+										info->strategy,
+										rel,
+										MAIN_FORKNUM,
+										block_range_read_stream_cb,
+										&p,
+										0);
 	for (;;)
 	{
+		Buffer buf;
 		/* Get the current relation length */
 		if (needLock)
 			LockRelationForExtension(rel, ExclusiveLock);
@@ -219,12 +228,23 @@ gistvacuumscan(IndexVacuumInfo *info, IndexBulkDeleteResult *stats,
 			UnlockRelationForExtension(rel, ExclusiveLock);
 
 		/* Quit if we've scanned the whole relation */
-		if (blkno >= num_pages)
+		if (p.current_blocknum >= num_pages)
 			break;
-		/* Iterate over pages, then loop back to recheck length */
-		for (; blkno < num_pages; blkno++)
-			gistvacuumpage(&vstate, blkno, blkno);
+		p.last_exclusive = num_pages;
+
+		/* Iterate over pages, then loop back to recheck relation length */
+		while(BufferIsValid(buf = read_stream_next_buffer(stream, NULL)))
+		{
+			gistvacuumpage(&vstate, buf);
+		}
+		Assert(read_stream_next_buffer(stream, NULL) == InvalidBuffer);
+		/*
+		 * After reaching the end we have to reset stream to use it again.
+		 * Extra restart in case of just one iteration does not cost us much.
+		 */
+		read_stream_reset(stream);
 	}
+	read_stream_end(stream);
 
 	/*
 	 * If we found any recyclable pages (and recorded them in the FSM), then
@@ -269,24 +289,22 @@ gistvacuumscan(IndexVacuumInfo *info, IndexBulkDeleteResult *stats,
  * are recursing to re-examine a previous page).
  */
 static void
-gistvacuumpage(GistVacState *vstate, BlockNumber blkno, BlockNumber orig_blkno)
+gistvacuumpage(GistVacState *vstate, Buffer buffer)
 {
 	IndexVacuumInfo *info = vstate->info;
 	IndexBulkDeleteCallback callback = vstate->callback;
 	void	   *callback_state = vstate->callback_state;
 	Relation	rel = info->index;
-	Buffer		buffer;
+	BlockNumber orig_blkno = BufferGetBlockNumber(buffer);
 	Page		page;
 	BlockNumber recurse_to;
+	BlockNumber blkno = orig_blkno;
 
 restart:
 	recurse_to = InvalidBlockNumber;
 
 	/* call vacuum_delay_point while not holding any buffer lock */
 	vacuum_delay_point();
-
-	buffer = ReadBufferExtended(rel, MAIN_FORKNUM, blkno, RBM_NORMAL,
-								info->strategy);
 
 	/*
 	 * We are not going to stay here for a long time, aggressively grab an
@@ -450,6 +468,8 @@ restart:
 	if (recurse_to != InvalidBlockNumber)
 	{
 		blkno = recurse_to;
+		buffer = ReadBufferExtended(rel, MAIN_FORKNUM, blkno, RBM_NORMAL,
+									info->strategy);
 		goto restart;
 	}
 }
