@@ -1,0 +1,20 @@
+-- uuid check
+
+DROP TABLE IF EXISTS uuidtmp;
+CREATE TABLE uuidtmp (a uuid);
+
+\copy uuidtmp from 'data/uuid.data'
+
+CREATE INDEX uuididx ON uuidtmp USING gist ( a ) WITH(buffering = on);
+
+SET enable_seqscan=off;
+
+SELECT count(*) FROM uuidtmp WHERE a <  '55e65ca2-4136-4a4b-ba78-cd3fe4678203'::uuid;
+
+SELECT count(*) FROM uuidtmp WHERE a <= '55e65ca2-4136-4a4b-ba78-cd3fe4678203'::uuid;
+
+SELECT count(*) FROM uuidtmp WHERE a  = '55e65ca2-4136-4a4b-ba78-cd3fe4678203'::uuid;
+
+SELECT count(*) FROM uuidtmp WHERE a >= '55e65ca2-4136-4a4b-ba78-cd3fe4678203'::uuid;
+
+SELECT count(*) FROM uuidtmp WHERE a >  '55e65ca2-4136-4a4b-ba78-cd3fe4678203'::uuid;

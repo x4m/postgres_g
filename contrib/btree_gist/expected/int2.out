@@ -41,6 +41,7 @@ SELECT a, a <-> '237' FROM int2tmp ORDER BY a <-> '237' LIMIT 3;
 (3 rows)
 
 CREATE INDEX int2idx ON int2tmp USING gist ( a );
+NOTICE:  notice triggered for injection point btree-gist-sorted-build
 SET enable_seqscan=off;
 SELECT count(*) FROM int2tmp WHERE a <  237::int2;
  count 

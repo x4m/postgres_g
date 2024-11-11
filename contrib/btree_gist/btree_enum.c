@@ -7,6 +7,7 @@
 #include "btree_utils_num.h"
 #include "fmgr.h"
 #include "utils/fmgrprotos.h"
+#include "utils/sortsupport.h"
 
 /* enums are really Oids, so we just use the same structure */
 
@@ -26,7 +27,22 @@ PG_FUNCTION_INFO_V1(gbt_enum_picksplit);
 PG_FUNCTION_INFO_V1(gbt_enum_consistent);
 PG_FUNCTION_INFO_V1(gbt_enum_penalty);
 PG_FUNCTION_INFO_V1(gbt_enum_same);
+PG_FUNCTION_INFO_V1(gbt_enum_sortsupport);
 
+
+static int
+gbt_enum_ssup_cmp(Datum x, Datum y, SortSupport ssup)
+{
+	oidKEY *arg1 = (oidKEY *) DatumGetPointer(x);
+	oidKEY *arg2 = (oidKEY *) DatumGetPointer(y);
+
+	/* Since lower and upper oidKEY are always the same, just compare lower */
+	return DatumGetInt32(CallerFInfoFunctionCall2(enum_cmp,
+												  ssup->ssup_extra,
+												  InvalidOid,
+												  arg1->lower,
+												  arg2->lower));
+}
 
 static bool
 gbt_enumgt(const void *a, const void *b, FmgrInfo *flinfo)
@@ -182,4 +198,25 @@ gbt_enum_same(PG_FUNCTION_ARGS)
 
 	*result = gbt_num_same((void *) b1, (void *) b2, &tinfo, fcinfo->flinfo);
 	PG_RETURN_POINTER(result);
+}
+
+Datum
+gbt_enum_sortsupport(PG_FUNCTION_ARGS)
+{
+	SortSupport ssup = (SortSupport) PG_GETARG_POINTER(0);
+
+	ssup->comparator = gbt_enum_ssup_cmp;
+
+#ifdef USE_INJECTION_POINTS
+	INJECTION_POINT("btree-gist-sorted-build");
+#endif
+
+	/*
+	 * Since enum_fast_cmp() also uses enum_cmp() like the rest of the
+	 * comparison functions, it also needs to pass flinfo when calling
+	 * it. Thus save it in ssup_extra and retrieve it in enum_fast_cmp() later.
+	 */
+	ssup->ssup_extra = fcinfo->flinfo;
+
+	PG_RETURN_VOID();
 }

@@ -5,6 +5,8 @@ CREATE TABLE test_ne (
    b  NUMERIC
 );
 CREATE INDEX test_ne_idx ON test_ne USING gist (a, b);
+NOTICE:  notice triggered for injection point btree-gist-sorted-build
+NOTICE:  notice triggered for injection point btree-gist-sorted-build
 INSERT INTO test_ne SELECT '2009-01-01', 10.7 FROM generate_series(1,1000);
 INSERT INTO test_ne VALUES('2007-02-03', -91.3);
 INSERT INTO test_ne VALUES('2011-09-01', 43.7);
@@ -33,6 +35,8 @@ CREATE TABLE zoo (
    animal TEXT,
    EXCLUDE USING gist (cage WITH =, animal WITH <>)
 );
+NOTICE:  notice triggered for injection point btree-gist-sorted-build
+NOTICE:  notice triggered for injection point btree-gist-sorted-build
 INSERT INTO zoo VALUES(123, 'zebra');
 INSERT INTO zoo VALUES(123, 'zebra');
 INSERT INTO zoo VALUES(123, 'lion');

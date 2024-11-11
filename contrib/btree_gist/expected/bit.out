@@ -33,6 +33,7 @@ SELECT count(*) FROM bittmp WHERE a >   '011011000100010111011000110000100';
 (1 row)
 
 CREATE INDEX bitidx ON bittmp USING GIST ( a );
+NOTICE:  notice triggered for injection point btree-gist-sorted-build
 SET enable_seqscan=off;
 SELECT count(*) FROM bittmp WHERE a <   '011011000100010111011000110000100';
  count 

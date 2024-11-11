@@ -41,6 +41,7 @@ SELECT a, a <-> '2004-10-26 08:55:08' FROM timestamptmp ORDER BY a <-> '2004-10-
 (3 rows)
 
 CREATE INDEX timestampidx ON timestamptmp USING gist ( a );
+NOTICE:  notice triggered for injection point btree-gist-sorted-build
 SET enable_seqscan=off;
 SELECT count(*) FROM timestamptmp WHERE a <  '2004-10-26 08:55:08'::timestamp;
  count 

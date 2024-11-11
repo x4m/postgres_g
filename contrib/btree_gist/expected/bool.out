@@ -33,6 +33,7 @@ SELECT count(*) FROM booltmp WHERE a >  true;
 (1 row)
 
 CREATE INDEX boolidx ON booltmp USING gist ( a );
+NOTICE:  notice triggered for injection point btree-gist-sorted-build
 SET enable_seqscan=off;
 SELECT count(*) FROM booltmp WHERE a <  true;
  count 

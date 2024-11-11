@@ -33,6 +33,7 @@ SELECT count(*) FROM uuidtmp WHERE a >  '55e65ca2-4136-4a4b-ba78-cd3fe4678203';
 (1 row)
 
 CREATE INDEX uuididx ON uuidtmp USING gist ( a );
+NOTICE:  notice triggered for injection point btree-gist-sorted-build
 SET enable_seqscan=off;
 SELECT count(*) FROM uuidtmp WHERE a <  '55e65ca2-4136-4a4b-ba78-cd3fe4678203'::uuid;
  count 

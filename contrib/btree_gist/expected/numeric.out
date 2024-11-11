@@ -95,6 +95,7 @@ SELECT count(*) FROM numerictmp WHERE a >  0 ;
 (1 row)
 
 CREATE INDEX numericidx ON numerictmp USING gist ( a );
+NOTICE:  notice triggered for injection point btree-gist-sorted-build
 SET enable_seqscan=off;
 SELECT count(*) FROM numerictmp WHERE a <  -1890.0;
  count 
