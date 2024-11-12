@@ -1557,6 +1557,18 @@ WALRead(XLogReaderState *state,
 
 		/* Reset errno first; eases reporting non-errno-affecting errors */
 		errno = 0;
+
+#if defined(USE_POSIX_FADVISE) && defined(POSIX_FADV_WILLNEED)
+	/*
+	 *  Prefetch next wal blocks to avoid page misses on next read iterations.
+	 */
+#define RACHUNK (16*1024*1024)
+	if (p == 0) {
+		pgstat_report_wait_start(WAIT_EVENT_WAL_PREFETCH);
+		posix_fadvise(state->seg.ws_file, 0, RACHUNK, POSIX_FADV_WILLNEED);
+		pgstat_report_wait_end();
+	}
+#endif
 		readbytes = pg_pread(state->seg.ws_file, p, segbytes, (off_t) startoff);
 
 #ifndef FRONTEND
