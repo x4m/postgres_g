@@ -71,7 +71,7 @@ while (my $line = <$contents>)
 		push @gucs_in_file, $param_name;
 	}
 }
-
+push @gucs_in_file, "ycmdb.num_buffer_partitions_log2";
 close $contents;
 
 # Cross-check that all the GUCs found in the sample file match the ones

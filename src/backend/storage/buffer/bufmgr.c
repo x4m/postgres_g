@@ -62,6 +62,7 @@
 #include "utils/rel.h"
 #include "utils/resowner.h"
 #include "utils/timestamp.h"
+#include "utils/guc_hooks.h"
 
 
 /* Note: these two macros only work on shared buffers, not local ones! */
@@ -141,6 +142,13 @@ bool		zero_damaged_pages = false;
 int			bgwriter_lru_maxpages = 100;
 double		bgwriter_lru_multiplier = 2.0;
 bool		track_io_timing = false;
+
+/* GUC assign hook for num_buffer_partitions_log2 */
+void
+assign_num_buffer_partitions_log2(int newval, void *extra)
+{
+	num_buffer_partitions_mask = (1 << newval) - 1;
+}
 
 /*
  * How many buffers PrefetchBuffer callers should try to stay ahead of their
