@@ -503,6 +503,17 @@ generate_uuidv7(uint64 ns)
 				(errcode(ERRCODE_INTERNAL_ERROR),
 				 errmsg("could not generate random values")));
 
+#if defined(__darwin__)
+	/*
+	 * On MacOS real time is truncted to microseconds. Thus, 2 least
+	 * significant bits of increased_clock_precision are neither random
+	 * (CSPRNG), nor time-dependent (in a sense - truly random). These 2 bits
+	 * are dependent on other time-specific bits, thus they do not contribute
+	 * to uniqueness. To make these bit random we mix in two bits from CSPRNG.
+	 */
+	uuid->data[7] = uuid->data[7] ^ (uuid->data[8] >> 6);
+#endif
+
 	/*
 	 * Set magic numbers for a "version 7" (pseudorandom) UUID, see
 	 * https://www.rfc-editor.org/rfc/rfc9562#name-version-field
