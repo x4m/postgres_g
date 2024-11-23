@@ -184,20 +184,6 @@
 #ifdef _MSC_VER
 /* Last parameter not used */
 extern int	gettimeofday(struct timeval *tp, void *tzp);
-
-/*
- * Windows implementation is limited to CLOCK_REALTIME
- */
-typedef enum {
-	CLOCK_REALTIME
-} clockid_t;
-
-#include <time.h> /* for timespec */
-
-extern int clock_gettime(clockid_t clock_id, struct timespec *tp);
-#else
-/* MinGW */
-#include "pthread_time.h"
 #endif
 
 /* for setitimer in backend/port/win32/timer.c */
