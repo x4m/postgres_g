@@ -41,7 +41,6 @@ static const unsigned __int64 epoch = UINT64CONST(116444736000000000);
  */
 #define FILETIME_UNITS_PER_SEC	10000000L
 #define FILETIME_UNITS_PER_USEC 10
-#define FILETIME_UNITS_TO_NS	100L
 
 
 /*
@@ -71,27 +70,6 @@ gettimeofday(struct timeval *tp, void *tzp)
 	tp->tv_sec = (long) ((ularge.QuadPart - epoch) / FILETIME_UNITS_PER_SEC);
 	tp->tv_usec = (long) (((ularge.QuadPart - epoch) % FILETIME_UNITS_PER_SEC)
 						  / FILETIME_UNITS_PER_USEC);
-
-	return 0;
-}
-
-/*
- * This function is ported for UUID purposes.
- */
-int
-clock_gettime(clockid_t clock_id, struct timespec *tp)
-{
-	Assert(clock_id == CLOCK_REALTIME);
-
-	FILETIME	file_time;
-	ULARGE_INTEGER ularge;
-	GetSystemTimePreciseAsFileTime(&file_time);
-	ularge.LowPart = file_time.dwLowDateTime;
-	ularge.HighPart = file_time.dwHighDateTime;
-
-	tp->tv_sec = (long) ((ularge.QuadPart - epoch) / FILETIME_UNITS_PER_SEC);
-	tp->tv_nsec = (long) (((ularge.QuadPart - epoch) % FILETIME_UNITS_PER_SEC)
-						  * FILETIME_UNITS_TO_NS);
 
 	return 0;
 }

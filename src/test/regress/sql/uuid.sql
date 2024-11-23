@@ -10,6 +10,11 @@ CREATE TABLE guid2
 	guid_field UUID,
 	text_field TEXT DEFAULT(now())
 );
+CREATE TABLE guid3
+(
+	id SERIAL,
+	guid_field UUID
+);
 
 -- inserting invalid data tests
 -- too long
@@ -98,6 +103,9 @@ INSERT INTO guid1 (guid_field) VALUES (uuidv7());
 INSERT INTO guid1 (guid_field) VALUES (uuidv7(INTERVAL '1 day'));
 SELECT count(DISTINCT guid_field) FROM guid1;
 
+-- test sortability of v7
+INSERT INTO guid3 (guid_field) SELECT uuidv7() FROM generate_series(1, 10);
+SELECT array_agg(id ORDER BY guid_field) FROM guid3;
 
 -- extract functions
 
@@ -116,4 +124,4 @@ SELECT uuid_extract_timestamp('11111111-1111-1111-1111-111111111111');  -- null
 
 
 -- clean up
-DROP TABLE guid1, guid2 CASCADE;
+DROP TABLE guid1, guid2, guid3 CASCADE;

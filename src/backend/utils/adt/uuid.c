@@ -13,16 +13,29 @@
 
 #include "postgres.h"
 
+#include <time.h> /* for clock_gettime() */
+
 #include "common/hashfn.h"
 #include "lib/hyperloglog.h"
 #include "libpq/pqformat.h"
 #include "port/pg_bswap.h"
-#include "portability/instr_time.h"
 #include "utils/fmgrprotos.h"
 #include "utils/guc.h"
 #include "utils/sortsupport.h"
 #include "utils/timestamp.h"
 #include "utils/uuid.h"
+
+/* helper macros */
+#define NS_PER_S	INT64CONST(1000000000)
+#define NS_PER_MS	INT64CONST(1000000)
+#define NS_PER_US	INT64CONST(1000)
+
+/*
+ * In UUID version 7, we use 12 bits in "rand_a" to store 1/4096 fractions of
+ * sub-millisecond. This is the minimum amount of nanoseconds that guarantees
+ * step of UUID increased clock precision.
+ */
+#define SUBMS_MINIMAL_STEP ((NS_PER_MS / (1 << 12)) + 1)
 
 /* sortsupport for uuid */
 typedef struct
@@ -39,7 +52,7 @@ static int	uuid_fast_cmp(Datum x, Datum y, SortSupport ssup);
 static bool uuid_abbrev_abort(int memtupcount, SortSupport ssup);
 static Datum uuid_abbrev_convert(Datum original, SortSupport ssup);
 static inline void uuid_set_version(pg_uuid_t *uuid, unsigned char version);
-static inline uint64 get_real_time_ns_ascending();
+static inline int64 get_real_time_ns_ascending();
 
 Datum
 uuid_in(PG_FUNCTION_ARGS)
@@ -404,14 +417,13 @@ uuid_hash_extended(PG_FUNCTION_ARGS)
 	return hash_any_extended(key->data, UUID_LEN, PG_GETARG_INT64(1));
 }
 
-/*
- * Set magic numbers for a UUID variant 3
- * https://www.rfc-editor.org/rfc/rfc9562
- */
-static inline void uuid_set_version(pg_uuid_t *uuid, unsigned char version)
+/* Set the given UUID version and the variant bits */
+static inline void
+uuid_set_version(pg_uuid_t *uuid, unsigned char version)
 {
 	/* set version field, top four bits */
 	uuid->data[6] = (uuid->data[6] & 0x0f) | (version << 4);
+
 	/* set variant field, top two bits are 1, 0 */
 	uuid->data[8] = (uuid->data[8] & 0x3f) | 0x80;
 }
@@ -433,8 +445,8 @@ gen_random_uuid(PG_FUNCTION_ARGS)
 				 errmsg("could not generate random values")));
 
 	/*
-	 * Set magic numbers for a "version 4" (pseudorandom) UUID, see
-	 * https://datatracker.ietf.org/doc/html/rfc9562#name-uuid-version-4
+	 * Set magic numbers for a "version 4" (pseudorandom) UUID and
+	 * variant, see https://datatracker.ietf.org/doc/html/rfc9562#name-uuid-version-4
 	 */
 	uuid_set_version(uuid, 4);
 
@@ -442,44 +454,63 @@ gen_random_uuid(PG_FUNCTION_ARGS)
 }
 
 /*
- * Aquire nanosecond reading and ensure it is ascending (on this backend)
+ * Get the current timestamp with nanosecond precision for UUID generation.
+ * The returned timestamp is ensured to be at least SUBMS_MINIMAL_STEP greater
+ * than the previous returned timestamp (on this backend).
  */
-static inline uint64 get_real_time_ns_ascending()
+static inline int64
+get_real_time_ns_ascending()
 {
-	static uint64 previous_ns = 0;
+	static int64 previous_ns = 0;
+	int64 ns;
+
+	/* Get the current real timestamp */
+
+#ifdef	WIN32
+	struct timeval tmp;
+
+	gettimeofday(&tp, NULL);
+	ns = tmp.tv_sec * NS_PER_S + tmp.tv_usec * NS_PER_US;
+#else
 	struct timespec tmp;
-	uint64 ns;
 
-	/* We use some bits of nanosecond precision, so we cannot resort to gettimeofday() */
+	/*
+	 * We don't use gettimeofday() where available, instead use clock_gettime()
+	 * with CLOCK_REALTIME in order to get a high-precision (nanoseconds) real
+	 * timestamp.
+	 *
+	 * Note that a timestamp returned by clock_gettime() with CLOCK_REALTIME
+	 * is nanosecond-precision on most Unix-like platforms. On some platforms
+	 * such as macOS, it's restricted to microsecond-precision.
+	 */
 	clock_gettime(CLOCK_REALTIME, &tmp);
-	ns = tmp.tv_sec * 1000000000L + tmp.tv_nsec;
+	ns = tmp.tv_sec * NS_PER_S + tmp.tv_nsec;
+#endif
 
-	/* minimum amount of ns that guarantees step of UUID increased clock precision */
-#define SUB_MILLISECOND_STEP ((NS_PER_MS / (1 << 12)) + 1)
-	if (previous_ns + SUB_MILLISECOND_STEP >= ns)
-		ns = previous_ns + SUB_MILLISECOND_STEP;
+	/* Guarantee the minimal step advancement of the timestamp */
+	if (previous_ns + SUBMS_MINIMAL_STEP >= ns)
+		ns = previous_ns + SUBMS_MINIMAL_STEP;
 	previous_ns = ns;
 
 	return ns;
 }
 
 /*
- * Generate UUID version 7 per RFC 9562.
+ * Generate UUID version 7 per RFC 9562, with the given timestamp.
  *
- * Monotonicity (regarding generation on given backend) is ensured with method
- * "Replace Leftmost Random Bits with Increased Clock Precision (Method 3)".
- * We use 12 bits in "rand_a" bits to store 1/4096 fractions of millisecond.
- * Usage of pg_testtime indicates that such precision is available on most
- * systems. If timestamp is not advancing between two consecutive UUID
- * generations, previous timestamp is incremented and used instead of current
- * timestamp.
+ * UUID version 7 consists of a Unix timestamp in milliseconds (48 bits) and
+ * 74 random bits, excluding the required version and variant bits. To ensure
+ * monotonicity in scenarios of high-frequency UUID generation, we employ the
+ * method "Replace Leftmost Random Bits with Increased Clock Precision (Method 3)".
+ * This method utilizes 12 bits from the "rand_a" bits to store a 1/4096
+ * (or 2^12) fraction of sub-millisecond precision.
  */
-static Datum
-generate_uuidv7(uint64 ns)
+static pg_attribute_always_inline pg_uuid_t *
+generate_uuidv7(int64 ns)
 {
 	pg_uuid_t	*uuid = palloc(UUID_LEN);
-	uint64		 unix_ts_ms;
-	uint16 		 increased_clock_precision;
+	int64		 unix_ts_ms;
+	int32 		 increased_clock_precision;
 
 	unix_ts_ms = ns / NS_PER_MS;
 
@@ -494,6 +525,7 @@ generate_uuidv7(uint64 ns)
 	/* sub-millisecond timestamp fraction (12 bits) */
 	increased_clock_precision = ((ns % NS_PER_MS) * (1 << 12)) / NS_PER_MS;
 
+	/* Fill the increased clock precision to "rand_a" bits */
 	uuid->data[6] = (unsigned char) (increased_clock_precision >> 8);
 	uuid->data[7] = (unsigned char) (increased_clock_precision);
 
@@ -504,51 +536,62 @@ generate_uuidv7(uint64 ns)
 				 errmsg("could not generate random values")));
 
 	/*
-	 * Set magic numbers for a "version 7" (pseudorandom) UUID, see
-	 * https://www.rfc-editor.org/rfc/rfc9562#name-version-field
+	 * Set magic numbers for a "version 7" (pseudorandom) UUID and
+	 * variant, see https://www.rfc-editor.org/rfc/rfc9562#name-version-field
 	 */
 	uuid_set_version(uuid, 7);
+
+	return uuid;
+}
+
+/*
+ * Generate UUID version 7 with the current timestamp.
+ */
+Datum
+uuidv7(PG_FUNCTION_ARGS)
+{
+	pg_uuid_t *uuid = generate_uuidv7(get_real_time_ns_ascending());
 
 	PG_RETURN_UUID_P(uuid);
 }
 
 /*
- * Entry point for uuidv7()
- */
-Datum
-uuidv7(PG_FUNCTION_ARGS)
-{
-   return generate_uuidv7(get_real_time_ns_ascending());
-}
-
-/*
- * Entry point for uuidv7(interval)
+ * Similar to uuidv7() but with the timestamp adjusted by the given interval.
  */
 Datum
 uuidv7_interval(PG_FUNCTION_ARGS)
 {
-	uint64 ns = get_real_time_ns_ascending();
-	/*
-	 * We are given a time shift interval as an argument.
-	 * The interval represent days, monthes and years, that are not fixed
-	 * number of nanoseconds. To make correct computations we call
-	 * timestamptz_pl_interval() with corresponding logic. This logic is
-	 * implemented with microsecond precision. So we carry nanoseconds
-	 * between computations.
-	 */
 	Interval *span = PG_GETARG_INTERVAL_P(0);
-	/* Convert time part of UUID to Timestamptz (ms since Postgres epoch) */
-	TimestampTz ts = (TimestampTz) (ns / 1000) -
+	TimestampTz ts;
+	pg_uuid_t *uuid;
+	int64 ns = get_real_time_ns_ascending();
+
+	/*
+	 * Shift the current timestamp by the given interval. To make correct
+	 * calculating the time shift, we convert the UNIX epoch to TimestampTz
+	 * and use timestamptz_pl_interval(). Since this calculation is done with
+	 * microsecond precision, we carry back the nanoseconds.
+	 */
+
+	ts = (TimestampTz) (ns / NS_PER_US) -
 		(POSTGRES_EPOCH_JDATE - UNIX_EPOCH_JDATE) * SECS_PER_DAY * USECS_PER_SEC;
 
 	/* Copmute time shift */
 	ts = DatumGetTimestampTz(DirectFunctionCall2(timestamptz_pl_interval,
-													TimestampTzGetDatum(ts),
-													IntervalPGetDatum(span)));
-	/* Convert TimestampTz back and carry nanoseconds. */
+												 TimestampTzGetDatum(ts),
+												 IntervalPGetDatum(span)));
+
+	/*
+	 * Convert a TimestampTz value back to an UNIX epoch and carry back
+	 * nanoseconds.
+	 */
 	ns = (ts + (POSTGRES_EPOCH_JDATE - UNIX_EPOCH_JDATE) * SECS_PER_DAY * USECS_PER_SEC)
-		* 1000 + ns % 1000;
-   return generate_uuidv7(ns);
+		* NS_PER_US + ns % NS_PER_US;
+
+	/* Generate an UUID */
+	uuid = generate_uuidv7(ns);
+
+	PG_RETURN_UUID_P(uuid);
 }
 
 /*
@@ -603,7 +646,7 @@ uuid_extract_timestamp(PG_FUNCTION_ARGS)
 			+ (((uint64) uuid->data[0]) << 40);
 
 		/* convert ms to us, then adjust */
-		ts = (TimestampTz) (tms * 1000) -
+		ts = (TimestampTz) (tms * NS_PER_US) -
 			(POSTGRES_EPOCH_JDATE - UNIX_EPOCH_JDATE) * SECS_PER_DAY * USECS_PER_SEC;
 
 		PG_RETURN_TIMESTAMPTZ(ts);
