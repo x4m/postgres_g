@@ -31,12 +31,19 @@
 #define NS_PER_US	INT64CONST(1000)
 
 /*
- * In UUID version 7, we use 12 bits in "rand_a" to store 1/4096 fractions of
- * sub-millisecond. This is the minimum amount of nanoseconds that guarantees
- * step advancement of sub-millisecond part.
+ * In UUID version 7, we use 12 bits in "rand_a" to store 1/4096
+ * fractions of sub-millisecond. On systems that have only 10 bits of sub-ms
+ * precision we still use 1/4096 parts of a millisecond, but fill lower 2 bits
+ * with random numbers. SUBMS_MINIMAL_STEP is the minimum amount of
+ * nanoseconds that guarantees step of UUID increased clock precision.
  */
+#if defined(__darwin__) || defined(_MSC_VER)
+#define SUBMS_MINIMAL_STEP_BITS 10
+#else
+#define SUBMS_MINIMAL_STEP_BITS 12
+#endif
 #define SUBMS_BITS	12
-#define SUBMS_MINIMAL_STEP_NS ((NS_PER_MS / (1 << SUBMS_BITS)) + 1)
+#define SUBMS_MINIMAL_STEP_NS ((NS_PER_MS / (1 << SUBMS_MINIMAL_STEP_BITS)) + 1)
 
 /* sortsupport for uuid */
 typedef struct
@@ -523,7 +530,10 @@ generate_uuidv7(int64 ns)
 	uuid->data[4] = (unsigned char) (unix_ts_ms >> 8);
 	uuid->data[5] = (unsigned char) unix_ts_ms;
 
-	/* sub-millisecond timestamp fraction (12 bits) */
+	/* 
+	 * sub-millisecond timestamp fraction (SUBMS_BITS bits, not
+	 * SUBMS_MINIMAL_STEP_BITS)
+	 */
 	increased_clock_precision = ((ns % NS_PER_MS) * (1 << SUBMS_BITS)) / NS_PER_MS;
 
 	/* Fill the increased clock precision to "rand_a" bits */
@@ -535,6 +545,19 @@ generate_uuidv7(int64 ns)
 		ereport(ERROR,
 				(errcode(ERRCODE_INTERNAL_ERROR),
 				 errmsg("could not generate random values")));
+
+#if defined(__darwin__) || defined(WIN32)
+	/*
+	 * On MacOS real time is truncted to microseconds. Thus, 2 least
+	 * significant are dependent on other time-specific bits, thus they do not
+	 * contribute to uniqueness. To make these bit random we mix in two bits
+	 * from CSPRNG.
+	 * 
+	 * SUBMS_MINIMAL_STEP is chosen so that we still guarantee monotonicity
+	 * despite altering these bits.
+	 */
+	uuid->data[7] = uuid->data[7] ^ (uuid->data[8] >> 6);
+#endif
 
 	/*
 	 * Set magic numbers for a "version 7" (pseudorandom) UUID and variant,
