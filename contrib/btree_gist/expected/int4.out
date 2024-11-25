@@ -41,6 +41,7 @@ SELECT a, a <-> '237' FROM int4tmp ORDER BY a <-> '237' LIMIT 3;
 (3 rows)
 
 CREATE INDEX int4idx ON int4tmp USING gist ( a );
+NOTICE:  notice triggered for injection point gist-sorted-build
 SET enable_seqscan=off;
 SELECT count(*) FROM int4tmp WHERE a <  237::int4;
  count 

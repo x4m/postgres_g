@@ -33,6 +33,7 @@ SELECT count(*) FROM inettmp WHERE a >  '89.225.196.191';
 (1 row)
 
 CREATE INDEX inetidx ON inettmp USING gist ( a );
+NOTICE:  notice triggered for injection point gist-sorted-build
 SET enable_seqscan=off;
 SELECT count(*) FROM inettmp WHERE a <  '89.225.196.191'::inet;
  count 

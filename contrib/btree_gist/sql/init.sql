@@ -1,3 +1,7 @@
+CREATE EXTENSION injection_points;
+
+SELECT injection_points_attach('gist-sorted-build', 'notice');
+
 CREATE EXTENSION btree_gist;
 
 -- Check whether any of our opclasses fail amvalidate

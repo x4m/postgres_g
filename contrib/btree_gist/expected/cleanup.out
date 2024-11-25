@@ -1,0 +1,6 @@
+SELECT injection_points_detach('gist-sorted-build');
+ injection_points_detach 
+-------------------------
+ 
+(1 row)
+

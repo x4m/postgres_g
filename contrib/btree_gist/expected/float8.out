@@ -41,6 +41,7 @@ SELECT a, a <-> '-1890.0' FROM float8tmp ORDER BY a <-> '-1890.0' LIMIT 3;
 (3 rows)
 
 CREATE INDEX float8idx ON float8tmp USING gist ( a );
+NOTICE:  notice triggered for injection point gist-sorted-build
 SET enable_seqscan=off;
 SELECT count(*) FROM float8tmp WHERE a <  -1890.0::float8;
  count 

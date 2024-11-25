@@ -2,6 +2,9 @@
 -- across a partitioned table.
 -- That code looks at strategy numbers that can differ in regular gist vs btree_gist,
 -- so we want to make sure it works here too.
+--
+-- Note that this also checks sorted builds for btree_gist and rangetypes.
+
 create table parttmp (
   id int,
   valid_at daterange,

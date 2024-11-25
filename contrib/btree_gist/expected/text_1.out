@@ -34,6 +34,7 @@ SELECT count(*) FROM texttmp WHERE a >   '31b0';
 (1 row)
 
 CREATE INDEX textidx ON texttmp USING GIST ( a );
+NOTICE:  notice triggered for injection point gist-sorted-build
 SET enable_seqscan=off;
 SELECT count(*) FROM texttmp WHERE a <   '31b0'::text;
  count 

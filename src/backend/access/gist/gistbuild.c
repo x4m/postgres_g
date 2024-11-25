@@ -44,6 +44,7 @@
 #include "storage/bufmgr.h"
 #include "storage/bulk_write.h"
 
+#include "utils/injection_point.h"
 #include "utils/memutils.h"
 #include "utils/rel.h"
 #include "utils/tuplesort.h"
@@ -402,6 +403,8 @@ gist_indexsortbuild(GISTBuildState *state)
 	IndexTuple	itup;
 	GistSortedBuildLevelState *levelstate;
 	BulkWriteBuffer rootbuf;
+
+	INJECTION_POINT("gist-sorted-build");
 
 	/* Reserve block 0 for the root page */
 	state->pages_allocated = 1;

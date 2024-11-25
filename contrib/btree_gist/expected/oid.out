@@ -33,6 +33,7 @@ SELECT count(*) FROM oidtmp WHERE oid >  17;
 (1 row)
 
 CREATE INDEX oididx ON oidtmp USING gist ( oid );
+NOTICE:  notice triggered for injection point gist-sorted-build
 SET enable_seqscan=off;
 SELECT count(*) FROM oidtmp WHERE oid <  17;
  count 

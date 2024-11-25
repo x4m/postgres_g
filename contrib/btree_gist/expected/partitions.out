@@ -2,13 +2,17 @@
 -- across a partitioned table.
 -- That code looks at strategy numbers that can differ in regular gist vs btree_gist,
 -- so we want to make sure it works here too.
+--
+-- Note that this also checks sorted builds for btree_gist and rangetypes.
 create table parttmp (
   id int,
   valid_at daterange,
   exclude using gist (id with =, valid_at with &&)
 ) partition by range (id);
 create table parttmp_1_to_10 partition of parttmp for values from (1) to (10);
+NOTICE:  notice triggered for injection point gist-sorted-build
 create table parttmp_11_to_20 partition of parttmp for values from (11) to (20);
+NOTICE:  notice triggered for injection point gist-sorted-build
 insert into parttmp (id, valid_at) values
   (1, '[2000-01-01, 2000-02-01)'),
   (1, '[2000-02-01, 2000-03-01)'),
