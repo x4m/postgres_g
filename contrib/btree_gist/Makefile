@@ -31,16 +31,23 @@ OBJS =  \
 
 EXTENSION = btree_gist
 DATA = btree_gist--1.0--1.1.sql \
-       btree_gist--1.1--1.2.sql btree_gist--1.2.sql btree_gist--1.2--1.3.sql \
-       btree_gist--1.3--1.4.sql btree_gist--1.4--1.5.sql \
-       btree_gist--1.5--1.6.sql btree_gist--1.6--1.7.sql \
-       btree_gist--1.7--1.8.sql
+		btree_gist--1.1--1.2.sql btree_gist--1.2.sql btree_gist--1.2--1.3.sql \
+		btree_gist--1.3--1.4.sql btree_gist--1.4--1.5.sql \
+		btree_gist--1.5--1.6.sql btree_gist--1.6--1.7.sql \
+		btree_gist--1.7--1.8.sql btree_gist--1.8--1.9.sql
 PGFILEDESC = "btree_gist - B-tree equivalent GiST operator classes"
 
-REGRESS = init int2 int4 int8 float4 float8 cash oid timestamp timestamptz \
-        time timetz date interval macaddr macaddr8 inet cidr text varchar char \
-        bytea bit varbit numeric uuid not_equal enum bool partitions \
-        stratnum without_overlaps
+REGRESS = init int2 int2_buffering int4 int4_buffering int8 int8_buffering float4 \
+		  float4_buffering float8 float8__buffering cash cash_buffering \
+		  oid oid_buffering timestamp timestamp_buffering timestamptz \
+		  timestamptz_buffering time time_buffering timetz timetz_buffering date \
+		  date_buffering interval interval_buffering macaddr macaddr_buffering \
+		  macaddr8 macaddr8_buffering inet inet_buffering cidr cidr_buffering text \
+		  text_buffering varchar varchar_buffering char char_buffering \
+		  bytea bytea_buffering bit bit_buffering varbit varbit_buffering numeric \
+		  numeric_buffering uuid uuid_buffering not_equal not_equal_buffering \
+		  enum enum_buffering bool bool_buffering partitions partitions_buffering \
+		  stratnum without_overlaps cleanup
 
 SHLIB_LINK += $(filter -lm, $(LIBS))
 

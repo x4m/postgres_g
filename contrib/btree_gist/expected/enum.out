@@ -47,6 +47,7 @@ SELECT count(*) FROM enumtmp WHERE a >  'g'::rainbow;
 (1 row)
 
 CREATE INDEX enumidx ON enumtmp USING gist ( a );
+NOTICE:  notice triggered for injection point gist-sorted-build
 SET enable_seqscan=off;
 SELECT count(*) FROM enumtmp WHERE a <  'g'::rainbow;
  count 

@@ -8,6 +8,7 @@ CREATE TABLE temporal_rng (
   valid_at daterange,
   CONSTRAINT temporal_rng_pk PRIMARY KEY (id, valid_at WITHOUT OVERLAPS)
 );
+NOTICE:  notice triggered for injection point gist-sorted-build
 \d temporal_rng
               Table "public.temporal_rng"
   Column  |   Type    | Collation | Nullable | Default 
@@ -51,6 +52,7 @@ CREATE TABLE temporal_fk_rng2rng (
   CONSTRAINT temporal_fk_rng2rng_fk FOREIGN KEY (parent_id, PERIOD valid_at)
     REFERENCES temporal_rng (id, PERIOD valid_at)
 );
+NOTICE:  notice triggered for injection point gist-sorted-build
 \d temporal_fk_rng2rng
            Table "public.temporal_fk_rng2rng"
   Column   |   Type    | Collation | Nullable | Default 

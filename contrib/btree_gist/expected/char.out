@@ -33,6 +33,7 @@ SELECT count(*) FROM chartmp WHERE a >   '31b0'::char(32);
 (1 row)
 
 CREATE INDEX charidx ON chartmp USING GIST ( a );
+NOTICE:  notice triggered for injection point gist-sorted-build
 SET enable_seqscan=off;
 SELECT count(*) FROM chartmp WHERE a <   '31b0'::char(32);
  count 
