@@ -433,7 +433,9 @@ uuid_hash_extended(PG_FUNCTION_ARGS)
 	return hash_any_extended(key->data, UUID_LEN, PG_GETARG_INT64(1));
 }
 
-/* Set the given UUID version and the variant bits */
+/*
+ * Set the given UUID version and the variant bits
+ */
 static inline void
 uuid_set_version(pg_uuid_t *uuid, unsigned char version)
 {
@@ -467,6 +469,15 @@ gen_random_uuid(PG_FUNCTION_ARGS)
 	uuid_set_version(uuid, 4);
 
 	PG_RETURN_UUID_P(uuid);
+}
+
+/*
+ * Wrapper for gen_random_uuid()
+ */
+Datum
+uuidv4(PG_FUNCTION_ARGS)
+{
+	return gen_random_uuid(fcinfo);
 }
 
 /*
@@ -520,6 +531,9 @@ get_real_time_ns_ascending()
  * method "Replace Leftmost Random Bits with Increased Clock Precision (Method 3)".
  * This method utilizes 12 bits from the "rand_a" bits to store a 1/4096
  * (or 2^12) fraction of sub-millisecond precision.
+ *
+ * ns is a number of nanoseconds since start of the UNIX epoch. This value is
+ * used for time-dependent bits of UUID.
  */
 static pg_attribute_always_inline pg_uuid_t *
 generate_uuidv7(int64 ns)
@@ -592,16 +606,17 @@ uuidv7(PG_FUNCTION_ARGS)
 Datum
 uuidv7_interval(PG_FUNCTION_ARGS)
 {
-	Interval   *span = PG_GETARG_INTERVAL_P(0);
+	Interval   *shift = PG_GETARG_INTERVAL_P(0);
 	TimestampTz ts;
 	pg_uuid_t  *uuid;
 	int64		ns = get_real_time_ns_ascending();
 
 	/*
-	 * Shift the current timestamp by the given interval. To make correct
-	 * calculating the time shift, we convert the UNIX epoch to TimestampTz
+	 * Shift the current timestamp by the given interval. To calsulate time
+	 * shift correctly, we convert the UNIX epoch to TimestampTz
 	 * and use timestamptz_pl_interval(). Since this calculation is done with
-	 * microsecond precision, we carry back the nanoseconds.
+	 * microsecond precision, we carry nanoseconds from original ns value to
+	 * shifted ns value.
 	 */
 
 	ts = (TimestampTz) (ns / NS_PER_US) -
@@ -610,7 +625,7 @@ uuidv7_interval(PG_FUNCTION_ARGS)
 	/* Compute time shift */
 	ts = DatumGetTimestampTz(DirectFunctionCall2(timestamptz_pl_interval,
 												 TimestampTzGetDatum(ts),
-												 IntervalPGetDatum(span)));
+												 IntervalPGetDatum(shift)));
 
 	/*
 	 * Convert a TimestampTz value back to an UNIX epoch and carry back
