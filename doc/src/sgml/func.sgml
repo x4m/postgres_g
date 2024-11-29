@@ -14279,10 +14279,12 @@ CREATE TYPE rainbow AS ENUM ('red', 'orange', 'yellow', 'green', 'blue', 'purple
 </synopsis>
    These functions return a version 4 (random) UUID.
 <synopsis>
-<function>uuidv7</function> () <returnvalue>uuid</returnvalue>
+<function>uuidv7</function> (<optional> <parameter>shift</parameter> <type>interval</type> </optional>) <returnvalue>uuid</returnvalue>
 </synopsis>
     This function returns a version 7 UUID (UNIX timestamp with millisecond
-    precision + sub-millisecond timestamp + random).
+    precision + sub-millisecond timestamp + random). This function can accept
+    optional <parameter>shift</parameter> parameter of type <type>interval</type>
+    which shift internal timestamp by the given interval.
   </para>
 
   <para>
@@ -14296,9 +14298,10 @@ CREATE TYPE rainbow AS ENUM ('red', 'orange', 'yellow', 'green', 'blue', 'purple
 <function>uuid_extract_timestamp</function> (uuid) <returnvalue>timestamp with time zone</returnvalue>
 </synopsis>
    This function extracts a <type>timestamp with time zone</type> from UUID
-   version 1.  For other versions, this function returns null.  Note that the
-   extracted timestamp is not necessarily exactly equal to the time the UUID
-   was generated; this depends on the implementation that generated the UUID.
+   version 1 and 7.  For other versions, this function returns null.  Note that
+   the extracted timestamp is not necessarily exactly equal to the time the
+   UUID was generated; this depends on the implementation that generated the
+   UUID.
   </para>
 
   <para>
