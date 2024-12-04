@@ -18,7 +18,9 @@
 #include "common/hashfn.h"
 #include "lib/hyperloglog.h"
 #include "libpq/pqformat.h"
+#include "port/atomics.h"
 #include "port/pg_bswap.h"
+#include "storage/shmem.h"
 #include "utils/fmgrprotos.h"
 #include "utils/guc.h"
 #include "utils/sortsupport.h"
@@ -471,6 +473,35 @@ gen_random_uuid(PG_FUNCTION_ARGS)
 	PG_RETURN_UUID_P(uuid);
 }
 
+static pg_atomic_uint64 *previous_ns = NULL;
+
+/* Report shared memory space needed by previous_ns */
+Size
+UuidShmemSize(void)
+{
+	Size		size = 0;
+
+	size = add_size(size, sizeof(pg_atomic_uint64)+100);
+
+	return size;
+}
+
+/* Allocate and initialize previous_ns shared memory */
+void
+UuidShmemInit(void)
+{
+	bool		found;
+
+	previous_ns = (pg_atomic_uint64 *)
+		ShmemInitStruct("UUID timestamp", UuidShmemSize(), &found);
+
+	if (!found)
+	{
+		/* First time through, so initialize */
+		pg_atomic_init_u64(previous_ns, 0);
+	}
+}
+
 /*
  * Get the current timestamp with nanosecond precision for UUID generation.
  * The returned timestamp is ensured to be at least SUBMS_MINIMAL_STEP greater
@@ -479,7 +510,6 @@ gen_random_uuid(PG_FUNCTION_ARGS)
 static inline int64
 get_real_time_ns_ascending()
 {
-	static int64 previous_ns = 0;
 	int64		ns;
 
 	/* Get the current real timestamp */
@@ -505,10 +535,20 @@ get_real_time_ns_ascending()
 	ns = tmp.tv_sec * NS_PER_S + tmp.tv_nsec;
 #endif
 
-	/* Guarantee the minimal step advancement of the timestamp */
-	if (previous_ns + SUBMS_MINIMAL_STEP_NS >= ns)
-		ns = previous_ns + SUBMS_MINIMAL_STEP_NS;
-	previous_ns = ns;
+	/* Guarantee the minimal step advancement of the timestamp across all backends */
+	while (true)
+	{
+		uint64 copy_pns = pg_atomic_read_u64(previous_ns);
+		uint64 copy_ns = ns;
+		if (copy_pns + SUBMS_MINIMAL_STEP_NS >= ns)
+			copy_ns = copy_pns + SUBMS_MINIMAL_STEP_NS;
+
+		if (pg_atomic_compare_exchange_u64(previous_ns, &copy_pns, copy_ns))
+		{
+			ns = copy_ns;
+			break;
+		}
+	}
 
 	return ns;
 }

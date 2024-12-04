@@ -39,4 +39,7 @@ DatumGetUUIDP(Datum X)
 
 #define PG_GETARG_UUID_P(X)		DatumGetUUIDP(PG_GETARG_DATUM(X))
 
+extern Size UuidShmemSize(void);
+extern void UuidShmemInit(void);
+
 #endif							/* UUID_H */
