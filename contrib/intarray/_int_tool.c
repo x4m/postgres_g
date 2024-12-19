@@ -221,6 +221,9 @@ resize_intArrayType(ArrayType *a, int num)
 	int			nbytes;
 	int			i;
 
+	if (num == ARRNELEMS(a))
+		return a;
+
 	/* if no elements, return a zero-dimensional array */
 	if (num <= 0)
 	{
@@ -228,9 +231,6 @@ resize_intArrayType(ArrayType *a, int num)
 		a = construct_empty_array(INT4OID);
 		return a;
 	}
-
-	if (num == ARRNELEMS(a))
-		return a;
 
 	nbytes = ARR_DATA_OFFSET(a) + sizeof(int) * num;
 
