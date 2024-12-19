@@ -381,8 +381,8 @@ intset_union_elem(PG_FUNCTION_ARGS)
 
 	result = intarray_add_elem(a, PG_GETARG_INT32(1));
 	PG_FREE_IF_COPY(a, 0);
-	QSORT(result, 1);
-	PG_RETURN_POINTER(_int_unique(result));
+	PREPAREARR(result);
+	PG_RETURN_POINTER(result);
 }
 
 Datum
@@ -403,11 +403,9 @@ intset_subtract(PG_FUNCTION_ARGS)
 	CHECKARRVALID(a);
 	CHECKARRVALID(b);
 
-	QSORT(a, 1);
-	a = _int_unique(a);
+	PREPAREARR(a);
 	ca = ARRNELEMS(a);
-	QSORT(b, 1);
-	b = _int_unique(b);
+	PREPAREARR(b);
 	cb = ARRNELEMS(b);
 	result = new_intArrayType(ca);
 	aa = ARRPTR(a);

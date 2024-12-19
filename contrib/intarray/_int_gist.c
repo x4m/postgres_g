@@ -150,8 +150,7 @@ g_int_union(PG_FUNCTION_ARGS)
 		ptr += nel;
 	}
 
-	QSORT(res, 1);
-	res = _int_unique(res);
+	PREPAREARR(res);
 	*size = VARSIZE(res);
 	PG_RETURN_POINTER(res);
 }
