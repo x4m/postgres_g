@@ -78,56 +78,45 @@ inner_int_overlap(ArrayType *a, ArrayType *b)
 ArrayType *
 inner_int_union(ArrayType *a, ArrayType *b)
 {
-	ArrayType  *r = NULL;
+	int			na = ARRNELEMS(a),
+				nb = ARRNELEMS(b);
+	ArrayType  *r = new_intArrayType(na + nb);
+	int		   *da = ARRPTR(a),
+			   *db = ARRPTR(b);
+	int			i = 0,
+				j = 0,
+				*dr = ARRPTR(r);
+	int64_t		p = INT64_MAX;
 
 	CHECKARRVALID(a);
 	CHECKARRVALID(b);
 
-	if (ARRISEMPTY(a) && ARRISEMPTY(b))
-		return new_intArrayType(0);
-	if (ARRISEMPTY(a))
-		r = copy_intArrayType(b);
-	if (ARRISEMPTY(b))
-		r = copy_intArrayType(a);
-
-	if (!r)
+	/* union */
+	while (i < na && j < nb)
 	{
-		int			na = ARRNELEMS(a),
-					nb = ARRNELEMS(b);
-		int		   *da = ARRPTR(a),
-				   *db = ARRPTR(b);
-		int			i,
-					j,
-				   *dr;
-
-		r = new_intArrayType(na + nb);
-		dr = ARRPTR(r);
-
-		/* union */
-		i = j = 0;
-		while (i < na && j < nb)
+		if (da[i] == db[j])
 		{
-			if (da[i] == db[j])
-			{
-				*dr++ = da[i++];
-				j++;
-			}
-			else if (da[i] < db[j])
-				*dr++ = da[i++];
-			else
-				*dr++ = db[j++];
+			*dr = da[i++];
+			j++;
 		}
+		else if (da[i] < db[j])
+			*dr = da[i++];
+		else
+			*dr = db[j++];
 
-		while (i < na)
-			*dr++ = da[i++];
-		while (j < nb)
-			*dr++ = db[j++];
-
-		r = resize_intArrayType(r, dr - ARRPTR(r));
+		if (p != *dr)
+		{
+			p = *dr;
+			dr++;
+		}
 	}
 
-	if (ARRNELEMS(r) > 1)
-		r = _int_unique(r);
+	while (i < na)
+		*dr++ = da[i++];
+	while (j < nb)
+		*dr++ = db[j++];
+
+	r = resize_intArrayType(r, dr - ARRPTR(r));
 
 	return r;
 }
