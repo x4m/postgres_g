@@ -245,8 +245,11 @@
 #full_page_writes = on                  # recover from partial page writes
 #wal_log_hints = off                    # also do full page writes of non-critical updates
                                         # (change requires restart)
-#wal_compression = off                  # enables compression of full-page writes;
+#wal_compression = lz4                  # enables compression of full-page writes;
                                         # off, pglz, lz4, zstd, or on
+#wal_compression_threshold = 512        # min 32, minimal record length to be compressed
+#wal_compression_buffer = 295972        # buffer for FPI and whole-record compression;
+                                        # actual memory usage is ~2x this value
 #wal_init_zero = on                     # zero-fill new WAL files
 #wal_recycle = on                       # recycle WAL files
 #wal_buffers = -1                       # min 32kB, -1 sets based on shared_buffers
