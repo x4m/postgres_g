@@ -1106,6 +1106,22 @@ errbacktrace(void)
 	return 0;
 }
 
+void PrintBacktrace()
+{
+	void	   *buf[100];
+	int			nframes;
+	char	  **strfrms;
+
+	nframes = backtrace(buf, lengthof(buf));
+	strfrms = backtrace_symbols(buf, nframes);
+	if (strfrms == NULL)
+		return;
+
+	for (int i = 0; i < nframes; i++)
+		elog(WARNING, "\n%s", strfrms[i]);
+	free(strfrms);
+}
+
 /*
  * Compute backtrace data and add it to the supplied ErrorData.  num_skip
  * specifies how many inner frames to skip.  Use this to avoid showing the
