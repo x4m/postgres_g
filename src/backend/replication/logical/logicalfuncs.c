@@ -255,6 +255,7 @@ pg_logical_slot_get_changes_guts(FunctionCallInfo fcinfo, bool confirm, bool bin
 			char	   *errm = NULL;
 
 			record = XLogReadRecord(ctx->reader, &errm);
+			MemoryContextCheck(TopMemoryContext);
 			if (errm)
 				elog(ERROR, "could not find record for logical decoding: %s", errm);
 

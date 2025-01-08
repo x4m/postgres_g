@@ -1244,7 +1244,7 @@ MemoryContextAllocExtended(MemoryContext context, Size size, int flags)
 
 	if (!((flags & MCXT_ALLOC_HUGE) != 0 ? AllocHugeSizeIsValid(size) :
 		  AllocSizeIsValid(size)))
-		elog(ERROR, "invalid memory alloc request size %zu", size);
+		MemoryContextSizeFailure(context, size, flags);
 
 	context->isReset = false;
 

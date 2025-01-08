@@ -121,7 +121,7 @@ char	   *XLogArchiveCommand = NULL;
 bool		EnableHotStandby = false;
 bool		fullPageWrites = true;
 bool		wal_log_hints = false;
-int			wal_compression = WAL_COMPRESSION_NONE;
+int			wal_compression = WAL_COMPRESSION_ZSTD;
 char	   *wal_consistency_checking_string = NULL;
 bool	   *wal_consistency_checking = NULL;
 bool		wal_init_zero = true;
@@ -915,6 +915,12 @@ XLogInsertRecord(XLogRecData *rdata,
 		FIN_CRC32C(rdata_crc);
 		rechdr->xl_crc = rdata_crc;
 
+		if (rechdr->xl_info & XLR_COMPRESSED)
+		{
+			XLogCompressionData *c = (XLogCompressionData*) rechdr;
+			Assert(((int32_t)c->decompressed_length) > 0);
+		}
+
 		/*
 		 * All the record data, including the header, is now ready to be
 		 * inserted. Copy the record in the space reserved.
@@ -1031,7 +1037,7 @@ XLogInsertRecord(XLogRecData *rdata,
 		/* We also need temporary space to decode the record. */
 		record = (XLogRecord *) recordBuf.data;
 		decoded = (DecodedXLogRecord *)
-			palloc(DecodeXLogRecordRequiredSpace(record->xl_tot_len));
+			palloc(DecodeXLogRecordRequiredSpace(XLogGetRecordTotalLen(record)));
 
 		if (!debug_reader)
 			debug_reader = XLogReaderAllocate(wal_segment_size, NULL,
