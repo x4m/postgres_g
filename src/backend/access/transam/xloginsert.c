@@ -43,27 +43,6 @@
 #include "utils/pgstat_internal.h"
 
 /*
- * Guess the maximum buffer size required to store a compressed version of
- * backup block image.
- */
-#ifdef USE_LZ4
-#define	LZ4_MAX_BLCKSZ		LZ4_COMPRESSBOUND(BLCKSZ)
-#else
-#define LZ4_MAX_BLCKSZ		0
-#endif
-
-#ifdef USE_ZSTD
-#define ZSTD_MAX_BLCKSZ		ZSTD_COMPRESSBOUND(BLCKSZ)
-#else
-#define ZSTD_MAX_BLCKSZ		0
-#endif
-
-#define PGLZ_MAX_BLCKSZ		PGLZ_MAX_OUTPUT(BLCKSZ)
-
-/* Buffer size required to store a compressed version of backup block image */
-#define COMPRESS_BUFSIZE	Max(Max(PGLZ_MAX_BLCKSZ, LZ4_MAX_BLCKSZ), ZSTD_MAX_BLCKSZ)
-
-/*
  * For each block reference registered with XLogRegisterBuffer, we fill in
  * a registered_buffer struct.
  */
@@ -83,9 +62,6 @@ typedef struct
 
 	XLogRecData bkp_rdatas[2];	/* temporary rdatas used to hold references to
 								 * backup block data in XLogRecordAssemble() */
-
-	/* buffer to store a compressed version of backup block image */
-	char		compressed_page[COMPRESS_BUFSIZE];
 } registered_buffer;
 
 static registered_buffer *registered_buffers;
@@ -115,6 +91,16 @@ static uint8 curinsert_flags = 0;
 static XLogRecData hdr_rdt;
 static char *hdr_scratch = NULL;
 
+/*
+ * Compression buffers are kept in StringInfo for the prototype.
+ * compression_buffer_current_size == -1 means we entered critical section
+ * before we could prepare compression buffers.
+ */
+static int32			compression_buffer_current_size;
+static XLogRecData		compressed_rdt_hdr;
+static StringInfo		data_before_compression = NULL;
+static StringInfo		compressed_data = NULL;
+
 #define SizeOfXlogOrigin	(sizeof(RepOriginId) + sizeof(char))
 #define SizeOfXLogTransactionId	(sizeof(TransactionId) + sizeof(char))
 
@@ -140,9 +126,7 @@ static XLogRecData *XLogRecordAssemble(RmgrId rmid, uint8 info,
 									   XLogRecPtr RedoRecPtr, bool doPageWrites,
 									   XLogRecPtr *fpw_lsn, int *num_fpi,
 									   uint64 *fpi_bytes,
-									   bool *topxid_included);
-static bool XLogCompressBackupBlock(const PageData *page, uint16 hole_offset,
-									uint16 hole_length, void *dest, uint16 *dlen);
+									   bool *topxid_included, uint64 *rec_size);
 
 /*
  * Begin constructing a WAL record. This must be called before the
@@ -163,6 +147,11 @@ XLogBeginInsert(void)
 		elog(ERROR, "XLogBeginInsert was already called");
 
 	begininsert_called = true;
+
+	if (data_before_compression)
+		resetStringInfo(data_before_compression);
+	if (compressed_data)
+		resetStringInfo(compressed_data);
 }
 
 /*
@@ -234,6 +223,7 @@ XLogResetInsertion(void)
 	mainrdata_len = 0;
 	mainrdata_last = (XLogRecData *) &mainrdata_head;
 	curinsert_flags = 0;
+	compression_buffer_current_size = 0;
 	begininsert_called = false;
 }
 
@@ -303,6 +293,8 @@ XLogRegisterBuffer(uint8 block_id, Buffer buffer, uint8 flags)
 #endif
 
 	regbuf->in_use = true;
+
+	XLogEnsureCompressionBuffer(MaxSizeOfXLogRecordBlockHeader + BLCKSZ);
 }
 
 /*
@@ -356,6 +348,7 @@ XLogRegisterBlock(uint8 block_id, RelFileLocator *rlocator, ForkNumber forknum,
 #endif
 
 	regbuf->in_use = true;
+	XLogEnsureCompressionBuffer(MaxSizeOfXLogRecordBlockHeader + BLCKSZ);
 }
 
 /*
@@ -390,6 +383,7 @@ XLogRegisterData(const void *data, uint32 len)
 	mainrdata_last = rdata;
 
 	mainrdata_len += len;
+	XLogEnsureCompressionBuffer(len);
 }
 
 /*
@@ -444,6 +438,7 @@ XLogRegisterBufData(uint8 block_id, const void *data, uint32 len)
 	regbuf->rdata_tail->next = rdata;
 	regbuf->rdata_tail = rdata;
 	regbuf->rdata_len += len;
+	XLogEnsureCompressionBuffer(len);
 }
 
 /*
@@ -461,6 +456,144 @@ XLogSetRecordFlags(uint8 flags)
 {
 	Assert(begininsert_called);
 	curinsert_flags |= flags;
+}
+
+/*
+ * Make sure we have buffers needed for compression.
+ * We cannot do it during WALInsert(), because we will be in a critial section.
+ */
+void XLogEnsureCompressionBuffer(uint32 extraLen)
+{
+	uint64 compressed_buffer_size;
+	uint64 desired_buffer_size;
+
+	if (wal_compression == WAL_COMPRESSION_NONE)
+		return;
+
+	if (CritSectionCount > 0 || compression_buffer_current_size == -1)
+	{
+		/* We cannot prepare buffer during critical section, so bail out early */
+		compression_buffer_current_size = -1;
+		return;
+	}
+
+	compression_buffer_current_size += extraLen;
+	desired_buffer_size = compression_buffer_current_size + SizeOfXLogRecord;
+	Assert(data_before_compression->len == 0);
+	enlargeStringInfo(data_before_compression, desired_buffer_size);
+
+	compressed_buffer_size = PGLZ_MAX_OUTPUT(desired_buffer_size);
+
+#ifdef USE_LZ4
+	compressed_buffer_size = Max(compressed_buffer_size, LZ4_COMPRESSBOUND(desired_buffer_size));
+#endif
+#ifdef USE_ZSTD
+	compressed_buffer_size = Max(compressed_buffer_size, ZSTD_COMPRESSBOUND(desired_buffer_size));
+#endif
+	compressed_buffer_size = compressed_buffer_size + SizeOfXLogCompressedRecord;
+	Assert(compressed_data->len == 0);
+	enlargeStringInfo(compressed_data, compressed_buffer_size);
+}
+
+/* Compress assembled record on top of compression buffers */
+static XLogRecData*
+XLogCompressRdt(XLogRecData *rdt)
+{
+	XLogCompressionHeader *compressed_header;
+	XLogRecord *src_header;
+	uint32 orig_len;
+	int32 compr_len = -1;
+
+	if (compression_buffer_current_size == -1)
+		return NULL;
+
+	Assert(wal_compression != WAL_COMPRESSION_NONE);
+	
+	Assert(compression_buffer_current_size <= data_before_compression->maxlen);
+
+	/* Build the whole record */
+	for (; rdt != NULL; rdt = rdt->next)
+		appendBinaryStringInfoNT(data_before_compression, rdt->data, rdt->len);
+
+	src_header = (XLogRecord*) data_before_compression->data;
+	compressed_header = (XLogCompressionHeader*) compressed_data->data;
+
+	compressed_header->record_header = *src_header;
+	compressed_header->decompressed_length = data_before_compression->len;
+
+	orig_len = src_header->xl_tot_len - SizeOfXLogRecord;
+
+	switch ((WalCompression) wal_compression)
+	{
+		case WAL_COMPRESSION_PGLZ:
+			compressed_header->method = XLR_COMPRESS_PGLZ;
+			compr_len = pglz_compress((char*)&src_header[1], orig_len, (char*)&compressed_header[1], PGLZ_strategy_default);
+			if (compr_len == -1)
+				return NULL;
+			break;
+
+		case WAL_COMPRESSION_LZ4:
+#ifdef USE_LZ4
+			compressed_header->method = XLR_COMPRESS_LZ4;
+			compr_len = LZ4_compress_default((char*)&src_header[1], (char*)&compressed_header[1], orig_len,
+									   compressed_data->maxlen);
+			if (compr_len <= 0)
+				return NULL;
+#else
+			elog(ERROR, "LZ4 is not supported by this build");
+#endif
+			break;
+
+		case WAL_COMPRESSION_ZSTD:
+#ifdef USE_ZSTD
+			compressed_header->method = XLR_COMPRESS_ZSTD;
+			compr_len = ZSTD_compress((char*)&compressed_header[1], compressed_data->maxlen, (char*)&src_header[1], orig_len,
+								ZSTD_CLEVEL_DEFAULT);
+			if (ZSTD_isError(compr_len))
+				return NULL;
+#else
+			elog(ERROR, "zstd is not supported by this build");
+#endif
+			break;
+
+		case WAL_COMPRESSION_NONE:
+			Assert(false);		/* cannot happen */
+			return NULL;
+			break;
+			/* no default case, so that compiler will warn */
+	}
+
+	Assert(compr_len > 0);
+
+	compressed_header->record_header.xl_tot_len = SizeOfXLogCompressedRecord + compr_len;
+
+	compressed_header->record_header.xl_info = compressed_header->record_header.xl_info | XLR_COMPRESSED;
+
+	compressed_rdt_hdr.data = compressed_data->data;
+	compressed_rdt_hdr.len = compressed_header->record_header.xl_tot_len;
+	compressed_rdt_hdr.next = NULL;
+
+	return &compressed_rdt_hdr;
+}
+
+/* Checksum assebled record, possibly compressed */
+static void XLogChecksumRecord(XLogRecData *rdt)
+{
+	pg_crc32c	rdata_crc;
+	XLogRecord *rechdr = (XLogRecord*) rdt->data;
+	/*
+	 * Calculate CRC of the data
+	 *
+	 * Note that the record header isn't added into the CRC initially since we
+	 * don't know the prev-link yet.  Thus, the CRC will represent the CRC of
+	 * the whole record in the order: rdata, then backup blocks, then record
+	 * header.
+	 */
+	INIT_CRC32C(rdata_crc);
+	COMP_CRC32C(rdata_crc, ((char *)rdt->data) + SizeOfXLogRecord, rdt->len - SizeOfXLogRecord);
+	for (rdt = rdt->next; rdt != NULL; rdt = rdt->next)
+		COMP_CRC32C(rdata_crc, rdt->data, rdt->len);
+	rechdr->xl_crc = rdata_crc;
 }
 
 /*
@@ -514,6 +647,7 @@ XLogInsert(RmgrId rmid, uint8 info)
 		XLogRecData *rdt;
 		int			num_fpi = 0;
 		uint64		fpi_bytes = 0;
+		uint64		rec_size;
 
 		/*
 		 * Get values needed to decide whether to do full-page writes. Since
@@ -524,7 +658,16 @@ XLogInsert(RmgrId rmid, uint8 info)
 
 		rdt = XLogRecordAssemble(rmid, info, RedoRecPtr, doPageWrites,
 								 &fpw_lsn, &num_fpi, &fpi_bytes,
-								 &topxid_included);
+								 &topxid_included, &rec_size);
+
+		if (rec_size > wal_compression_threshold && wal_compression != WAL_COMPRESSION_NONE)
+		{
+			XLogRecData *rdt_compressed = XLogCompressRdt(rdt);
+			if (rdt_compressed != NULL)
+				rdt = rdt_compressed;
+		}
+
+		XLogChecksumRecord(rdt);
 
 		EndPos = XLogInsertRecord(rdt, fpw_lsn, curinsert_flags, num_fpi,
 								  fpi_bytes, topxid_included);
@@ -566,12 +709,10 @@ static XLogRecData *
 XLogRecordAssemble(RmgrId rmid, uint8 info,
 				   XLogRecPtr RedoRecPtr, bool doPageWrites,
 				   XLogRecPtr *fpw_lsn, int *num_fpi, uint64 *fpi_bytes,
-				   bool *topxid_included)
+				   bool *topxid_included, uint64 *rec_size)
 {
-	XLogRecData *rdt;
 	uint64		total_len = 0;
 	int			block_id;
-	pg_crc32c	rdata_crc;
 	registered_buffer *prev_regbuf = NULL;
 	XLogRecData *rdt_datas_last;
 	XLogRecord *rechdr;
@@ -612,9 +753,8 @@ XLogRecordAssemble(RmgrId rmid, uint8 info,
 		bool		needs_data;
 		XLogRecordBlockHeader bkpb;
 		XLogRecordBlockImageHeader bimg;
-		XLogRecordBlockCompressHeader cbimg = {0};
+		uint32		hole_length;
 		bool		samerel;
-		bool		is_compressed = false;
 		bool		include_image;
 
 		if (!regbuf->in_use)
@@ -667,8 +807,7 @@ XLogRecordAssemble(RmgrId rmid, uint8 info,
 
 		if (include_image)
 		{
-			const PageData *page = regbuf->page;
-			uint16		compressed_len = 0;
+			const char *page = regbuf->page;
 
 			/*
 			 * The page needs to be backed up, so calculate its hole length
@@ -685,32 +824,20 @@ XLogRecordAssemble(RmgrId rmid, uint8 info,
 					upper <= BLCKSZ)
 				{
 					bimg.hole_offset = lower;
-					cbimg.hole_length = upper - lower;
+					hole_length = upper - lower;
 				}
 				else
 				{
 					/* No "hole" to remove */
 					bimg.hole_offset = 0;
-					cbimg.hole_length = 0;
+					hole_length = 0;
 				}
 			}
 			else
 			{
 				/* Not a standard page header, don't try to eliminate "hole" */
 				bimg.hole_offset = 0;
-				cbimg.hole_length = 0;
-			}
-
-			/*
-			 * Try to compress a block image if wal_compression is enabled
-			 */
-			if (wal_compression != WAL_COMPRESSION_NONE)
-			{
-				is_compressed =
-					XLogCompressBackupBlock(page, bimg.hole_offset,
-											cbimg.hole_length,
-											regbuf->compressed_page,
-											&compressed_len);
+				hole_length = 0;
 			}
 
 			/*
@@ -728,7 +855,7 @@ XLogRecordAssemble(RmgrId rmid, uint8 info,
 			rdt_datas_last->next = &regbuf->bkp_rdatas[0];
 			rdt_datas_last = rdt_datas_last->next;
 
-			bimg.bimg_info = (cbimg.hole_length == 0) ? 0 : BKPIMAGE_HAS_HOLE;
+			bimg.bimg_info = (hole_length == 0) ? 0 : BKPIMAGE_HAS_HOLE;
 
 			/*
 			 * If WAL consistency checking is enabled for the resource manager
@@ -739,48 +866,10 @@ XLogRecordAssemble(RmgrId rmid, uint8 info,
 			if (needs_backup)
 				bimg.bimg_info |= BKPIMAGE_APPLY;
 
-			if (is_compressed)
 			{
-				/* The current compression is stored in the WAL record */
-				bimg.length = compressed_len;
+				bimg.length = BLCKSZ - hole_length;
 
-				/* Set the compression method used for this block */
-				switch ((WalCompression) wal_compression)
-				{
-					case WAL_COMPRESSION_PGLZ:
-						bimg.bimg_info |= BKPIMAGE_COMPRESS_PGLZ;
-						break;
-
-					case WAL_COMPRESSION_LZ4:
-#ifdef USE_LZ4
-						bimg.bimg_info |= BKPIMAGE_COMPRESS_LZ4;
-#else
-						elog(ERROR, "LZ4 is not supported by this build");
-#endif
-						break;
-
-					case WAL_COMPRESSION_ZSTD:
-#ifdef USE_ZSTD
-						bimg.bimg_info |= BKPIMAGE_COMPRESS_ZSTD;
-#else
-						elog(ERROR, "zstd is not supported by this build");
-#endif
-						break;
-
-					case WAL_COMPRESSION_NONE:
-						Assert(false);	/* cannot happen */
-						break;
-						/* no default case, so that compiler will warn */
-				}
-
-				rdt_datas_last->data = regbuf->compressed_page;
-				rdt_datas_last->len = compressed_len;
-			}
-			else
-			{
-				bimg.length = BLCKSZ - cbimg.hole_length;
-
-				if (cbimg.hole_length == 0)
+				if (hole_length == 0)
 				{
 					rdt_datas_last->data = page;
 					rdt_datas_last->len = BLCKSZ;
@@ -795,9 +884,9 @@ XLogRecordAssemble(RmgrId rmid, uint8 info,
 					rdt_datas_last = rdt_datas_last->next;
 
 					rdt_datas_last->data =
-						page + (bimg.hole_offset + cbimg.hole_length);
+						page + (bimg.hole_offset + hole_length);
 					rdt_datas_last->len =
-						BLCKSZ - (bimg.hole_offset + cbimg.hole_length);
+						BLCKSZ - (bimg.hole_offset + hole_length);
 				}
 			}
 
@@ -843,12 +932,6 @@ XLogRecordAssemble(RmgrId rmid, uint8 info,
 		{
 			memcpy(scratch, &bimg, SizeOfXLogRecordBlockImageHeader);
 			scratch += SizeOfXLogRecordBlockImageHeader;
-			if (cbimg.hole_length != 0 && is_compressed)
-			{
-				memcpy(scratch, &cbimg,
-					   SizeOfXLogRecordBlockCompressHeader);
-				scratch += SizeOfXLogRecordBlockCompressHeader;
-			}
 		}
 		if (!samerel)
 		{
@@ -915,19 +998,6 @@ XLogRecordAssemble(RmgrId rmid, uint8 info,
 	total_len += hdr_rdt.len;
 
 	/*
-	 * Calculate CRC of the data
-	 *
-	 * Note that the record header isn't added into the CRC initially since we
-	 * don't know the prev-link yet.  Thus, the CRC will represent the CRC of
-	 * the whole record in the order: rdata, then backup blocks, then record
-	 * header.
-	 */
-	INIT_CRC32C(rdata_crc);
-	COMP_CRC32C(rdata_crc, hdr_scratch + SizeOfXLogRecord, hdr_rdt.len - SizeOfXLogRecord);
-	for (rdt = hdr_rdt.next; rdt != NULL; rdt = rdt->next)
-		COMP_CRC32C(rdata_crc, rdt->data, rdt->len);
-
-	/*
 	 * Ensure that the XLogRecord is not too large.
 	 *
 	 * XLogReader machinery is only able to handle records up to a certain
@@ -950,92 +1020,11 @@ XLogRecordAssemble(RmgrId rmid, uint8 info,
 	rechdr->xl_info = info;
 	rechdr->xl_rmid = rmid;
 	rechdr->xl_prev = InvalidXLogRecPtr;
-	rechdr->xl_crc = rdata_crc;
+	rechdr->xl_crc = 0;
+
+	*rec_size = rechdr->xl_tot_len;
 
 	return &hdr_rdt;
-}
-
-/*
- * Create a compressed version of a backup block image.
- *
- * Returns false if compression fails (i.e., compressed result is actually
- * bigger than original). Otherwise, returns true and sets 'dlen' to
- * the length of compressed block image.
- */
-static bool
-XLogCompressBackupBlock(const PageData *page, uint16 hole_offset, uint16 hole_length,
-						void *dest, uint16 *dlen)
-{
-	int32		orig_len = BLCKSZ - hole_length;
-	int32		len = -1;
-	int32		extra_bytes = 0;
-	const void *source;
-	PGAlignedBlock tmp;
-
-	if (hole_length != 0)
-	{
-		/* must skip the hole */
-		memcpy(tmp.data, page, hole_offset);
-		memcpy(tmp.data + hole_offset,
-			   page + (hole_offset + hole_length),
-			   BLCKSZ - (hole_length + hole_offset));
-		source = tmp.data;
-
-		/*
-		 * Extra data needs to be stored in WAL record for the compressed
-		 * version of block image if the hole exists.
-		 */
-		extra_bytes = SizeOfXLogRecordBlockCompressHeader;
-	}
-	else
-		source = page;
-
-	switch ((WalCompression) wal_compression)
-	{
-		case WAL_COMPRESSION_PGLZ:
-			len = pglz_compress(source, orig_len, dest, PGLZ_strategy_default);
-			break;
-
-		case WAL_COMPRESSION_LZ4:
-#ifdef USE_LZ4
-			len = LZ4_compress_default(source, dest, orig_len,
-									   COMPRESS_BUFSIZE);
-			if (len <= 0)
-				len = -1;		/* failure */
-#else
-			elog(ERROR, "LZ4 is not supported by this build");
-#endif
-			break;
-
-		case WAL_COMPRESSION_ZSTD:
-#ifdef USE_ZSTD
-			len = ZSTD_compress(dest, COMPRESS_BUFSIZE, source, orig_len,
-								ZSTD_CLEVEL_DEFAULT);
-			if (ZSTD_isError(len))
-				len = -1;		/* failure */
-#else
-			elog(ERROR, "zstd is not supported by this build");
-#endif
-			break;
-
-		case WAL_COMPRESSION_NONE:
-			Assert(false);		/* cannot happen */
-			break;
-			/* no default case, so that compiler will warn */
-	}
-
-	/*
-	 * We recheck the actual size even if compression reports success and see
-	 * if the number of bytes saved by compression is larger than the length
-	 * of extra data needed for the compressed version of block image.
-	 */
-	if (len >= 0 &&
-		len + extra_bytes < orig_len)
-	{
-		*dlen = (uint16) len;	/* successful compression */
-		return true;
-	}
-	return false;
 }
 
 /*
@@ -1411,4 +1400,18 @@ InitXLogInsert(void)
 	if (hdr_scratch == NULL)
 		hdr_scratch = MemoryContextAllocZero(xloginsert_cxt,
 											 HEADER_SCRATCH_SIZE);
+
+	/*
+	 * Allocate compression buffers in xloginsert_cxt to ensure they persist
+	 * for the lifetime of the backend, matching other WAL insertion buffers.
+	 */
+	if (data_before_compression == NULL)
+	{
+		MemoryContext oldcxt = MemoryContextSwitchTo(xloginsert_cxt);
+
+		data_before_compression = makeStringInfo();
+		compressed_data = makeStringInfo();
+		MemoryContextSwitchTo(oldcxt);
+	}
+	XLogEnsureCompressionBuffer(SizeOfXLogRecord);
 }

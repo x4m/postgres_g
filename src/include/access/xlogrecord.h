@@ -48,7 +48,7 @@ typedef struct XLogRecord
 	/* 2 bytes of padding here, initialize to zero */
 	pg_crc32c	xl_crc;			/* CRC for this record */
 
-	/* XLogRecordBlockHeaders and XLogRecordDataHeader follow, no padding */
+	/* XLogRecordBlockHeaders, XLogRecordDataHeader or compression header follow, no padding */
 
 } XLogRecord;
 
@@ -89,6 +89,9 @@ typedef struct XLogRecord
  * wal_consistency_checking is enabled for a rmgr this is set unconditionally.
  */
 #define XLR_CHECK_CONSISTENCY	0x02
+
+/* This bit in xl_info means the record is compressed */
+#define XLR_COMPRESSED	0x04
 
 /*
  * Header info for block data appended to an XLOG record.
@@ -143,11 +146,6 @@ typedef struct XLogRecordBlockImageHeader
 	uint16		length;			/* number of page image bytes */
 	uint16		hole_offset;	/* number of bytes before "hole" */
 	uint8		bimg_info;		/* flag bits, see below */
-
-	/*
-	 * If BKPIMAGE_HAS_HOLE and BKPIMAGE_COMPRESSED(), an
-	 * XLogRecordBlockCompressHeader struct follows.
-	 */
 } XLogRecordBlockImageHeader;
 
 #define SizeOfXLogRecordBlockImageHeader	\
@@ -158,25 +156,23 @@ typedef struct XLogRecordBlockImageHeader
 #define BKPIMAGE_APPLY			0x02	/* page image should be restored
 										 * during replay */
 /* compression methods supported */
-#define BKPIMAGE_COMPRESS_PGLZ	0x04
-#define BKPIMAGE_COMPRESS_LZ4	0x08
-#define BKPIMAGE_COMPRESS_ZSTD	0x10
+#define XLR_COMPRESS_PGLZ	0x04
+#define XLR_COMPRESS_LZ4	0x08
+#define XLR_COMPRESS_ZSTD	0x10
 
 #define	BKPIMAGE_COMPRESSED(info) \
-	((info & (BKPIMAGE_COMPRESS_PGLZ | BKPIMAGE_COMPRESS_LZ4 | \
-			  BKPIMAGE_COMPRESS_ZSTD)) != 0)
+	(((info) & (XLR_COMPRESS_PGLZ | XLR_COMPRESS_LZ4 | \
+			  XLR_COMPRESS_ZSTD)) != 0)
 
-/*
- * Extra header information used when page image has "hole" and
- * is compressed.
- */
-typedef struct XLogRecordBlockCompressHeader
+/* Record of a compressed header */
+typedef struct XLogCompressionHeader
 {
-	uint16		hole_length;	/* number of bytes in "hole" */
-} XLogRecordBlockCompressHeader;
+	XLogRecord record_header;
+	char	method;
+	uint32	decompressed_length;
+} XLogCompressionHeader;
 
-#define SizeOfXLogRecordBlockCompressHeader \
-	sizeof(XLogRecordBlockCompressHeader)
+#define SizeOfXLogCompressedRecord	(offsetof(XLogCompressionHeader, decompressed_length) + sizeof(uint32))
 
 /*
  * Maximum size of the header for a block reference. This is used to size a
@@ -185,7 +181,6 @@ typedef struct XLogRecordBlockCompressHeader
 #define MaxSizeOfXLogRecordBlockHeader \
 	(SizeOfXLogRecordBlockHeader + \
 	 SizeOfXLogRecordBlockImageHeader + \
-	 SizeOfXLogRecordBlockCompressHeader + \
 	 sizeof(RelFileLocator) + \
 	 sizeof(BlockNumber))
 
