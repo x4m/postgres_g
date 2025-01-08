@@ -720,6 +720,13 @@ sub init
 	# TEMP_CONFIG.  Otherwise, print it before TEMP_CONFIG, thereby permitting
 	# overrides.  Settings that merely improve performance or ease debugging
 	# belong before TEMP_CONFIG.
+
+	# Prevent whole-record WAL compression from triggering in tests that are
+	# not specifically testing it.  Tests that want whole-record compression
+	# can either lower this with append_conf() after init(), or supply a lower
+	# value via TEMP_CONFIG.
+	print $conf "wal_compression_threshold = '1GB'\n";
+
 	print $conf PostgreSQL::Test::Utils::slurp_file($ENV{TEMP_CONFIG})
 	  if defined $ENV{TEMP_CONFIG};
 

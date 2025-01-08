@@ -24,6 +24,16 @@ export enable_injection_points
 REGRESS_SHLIB=$(abs_top_builddir)/src/test/regress/regress$(DLSUFFIX)
 export REGRESS_SHLIB
 
+# Exercise WAL compression in recovery tests.  Set USE_WAL_COMPRESSION_CONFIG=
+# to disable, or TEMP_CONFIG=/path to use a different config.
+USE_WAL_COMPRESSION_CONFIG ?= 1
+ifneq ($(USE_WAL_COMPRESSION_CONFIG),)
+TEMP_CONFIG ?= $(srcdir)/wal_compression.conf
+export TEMP_CONFIG
+else
+unexport TEMP_CONFIG
+endif
+
 check:
 	$(prove_check)
 

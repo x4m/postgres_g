@@ -57,6 +57,8 @@ extern PGDLLIMPORT int CommitDelay;
 extern PGDLLIMPORT int CommitSiblings;
 extern PGDLLIMPORT bool track_wal_io_timing;
 extern PGDLLIMPORT int wal_decode_buffer_size;
+extern PGDLLIMPORT int wal_compression_threshold;
+extern PGDLLIMPORT int wal_compression_buffer;
 
 extern PGDLLIMPORT int CheckPointSegments;
 
