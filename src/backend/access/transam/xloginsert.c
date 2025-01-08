@@ -39,6 +39,7 @@
 #include "replication/origin.h"
 #include "storage/bufmgr.h"
 #include "storage/proc.h"
+#include "utils/guc_hooks.h"
 #include "utils/memutils.h"
 #include "utils/pgstat_internal.h"
 
@@ -63,6 +64,24 @@
 /* Buffer size required to store a compressed version of backup block image */
 #define COMPRESS_BUFSIZE	Max(Max(PGLZ_MAX_BLCKSZ, LZ4_MAX_BLCKSZ), ZSTD_MAX_BLCKSZ)
 
+#define SizeOfXlogOrigin		(sizeof(RepOriginId) + sizeof(char))
+#define SizeOfXLogTransactionId	(sizeof(TransactionId) + sizeof(char))
+
+#define HEADER_SCRATCH_SIZE \
+	(SizeOfXLogRecord + \
+	 MaxSizeOfXLogRecordBlockHeader * (XLR_MAX_BLOCK_ID + 1) + \
+	 SizeOfXLogRecordDataHeaderLong + SizeOfXlogOrigin + \
+	 SizeOfXLogTransactionId)
+
+/*
+ * Minimum buffer size for wal_compression_buffer GUC.
+ *
+ * Must accommodate the largest WAL record we might want to compress as a
+ * whole: up to XLR_MAX_BLOCK_ID full-page images (each up to COMPRESS_BUFSIZE
+ * bytes when uncompressed) plus per-block and record headers.
+ */
+#define MIN_WAL_COMPRESSION_BUFFER	(XLR_MAX_BLOCK_ID * COMPRESS_BUFSIZE + HEADER_SCRATCH_SIZE)
+
 /*
  * For each block reference registered with XLogRegisterBuffer, we fill in
  * a registered_buffer struct.
@@ -84,8 +103,8 @@ typedef struct
 	XLogRecData bkp_rdatas[2];	/* temporary rdatas used to hold references to
 								 * backup block data in XLogRecordAssemble() */
 
-	/* buffer to store a compressed version of backup block image */
-	char		compressed_page[COMPRESS_BUFSIZE];
+	/* pointer into compression_buf for compressed page image */
+	char	   *compressed_page;
 } registered_buffer;
 
 static registered_buffer *registered_buffers;
@@ -115,14 +134,62 @@ static uint8 curinsert_flags = 0;
 static XLogRecData hdr_rdt;
 static char *hdr_scratch = NULL;
 
-#define SizeOfXlogOrigin	(sizeof(RepOriginId) + sizeof(char))
-#define SizeOfXLogTransactionId	(sizeof(TransactionId) + sizeof(char))
+/*
+ * GUC: Maximum memory per backend for WAL compression.
+ *
+ * Controls the size of the shared FPI compression buffer as well as the
+ * threshold for whole-record compression: records larger than this value
+ * will not be compressed as a whole (per-FPI compression still applies).
+ *
+ * The default equals MIN_WAL_COMPRESSION_BUFFER, which is the total memory
+ * previously used by embedded per-block compressed_page arrays.
+ *
+ * Actual memory consumption per backend is approximately 2x this value
+ * because we need both an input buffer and an output buffer for whole-record
+ * compression.
+ */
+int		wal_compression_buffer;
 
-#define HEADER_SCRATCH_SIZE \
-	(SizeOfXLogRecord + \
-	 MaxSizeOfXLogRecordBlockHeader * (XLR_MAX_BLOCK_ID + 1) + \
-	 SizeOfXLogRecordDataHeaderLong + SizeOfXlogOrigin + \
-	 SizeOfXLogTransactionId)
+static XLogRecData		compressed_rdt_hdr;
+
+/*
+ * Compression buffers, allocated once and grown with repalloc if
+ * wal_compression_buffer increases.  compression_buffers_size tracks the
+ * wal_compression_buffer value at which they were last allocated.
+ *
+ * compression_buf is a single wal_compression_buffer-sized staging area
+ * shared between two mutually exclusive uses:
+ *
+ *  - FPI compression (skip_fpi_compression = false): compressed block images
+ *    are packed into compression_buf one after another, with
+ *    compression_buf_offset tracking the fill level.  rdt nodes point
+ *    directly into this buffer.
+ *
+ *  - Whole-record compression (skip_fpi_compression = true): XLogCompressRdt
+ *    flattens the rdt chain into compression_buf before compressing into
+ *    compressed_data.  FPI compression is skipped in this path, so the two
+ *    uses never overlap.
+ *
+ * compressed_data holds the compressor output for whole-record compression.
+ * Its size is the maximum compressed output for wal_compression_buffer bytes.
+ */
+static char			   *compression_buf = NULL;
+static int				compression_buf_offset;		/* fill level for FPI packing */
+static char			   *compressed_data = NULL;
+static uint32			compressed_data_size;		/* allocated size of compressed_data */
+static int				compression_buffers_size;	/* wal_compression_buffer at last alloc */
+
+/*
+ * In assert builds (where MEMORY_CONTEXT_CHECKING is active), verify every
+ * palloc sentinel in the process after operations that write to compression
+ * buffers.  This catches overflows that corrupt adjacent palloc blocks.
+ * Compiles to nothing in non-assert builds.
+ */
+#ifdef MEMORY_CONTEXT_CHECKING
+#define CheckCompressionMemory() MemoryContextCheck(TopMemoryContext)
+#else
+#define CheckCompressionMemory() ((void) 0)
+#endif
 
 /*
  * An array of XLogRecData structs, to hold registered data.
@@ -136,11 +203,13 @@ static bool begininsert_called = false;
 /* Memory context to hold the registered buffer and data references. */
 static MemoryContext xloginsert_cxt;
 
+static void AllocCompressionBuffers(void);
 static XLogRecData *XLogRecordAssemble(RmgrId rmid, uint8 info,
 									   XLogRecPtr RedoRecPtr, bool doPageWrites,
-									   XLogRecPtr *fpw_lsn, int *num_fpi,
-									   uint64 *fpi_bytes,
-									   bool *topxid_included);
+								   XLogRecPtr *fpw_lsn, int *num_fpi,
+								   uint64 *fpi_bytes,
+								   bool *topxid_included, uint64 *rec_size,
+								   bool skip_fpi_compression);
 static bool XLogCompressBackupBlock(const PageData *page, uint16 hole_offset,
 									uint16 hole_length, void *dest, uint16 *dlen);
 
@@ -154,6 +223,9 @@ XLogBeginInsert(void)
 	Assert(max_registered_block_id == 0);
 	Assert(mainrdata_last == (XLogRecData *) &mainrdata_head);
 	Assert(mainrdata_len == 0);
+
+	/* Enforce that InitXLogInsert() was called before any WAL insertion */
+	Assert(xloginsert_cxt != NULL);
 
 	/* cross-check on whether we should be here or not */
 	if (!XLogInsertAllowed())
@@ -234,6 +306,7 @@ XLogResetInsertion(void)
 	mainrdata_len = 0;
 	mainrdata_last = (XLogRecData *) &mainrdata_head;
 	curinsert_flags = 0;
+	compression_buf_offset = 0;
 	begininsert_called = false;
 }
 
@@ -463,6 +536,124 @@ XLogSetRecordFlags(uint8 flags)
 	curinsert_flags |= flags;
 }
 
+
+/* Compress assembled record on top of compression buffers */
+static XLogRecData *
+XLogCompressRdt(XLogRecData *rdt)
+{
+	XLogCompressionHeader *compressed_header;
+	XLogRecord *src_header;
+	uint32		flat_len = 0;
+	uint32		orig_len;
+	int32		compr_len = -1;
+
+	Assert(wal_compression != WAL_COMPRESSION_NONE);
+	Assert(compression_buf != NULL);
+
+	/*
+	 * Flatten the rdt chain into compression_buf.  FPI compression is always
+	 * skipped when whole-record compression is attempted (skip_fpi_compression
+	 * = true), so compression_buf is unused at this point and safe to
+	 * overwrite.
+	 *
+	 * Caller must have checked rec_size <= wal_compression_buffer before
+	 * calling us, and AllocCompressionBuffers() guarantees the buffer is at
+	 * least wal_compression_buffer bytes.  Verify the invariant here so that
+	 * any future drift between rec_size and the actual rdt chain length is
+	 * caught immediately rather than silently corrupting memory.
+	 */
+	for (const XLogRecData *r = rdt; r != NULL; r = r->next)
+	{
+		memcpy(compression_buf + flat_len, r->data, r->len);
+		flat_len += r->len;
+	}
+	Assert(flat_len <= (uint32) wal_compression_buffer);
+
+	src_header = (XLogRecord *) compression_buf;
+	compressed_header = (XLogCompressionHeader *) compressed_data;
+
+	compressed_header->record_header = *src_header;
+	compressed_header->decompressed_length = flat_len;
+
+	orig_len = src_header->xl_tot_len - SizeOfXLogRecord;
+
+	switch ((WalCompression) wal_compression)
+	{
+		case WAL_COMPRESSION_PGLZ:
+			compressed_header->method = XLR_COMPRESS_PGLZ;
+			compr_len = pglz_compress((char *) &src_header[1], orig_len, (char *) &compressed_header[1], PGLZ_strategy_default);
+			if (compr_len == -1)
+				return NULL;
+			break;
+
+		case WAL_COMPRESSION_LZ4:
+#ifdef USE_LZ4
+			compressed_header->method = XLR_COMPRESS_LZ4;
+		compr_len = LZ4_compress_default((char *) &src_header[1], (char *) &compressed_header[1],
+									   orig_len, compressed_data_size);
+			if (compr_len <= 0)
+				return NULL;
+#else
+			elog(ERROR, "LZ4 is not supported by this build");
+#endif
+			break;
+
+		case WAL_COMPRESSION_ZSTD:
+#ifdef USE_ZSTD
+			compressed_header->method = XLR_COMPRESS_ZSTD;
+		compr_len = ZSTD_compress((char *) &compressed_header[1], compressed_data_size,
+								(char *) &src_header[1], orig_len, ZSTD_CLEVEL_DEFAULT);
+			if (ZSTD_isError(compr_len))
+				return NULL;
+#else
+			elog(ERROR, "zstd is not supported by this build");
+#endif
+			break;
+
+		case WAL_COMPRESSION_NONE:
+			Assert(false);		/* cannot happen */
+			return NULL;
+			break;
+			/* no default case, so that compiler will warn */
+	}
+
+	Assert(compr_len > 0);
+
+	/* Verify compression did not overflow any palloc'd buffer. */
+	CheckCompressionMemory();
+
+	compressed_header->record_header.xl_tot_len = SizeOfXLogCompressedRecord + compr_len;
+
+	compressed_header->record_header.xl_info |= XLR_COMPRESSED;
+
+	compressed_rdt_hdr.data = compressed_data;
+	compressed_rdt_hdr.len = compressed_header->record_header.xl_tot_len;
+	compressed_rdt_hdr.next = NULL;
+
+	return &compressed_rdt_hdr;
+}
+
+/* Checksum assembled record (which may be compressed). */
+static void
+XLogChecksumRecord(XLogRecData *rdt)
+{
+	pg_crc32c	rdata_crc;
+	XLogRecord *rechdr = (XLogRecord *) rdt->data;
+	/*
+	 * Calculate CRC of the data
+	 *
+	 * Note that the record header isn't added into the CRC initially since we
+	 * don't know the prev-link yet.  Thus, the CRC will represent the CRC of
+	 * the whole record in the order: rdata, then backup blocks, then record
+	 * header.
+	 */
+	INIT_CRC32C(rdata_crc);
+	COMP_CRC32C(rdata_crc, ((char *)rdt->data) + SizeOfXLogRecord, rdt->len - SizeOfXLogRecord);
+	for (rdt = rdt->next; rdt != NULL; rdt = rdt->next)
+		COMP_CRC32C(rdata_crc, rdt->data, rdt->len);
+	rechdr->xl_crc = rdata_crc;
+}
+
 /*
  * Insert an XLOG record having the specified RMID and info bytes, with the
  * body of the record being the data and buffer references registered earlier
@@ -478,6 +669,15 @@ XLogRecPtr
 XLogInsert(RmgrId rmid, uint8 info)
 {
 	XLogRecPtr	EndPos;
+	/*
+	 * When whole-record compression can apply (threshold is within the buffer
+	 * size limit), skip per-FPI compression during assembly to avoid
+	 * compressing FPI data twice.  When threshold >= buffer_size, whole-record
+	 * compression can never trigger, so FPI compression runs normally.
+	 */
+	bool		try_whole_record = (wal_compression != WAL_COMPRESSION_NONE &&
+									wal_compression_threshold <
+									wal_compression_buffer);
 
 	/* XLogBeginInsert() must have been called. */
 	if (!begininsert_called)
@@ -514,6 +714,15 @@ XLogInsert(RmgrId rmid, uint8 info)
 		XLogRecData *rdt;
 		int			num_fpi = 0;
 		uint64		fpi_bytes = 0;
+		uint64		rec_size;
+
+		/*
+		 * Reset the FPI compression offset at the start of each iteration.
+		 * The do-while loop retries when XLogInsertRecord returns
+		 * InvalidXLogRecPtr (e.g. because doPageWrites changed), so we must
+		 * not accumulate FPI data across iterations.
+		 */
+		compression_buf_offset = 0;
 
 		/*
 		 * Get values needed to decide whether to do full-page writes. Since
@@ -524,7 +733,53 @@ XLogInsert(RmgrId rmid, uint8 info)
 
 		rdt = XLogRecordAssemble(rmid, info, RedoRecPtr, doPageWrites,
 								 &fpw_lsn, &num_fpi, &fpi_bytes,
-								 &topxid_included);
+								 &topxid_included, &rec_size,
+								 try_whole_record);
+
+		/*
+		 * When try_whole_record is true, FPI compression was skipped during
+		 * assembly.  Attempt whole-record compression if the record is in the
+		 * right size range.  Neither XLogCompressRdt() nor the compressors it
+		 * calls allocate memory, so this is safe inside a critical section.
+		 *
+		 * If whole-record compression was not used for any reason (record too
+		 * small, too large for our buffer, or compressor rejected it), fall
+		 * back to per-FPI compression by reassembling.  This ensures FPIs are
+		 * never silently left uncompressed because we optimistically skipped
+		 * them during the first assembly pass.
+		 */
+		if (try_whole_record)
+		{
+			bool		whole_record_compressed = false;
+
+			if (rec_size > wal_compression_threshold &&
+				rec_size <= (uint32) wal_compression_buffer)
+			{
+				XLogRecData *rdt_compressed = XLogCompressRdt(rdt);
+
+				if (rdt_compressed != NULL)
+				{
+					rdt = rdt_compressed;
+					whole_record_compressed = true;
+				}
+			}
+
+			if (!whole_record_compressed && num_fpi > 0)
+			{
+				/*
+				 * Fall back to per-FPI compression.  XLogRecordAssemble()
+				 * overwrites the same static buffers each call, so no extra
+				 * memory is required.
+				 */
+				compression_buf_offset = 0;
+				rdt = XLogRecordAssemble(rmid, info, RedoRecPtr, doPageWrites,
+										 &fpw_lsn, &num_fpi, &fpi_bytes,
+										 &topxid_included, &rec_size,
+										 false);
+			}
+		}
+
+		XLogChecksumRecord(rdt);
 
 		EndPos = XLogInsertRecord(rdt, fpw_lsn, curinsert_flags, num_fpi,
 								  fpi_bytes, topxid_included);
@@ -548,6 +803,87 @@ XLogSimpleInsertInt64(RmgrId rmid, uint8 info, int64 value)
 }
 
 /*
+ * Allocate (or grow) the two compression buffers.
+ *
+ * Must be called outside a critical section.  InitXLogInsert() calls this at
+ * backend start when wal_compression is enabled.  The GUC assign hooks for
+ * wal_compression and wal_compression_buffer call it when those GUCs change
+ * at runtime, which also always happens outside critical sections.
+ *
+ * If the buffers are already sized to wal_compression_buffer this is a no-op.
+ */
+static void
+AllocCompressionBuffers(void)
+{
+	uint32		new_size = wal_compression_buffer;
+	uint32		compressed_buf_size;
+
+	Assert(CritSectionCount == 0);
+	Assert(xloginsert_cxt != NULL);
+
+	if (compression_buffers_size >= new_size)
+		return;					/* already big enough */
+
+	compressed_buf_size = PGLZ_MAX_OUTPUT(new_size);
+#ifdef USE_LZ4
+	compressed_buf_size = Max(compressed_buf_size,
+							  LZ4_COMPRESSBOUND(new_size));
+#endif
+#ifdef USE_ZSTD
+	compressed_buf_size = Max(compressed_buf_size,
+							  ZSTD_COMPRESSBOUND(new_size));
+#endif
+	compressed_buf_size += SizeOfXLogCompressedRecord;
+
+	if (compression_buf == NULL)
+	{
+		compression_buf = MemoryContextAlloc(xloginsert_cxt, new_size);
+		compressed_data = MemoryContextAlloc(xloginsert_cxt, compressed_buf_size);
+	}
+	else
+	{
+		compression_buf = repalloc(compression_buf, new_size);
+		compressed_data = repalloc(compressed_data, compressed_buf_size);
+	}
+
+	compressed_data_size = compressed_buf_size;
+	compression_buffers_size = new_size;
+	CheckCompressionMemory();
+}
+
+/*
+ * GUC assign hook for wal_compression.
+ *
+ * Allocates compression buffers immediately when compression is first enabled
+ * so that XLogInsert() never needs to allocate inside a critical section.
+ * If xloginsert_cxt is not yet set up (very early startup), the allocation is
+ * deferred to InitXLogInsert().
+ */
+void
+assign_wal_compression(int newval, void *extra)
+{
+	if (newval != WAL_COMPRESSION_NONE &&
+		xloginsert_cxt != NULL &&
+		compression_buf == NULL)
+		AllocCompressionBuffers();
+}
+
+/*
+ * GUC assign hook for wal_compression_buffer.
+ *
+ * Grows the compression buffers immediately when the GUC is increased so that
+ * XLogInsert() never needs to repalloc inside a critical section.
+ */
+void
+assign_wal_compression_buffer(int newval, void *extra)
+{
+	if (wal_compression != WAL_COMPRESSION_NONE &&
+		xloginsert_cxt != NULL &&
+		compression_buf != NULL)
+		AllocCompressionBuffers();
+}
+
+/*
  * Assemble a WAL record from the registered data and buffers into an
  * XLogRecData chain, ready for insertion with XLogInsertRecord().
  *
@@ -566,12 +902,11 @@ static XLogRecData *
 XLogRecordAssemble(RmgrId rmid, uint8 info,
 				   XLogRecPtr RedoRecPtr, bool doPageWrites,
 				   XLogRecPtr *fpw_lsn, int *num_fpi, uint64 *fpi_bytes,
-				   bool *topxid_included)
+				   bool *topxid_included, uint64 *rec_size,
+				   bool skip_fpi_compression)
 {
-	XLogRecData *rdt;
 	uint64		total_len = 0;
 	int			block_id;
-	pg_crc32c	rdata_crc;
 	registered_buffer *prev_regbuf = NULL;
 	XLogRecData *rdt_datas_last;
 	XLogRecord *rechdr;
@@ -600,6 +935,18 @@ XLogRecordAssemble(RmgrId rmid, uint8 info,
 		info |= XLR_CHECK_CONSISTENCY;
 
 	/*
+	 * Compression buffers must already be allocated by this point.
+	 * InitXLogInsert() allocates them at backend start when wal_compression
+	 * is enabled; the assign hooks for wal_compression and
+	 * wal_compression_buffer handle later changes outside critical sections.
+	 * We must never allocate or repalloc here because XLogInsert() is
+	 * routinely called inside critical sections.
+	 */
+	Assert(wal_compression == WAL_COMPRESSION_NONE ||
+		   (compression_buf != NULL &&
+			compression_buffers_size >= wal_compression_buffer));
+
+	/*
 	 * Make an rdata chain containing all the data portions of all block
 	 * references. This includes the data for full-page images. Also append
 	 * the headers for the block references in the scratch buffer.
@@ -613,6 +960,7 @@ XLogRecordAssemble(RmgrId rmid, uint8 info,
 		XLogRecordBlockHeader bkpb;
 		XLogRecordBlockImageHeader bimg;
 		XLogRecordBlockCompressHeader cbimg = {0};
+		uint16		hole_length;
 		bool		samerel;
 		bool		is_compressed = false;
 		bool		include_image;
@@ -701,17 +1049,36 @@ XLogRecordAssemble(RmgrId rmid, uint8 info,
 				cbimg.hole_length = 0;
 			}
 
-			/*
-			 * Try to compress a block image if wal_compression is enabled
-			 */
-			if (wal_compression != WAL_COMPRESSION_NONE)
+		/*
+		 * Try to compress a block image if wal_compression is enabled,
+		 * we have space in the shared FPI compression buffer, and the caller
+		 * has not requested that FPI compression be skipped (because
+		 * whole-record compression will be applied instead).
+		 */
+		if (!skip_fpi_compression &&
+			wal_compression != WAL_COMPRESSION_NONE &&
+			compression_buf != NULL &&
+			compression_buf_offset + COMPRESS_BUFSIZE <= wal_compression_buffer)
 			{
+				/* Assign pointer into shared buffer for this FPI */
+				regbuf->compressed_page = compression_buf + compression_buf_offset;
+
 				is_compressed =
 					XLogCompressBackupBlock(page, bimg.hole_offset,
 											cbimg.hole_length,
 											regbuf->compressed_page,
 											&compressed_len);
+
+				if (is_compressed)
+				{
+					compression_buf_offset += compressed_len;
+					/* Verify FPI compression did not overrun compression_buf. */
+					CheckCompressionMemory();
+				}
 			}
+
+			/* for uncompressed images, use hole_length from cbimg */
+			hole_length = cbimg.hole_length;
 
 			/*
 			 * Fill in the remaining fields in the XLogRecordBlockHeader
@@ -778,9 +1145,9 @@ XLogRecordAssemble(RmgrId rmid, uint8 info,
 			}
 			else
 			{
-				bimg.length = BLCKSZ - cbimg.hole_length;
+				bimg.length = BLCKSZ - hole_length;
 
-				if (cbimg.hole_length == 0)
+				if (hole_length == 0)
 				{
 					rdt_datas_last->data = page;
 					rdt_datas_last->len = BLCKSZ;
@@ -795,9 +1162,9 @@ XLogRecordAssemble(RmgrId rmid, uint8 info,
 					rdt_datas_last = rdt_datas_last->next;
 
 					rdt_datas_last->data =
-						page + (bimg.hole_offset + cbimg.hole_length);
+						page + (bimg.hole_offset + hole_length);
 					rdt_datas_last->len =
-						BLCKSZ - (bimg.hole_offset + cbimg.hole_length);
+						BLCKSZ - (bimg.hole_offset + hole_length);
 				}
 			}
 
@@ -915,19 +1282,6 @@ XLogRecordAssemble(RmgrId rmid, uint8 info,
 	total_len += hdr_rdt.len;
 
 	/*
-	 * Calculate CRC of the data
-	 *
-	 * Note that the record header isn't added into the CRC initially since we
-	 * don't know the prev-link yet.  Thus, the CRC will represent the CRC of
-	 * the whole record in the order: rdata, then backup blocks, then record
-	 * header.
-	 */
-	INIT_CRC32C(rdata_crc);
-	COMP_CRC32C(rdata_crc, hdr_scratch + SizeOfXLogRecord, hdr_rdt.len - SizeOfXLogRecord);
-	for (rdt = hdr_rdt.next; rdt != NULL; rdt = rdt->next)
-		COMP_CRC32C(rdata_crc, rdt->data, rdt->len);
-
-	/*
 	 * Ensure that the XLogRecord is not too large.
 	 *
 	 * XLogReader machinery is only able to handle records up to a certain
@@ -950,7 +1304,9 @@ XLogRecordAssemble(RmgrId rmid, uint8 info,
 	rechdr->xl_info = info;
 	rechdr->xl_rmid = rmid;
 	rechdr->xl_prev = InvalidXLogRecPtr;
-	rechdr->xl_crc = rdata_crc;
+	rechdr->xl_crc = 0;
+
+	*rec_size = rechdr->xl_tot_len;
 
 	return &hdr_rdt;
 }
@@ -1365,50 +1721,60 @@ log_newpage_range(Relation rel, ForkNumber forknum,
 
 /*
  * Allocate working buffers needed for WAL record construction.
+ *
+ * Must be called exactly once per process before any XLogBeginInsert() call.
+ * Both regular backends (via InitPostgres) and auxiliary processes (via
+ * AuxiliaryProcessMainCommon) must call this.
  */
 void
 InitXLogInsert(void)
 {
 #ifdef USE_ASSERT_CHECKING
+	{
+		size_t		max_required;
 
-	/*
-	 * Check that any records assembled can be decoded.  This is capped based
-	 * on what XLogReader would require at its maximum bound.  The XLOG_BLCKSZ
-	 * addend covers the larger allocate_recordbuf() demand.  This code path
-	 * is called once per backend, more than enough for this check.
-	 */
-	size_t		max_required =
-		DecodeXLogRecordRequiredSpace(XLogRecordMaxSize + XLOG_BLCKSZ);
+		/* Detect extraneous calls */
+		Assert(xloginsert_cxt == NULL);
 
-	Assert(AllocSizeIsValid(max_required));
+		/*
+		 * Check that any records assembled can be decoded.  This is capped
+		 * based on what XLogReader would require at its maximum bound.  The
+		 * XLOG_BLCKSZ addend covers the larger allocate_recordbuf() demand.
+		 * This code path is called once per backend, more than enough for
+		 * this check.
+		 */
+		max_required = DecodeXLogRecordRequiredSpace(XLogRecordMaxSize + XLOG_BLCKSZ);
+		Assert(AllocSizeIsValid(max_required));
+	}
 #endif
 
 	/* Initialize the working areas */
-	if (xloginsert_cxt == NULL)
-	{
-		xloginsert_cxt = AllocSetContextCreate(TopMemoryContext,
-											   "WAL record construction",
-											   ALLOCSET_DEFAULT_SIZES);
-	}
+	xloginsert_cxt = AllocSetContextCreate(TopMemoryContext,
+										   "WAL record construction",
+										   ALLOCSET_DEFAULT_SIZES);
 
-	if (registered_buffers == NULL)
-	{
-		registered_buffers = (registered_buffer *)
-			MemoryContextAllocZero(xloginsert_cxt,
-								   sizeof(registered_buffer) * (XLR_NORMAL_MAX_BLOCK_ID + 1));
-		max_registered_buffers = XLR_NORMAL_MAX_BLOCK_ID + 1;
-	}
-	if (rdatas == NULL)
-	{
-		rdatas = MemoryContextAlloc(xloginsert_cxt,
-									sizeof(XLogRecData) * XLR_NORMAL_RDATAS);
-		max_rdatas = XLR_NORMAL_RDATAS;
-	}
+	registered_buffers = (registered_buffer *)
+		MemoryContextAllocZero(xloginsert_cxt,
+							   sizeof(registered_buffer) * (XLR_NORMAL_MAX_BLOCK_ID + 1));
+	max_registered_buffers = XLR_NORMAL_MAX_BLOCK_ID + 1;
+
+	rdatas = MemoryContextAlloc(xloginsert_cxt,
+								sizeof(XLogRecData) * XLR_NORMAL_RDATAS);
+	max_rdatas = XLR_NORMAL_RDATAS;
 
 	/*
 	 * Allocate a buffer to hold the header information for a WAL record.
 	 */
-	if (hdr_scratch == NULL)
-		hdr_scratch = MemoryContextAllocZero(xloginsert_cxt,
-											 HEADER_SCRATCH_SIZE);
+	hdr_scratch = MemoryContextAllocZero(xloginsert_cxt, HEADER_SCRATCH_SIZE);
+
+	/*
+	 * Pre-allocate compression buffers if compression is already enabled.
+	 * This ensures the buffers exist before the first XLogInsert() call,
+	 * which may happen inside a critical section where palloc is unsafe.
+	 * If wal_compression is later turned on or wal_compression_buffer is
+	 * increased, the GUC assign hooks handle allocation at that point
+	 * (also always outside critical sections).
+	 */
+	if (wal_compression != WAL_COMPRESSION_NONE)
+		AllocCompressionBuffers();
 }

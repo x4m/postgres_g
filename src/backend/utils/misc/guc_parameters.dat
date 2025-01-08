@@ -3323,6 +3323,31 @@
   variable => 'wal_compression',
   boot_val => 'WAL_COMPRESSION_NONE',
   options => 'wal_compression_options',
+  assign_hook => 'assign_wal_compression',
+},
+
+{ name => 'wal_compression_buffer', type => 'int', context => 'PGC_SUSET', group => 'WAL_SETTINGS',
+  short_desc => 'Buffer size for WAL compression.',
+  long_desc => 'Sets the buffer size for WAL compression, used for both FPI compression '
+             . 'and whole-record compression. Must be large enough to hold compressed '
+             . 'full page images for up to 32 blocks (XLR_MAX_BLOCK_ID). '
+             . 'Note: actual memory consumption per backend is approximately 2x this value '
+             . 'plus ~5% overhead, as additional buffers are needed for whole-record compression.',
+  flags => 'GUC_UNIT_BYTE',
+  variable => 'wal_compression_buffer',
+  boot_val => '295972',
+  min => '295972',
+  max => '1073741824',
+  assign_hook => 'assign_wal_compression_buffer',
+},
+
+{ name => 'wal_compression_threshold', type => 'int', context => 'PGC_SUSET', group => 'WAL_SETTINGS',
+  short_desc => 'Minimum WAL record length to engage compression.',
+  flags => 'GUC_UNIT_BYTE',
+  variable => 'wal_compression_threshold',
+  boot_val => '512',
+  min => '32',
+  max => 'INT_MAX',
 },
 
 { name => 'wal_consistency_checking', type => 'string', context => 'PGC_SUSET', group => 'DEVELOPER_OPTIONS',

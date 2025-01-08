@@ -720,6 +720,13 @@ sub init
 	# TEMP_CONFIG.  Otherwise, print it before TEMP_CONFIG, thereby permitting
 	# overrides.  Settings that merely improve performance or ease debugging
 	# belong before TEMP_CONFIG.
+
+	# Prevent whole-record WAL compression from triggering in tests that are
+	# not specifically testing it.  Tests that want whole-record compression
+	# can either lower this with append_conf() after init(), or supply a lower
+	# value via TEMP_CONFIG.
+	print $conf "wal_compression_threshold = '1GB'\n";
+
 	print $conf PostgreSQL::Test::Utils::slurp_file($ENV{TEMP_CONFIG})
 	  if defined $ENV{TEMP_CONFIG};
 
@@ -3145,10 +3152,16 @@ sub emit_wal
 {
 	my ($self, $size) = @_;
 
+	# Disable whole-record WAL compression for this emission.  Tests call
+	# emit_wal() to place an exact number of bytes in WAL (e.g. to reach a
+	# specific page offset); whole-record compression would shrink the record
+	# and break those position-sensitive calculations.
 	return int(
 		$self->safe_psql(
 			'postgres',
-			"SELECT pg_logical_emit_message(true, '', repeat('a', $size)) - '0/0'"
+			"SET wal_compression_threshold = 2147483647;
+			 SELECT pg_logical_emit_message(true, '', repeat('a', $size)) - '0/0';
+			 RESET wal_compression_threshold"
 		));
 }
 
