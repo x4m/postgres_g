@@ -252,6 +252,12 @@ struct XLogReaderState
 	char	   *decode_buffer_tail; /* new data is written at the tail */
 
 	/*
+	 * Buffer to decompress records
+	 */
+	char	   *decompression_buffer;
+	uint32 		decompression_buffer_size;
+
+	/*
 	 * Queue of records that have been decoded.  This is a linked list that
 	 * usually consists of consecutive records in decode_buffer, but may also
 	 * contain oversized records allocated with palloc().
