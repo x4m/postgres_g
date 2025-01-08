@@ -2981,6 +2981,17 @@ struct config_int ConfigureNamesInt[] =
 	},
 
 	{
+		{"wal_compression_threshold", PGC_SIGHUP, WAL_SETTINGS,
+			gettext_noop("Minimum WAL record length to engage compression."),
+			NULL,
+			GUC_UNIT_BYTE
+		},
+		&wal_compression_threshold,
+		512, 32, INT_MAX,
+		NULL, NULL, NULL
+	},
+
+	{
 		{"wal_writer_flush_after", PGC_SIGHUP, WAL_SETTINGS,
 			gettext_noop("Amount of WAL written out by WAL writer that triggers a flush."),
 			NULL,
