@@ -90,6 +90,8 @@ typedef struct XLogRecord
  */
 #define XLR_CHECK_CONSISTENCY	0x02
 
+#define XLR_COMPRESSED	0x04
+
 /*
  * Header info for block data appended to an XLOG record.
  *
@@ -165,6 +167,13 @@ typedef struct XLogRecordBlockImageHeader
 #define	BKPIMAGE_COMPRESSED(info) \
 	((info & (BKPIMAGE_COMPRESS_PGLZ | BKPIMAGE_COMPRESS_LZ4 | \
 			  BKPIMAGE_COMPRESS_ZSTD)) != 0)
+
+typedef struct XLogCompressionData
+{
+	XLogRecord record_header;
+	char	method;
+	uint32	decompressed_length;
+} XLogCompressionData;
 
 /*
  * Extra header information used when page image has "hole" and

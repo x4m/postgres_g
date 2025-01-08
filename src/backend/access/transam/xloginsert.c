@@ -137,7 +137,7 @@ static MemoryContext xloginsert_cxt;
 static XLogRecData *XLogRecordAssemble(RmgrId rmid, uint8 info,
 									   XLogRecPtr RedoRecPtr, bool doPageWrites,
 									   XLogRecPtr *fpw_lsn, int *num_fpi,
-									   bool *topxid_included);
+									   bool *topxid_included, uint64 *rec_size);
 static bool XLogCompressBackupBlock(const char *page, uint16 hole_offset,
 									uint16 hole_length, char *dest, uint16 *dlen);
 
@@ -459,6 +459,112 @@ XLogSetRecordFlags(uint8 flags)
 	curinsert_flags |= flags;
 }
 
+static XLogRecData		compressed_rdt_hdr;
+static StringInfo		data_before_compression = NULL;
+static StringInfo		compressed_data = NULL;
+
+
+#ifdef USE_LZ4
+#define	LZ4_MAX_BLCKSZ(input)		LZ4_COMPRESSBOUND(BLCKSZ)
+#else
+#define LZ4_MAX_BLCKSZ		0
+#endif
+
+#ifdef USE_ZSTD
+#define ZSTD_MAX_BLCKSZ		ZSTD_COMPRESSBOUND(BLCKSZ)
+#else
+#define ZSTD_MAX_BLCKSZ		0
+#endif
+
+#define PGLZ_MAX_BLCKSZ		PGLZ_MAX_OUTPUT(BLCKSZ)
+
+static XLogRecData*
+XLogCompressRdt(XLogRecData *rdt)
+{
+	uint64 compressed_buffer_size;
+	XLogCompressionData *compressed_header;
+	XLogRecord *src_header;
+	uint32 orig_len;
+	uint32 compr_len;
+
+	Assert(wal_compression != WAL_COMPRESSION_NONE);
+	/* Build the whole record */
+	if (data_before_compression == NULL)
+		data_before_compression = makeStringInfo();
+	else
+		resetStringInfo(data_before_compression);
+	for (; rdt != NULL; rdt = rdt->next)
+		appendBinaryStringInfoNT(data_before_compression, rdt->data, rdt->len);
+
+	compressed_buffer_size = PGLZ_MAX_OUTPUT(data_before_compression->len);
+
+#ifdef USE_LZ4
+	compressed_buffer_size = Max(compressed_buffer_size, LZ4_COMPRESSBOUND(data_before_compression->len));
+#endif
+#ifdef USE_ZSTD
+	compressed_buffer_size = Max(compressed_buffer_size, ZSTD_COMPRESSBOUND(data_before_compression->len));
+#endif
+
+	if (compressed_data == NULL)
+		data_before_compression = makeStringInfo();
+	else
+		resetStringInfo(compressed_data);
+
+	enlargeStringInfo(compressed_data, compressed_buffer_size + sizeof(XLogCompressionData));
+
+	src_header = (XLogRecord*) data_before_compression->data;
+	compressed_header = (XLogCompressionData*) compressed_data->data;
+
+	compressed_header->record_header = *src_header;
+	compressed_header->decompressed_length = data_before_compression->len;
+
+	orig_len = src_header->xl_tot_len - SizeOfXLogRecord;
+
+	switch ((WalCompression) wal_compression)
+	{
+		case WAL_COMPRESSION_PGLZ:
+			compr_len = pglz_compress((char*)&src_header[1], orig_len, (char*)&compressed_header[1], PGLZ_strategy_default);
+			break;
+
+		case WAL_COMPRESSION_LZ4:
+#ifdef USE_LZ4
+			compr_len = LZ4_compress_default((char*)&src_header[1], (char*)&compressed_header[1], orig_len,
+									   compressed_buffer_size);
+			if (compr_len <= 0)
+				compr_len = -1;		/* failure */
+#else
+			elog(ERROR, "LZ4 is not supported by this build");
+#endif
+			break;
+
+		case WAL_COMPRESSION_ZSTD:
+#ifdef USE_ZSTD
+			compr_len = ZSTD_compress((char*)&compressed_header[1], compressed_buffer_size, (char*)&src_header[1], orig_len,
+								ZSTD_CLEVEL_DEFAULT);
+			if (ZSTD_isError(compr_len))
+				compr_len = -1;		/* failure */
+#else
+			elog(ERROR, "zstd is not supported by this build");
+#endif
+			break;
+
+		case WAL_COMPRESSION_NONE:
+			Assert(false);		/* cannot happen */
+			break;
+			/* no default case, so that compiler will warn */
+	}
+
+	compressed_header->record_header.xl_tot_len = SizeOfXLogRecord + compr_len;
+
+	compressed_header->record_header.xl_info = compressed_header->record_header.xl_info | XLR_COMPRESSED;
+
+	compressed_rdt_hdr.data = compressed_data->data;
+	compressed_rdt_hdr.len = compressed_header->record_header.xl_tot_len;
+	compressed_rdt_hdr.next = NULL;
+
+	return &compressed_rdt_hdr;
+}
+
 /*
  * Insert an XLOG record having the specified RMID and info bytes, with the
  * body of the record being the data and buffer references registered earlier
@@ -509,6 +615,8 @@ XLogInsert(RmgrId rmid, uint8 info)
 		XLogRecPtr	fpw_lsn;
 		XLogRecData *rdt;
 		int			num_fpi = 0;
+		uint64		rec_size;
+
 
 		/*
 		 * Get values needed to decide whether to do full-page writes. Since
@@ -518,7 +626,13 @@ XLogInsert(RmgrId rmid, uint8 info)
 		GetFullPageWriteInfo(&RedoRecPtr, &doPageWrites);
 
 		rdt = XLogRecordAssemble(rmid, info, RedoRecPtr, doPageWrites,
-								 &fpw_lsn, &num_fpi, &topxid_included);
+								 &fpw_lsn, &num_fpi, &topxid_included,
+								 &rec_size);
+
+		if (rec_size > 512 && wal_compression != WAL_COMPRESSION_NONE)
+		{
+			rdt = XLogCompressRdt(rdt);
+		}
 
 		EndPos = XLogInsertRecord(rdt, fpw_lsn, curinsert_flags, num_fpi,
 								  topxid_included);
@@ -547,7 +661,8 @@ XLogInsert(RmgrId rmid, uint8 info)
 static XLogRecData *
 XLogRecordAssemble(RmgrId rmid, uint8 info,
 				   XLogRecPtr RedoRecPtr, bool doPageWrites,
-				   XLogRecPtr *fpw_lsn, int *num_fpi, bool *topxid_included)
+				   XLogRecPtr *fpw_lsn, int *num_fpi, bool *topxid_included,
+				   uint64 *rec_size)
 {
 	XLogRecData *rdt;
 	uint64		total_len = 0;
@@ -929,6 +1044,8 @@ XLogRecordAssemble(RmgrId rmid, uint8 info,
 	rechdr->xl_rmid = rmid;
 	rechdr->xl_prev = InvalidXLogRecPtr;
 	rechdr->xl_crc = rdata_crc;
+
+	*rec_size = rechdr->xl_tot_len;
 
 	return &hdr_rdt;
 }
