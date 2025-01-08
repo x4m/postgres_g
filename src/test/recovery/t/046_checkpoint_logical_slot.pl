@@ -115,10 +115,9 @@ $node->safe_psql('postgres',
 	q{select pg_replication_slot_advance('slot_physical', pg_current_wal_lsn())}
 );
 
-# Generate a long WAL record, spawning at least two pages for the follow-up
+# Generate a long WAL record, spanning at least two pages for the follow-up
 # post-recovery check.
-$node->safe_psql('postgres',
-	q{select pg_logical_emit_message(false, '', repeat('123456789', 1000))});
+$node->emit_wal(9000);
 
 # Continue the checkpoint and wait for its completion.
 my $log_offset = -s $node->logfile;
