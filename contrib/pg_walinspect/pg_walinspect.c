@@ -314,12 +314,6 @@ GetWALBlockInfo(FunctionCallInfo fcinfo, XLogReaderState *record,
 				flags[cnt++] = CStringGetTextDatum("HAS_HOLE");
 			if (blk->apply_image)
 				flags[cnt++] = CStringGetTextDatum("APPLY");
-			if ((blk->bimg_info & BKPIMAGE_COMPRESS_PGLZ) != 0)
-				flags[cnt++] = CStringGetTextDatum("COMPRESS_PGLZ");
-			if ((blk->bimg_info & BKPIMAGE_COMPRESS_LZ4) != 0)
-				flags[cnt++] = CStringGetTextDatum("COMPRESS_LZ4");
-			if ((blk->bimg_info & BKPIMAGE_COMPRESS_ZSTD) != 0)
-				flags[cnt++] = CStringGetTextDatum("COMPRESS_ZSTD");
 
 			Assert(cnt <= bitcnt);
 			block_fpi_info = construct_array_builtin(flags, cnt, TEXTOID);
