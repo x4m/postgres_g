@@ -113,6 +113,11 @@ static uint8 curinsert_flags = 0;
 static XLogRecData hdr_rdt;
 static char *hdr_scratch = NULL;
 
+static int32			compression_buffer_current_size;
+static XLogRecData		compressed_rdt_hdr;
+static StringInfo		data_before_compression = NULL;
+static StringInfo		compressed_data = NULL;
+
 #define SizeOfXlogOrigin	(sizeof(RepOriginId) + sizeof(char))
 #define SizeOfXLogTransactionId	(sizeof(TransactionId) + sizeof(char))
 
@@ -160,6 +165,11 @@ XLogBeginInsert(void)
 		elog(ERROR, "XLogBeginInsert was already called");
 
 	begininsert_called = true;
+
+	if (data_before_compression)
+		resetStringInfo(data_before_compression);
+	if (compressed_data)
+		resetStringInfo(compressed_data);
 }
 
 /*
@@ -231,6 +241,7 @@ XLogResetInsertion(void)
 	mainrdata_len = 0;
 	mainrdata_last = (XLogRecData *) &mainrdata_head;
 	curinsert_flags = 0;
+	compression_buffer_current_size = 0;
 	begininsert_called = false;
 }
 
@@ -299,6 +310,8 @@ XLogRegisterBuffer(uint8 block_id, Buffer buffer, uint8 flags)
 #endif
 
 	regbuf->in_use = true;
+
+	XLogEnsureCompressionBuffer(MaxSizeOfXLogRecordBlockHeader + BLCKSZ);
 }
 
 /*
@@ -352,6 +365,7 @@ XLogRegisterBlock(uint8 block_id, RelFileLocator *rlocator, ForkNumber forknum,
 #endif
 
 	regbuf->in_use = true;
+	XLogEnsureCompressionBuffer(MaxSizeOfXLogRecordBlockHeader + BLCKSZ);
 }
 
 /*
@@ -386,6 +400,7 @@ XLogRegisterData(const char *data, uint32 len)
 	mainrdata_last = rdata;
 
 	mainrdata_len += len;
+	XLogEnsureCompressionBuffer(len);
 }
 
 /*
@@ -440,6 +455,7 @@ XLogRegisterBufData(uint8 block_id, const char *data, uint32 len)
 	regbuf->rdata_tail->next = rdata;
 	regbuf->rdata_tail = rdata;
 	regbuf->rdata_len += len;
+	XLogEnsureCompressionBuffer(len);
 }
 
 /*
@@ -459,58 +475,56 @@ XLogSetRecordFlags(uint8 flags)
 	curinsert_flags |= flags;
 }
 
-static XLogRecData		compressed_rdt_hdr;
-static StringInfo		data_before_compression = NULL;
-static StringInfo		compressed_data = NULL;
+void XLogEnsureCompressionBuffer(uint32 extraLen)
+{
+	uint64 compressed_buffer_size;
+	uint64 desired_buffer_size;
 
+	if (wal_compression == WAL_COMPRESSION_NONE)
+		return;
+
+	if (CritSectionCount > 0 || compression_buffer_current_size == -1)
+	{
+		compression_buffer_current_size = -1;
+		return;
+	}
+
+	compression_buffer_current_size += extraLen;
+	desired_buffer_size = compression_buffer_current_size + SizeOfXLogRecord;
+	Assert(data_before_compression->len == 0);
+	enlargeStringInfo(data_before_compression, desired_buffer_size);
+
+	compressed_buffer_size = PGLZ_MAX_OUTPUT(desired_buffer_size);
 
 #ifdef USE_LZ4
-#define	LZ4_MAX_BLCKSZ(input)		LZ4_COMPRESSBOUND(BLCKSZ)
-#else
-#define LZ4_MAX_BLCKSZ		0
+	compressed_buffer_size = Max(compressed_buffer_size, LZ4_COMPRESSBOUND(desired_buffer_size));
 #endif
-
 #ifdef USE_ZSTD
-#define ZSTD_MAX_BLCKSZ		ZSTD_COMPRESSBOUND(BLCKSZ)
-#else
-#define ZSTD_MAX_BLCKSZ		0
+	compressed_buffer_size = Max(compressed_buffer_size, ZSTD_COMPRESSBOUND(desired_buffer_size));
 #endif
-
-#define PGLZ_MAX_BLCKSZ		PGLZ_MAX_OUTPUT(BLCKSZ)
+	compressed_buffer_size = compressed_buffer_size + sizeof(XLogCompressionData);
+	Assert(compressed_data->len == 0);
+	enlargeStringInfo(compressed_data, compressed_buffer_size);
+}
 
 static XLogRecData*
 XLogCompressRdt(XLogRecData *rdt)
 {
-	uint64 compressed_buffer_size;
 	XLogCompressionData *compressed_header;
 	XLogRecord *src_header;
 	uint32 orig_len;
 	uint32 compr_len;
 
+	if (compression_buffer_current_size == -1)
+		return NULL;
+
 	Assert(wal_compression != WAL_COMPRESSION_NONE);
+	//elog(WARNING, "compression_buffer_current_size %d data_before_compression->maxlen %d", compression_buffer_current_size, data_before_compression->maxlen);
+	Assert(compression_buffer_current_size <= data_before_compression->maxlen);
+
 	/* Build the whole record */
-	if (data_before_compression == NULL)
-		data_before_compression = makeStringInfo();
-	else
-		resetStringInfo(data_before_compression);
 	for (; rdt != NULL; rdt = rdt->next)
 		appendBinaryStringInfoNT(data_before_compression, rdt->data, rdt->len);
-
-	compressed_buffer_size = PGLZ_MAX_OUTPUT(data_before_compression->len);
-
-#ifdef USE_LZ4
-	compressed_buffer_size = Max(compressed_buffer_size, LZ4_COMPRESSBOUND(data_before_compression->len));
-#endif
-#ifdef USE_ZSTD
-	compressed_buffer_size = Max(compressed_buffer_size, ZSTD_COMPRESSBOUND(data_before_compression->len));
-#endif
-
-	if (compressed_data == NULL)
-		data_before_compression = makeStringInfo();
-	else
-		resetStringInfo(compressed_data);
-
-	enlargeStringInfo(compressed_data, compressed_buffer_size + sizeof(XLogCompressionData));
 
 	src_header = (XLogRecord*) data_before_compression->data;
 	compressed_header = (XLogCompressionData*) compressed_data->data;
@@ -520,18 +534,23 @@ XLogCompressRdt(XLogRecData *rdt)
 
 	orig_len = src_header->xl_tot_len - SizeOfXLogRecord;
 
+	elog(WARNING, "Compressing %d", orig_len);
+
 	switch ((WalCompression) wal_compression)
 	{
 		case WAL_COMPRESSION_PGLZ:
 			compr_len = pglz_compress((char*)&src_header[1], orig_len, (char*)&compressed_header[1], PGLZ_strategy_default);
+			if (compr_len == -1)
+				return NULL;
+			elog(WARNING,"Actually compressed something");
 			break;
 
 		case WAL_COMPRESSION_LZ4:
 #ifdef USE_LZ4
 			compr_len = LZ4_compress_default((char*)&src_header[1], (char*)&compressed_header[1], orig_len,
-									   compressed_buffer_size);
+									   compressed_data->maxlen);
 			if (compr_len <= 0)
-				compr_len = -1;		/* failure */
+				return NULL;
 #else
 			elog(ERROR, "LZ4 is not supported by this build");
 #endif
@@ -539,10 +558,10 @@ XLogCompressRdt(XLogRecData *rdt)
 
 		case WAL_COMPRESSION_ZSTD:
 #ifdef USE_ZSTD
-			compr_len = ZSTD_compress((char*)&compressed_header[1], compressed_buffer_size, (char*)&src_header[1], orig_len,
+			compr_len = ZSTD_compress((char*)&compressed_header[1], compressed_data->maxlen, (char*)&src_header[1], orig_len,
 								ZSTD_CLEVEL_DEFAULT);
 			if (ZSTD_isError(compr_len))
-				compr_len = -1;		/* failure */
+				return NULL;
 #else
 			elog(ERROR, "zstd is not supported by this build");
 #endif
@@ -561,6 +580,8 @@ XLogCompressRdt(XLogRecData *rdt)
 	compressed_rdt_hdr.data = compressed_data->data;
 	compressed_rdt_hdr.len = compressed_header->record_header.xl_tot_len;
 	compressed_rdt_hdr.next = NULL;
+
+	elog(WARNING, "compressed_rdt_hdr.len %d", compressed_rdt_hdr.len);
 
 	return &compressed_rdt_hdr;
 }
@@ -631,7 +652,9 @@ XLogInsert(RmgrId rmid, uint8 info)
 
 		if (rec_size > 512 && wal_compression != WAL_COMPRESSION_NONE)
 		{
-			rdt = XLogCompressRdt(rdt);
+			XLogRecData *rdt_compressed = XLogCompressRdt(rdt);
+			if (rdt_compressed != NULL)
+				rdt = rdt_compressed;
 		}
 
 		EndPos = XLogInsertRecord(rdt, fpw_lsn, curinsert_flags, num_fpi,
@@ -1506,4 +1529,15 @@ InitXLogInsert(void)
 	if (hdr_scratch == NULL)
 		hdr_scratch = MemoryContextAllocZero(xloginsert_cxt,
 											 HEADER_SCRATCH_SIZE);
+
+	// if (CritSectionCount > 0)
+	// {
+	// 	compression_buffer_current_size = -1;
+	// 	return;
+	// }
+	if (data_before_compression == NULL)
+		data_before_compression = makeStringInfo();
+	if (compressed_data == NULL)
+		compressed_data = makeStringInfo();
+	XLogEnsureCompressionBuffer(SizeOfXLogRecord);
 }
