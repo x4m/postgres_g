@@ -3148,7 +3148,7 @@ sub emit_wal
 	return int(
 		$self->safe_psql(
 			'postgres',
-			"SELECT pg_logical_emit_message(true, '', repeat('a', $size)) - '0/0'"
+			"SET wal_compression to off; SELECT pg_logical_emit_message(true, '', repeat('a', $size)) - '0/0';"
 		));
 }
 

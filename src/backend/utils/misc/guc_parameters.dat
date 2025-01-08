@@ -3325,6 +3325,15 @@
   options => 'wal_compression_options',
 },
 
+{ name => 'wal_compression_threshold', type => 'int', context => 'PGC_SIGHUP', group => 'WAL_SETTINGS',
+  short_desc => 'Minimum WAL record length to engage compression.',
+  flags => 'GUC_UNIT_BYTE',
+  variable => 'wal_compression_threshold',
+  boot_val => '512',
+  min => '32',
+  max => 'INT_MAX',
+},
+
 { name => 'wal_consistency_checking', type => 'string', context => 'PGC_SUSET', group => 'DEVELOPER_OPTIONS',
   short_desc => 'Sets the WAL resource managers for which WAL consistency checks are done.',
   long_desc => 'Full-page images will be logged for all data blocks and cross-checked against the results of WAL replay.',
