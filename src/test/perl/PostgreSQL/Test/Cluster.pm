@@ -723,6 +723,11 @@ sub init
 	print $conf PostgreSQL::Test::Utils::slurp_file($ENV{TEMP_CONFIG})
 	  if defined $ENV{TEMP_CONFIG};
 
+	# Prevent whole-record WAL compression from triggering in tests that are
+	# not specifically testing it.  Tests that want whole-record compression
+	# should lower this with append_conf() after init().
+	print $conf "wal_compression_threshold = '1GB'\n";
+
 	if ($params{allows_streaming})
 	{
 		if ($params{allows_streaming} eq "logical")
