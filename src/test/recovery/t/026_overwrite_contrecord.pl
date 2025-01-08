@@ -22,6 +22,7 @@ $node->append_conf(
 	'postgresql.conf', qq(
 autovacuum = off
 wal_keep_size = 1GB
+wal_compression_threshold = 1GB
 ));
 $node->start;
 

@@ -64,6 +64,7 @@ $primary->append_conf(
 autovacuum = off
 checkpoint_timeout = '30min'
 wal_keep_size = 1GB
+wal_compression_threshold = 1GB
 ));
 
 $primary->start;
