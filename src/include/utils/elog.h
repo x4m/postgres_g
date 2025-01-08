@@ -537,4 +537,6 @@ extern void write_jsonlog(ErrorData *edata);
  */
 extern void write_stderr(const char *fmt,...) pg_attribute_printf(1, 2);
 
+extern void PrintBacktrace();
+
 #endif							/* ELOG_H */

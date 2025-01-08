@@ -375,6 +375,8 @@ extern bool XLogReaderValidatePageHeader(XLogReaderState *state,
 /* Forget error produced by XLogReaderValidatePageHeader(). */
 extern void XLogReaderResetError(XLogReaderState *state);
 
+extern uint32 XLogGetRecordTotalLen(XLogRecord *record);
+
 /*
  * Error information from WALRead that both backend and frontend caller can
  * process.  Currently only errors from pg_pread can be reported.

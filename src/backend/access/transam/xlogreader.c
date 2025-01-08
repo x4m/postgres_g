@@ -32,6 +32,7 @@
 #include "catalog/pg_control.h"
 #include "common/pg_lzcompress.h"
 #include "replication/origin.h"
+#include "utils/memutils.h"
 
 #ifndef FRONTEND
 #include "pgstat.h"
@@ -53,6 +54,7 @@ static bool ValidXLogRecord(XLogReaderState *state, XLogRecord *record,
 static void ResetDecoder(XLogReaderState *state);
 static void WALOpenSegmentInit(WALOpenSegment *seg, WALSegmentContext *segcxt,
 							   int segsize, const char *waldir);
+static XLogRecord* XLogDecompressRecordIfNeeded(XLogRecord *record);
 
 /* size of the buffer allocated for error message. */
 #define MAX_ERRORMSG_LEN 1000
@@ -524,6 +526,17 @@ XLogReadRecordAlloc(XLogReaderState *state, size_t xl_tot_len, bool allow_oversi
 	return NULL;
 }
 
+uint32 XLogGetRecordTotalLen(XLogRecord *record)
+{
+	if (record->xl_info & XLR_COMPRESSED)
+	{
+		XLogCompressionData *c = (XLogCompressionData*) record;
+		Assert(((int32_t)c->decompressed_length) > 0);
+		return c->decompressed_length;
+	}
+	return record->xl_tot_len;
+}
+
 static XLogPageReadResult
 XLogDecodeNextRecord(XLogReaderState *state, bool nonblocking)
 {
@@ -532,7 +545,8 @@ XLogDecodeNextRecord(XLogReaderState *state, bool nonblocking)
 	XLogRecPtr	targetPagePtr;
 	bool		randAccess;
 	uint32		len,
-				total_len;
+				total_len_decomp,
+				total_len_phisical;
 	uint32		targetRecOff;
 	uint32		pageHeaderSize;
 	bool		assembled;
@@ -643,8 +657,27 @@ restart:
 	 * whole header.
 	 */
 	record = (XLogRecord *) (state->readBuf + RecPtr % XLOG_BLCKSZ);
-	total_len = record->xl_tot_len;
+	total_len_phisical = record->xl_tot_len;
 
+	/* TODO: Actually, we should not trust this compression bit too... */
+	if (record->xl_info & XLR_COMPRESSED)
+	{
+		if (targetRecOff > XLOG_BLCKSZ - sizeof(XLogCompressionData))
+		{
+			total_len_decomp = -1; /* Need reassemble to know the size */
+		}
+		else
+		{
+			XLogCompressionData *c = (XLogCompressionData*) record;
+			// Assert(((int32_t)c->decompressed_length) > 0); // We cannot assert this, this might be a garbage
+			total_len_decomp = c->decompressed_length;
+		}
+	}
+	else
+		if (targetRecOff > XLOG_BLCKSZ - SizeOfXLogRecord)
+			total_len_decomp = record->xl_tot_len;
+		else 
+			total_len_decomp = -1; /* We are not sure record is not compressed */
 	/*
 	 * If the whole record header is on this page, validate it immediately.
 	 * Otherwise do just a basic sanity check on xl_tot_len, and validate the
@@ -659,16 +692,18 @@ restart:
 								   randAccess))
 			goto err;
 		gotheader = true;
+		if (record->xl_info & XLR_COMPRESSED)
+			gotheader = targetRecOff <= XLOG_BLCKSZ - sizeof(XLogCompressionData);
 	}
 	else
 	{
 		/* There may be no next page if it's too small. */
-		if (total_len < SizeOfXLogRecord)
+		if (total_len_phisical < SizeOfXLogRecord)
 		{
 			report_invalid_record(state,
 								  "invalid record length at %X/%X: expected at least %u, got %u",
 								  LSN_FORMAT_ARGS(RecPtr),
-								  (uint32) SizeOfXLogRecord, total_len);
+								  (uint32) SizeOfXLogRecord, total_len_phisical);
 			goto err;
 		}
 		/* We'll validate the header once we have the next page. */
@@ -680,9 +715,11 @@ restart:
 	 * calling palloc.  If we can't, we'll try again below after we've
 	 * validated that total_len isn't garbage bytes from a recycled WAL page.
 	 */
-	decoded = XLogReadRecordAlloc(state,
-								  total_len,
+	if (total_len_decomp != -1)
+		decoded = XLogReadRecordAlloc(state,
+								  total_len_decomp,
 								  false /* allow_oversized */ );
+
 	if (decoded == NULL && nonblocking)
 	{
 		/*
@@ -694,7 +731,7 @@ restart:
 	}
 
 	len = XLOG_BLCKSZ - RecPtr % XLOG_BLCKSZ;
-	if (total_len > len)
+	if (total_len_phisical > len)
 	{
 		/* Need to reassemble record */
 		char	   *contdata;
@@ -724,7 +761,7 @@ restart:
 
 			/* Wait for the next page to become available */
 			readOff = ReadPageInternal(state, targetPagePtr,
-									   Min(total_len - gotlen + SizeOfXLogShortPHD,
+									   Min(total_len_phisical - gotlen + SizeOfXLogShortPHD,
 										   XLOG_BLCKSZ));
 
 			if (readOff == XLREAD_WOULDBLOCK)
@@ -765,12 +802,12 @@ restart:
 			 * we expect there to be left.
 			 */
 			if (pageHeader->xlp_rem_len == 0 ||
-				total_len != (pageHeader->xlp_rem_len + gotlen))
+				total_len_phisical != (pageHeader->xlp_rem_len + gotlen))
 			{
 				report_invalid_record(state,
 									  "invalid contrecord length %u (expected %lld) at %X/%X",
 									  pageHeader->xlp_rem_len,
-									  ((long long) total_len) - gotlen,
+									  ((long long) total_len_phisical) - gotlen,
 									  LSN_FORMAT_ARGS(RecPtr));
 				goto err;
 			}
@@ -813,7 +850,7 @@ restart:
 			 * also cross-checked total_len against xlp_rem_len on the second
 			 * page, and verified xlp_pageaddr on both.
 			 */
-			if (total_len > state->readRecordBufSize)
+			if (total_len_phisical > state->readRecordBufSize)
 			{
 				char		save_copy[XLOG_BLCKSZ * 2];
 
@@ -824,11 +861,11 @@ restart:
 				Assert(gotlen <= lengthof(save_copy));
 				Assert(gotlen <= state->readRecordBufSize);
 				memcpy(save_copy, state->readRecordBuf, gotlen);
-				allocate_recordbuf(state, total_len);
+				allocate_recordbuf(state, total_len_phisical);
 				memcpy(state->readRecordBuf, save_copy, gotlen);
 				buffer = state->readRecordBuf + gotlen;
 			}
-		} while (gotlen < total_len);
+		} while (gotlen < total_len_phisical);
 		Assert(gotheader);
 
 		record = (XLogRecord *) state->readRecordBuf;
@@ -843,8 +880,9 @@ restart:
 	else
 	{
 		/* Wait for the record data to become available */
+		Assert(targetRecOff + total_len_phisical <= XLOG_BLCKSZ);
 		readOff = ReadPageInternal(state, targetPagePtr,
-								   Min(targetRecOff + total_len, XLOG_BLCKSZ));
+								   targetRecOff + total_len_phisical);
 		if (readOff == XLREAD_WOULDBLOCK)
 			return XLREAD_WOULDBLOCK;
 		else if (readOff < 0)
@@ -854,7 +892,7 @@ restart:
 		if (!ValidXLogRecord(state, record, RecPtr))
 			goto err;
 
-		state->NextRecPtr = RecPtr + MAXALIGN(total_len);
+		state->NextRecPtr = RecPtr + MAXALIGN(total_len_phisical);
 
 		state->DecodeRecPtr = RecPtr;
 	}
@@ -877,8 +915,19 @@ restart:
 	if (decoded == NULL)
 	{
 		Assert(!nonblocking);
+
+		/* total_len_decomp might be not actual */
+		if (record->xl_info & XLR_COMPRESSED)
+		{
+			XLogCompressionData *c = (XLogCompressionData*) record;
+			Assert(((int32_t)c->decompressed_length) > 0);
+			Assert(((int32_t)c->decompressed_length) < MaxAllocSize);
+			total_len_decomp = c->decompressed_length;
+		}
+		else
+			total_len_decomp = record->xl_tot_len;
 		decoded = XLogReadRecordAlloc(state,
-									  total_len,
+									  total_len_decomp,
 									  true /* allow_oversized */ );
 		/* allocation should always happen under allow_oversized */
 		Assert(decoded != NULL);
@@ -1646,6 +1695,91 @@ DecodeXLogRecordRequiredSpace(size_t xl_tot_len)
 	return size;
 }
 
+static char* decompression_buffer = NULL;
+static uint32 decompression_buffer_len = 0;
+
+static XLogRecord* XLogDecompressRecordIfNeeded(XLogRecord *record)
+{
+	if (record->xl_info & XLR_COMPRESSED)
+	{
+		XLogCompressionData	*src = (XLogCompressionData*) record;
+		bool				decomp_success = true;
+		uint32				srclen = src->record_header.xl_tot_len - sizeof(XLogCompressionData);
+		char				*dst;
+		XLogRecord			*dst_h;
+
+		if (decompression_buffer_len < src->decompressed_length)
+		{
+			if (decompression_buffer)
+				pfree(decompression_buffer);
+			/* Avoid small steps in growths, we compress only big records */
+			decompression_buffer_len = TYPEALIGN(BLCKSZ, src->decompressed_length);
+			decompression_buffer = palloc(decompression_buffer_len + SizeOfXLogRecord);
+		}
+		dst_h = (XLogRecord*) decompression_buffer;
+		*dst_h = src->record_header;
+		dst_h->xl_tot_len = src->decompressed_length;
+		dst = (char*) &dst_h[1];
+
+		/* If a backup block image is compressed, decompress it */
+
+		if (src->method == BKPIMAGE_COMPRESS_PGLZ)
+		{
+			if (pglz_decompress((char*) &src[1], srclen, dst,
+								decompression_buffer_len, true) < 0)
+				decomp_success = false;
+		}
+		else if (src->method == BKPIMAGE_COMPRESS_LZ4)
+		{
+#ifdef USE_LZ4
+			if (LZ4_decompress_safe((char*) &src[1], dst,
+									srclen, decompression_buffer_len) <= 0)
+				decomp_success = false;
+#else
+			// report_invalid_record(src, "could not restore image at %X/%X compressed with %s not supported by build, block %d",
+			// 					  LSN_FORMAT_ARGS((XLogRecPtr)0),
+			// 					  "LZ4",
+			// 					  0);
+			return NULL;
+#endif
+		}
+		else if (src->method == BKPIMAGE_COMPRESS_ZSTD)
+		{
+#ifdef USE_ZSTD
+			size_t		decomp_result = ZSTD_decompress(dst,
+														decompression_buffer_len,
+														(char*) &src[1], srclen);
+			if (ZSTD_isError(decomp_result))
+				decomp_success = false;
+#else
+			// report_invalid_record(src, "could not restore image at %X/%X compressed with %s not supported by build, block %d",
+			// 					  LSN_FORMAT_ARGS((XLogRecPtr)0),
+			// 					  "zstd",
+			// 					  0);
+			return NULL;
+#endif
+		}
+		else
+		{
+			// report_invalid_record(src, "could not restore image at %X/%X compressed with unknown method, block %d",
+			// 					  LSN_FORMAT_ARGS((XLogRecPtr)0),
+			// 					  0);
+			return NULL;
+		}
+
+		if (!decomp_success)
+		{
+			// report_invalid_record(src, "could not decompress image at %X/%X, block %d",
+			// 					  LSN_FORMAT_ARGS((XLogRecPtr)0),
+			// 					  0);
+			return NULL;
+		}
+
+		return (XLogRecord*) decompression_buffer;
+	}
+	return record;
+}
+
 /*
  * Decode a record.  "decoded" must point to a MAXALIGNed memory area that has
  * space for at least DecodeXLogRecordRequiredSpace(record) bytes.  On
@@ -1683,6 +1817,16 @@ DecodeXLogRecord(XLogReaderState *state,
 	uint32		datatotal;
 	RelFileLocator *rlocator = NULL;
 	uint8		block_id;
+	XLogRecord *record1 = record;
+
+	record = XLogDecompressRecordIfNeeded(record);
+
+	if (!record)
+	{
+		if (record1)
+			fprintf(stderr, "record %d\n", record1->xl_tot_len);
+		return false;
+	}
 
 	decoded->header = *record;
 	decoded->lsn = lsn;
@@ -1794,10 +1938,7 @@ DecodeXLogRecord(XLogReaderState *state,
 
 				if (BKPIMAGE_COMPRESSED(blk->bimg_info))
 				{
-					if (blk->bimg_info & BKPIMAGE_HAS_HOLE)
-						COPY_HEADER_FIELD(&blk->hole_length, sizeof(uint16));
-					else
-						blk->hole_length = 0;
+					Assert(false);
 				}
 				else
 					blk->hole_length = BLCKSZ - blk->bimg_len;
@@ -1832,19 +1973,6 @@ DecodeXLogRecord(XLogReaderState *state,
 										  "BKPIMAGE_HAS_HOLE not set, but hole offset %u length %u at %X/%X",
 										  (unsigned int) blk->hole_offset,
 										  (unsigned int) blk->hole_length,
-										  LSN_FORMAT_ARGS(state->ReadRecPtr));
-					goto err;
-				}
-
-				/*
-				 * Cross-check that bimg_len < BLCKSZ if it is compressed.
-				 */
-				if (BKPIMAGE_COMPRESSED(blk->bimg_info) &&
-					blk->bimg_len == BLCKSZ)
-				{
-					report_invalid_record(state,
-										  "BKPIMAGE_COMPRESSED set, but block image length %u at %X/%X",
-										  (unsigned int) blk->bimg_len,
 										  LSN_FORMAT_ARGS(state->ReadRecPtr));
 					goto err;
 				}
@@ -2057,7 +2185,6 @@ RestoreBlockImage(XLogReaderState *record, uint8 block_id, char *page)
 {
 	DecodedBkpBlock *bkpb;
 	char	   *ptr;
-	PGAlignedBlock tmp;
 
 	if (block_id > record->record->max_block_id ||
 		!record->record->blocks[block_id].in_use)
@@ -2081,63 +2208,7 @@ RestoreBlockImage(XLogReaderState *record, uint8 block_id, char *page)
 
 	if (BKPIMAGE_COMPRESSED(bkpb->bimg_info))
 	{
-		/* If a backup block image is compressed, decompress it */
-		bool		decomp_success = true;
-
-		if ((bkpb->bimg_info & BKPIMAGE_COMPRESS_PGLZ) != 0)
-		{
-			if (pglz_decompress(ptr, bkpb->bimg_len, tmp.data,
-								BLCKSZ - bkpb->hole_length, true) < 0)
-				decomp_success = false;
-		}
-		else if ((bkpb->bimg_info & BKPIMAGE_COMPRESS_LZ4) != 0)
-		{
-#ifdef USE_LZ4
-			if (LZ4_decompress_safe(ptr, tmp.data,
-									bkpb->bimg_len, BLCKSZ - bkpb->hole_length) <= 0)
-				decomp_success = false;
-#else
-			report_invalid_record(record, "could not restore image at %X/%X compressed with %s not supported by build, block %d",
-								  LSN_FORMAT_ARGS(record->ReadRecPtr),
-								  "LZ4",
-								  block_id);
-			return false;
-#endif
-		}
-		else if ((bkpb->bimg_info & BKPIMAGE_COMPRESS_ZSTD) != 0)
-		{
-#ifdef USE_ZSTD
-			size_t		decomp_result = ZSTD_decompress(tmp.data,
-														BLCKSZ - bkpb->hole_length,
-														ptr, bkpb->bimg_len);
-
-			if (ZSTD_isError(decomp_result))
-				decomp_success = false;
-#else
-			report_invalid_record(record, "could not restore image at %X/%X compressed with %s not supported by build, block %d",
-								  LSN_FORMAT_ARGS(record->ReadRecPtr),
-								  "zstd",
-								  block_id);
-			return false;
-#endif
-		}
-		else
-		{
-			report_invalid_record(record, "could not restore image at %X/%X compressed with unknown method, block %d",
-								  LSN_FORMAT_ARGS(record->ReadRecPtr),
-								  block_id);
-			return false;
-		}
-
-		if (!decomp_success)
-		{
-			report_invalid_record(record, "could not decompress image at %X/%X, block %d",
-								  LSN_FORMAT_ARGS(record->ReadRecPtr),
-								  block_id);
-			return false;
-		}
-
-		ptr = tmp.data;
+		Assert(false);
 	}
 
 	/* generate page, taking into account hole if necessary */
