@@ -97,7 +97,8 @@ enum dbObjectTypePriorities
 	PRIO_SUBSCRIPTION_REL,
 	PRIO_DEFAULT_ACL,			/* done in ACL pass */
 	PRIO_EVENT_TRIGGER,			/* must be next to last! */
-	PRIO_REFRESH_MATVIEW		/* must be last! */
+	PRIO_REFRESH_MATVIEW,		/* must be last! */
+	PRIO_ANALYZE				/* must be really last! */
 };
 
 /* This table is indexed by enum DumpableObjectType */
@@ -150,9 +151,10 @@ static const int dbObjectTypePriority[] =
 	[DO_PUBLICATION_TABLE_IN_SCHEMA] = PRIO_PUBLICATION_TABLE_IN_SCHEMA,
 	[DO_SUBSCRIPTION] = PRIO_SUBSCRIPTION,
 	[DO_SUBSCRIPTION_REL] = PRIO_SUBSCRIPTION_REL,
+	[DO_ANALYZE] = PRIO_ANALYZE
 };
 
-StaticAssertDecl(lengthof(dbObjectTypePriority) == (DO_SUBSCRIPTION_REL + 1),
+StaticAssertDecl(lengthof(dbObjectTypePriority) == (DO_ANALYZE + 1),
 				 "array length mismatch");
 
 static DumpId preDataBoundId;
@@ -1354,6 +1356,11 @@ describeDumpableObject(DumpableObject *obj, char *buf, int bufsize)
 		case DO_REFRESH_MATVIEW:
 			snprintf(buf, bufsize,
 					 "REFRESH MATERIALIZED VIEW %s  (ID %d OID %u)",
+					 obj->name, obj->dumpId, obj->catId.oid);
+			return;
+		case DO_ANALYZE:
+			snprintf(buf, bufsize,
+					 "ANALYZE %s  (ID %d OID %u)",
 					 obj->name, obj->dumpId, obj->catId.oid);
 			return;
 		case DO_RULE:

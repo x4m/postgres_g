@@ -2834,6 +2834,9 @@ refreshMatViewData(Archive *fout, const TableDataInfo *tdinfo)
 	destroyPQExpBuffer(q);
 }
 
+static void
+makeTableAnalyzeInfo(DumpOptions *dopt, TableInfo *tbinfo);
+
 /*
  * getTableData -
  *	  set up dumpable objects representing the contents of tables
@@ -2848,7 +2851,85 @@ getTableData(DumpOptions *dopt, TableInfo *tblinfo, int numTables, char relkind)
 		if (tblinfo[i].dobj.dump & DUMP_COMPONENT_DATA &&
 			(!relkind || tblinfo[i].relkind == relkind))
 			makeTableDataInfo(dopt, &(tblinfo[i]));
+		if (  //tblinfo[i].dobj.dump & DUMP_COMPONENT_DATA &&
+		 	(!relkind || tblinfo[i].relkind == relkind))
+			makeTableAnalyzeInfo(dopt, &(tblinfo[i]));
 	}
+}
+
+static void
+makeTableAnalyzeInfo(DumpOptions *dopt, TableInfo *tbinfo)
+{
+	TableDataInfo *tdinfo;
+
+	//fprintf(stderr, "Hello again1\n");
+	/*
+	 * Nothing to do if we already decided to dump the table.  This will
+	 * happen for "config" tables.
+	 */
+	if (tbinfo->dataObj != NULL)
+		return;
+	//fprintf(stderr, "A");
+
+	/* Skip VIEWs (no data to dump) */
+	if (tbinfo->relkind == RELKIND_VIEW)
+		return;
+	//fprintf(stderr, "B");
+	/* Skip FOREIGN TABLEs (no data to dump) unless requested explicitly */
+	if (tbinfo->relkind == RELKIND_FOREIGN_TABLE &&
+		(foreign_servers_include_oids.head == NULL ||
+		 !simple_oid_list_member(&foreign_servers_include_oids,
+								 tbinfo->foreign_server)))
+		return;
+	//fprintf(stderr, "C");
+	/* Skip partitioned tables (data in partitions) */
+	if (tbinfo->relkind == RELKIND_PARTITIONED_TABLE)
+		return;
+	///fprintf(stderr, "D");
+
+	/* Don't dump data in unlogged tables, if so requested */
+	if (tbinfo->relpersistence == RELPERSISTENCE_UNLOGGED &&
+		dopt->no_unlogged_table_data)
+		return;
+	//fprintf(stderr, "F");
+
+	/* Check that the data is not explicitly excluded */
+	if (simple_oid_list_member(&tabledata_exclude_oids,
+							   tbinfo->dobj.catId.oid))
+		return;
+	//fprintf(stderr, "G");
+
+	/* OK, let's dump it */
+	tdinfo = (TableDataInfo *) pg_malloc(sizeof(TableDataInfo));
+
+	if (tbinfo->relkind == RELKIND_SEQUENCE)
+		return;
+
+	
+		fprintf(stderr, "Hello again");
+
+	tdinfo->dobj.objType = DO_ANALYZE;
+
+	/*
+	 * Note: use tableoid 0 so that this object won't be mistaken for
+	 * something that pg_depend entries apply to.
+	 */
+	tdinfo->dobj.catId.tableoid = 0;
+	tdinfo->dobj.catId.oid = tbinfo->dobj.catId.oid;
+	AssignDumpId(&tdinfo->dobj);
+	tdinfo->dobj.name = tbinfo->dobj.name;
+	tdinfo->dobj.namespace = tbinfo->dobj.namespace;
+	tdinfo->tdtable = tbinfo;
+	tdinfo->filtercond = NULL;	/* might get set later */
+	addObjectDependency(&tdinfo->dobj, tbinfo->dobj.dumpId);
+
+	/* A TableDataInfo contains data, of course */
+	tdinfo->dobj.components |= DUMP_COMPONENT_ANALYZE;
+
+	tbinfo->dataObj = tdinfo;
+
+	/* Make sure that we'll collect per-column info for this table. */
+	tbinfo->interesting = true;
 }
 
 /*
@@ -10664,6 +10745,22 @@ dumpDumpableObject(Archive *fout, DumpableObject *dobj)
 			break;
 		case DO_TABLE_DATA:
 			dumpTableData(fout, (const TableDataInfo *) dobj);
+			break;
+		case DO_ANALYZE:
+		{
+			PQExpBuffer q;
+			const TableInfo * tbinfo = (const TableInfo *) dobj;
+			q = createPQExpBuffer();
+			appendPQExpBuffer(q, "ANALYZE %s",
+							  fmtQualifiedDumpable(tbinfo));
+			ArchiveEntry(fout, tbinfo->dobj.catId, tbinfo->dobj.dumpId,
+				ARCHIVE_OPTS(.tag = tbinfo->dobj.name,
+							.namespace = tbinfo->dobj.namespace->dobj.name,
+							.relkind = tbinfo->relkind,
+							.owner = tbinfo->rolname,
+							.section = SECTION_POST_DATA,
+							.createStmt = q->data));
+		}
 			break;
 		case DO_DUMMY_TYPE:
 			/* table rowtypes and array types are never dumped separately */
@@ -18900,6 +18997,7 @@ addBoundaryDependencies(DumpableObject **dobjs, int numObjs,
 		 */
 		switch (dobj->objType)
 		{
+			case DO_ANALYZE:
 			case DO_NAMESPACE:
 			case DO_EXTENSION:
 			case DO_TYPE:

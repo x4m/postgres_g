@@ -84,6 +84,7 @@ typedef enum
 	DO_PUBLICATION_TABLE_IN_SCHEMA,
 	DO_SUBSCRIPTION,
 	DO_SUBSCRIPTION_REL,		/* see note for SubRelInfo */
+	DO_ANALYZE
 } DumpableObjectType;
 
 /*
@@ -109,6 +110,7 @@ typedef uint32 DumpComponents;
 #define DUMP_COMPONENT_ACL			(1 << 4)
 #define DUMP_COMPONENT_POLICY		(1 << 5)
 #define DUMP_COMPONENT_USERMAP		(1 << 6)
+#define DUMP_COMPONENT_ANALYZE		(1 << 7)
 #define DUMP_COMPONENT_ALL			(0xFFFF)
 
 /*
