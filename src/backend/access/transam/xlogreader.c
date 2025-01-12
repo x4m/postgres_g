@@ -1662,12 +1662,6 @@ DecodeXLogRecordRequiredSpace(size_t xl_tot_len)
 static char* decompression_buffer = NULL;
 static uint32 decompression_buffer_len = 0;
 
-
-#ifndef FRONTEND
-void
-MemoryContextCheck(MemoryContext context);
-#endif
-
 static XLogRecord* XLogDecompressRecordIfNeeded(XLogRecord *record)
 {
 	if (record->xl_info & XLR_COMPRESSED)
@@ -1716,15 +1710,9 @@ static XLogRecord* XLogDecompressRecordIfNeeded(XLogRecord *record)
 		else if (src->method == BKPIMAGE_COMPRESS_ZSTD)
 		{
 #ifdef USE_ZSTD
-#ifndef FRONTEND
-			MemoryContextCheck(CurrentMemoryContext);
-#endif
 			size_t		decomp_result = ZSTD_decompress(dst,
 														decompression_buffer_len,
 														(char*) &src[1], srclen);
-#ifndef FRONTEND
-			MemoryContextCheck(CurrentMemoryContext);
-#endif
 			if (ZSTD_isError(decomp_result))
 				decomp_success = false;
 #else
@@ -1794,13 +1782,7 @@ DecodeXLogRecord(XLogReaderState *state,
 	RelFileLocator *rlocator = NULL;
 	uint8		block_id;
 
-#ifndef FRONTEND
-			MemoryContextCheck(CurrentMemoryContext);
-#endif
 	record = XLogDecompressRecordIfNeeded(record);
-#ifndef FRONTEND
-			MemoryContextCheck(CurrentMemoryContext);
-#endif
 
 	decoded->header = *record;
 	decoded->lsn = lsn;
@@ -2008,10 +1990,6 @@ DecodeXLogRecord(XLogReaderState *state,
 		offsetof(DecodedXLogRecord, blocks) +
 		sizeof(decoded->blocks[0]) * (decoded->max_block_id + 1);
 
-#ifndef FRONTEND
-			MemoryContextCheck(CurrentMemoryContext);
-#endif
-
 	/* block data first */
 	for (block_id = 0; block_id <= decoded->max_block_id; block_id++)
 	{
@@ -2027,9 +2005,6 @@ DecodeXLogRecord(XLogReaderState *state,
 			/* no need to align image */
 			blk->bkp_image = out;
 			memcpy(out, ptr, blk->bimg_len);
-#ifndef FRONTEND
-			MemoryContextCheck(CurrentMemoryContext);
-#endif
 			ptr += blk->bimg_len;
 			out += blk->bimg_len;
 		}
@@ -2038,17 +2013,10 @@ DecodeXLogRecord(XLogReaderState *state,
 			out = (char *) MAXALIGN(out);
 			blk->data = out;
 			memcpy(blk->data, ptr, blk->data_len);
-#ifndef FRONTEND
-			MemoryContextCheck(CurrentMemoryContext);
-#endif
 			ptr += blk->data_len;
 			out += blk->data_len;
 		}
 	}
-
-#ifndef FRONTEND
-			MemoryContextCheck(CurrentMemoryContext);
-#endif
 
 	/* and finally, the main data */
 	if (decoded->main_data_len > 0)
