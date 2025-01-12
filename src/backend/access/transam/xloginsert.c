@@ -508,11 +508,12 @@ XLogCompressRdt(XLogRecData *rdt)
 
 	orig_len = src_header->xl_tot_len - SizeOfXLogRecord;
 
-	elog(WARNING, "Compressing %d", orig_len);
+	elog(WARNING, "Compressing src_header->xl_tot_len %d orig_len %d", src_header->xl_tot_len, orig_len);
 
 	switch ((WalCompression) wal_compression)
 	{
 		case WAL_COMPRESSION_PGLZ:
+			compressed_header->method = BKPIMAGE_COMPRESS_PGLZ;
 			compr_len = pglz_compress((char*)&src_header[1], orig_len, (char*)&compressed_header[1], PGLZ_strategy_default);
 			if (compr_len == -1)
 				return NULL;
@@ -521,6 +522,7 @@ XLogCompressRdt(XLogRecData *rdt)
 
 		case WAL_COMPRESSION_LZ4:
 #ifdef USE_LZ4
+			compressed_header->method = BKPIMAGE_COMPRESS_LZ4;
 			compr_len = LZ4_compress_default((char*)&src_header[1], (char*)&compressed_header[1], orig_len,
 									   compressed_data->maxlen);
 			if (compr_len <= 0)
@@ -532,8 +534,10 @@ XLogCompressRdt(XLogRecData *rdt)
 
 		case WAL_COMPRESSION_ZSTD:
 #ifdef USE_ZSTD
+			compressed_header->method = BKPIMAGE_COMPRESS_ZSTD;
 			compr_len = ZSTD_compress((char*)&compressed_header[1], compressed_data->maxlen, (char*)&src_header[1], orig_len,
 								ZSTD_CLEVEL_DEFAULT);
+			elog(WARNING, "Compressed %d", compr_len);
 			if (ZSTD_isError(compr_len))
 				return NULL;
 #else
@@ -547,7 +551,7 @@ XLogCompressRdt(XLogRecData *rdt)
 			/* no default case, so that compiler will warn */
 	}
 
-	compressed_header->record_header.xl_tot_len = SizeOfXLogRecord + compr_len;
+	compressed_header->record_header.xl_tot_len = sizeof(XLogCompressionData) + compr_len;
 
 	compressed_header->record_header.xl_info = compressed_header->record_header.xl_info | XLR_COMPRESSED;
 
@@ -558,6 +562,25 @@ XLogCompressRdt(XLogRecData *rdt)
 	elog(WARNING, "compressed_rdt_hdr.len %d", compressed_rdt_hdr.len);
 
 	return &compressed_rdt_hdr;
+}
+
+static void XLogChecksumRecord(XLogRecData *rdt)
+{
+	pg_crc32c	rdata_crc;
+	XLogRecord *rechdr = (XLogRecord*) rdt->data;
+	/*
+	 * Calculate CRC of the data
+	 *
+	 * Note that the record header isn't added into the CRC initially since we
+	 * don't know the prev-link yet.  Thus, the CRC will represent the CRC of
+	 * the whole record in the order: rdata, then backup blocks, then record
+	 * header.
+	 */
+	INIT_CRC32C(rdata_crc);
+	COMP_CRC32C(rdata_crc, rdt->data + SizeOfXLogRecord, rdt->len - SizeOfXLogRecord);
+	for (rdt = rdt->next; rdt != NULL; rdt = rdt->next)
+		COMP_CRC32C(rdata_crc, rdt->data, rdt->len);
+	rechdr->xl_crc = rdata_crc;
 }
 
 /*
@@ -631,6 +654,8 @@ XLogInsert(RmgrId rmid, uint8 info)
 				rdt = rdt_compressed;
 		}
 
+		XLogChecksumRecord(rdt);
+
 		EndPos = XLogInsertRecord(rdt, fpw_lsn, curinsert_flags, num_fpi,
 								  topxid_included);
 	} while (EndPos == InvalidXLogRecPtr);
@@ -661,10 +686,8 @@ XLogRecordAssemble(RmgrId rmid, uint8 info,
 				   XLogRecPtr *fpw_lsn, int *num_fpi, bool *topxid_included,
 				   uint64 *rec_size)
 {
-	XLogRecData *rdt;
 	uint64		total_len = 0;
 	int			block_id;
-	pg_crc32c	rdata_crc;
 	registered_buffer *prev_regbuf = NULL;
 	XLogRecData *rdt_datas_last;
 	XLogRecord *rechdr;
@@ -947,19 +970,6 @@ XLogRecordAssemble(RmgrId rmid, uint8 info,
 	total_len += hdr_rdt.len;
 
 	/*
-	 * Calculate CRC of the data
-	 *
-	 * Note that the record header isn't added into the CRC initially since we
-	 * don't know the prev-link yet.  Thus, the CRC will represent the CRC of
-	 * the whole record in the order: rdata, then backup blocks, then record
-	 * header.
-	 */
-	INIT_CRC32C(rdata_crc);
-	COMP_CRC32C(rdata_crc, hdr_scratch + SizeOfXLogRecord, hdr_rdt.len - SizeOfXLogRecord);
-	for (rdt = hdr_rdt.next; rdt != NULL; rdt = rdt->next)
-		COMP_CRC32C(rdata_crc, rdt->data, rdt->len);
-
-	/*
 	 * Ensure that the XLogRecord is not too large.
 	 *
 	 * XLogReader machinery is only able to handle records up to a certain
@@ -982,7 +992,7 @@ XLogRecordAssemble(RmgrId rmid, uint8 info,
 	rechdr->xl_info = info;
 	rechdr->xl_rmid = rmid;
 	rechdr->xl_prev = InvalidXLogRecPtr;
-	rechdr->xl_crc = rdata_crc;
+	rechdr->xl_crc = 0;
 
 	*rec_size = rechdr->xl_tot_len;
 
