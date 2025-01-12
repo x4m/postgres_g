@@ -1682,9 +1682,8 @@ static XLogRecord* XLogDecompressRecordIfNeeded(XLogRecord *record)
 		}
 		dst_h = (XLogRecord*) decompression_buffer;
 		*dst_h = src->record_header;
+		dst_h->xl_tot_len = src->decompressed_length;
 		dst = (char*) &dst_h[1];
-
-		fprintf(stderr, "Compressed recrod! srclen %d src->decompressed_length %d decompression_buffer_len %d\n", srclen, src->decompressed_length, decompression_buffer_len); 
 
 		/* If a backup block image is compressed, decompress it */
 
@@ -1714,7 +1713,6 @@ static XLogRecord* XLogDecompressRecordIfNeeded(XLogRecord *record)
 			size_t		decomp_result = ZSTD_decompress(dst,
 														decompression_buffer_len,
 														(char*) &src[1], srclen);
-			fprintf(stderr, "Decompression ZSTD decomp_result %d\n", decomp_result);
 			if (ZSTD_isError(decomp_result))
 				decomp_success = false;
 #else
@@ -1735,7 +1733,6 @@ static XLogRecord* XLogDecompressRecordIfNeeded(XLogRecord *record)
 
 		if (!decomp_success)
 		{
-			fprintf(stderr, "Decompression faiulre");
 			// report_invalid_record(src, "could not decompress image at %X/%X, block %d",
 			// 					  LSN_FORMAT_ARGS((XLogRecPtr)0),
 			// 					  0);
