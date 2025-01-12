@@ -508,8 +508,6 @@ XLogCompressRdt(XLogRecData *rdt)
 
 	orig_len = src_header->xl_tot_len - SizeOfXLogRecord;
 
-	elog(WARNING, "Compressing src_header->xl_tot_len %d orig_len %d", src_header->xl_tot_len, orig_len);
-
 	switch ((WalCompression) wal_compression)
 	{
 		case WAL_COMPRESSION_PGLZ:
@@ -517,7 +515,6 @@ XLogCompressRdt(XLogRecData *rdt)
 			compr_len = pglz_compress((char*)&src_header[1], orig_len, (char*)&compressed_header[1], PGLZ_strategy_default);
 			if (compr_len == -1)
 				return NULL;
-			elog(WARNING,"Actually compressed something");
 			break;
 
 		case WAL_COMPRESSION_LZ4:
@@ -537,7 +534,6 @@ XLogCompressRdt(XLogRecData *rdt)
 			compressed_header->method = BKPIMAGE_COMPRESS_ZSTD;
 			compr_len = ZSTD_compress((char*)&compressed_header[1], compressed_data->maxlen, (char*)&src_header[1], orig_len,
 								ZSTD_CLEVEL_DEFAULT);
-			elog(WARNING, "Compressed %d", compr_len);
 			if (ZSTD_isError(compr_len))
 				return NULL;
 #else
@@ -558,8 +554,6 @@ XLogCompressRdt(XLogRecData *rdt)
 	compressed_rdt_hdr.data = compressed_data->data;
 	compressed_rdt_hdr.len = compressed_header->record_header.xl_tot_len;
 	compressed_rdt_hdr.next = NULL;
-
-	elog(WARNING, "compressed_rdt_hdr.len %d", compressed_rdt_hdr.len);
 
 	return &compressed_rdt_hdr;
 }
