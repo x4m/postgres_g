@@ -334,6 +334,401 @@ plpgsql_getdiag_kindname(PLpgSQL_getdiag_kind kind)
 
 
 /**********************************************************************
+ * Mark assignment source expressions that have local target variables,
+ * that is, variables declared within the exception block most closely
+ * containing the assignment itself.  (Such target variables need not be
+ * preserved if the assignment's source expression raises an error,
+ * allowing better optimization.)
+ *
+ * This code need not be called if the plpgsql function contains no exception
+ * blocks, because expr_is_assignment_source() will have set all the flags
+ * to true already.  Also, we need not examine default-value expressions for
+ * variables, because variable declarations are necessarily within the nearest
+ * exception block.  (In DECLARE ... BEGIN ... EXCEPTION ... END, the variable
+ * initializations are done before entering the exception scope.)  So it's
+ * sufficient to find assignment statements.
+ *
+ * Within the recursion, local_dnos is a Bitmapset of dnos of variables
+ * known to be declared within the current exception level.
+ **********************************************************************/
+static void mark_stmt(PLpgSQL_stmt *stmt, Bitmapset *local_dnos);
+static void mark_block(PLpgSQL_stmt_block *block, Bitmapset *local_dnos);
+static void mark_assign(PLpgSQL_stmt_assign *stmt, Bitmapset *local_dnos);
+static void mark_if(PLpgSQL_stmt_if *stmt, Bitmapset *local_dnos);
+static void mark_case(PLpgSQL_stmt_case *stmt, Bitmapset *local_dnos);
+static void mark_loop(PLpgSQL_stmt_loop *stmt, Bitmapset *local_dnos);
+static void mark_while(PLpgSQL_stmt_while *stmt, Bitmapset *local_dnos);
+static void mark_fori(PLpgSQL_stmt_fori *stmt, Bitmapset *local_dnos);
+static void mark_fors(PLpgSQL_stmt_fors *stmt, Bitmapset *local_dnos);
+static void mark_forc(PLpgSQL_stmt_forc *stmt, Bitmapset *local_dnos);
+static void mark_foreach_a(PLpgSQL_stmt_foreach_a *stmt, Bitmapset *local_dnos);
+static void mark_exit(PLpgSQL_stmt_exit *stmt, Bitmapset *local_dnos);
+static void mark_return(PLpgSQL_stmt_return *stmt, Bitmapset *local_dnos);
+static void mark_return_next(PLpgSQL_stmt_return_next *stmt, Bitmapset *local_dnos);
+static void mark_return_query(PLpgSQL_stmt_return_query *stmt, Bitmapset *local_dnos);
+static void mark_raise(PLpgSQL_stmt_raise *stmt, Bitmapset *local_dnos);
+static void mark_assert(PLpgSQL_stmt_assert *stmt, Bitmapset *local_dnos);
+static void mark_execsql(PLpgSQL_stmt_execsql *stmt, Bitmapset *local_dnos);
+static void mark_dynexecute(PLpgSQL_stmt_dynexecute *stmt, Bitmapset *local_dnos);
+static void mark_dynfors(PLpgSQL_stmt_dynfors *stmt, Bitmapset *local_dnos);
+static void mark_getdiag(PLpgSQL_stmt_getdiag *stmt, Bitmapset *local_dnos);
+static void mark_open(PLpgSQL_stmt_open *stmt, Bitmapset *local_dnos);
+static void mark_fetch(PLpgSQL_stmt_fetch *stmt, Bitmapset *local_dnos);
+static void mark_close(PLpgSQL_stmt_close *stmt, Bitmapset *local_dnos);
+static void mark_perform(PLpgSQL_stmt_perform *stmt, Bitmapset *local_dnos);
+static void mark_call(PLpgSQL_stmt_call *stmt, Bitmapset *local_dnos);
+static void mark_commit(PLpgSQL_stmt_commit *stmt, Bitmapset *local_dnos);
+static void mark_rollback(PLpgSQL_stmt_rollback *stmt, Bitmapset *local_dnos);
+
+
+static void
+mark_stmt(PLpgSQL_stmt *stmt, Bitmapset *local_dnos)
+{
+	switch (stmt->cmd_type)
+	{
+		case PLPGSQL_STMT_BLOCK:
+			mark_block((PLpgSQL_stmt_block *) stmt, local_dnos);
+			break;
+		case PLPGSQL_STMT_ASSIGN:
+			mark_assign((PLpgSQL_stmt_assign *) stmt, local_dnos);
+			break;
+		case PLPGSQL_STMT_IF:
+			mark_if((PLpgSQL_stmt_if *) stmt, local_dnos);
+			break;
+		case PLPGSQL_STMT_CASE:
+			mark_case((PLpgSQL_stmt_case *) stmt, local_dnos);
+			break;
+		case PLPGSQL_STMT_LOOP:
+			mark_loop((PLpgSQL_stmt_loop *) stmt, local_dnos);
+			break;
+		case PLPGSQL_STMT_WHILE:
+			mark_while((PLpgSQL_stmt_while *) stmt, local_dnos);
+			break;
+		case PLPGSQL_STMT_FORI:
+			mark_fori((PLpgSQL_stmt_fori *) stmt, local_dnos);
+			break;
+		case PLPGSQL_STMT_FORS:
+			mark_fors((PLpgSQL_stmt_fors *) stmt, local_dnos);
+			break;
+		case PLPGSQL_STMT_FORC:
+			mark_forc((PLpgSQL_stmt_forc *) stmt, local_dnos);
+			break;
+		case PLPGSQL_STMT_FOREACH_A:
+			mark_foreach_a((PLpgSQL_stmt_foreach_a *) stmt, local_dnos);
+			break;
+		case PLPGSQL_STMT_EXIT:
+			mark_exit((PLpgSQL_stmt_exit *) stmt, local_dnos);
+			break;
+		case PLPGSQL_STMT_RETURN:
+			mark_return((PLpgSQL_stmt_return *) stmt, local_dnos);
+			break;
+		case PLPGSQL_STMT_RETURN_NEXT:
+			mark_return_next((PLpgSQL_stmt_return_next *) stmt, local_dnos);
+			break;
+		case PLPGSQL_STMT_RETURN_QUERY:
+			mark_return_query((PLpgSQL_stmt_return_query *) stmt, local_dnos);
+			break;
+		case PLPGSQL_STMT_RAISE:
+			mark_raise((PLpgSQL_stmt_raise *) stmt, local_dnos);
+			break;
+		case PLPGSQL_STMT_ASSERT:
+			mark_assert((PLpgSQL_stmt_assert *) stmt, local_dnos);
+			break;
+		case PLPGSQL_STMT_EXECSQL:
+			mark_execsql((PLpgSQL_stmt_execsql *) stmt, local_dnos);
+			break;
+		case PLPGSQL_STMT_DYNEXECUTE:
+			mark_dynexecute((PLpgSQL_stmt_dynexecute *) stmt, local_dnos);
+			break;
+		case PLPGSQL_STMT_DYNFORS:
+			mark_dynfors((PLpgSQL_stmt_dynfors *) stmt, local_dnos);
+			break;
+		case PLPGSQL_STMT_GETDIAG:
+			mark_getdiag((PLpgSQL_stmt_getdiag *) stmt, local_dnos);
+			break;
+		case PLPGSQL_STMT_OPEN:
+			mark_open((PLpgSQL_stmt_open *) stmt, local_dnos);
+			break;
+		case PLPGSQL_STMT_FETCH:
+			mark_fetch((PLpgSQL_stmt_fetch *) stmt, local_dnos);
+			break;
+		case PLPGSQL_STMT_CLOSE:
+			mark_close((PLpgSQL_stmt_close *) stmt, local_dnos);
+			break;
+		case PLPGSQL_STMT_PERFORM:
+			mark_perform((PLpgSQL_stmt_perform *) stmt, local_dnos);
+			break;
+		case PLPGSQL_STMT_CALL:
+			mark_call((PLpgSQL_stmt_call *) stmt, local_dnos);
+			break;
+		case PLPGSQL_STMT_COMMIT:
+			mark_commit((PLpgSQL_stmt_commit *) stmt, local_dnos);
+			break;
+		case PLPGSQL_STMT_ROLLBACK:
+			mark_rollback((PLpgSQL_stmt_rollback *) stmt, local_dnos);
+			break;
+		default:
+			elog(ERROR, "unrecognized cmd_type: %d", stmt->cmd_type);
+			break;
+	}
+}
+
+static void
+mark_stmts(List *stmts, Bitmapset *local_dnos)
+{
+	ListCell   *s;
+
+	foreach(s, stmts)
+	{
+		mark_stmt((PLpgSQL_stmt *) lfirst(s), local_dnos);
+	}
+}
+
+static void
+mark_block(PLpgSQL_stmt_block *block, Bitmapset *local_dnos)
+{
+	if (block->exceptions)
+	{
+		ListCell   *e;
+
+		/*
+		 * The block creates a new exception scope, so variables declared at
+		 * outer levels are nonlocal.  For that matter, so are any variables
+		 * declared in the block's DECLARE section.  Hence, we must pass down
+		 * empty local_dnos.
+		 */
+		mark_stmts(block->body, NULL);
+
+		foreach(e, block->exceptions->exc_list)
+		{
+			PLpgSQL_exception *exc = (PLpgSQL_exception *) lfirst(e);
+
+			mark_stmts(exc->action, NULL);
+		}
+	}
+	else
+	{
+		/*
+		 * Otherwise, the block does not create a new exception scope, and any
+		 * variables it declares can also be considered local within it.  Note
+		 * that only initializable datum types (VAR, REC) are included in
+		 * initvarnos; but that's sufficient for our purposes.
+		 */
+		local_dnos = bms_copy(local_dnos);
+		for (int i = 0; i < block->n_initvars; i++)
+			local_dnos = bms_add_member(local_dnos, block->initvarnos[i]);
+		mark_stmts(block->body, local_dnos);
+		bms_free(local_dnos);
+	}
+}
+
+static void
+mark_assign(PLpgSQL_stmt_assign *stmt, Bitmapset *local_dnos)
+{
+	PLpgSQL_expr *expr = stmt->expr;
+
+	/*
+	 * If the assignment target is a plain DTYPE_VAR datum, mark it as local
+	 * or not.  (If it's not a VAR, we don't care.)
+	 */
+	if (expr->target_param >= 0)
+		expr->target_is_local = bms_is_member(expr->target_param, local_dnos);
+}
+
+static void
+mark_if(PLpgSQL_stmt_if *stmt, Bitmapset *local_dnos)
+{
+	ListCell   *l;
+
+	/* stmt->cond cannot be an assignment source */
+	mark_stmts(stmt->then_body, local_dnos);
+	foreach(l, stmt->elsif_list)
+	{
+		PLpgSQL_if_elsif *elif = (PLpgSQL_if_elsif *) lfirst(l);
+
+		/* elif->cond cannot be an assignment source */
+		mark_stmts(elif->stmts, local_dnos);
+	}
+	mark_stmts(stmt->else_body, local_dnos);
+}
+
+static void
+mark_case(PLpgSQL_stmt_case *stmt, Bitmapset *local_dnos)
+{
+	ListCell   *l;
+
+	/* stmt->t_expr cannot be an assignment source */
+	foreach(l, stmt->case_when_list)
+	{
+		PLpgSQL_case_when *cwt = (PLpgSQL_case_when *) lfirst(l);
+
+		/* cwt->expr cannot be an assignment source */
+		mark_stmts(cwt->stmts, local_dnos);
+	}
+	mark_stmts(stmt->else_stmts, local_dnos);
+}
+
+static void
+mark_loop(PLpgSQL_stmt_loop *stmt, Bitmapset *local_dnos)
+{
+	mark_stmts(stmt->body, local_dnos);
+}
+
+static void
+mark_while(PLpgSQL_stmt_while *stmt, Bitmapset *local_dnos)
+{
+	/* stmt->cond cannot be an assignment source */
+	mark_stmts(stmt->body, local_dnos);
+}
+
+static void
+mark_fori(PLpgSQL_stmt_fori *stmt, Bitmapset *local_dnos)
+{
+	/* stmt->lower, upper, step cannot be an assignment source */
+	mark_stmts(stmt->body, local_dnos);
+}
+
+static void
+mark_fors(PLpgSQL_stmt_fors *stmt, Bitmapset *local_dnos)
+{
+	mark_stmts(stmt->body, local_dnos);
+	/* stmt->query cannot be an assignment source */
+}
+
+static void
+mark_forc(PLpgSQL_stmt_forc *stmt, Bitmapset *local_dnos)
+{
+	mark_stmts(stmt->body, local_dnos);
+	/* stmt->argquery cannot be an assignment source */
+}
+
+static void
+mark_foreach_a(PLpgSQL_stmt_foreach_a *stmt, Bitmapset *local_dnos)
+{
+	/* stmt->expr cannot be an assignment source */
+	mark_stmts(stmt->body, local_dnos);
+}
+
+static void
+mark_open(PLpgSQL_stmt_open *stmt, Bitmapset *local_dnos)
+{
+	/* stmt->argquery, query, dynquery cannot be an assignment source */
+	/* stmt->params cannot contain an assignment source */
+}
+
+static void
+mark_fetch(PLpgSQL_stmt_fetch *stmt, Bitmapset *local_dnos)
+{
+	/* stmt->expr cannot be an assignment source */
+}
+
+static void
+mark_close(PLpgSQL_stmt_close *stmt, Bitmapset *local_dnos)
+{
+}
+
+static void
+mark_perform(PLpgSQL_stmt_perform *stmt, Bitmapset *local_dnos)
+{
+	/* stmt->expr cannot be an assignment source */
+}
+
+static void
+mark_call(PLpgSQL_stmt_call *stmt, Bitmapset *local_dnos)
+{
+	/* stmt->expr cannot be an assignment source */
+}
+
+static void
+mark_commit(PLpgSQL_stmt_commit *stmt, Bitmapset *local_dnos)
+{
+}
+
+static void
+mark_rollback(PLpgSQL_stmt_rollback *stmt, Bitmapset *local_dnos)
+{
+}
+
+static void
+mark_exit(PLpgSQL_stmt_exit *stmt, Bitmapset *local_dnos)
+{
+	/* stmt->cond cannot be an assignment source */
+}
+
+static void
+mark_return(PLpgSQL_stmt_return *stmt, Bitmapset *local_dnos)
+{
+	/* stmt->expr cannot be an assignment source */
+}
+
+static void
+mark_return_next(PLpgSQL_stmt_return_next *stmt, Bitmapset *local_dnos)
+{
+	/* stmt->expr cannot be an assignment source */
+}
+
+static void
+mark_return_query(PLpgSQL_stmt_return_query *stmt, Bitmapset *local_dnos)
+{
+	/* stmt->query, dynquery cannot be an assignment source */
+	/* stmt->params cannot contain an assignment source */
+}
+
+static void
+mark_raise(PLpgSQL_stmt_raise *stmt, Bitmapset *local_dnos)
+{
+	/* stmt->params cannot contain an assignment source */
+	/* stmt->options cannot contain an assignment source */
+}
+
+static void
+mark_assert(PLpgSQL_stmt_assert *stmt, Bitmapset *local_dnos)
+{
+	/* stmt->cond, message cannot be an assignment source */
+}
+
+static void
+mark_execsql(PLpgSQL_stmt_execsql *stmt, Bitmapset *local_dnos)
+{
+	/* stmt->sqlstmt cannot be an assignment source */
+}
+
+static void
+mark_dynexecute(PLpgSQL_stmt_dynexecute *stmt, Bitmapset *local_dnos)
+{
+	/* stmt->query cannot be an assignment source */
+	/* stmt->params cannot contain an assignment source */
+}
+
+static void
+mark_dynfors(PLpgSQL_stmt_dynfors *stmt, Bitmapset *local_dnos)
+{
+	mark_stmts(stmt->body, local_dnos);
+	/* stmt->query cannot be an assignment source */
+	/* stmt->params cannot contain an assignment source */
+}
+
+static void
+mark_getdiag(PLpgSQL_stmt_getdiag *stmt, Bitmapset *local_dnos)
+{
+}
+
+void
+plpgsql_mark_local_assignment_targets(PLpgSQL_function *func)
+{
+	Bitmapset  *local_dnos;
+
+	/* Function parameters can be treated as local targets at outer level */
+	local_dnos = NULL;
+	for (int i = 0; i < func->fn_nargs; i++)
+		local_dnos = bms_add_member(local_dnos, func->fn_argvarnos[i]);
+	if (func->action)
+		mark_block(func->action, local_dnos);
+	bms_free(local_dnos);
+}
+
+
+/**********************************************************************
  * Release memory when a PL/pgSQL function is no longer needed
  *
  * The code for recursing through the function tree is really only
@@ -1594,6 +1989,9 @@ static void
 dump_expr(PLpgSQL_expr *expr)
 {
 	printf("'%s'", expr->query);
+	if (expr->target_param >= 0)
+		printf(" target %d%s", expr->target_param,
+			   expr->target_is_local ? " (local)" : "");
 }
 
 void

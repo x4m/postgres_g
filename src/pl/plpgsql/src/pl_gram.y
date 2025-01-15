@@ -2327,6 +2327,8 @@ exception_sect	:
 						PLpgSQL_exception_block *new = palloc(sizeof(PLpgSQL_exception_block));
 						PLpgSQL_variable *var;
 
+						plpgsql_curr_compile->has_exception_block = true;
+
 						var = plpgsql_build_variable("sqlstate", lineno,
 													 plpgsql_build_datatype(TEXTOID,
 																			-1,
@@ -2672,6 +2674,7 @@ make_plpgsql_expr(const char *query,
 	expr->ns = plpgsql_ns_top();
 	/* might get changed later during parsing: */
 	expr->target_param = -1;
+	expr->target_is_local = false;
 	/* other fields are left as zeroes until first execution */
 	return expr;
 }
@@ -2686,9 +2689,21 @@ expr_is_assignment_source(PLpgSQL_expr *expr, PLpgSQL_datum *target)
 	 * other DTYPEs.
 	 */
 	if (target->dtype == PLPGSQL_DTYPE_VAR)
+	{
 		expr->target_param = target->dno;
+
+		/*
+		 * For now, assume the target is local to the nearest enclosing
+		 * exception block.  That's correct if the function contains no
+		 * exception blocks; otherwise we'll update this later.
+		 */
+		expr->target_is_local = true;
+	}
 	else
+	{
 		expr->target_param = -1;	/* should be that already */
+		expr->target_is_local = false; /* ditto */
+	}
 }
 
 /* Convenience routine to read an expression with one possible terminator */
