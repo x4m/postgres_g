@@ -530,6 +530,7 @@ uint32 XLogGetRecordTotalLen(XLogRecord *record)
 	if (record->xl_info & XLR_COMPRESSED)
 	{
 		XLogCompressionData *c = (XLogCompressionData*) record;
+		Assert(((int32_t)c->decompressed_length) > 0);
 		return c->decompressed_length;
 	}
 	return record->xl_tot_len;
@@ -655,8 +656,12 @@ restart:
 	 * whole header.
 	 */
 	record = (XLogRecord *) (state->readBuf + RecPtr % XLOG_BLCKSZ);
-	total_len_decomp = XLogGetRecordTotalLen(record);
 	total_len_phisical = record->xl_tot_len;
+
+	if ((record->xl_info & XLR_COMPRESSED) && (targetRecOff <= XLOG_BLCKSZ - sizeof(XLogCompressionData)))
+		total_len_decomp = -1; /* Need reassemble to know the size */
+	else
+		total_len_decomp = XLogGetRecordTotalLen(record);
 
 	/*
 	 * If the whole record header is on this page, validate it immediately.
@@ -672,6 +677,8 @@ restart:
 								   randAccess))
 			goto err;
 		gotheader = true;
+		if (record->xl_info & XLR_COMPRESSED)
+			gotheader = targetRecOff <= XLOG_BLCKSZ - sizeof(XLogCompressionData);
 	}
 	else
 	{
@@ -693,9 +700,15 @@ restart:
 	 * calling palloc.  If we can't, we'll try again below after we've
 	 * validated that total_len isn't garbage bytes from a recycled WAL page.
 	 */
-	decoded = XLogReadRecordAlloc(state,
+	if (total_len_decomp != -1)
+		decoded = XLogReadRecordAlloc(state,
 								  total_len_decomp,
 								  false /* allow_oversized */ );
+	// else
+
+	// 	decoded = XLogReadRecordAlloc(state,
+	// 							  total_len_phisical,
+	// 							  false /* allow_oversized */ );
 	if (decoded == NULL && nonblocking)
 	{
 		/*
@@ -826,7 +839,7 @@ restart:
 			 * also cross-checked total_len against xlp_rem_len on the second
 			 * page, and verified xlp_pageaddr on both.
 			 */
-			if (total_len_decomp > state->readRecordBufSize)
+			if (total_len_phisical > state->readRecordBufSize)
 			{
 				char		save_copy[XLOG_BLCKSZ * 2];
 
@@ -837,7 +850,7 @@ restart:
 				Assert(gotlen <= lengthof(save_copy));
 				Assert(gotlen <= state->readRecordBufSize);
 				memcpy(save_copy, state->readRecordBuf, gotlen);
-				allocate_recordbuf(state, total_len_decomp);
+				allocate_recordbuf(state, total_len_phisical);
 				memcpy(state->readRecordBuf, save_copy, gotlen);
 				buffer = state->readRecordBuf + gotlen;
 			}
@@ -890,6 +903,9 @@ restart:
 	if (decoded == NULL)
 	{
 		Assert(!nonblocking);
+
+		/* total_len_decomp might be not actual */
+		total_len_decomp = XLogGetRecordTotalLen(record);
 		decoded = XLogReadRecordAlloc(state,
 									  total_len_decomp,
 									  true /* allow_oversized */ );

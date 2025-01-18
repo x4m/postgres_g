@@ -915,6 +915,12 @@ XLogInsertRecord(XLogRecData *rdata,
 		FIN_CRC32C(rdata_crc);
 		rechdr->xl_crc = rdata_crc;
 
+		if (rechdr->xl_info & XLR_COMPRESSED)
+		{
+			XLogCompressionData *c = (XLogCompressionData*) rechdr;
+			Assert(((int32_t)c->decompressed_length) > 0);
+		}
+
 		/*
 		 * All the record data, including the header, is now ready to be
 		 * inserted. Copy the record in the space reserved.

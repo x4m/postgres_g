@@ -498,7 +498,7 @@ XLogCompressRdt(XLogRecData *rdt)
 	XLogCompressionData *compressed_header;
 	XLogRecord *src_header;
 	uint32 orig_len;
-	uint32 compr_len;
+	int32 compr_len;
 
 	if (compression_buffer_current_size == -1)
 		return NULL;
@@ -558,6 +558,8 @@ XLogCompressRdt(XLogRecData *rdt)
 			break;
 			/* no default case, so that compiler will warn */
 	}
+
+	Assert(compr_len > 0);
 
 	compressed_header->record_header.xl_tot_len = sizeof(XLogCompressionData) + compr_len;
 
