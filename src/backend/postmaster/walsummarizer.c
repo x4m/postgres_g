@@ -204,12 +204,6 @@ WalSummarizerShmemInit(void)
 	}
 }
 
-void
-SignalHandlerForSigSegv(SIGNAL_ARGS)
-{
-	PrintBacktrace();
-	raise(SIGFPE);
-}
 /*
  * Entry point for walsummarizer process.
  */
@@ -251,7 +245,6 @@ WalSummarizerMain(char *startup_data, size_t startup_data_len)
 	 * reasonable to treat like SIGTERM.
 	 */
 	pqsignal(SIGHUP, SignalHandlerForConfigReload);
-	pqsignal(SIGSEGV, SignalHandlerForSigSegv);
 	pqsignal(SIGINT, SignalHandlerForShutdownRequest);
 	pqsignal(SIGTERM, SignalHandlerForShutdownRequest);
 	/* SIGQUIT handler was already set up by InitPostmasterChild */

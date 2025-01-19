@@ -32,6 +32,7 @@
 #include "catalog/pg_control.h"
 #include "common/pg_lzcompress.h"
 #include "replication/origin.h"
+#include "utils/memutils.h"
 
 #ifndef FRONTEND
 #include "pgstat.h"
@@ -658,11 +659,25 @@ restart:
 	record = (XLogRecord *) (state->readBuf + RecPtr % XLOG_BLCKSZ);
 	total_len_phisical = record->xl_tot_len;
 
-	if ((record->xl_info & XLR_COMPRESSED) && (targetRecOff <= XLOG_BLCKSZ - sizeof(XLogCompressionData)))
-		total_len_decomp = -1; /* Need reassemble to know the size */
+	/* TODO: Actually, we should not trust this compression bit too... */
+	if (record->xl_info & XLR_COMPRESSED)
+	{
+		if (targetRecOff > XLOG_BLCKSZ - sizeof(XLogCompressionData))
+		{
+			total_len_decomp = -1; /* Need reassemble to know the size */
+		}
+		else
+		{
+			XLogCompressionData *c = (XLogCompressionData*) record;
+			Assert(((int32_t)c->decompressed_length) > 0);
+			total_len_decomp = c->decompressed_length;
+		}
+	}
 	else
-		total_len_decomp = XLogGetRecordTotalLen(record);
-
+		if (targetRecOff > XLOG_BLCKSZ - SizeOfXLogRecord)
+			total_len_decomp = record->xl_tot_len;
+		else 
+			total_len_decomp = -1; /* We are not sure record is not compressed */
 	/*
 	 * If the whole record header is on this page, validate it immediately.
 	 * Otherwise do just a basic sanity check on xl_tot_len, and validate the
@@ -704,11 +719,7 @@ restart:
 		decoded = XLogReadRecordAlloc(state,
 								  total_len_decomp,
 								  false /* allow_oversized */ );
-	// else
 
-	// 	decoded = XLogReadRecordAlloc(state,
-	// 							  total_len_phisical,
-	// 							  false /* allow_oversized */ );
 	if (decoded == NULL && nonblocking)
 	{
 		/*
@@ -869,8 +880,9 @@ restart:
 	else
 	{
 		/* Wait for the record data to become available */
+		Assert(targetRecOff + total_len_phisical <= XLOG_BLCKSZ);
 		readOff = ReadPageInternal(state, targetPagePtr,
-								   Min(targetRecOff + total_len_phisical, XLOG_BLCKSZ));
+								   targetRecOff + total_len_phisical);
 		if (readOff == XLREAD_WOULDBLOCK)
 			return XLREAD_WOULDBLOCK;
 		else if (readOff < 0)
@@ -905,7 +917,15 @@ restart:
 		Assert(!nonblocking);
 
 		/* total_len_decomp might be not actual */
-		total_len_decomp = XLogGetRecordTotalLen(record);
+		if (record->xl_info & XLR_COMPRESSED)
+		{
+			XLogCompressionData *c = (XLogCompressionData*) record;
+			Assert(((int32_t)c->decompressed_length) > 0);
+			Assert(((int32_t)c->decompressed_length) < MaxAllocSize);
+			total_len_decomp = c->decompressed_length;
+		}
+		else
+			total_len_decomp = record->xl_tot_len;
 		decoded = XLogReadRecordAlloc(state,
 									  total_len_decomp,
 									  true /* allow_oversized */ );

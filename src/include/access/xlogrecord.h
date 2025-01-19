@@ -90,7 +90,7 @@ typedef struct XLogRecord
  */
 #define XLR_CHECK_CONSISTENCY	0x02
 
-#define XLR_COMPRESSED	0x08
+#define XLR_COMPRESSED	0x04
 
 /*
  * Header info for block data appended to an XLOG record.
