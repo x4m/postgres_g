@@ -1823,8 +1823,7 @@ DecodeXLogRecord(XLogReaderState *state,
 
 	if (!record)
 	{
-		if (record1)
-			fprintf(stderr, "record %d\n", record1->xl_tot_len);
+		/* Decompression failed, error must be reported already */
 		return false;
 	}
 
