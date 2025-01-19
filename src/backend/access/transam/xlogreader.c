@@ -669,7 +669,7 @@ restart:
 		else
 		{
 			XLogCompressionData *c = (XLogCompressionData*) record;
-			Assert(((int32_t)c->decompressed_length) > 0);
+			// Assert(((int32_t)c->decompressed_length) > 0); // We cannot assert this, this might be a garbage
 			total_len_decomp = c->decompressed_length;
 		}
 	}
