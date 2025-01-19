@@ -81,7 +81,7 @@ sub emit_message
 	return int(
 		$node->safe_psql(
 			'postgres',
-			"SELECT pg_logical_emit_message(true, '', repeat('a', $size)) - '0/0'"
+			"SET wal_compression to off;SELECT pg_logical_emit_message(true, '', repeat('a', $size)) - '0/0'"
 		));
 }
 
@@ -299,7 +299,6 @@ ok( $node->log_contains(
 		"invalid record length at .*: expected at least 24, got 1", $log_size
 	),
 	"xl_tot_len short at end-of-page");
-exit(1);
 
 # Need more pages, but xl_prev check fails first.
 emit_message($node, 0);
