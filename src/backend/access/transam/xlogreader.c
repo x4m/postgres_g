@@ -54,7 +54,8 @@ static bool ValidXLogRecord(XLogReaderState *state, XLogRecord *record,
 static void ResetDecoder(XLogReaderState *state);
 static void WALOpenSegmentInit(WALOpenSegment *seg, WALSegmentContext *segcxt,
 							   int segsize, const char *waldir);
-static XLogRecord* XLogDecompressRecordIfNeeded(XLogRecord *record);
+static XLogRecord* XLogDecompressRecordIfNeeded(XLogReaderState *state, XLogRecord *record,
+												XLogRecPtr recptr);
 
 /* size of the buffer allocated for error message. */
 #define MAX_ERRORMSG_LEN 1000
@@ -171,6 +172,8 @@ XLogReaderFree(XLogReaderState *state)
 	pfree(state->errormsg_buf);
 	if (state->readRecordBuf)
 		pfree(state->readRecordBuf);
+	if (state->decompression_buffer)
+		pfree(state->decompression_buffer);
 	pfree(state->readBuf);
 	pfree(state);
 }
@@ -1695,10 +1698,9 @@ DecodeXLogRecordRequiredSpace(size_t xl_tot_len)
 	return size;
 }
 
-static char* decompression_buffer = NULL;
-static uint32 decompression_buffer_len = 0;
-
-static XLogRecord* XLogDecompressRecordIfNeeded(XLogRecord *record)
+static XLogRecord* XLogDecompressRecordIfNeeded(XLogReaderState *state,
+												XLogRecord *record,
+												XLogRecPtr recptr)
 {
 	if (record->xl_info & XLR_COMPRESSED)
 	{
@@ -1708,15 +1710,15 @@ static XLogRecord* XLogDecompressRecordIfNeeded(XLogRecord *record)
 		char				*dst;
 		XLogRecord			*dst_h;
 
-		if (decompression_buffer_len < src->decompressed_length)
+		if (state->decompression_buffer_size < src->decompressed_length + SizeOfXLogRecord)
 		{
-			if (decompression_buffer)
-				pfree(decompression_buffer);
+			if (state->decompression_buffer)
+				pfree(state->decompression_buffer);
 			/* Avoid small steps in growths, we compress only big records */
-			decompression_buffer_len = TYPEALIGN(BLCKSZ, src->decompressed_length);
-			decompression_buffer = palloc(decompression_buffer_len + SizeOfXLogRecord);
+			state->decompression_buffer_size = TYPEALIGN(BLCKSZ, src->decompressed_length + SizeOfXLogRecord);
+			state->decompression_buffer = palloc(state->decompression_buffer_size);
 		}
-		dst_h = (XLogRecord*) decompression_buffer;
+		dst_h = (XLogRecord*) state->decompression_buffer;
 		*dst_h = src->record_header;
 		dst_h->xl_tot_len = src->decompressed_length;
 		dst = (char*) &dst_h[1];
@@ -1726,14 +1728,14 @@ static XLogRecord* XLogDecompressRecordIfNeeded(XLogRecord *record)
 		if (src->method == BKPIMAGE_COMPRESS_PGLZ)
 		{
 			if (pglz_decompress((char*) &src[1], srclen, dst,
-								decompression_buffer_len, true) < 0)
+								state->decompression_buffer_size, true) < 0)
 				decomp_success = false;
 		}
 		else if (src->method == BKPIMAGE_COMPRESS_LZ4)
 		{
 #ifdef USE_LZ4
 			if (LZ4_decompress_safe((char*) &src[1], dst,
-									srclen, decompression_buffer_len) <= 0)
+									srclen, state->decompression_buffer_size) <= 0)
 				decomp_success = false;
 #else
 			// report_invalid_record(src, "could not restore image at %X/%X compressed with %s not supported by build, block %d",
@@ -1747,7 +1749,7 @@ static XLogRecord* XLogDecompressRecordIfNeeded(XLogRecord *record)
 		{
 #ifdef USE_ZSTD
 			size_t		decomp_result = ZSTD_decompress(dst,
-														decompression_buffer_len,
+														state->decompression_buffer_size,
 														(char*) &src[1], srclen);
 			if (ZSTD_isError(decomp_result))
 				decomp_success = false;
@@ -1775,7 +1777,7 @@ static XLogRecord* XLogDecompressRecordIfNeeded(XLogRecord *record)
 			return NULL;
 		}
 
-		return (XLogRecord*) decompression_buffer;
+		return (XLogRecord*) state->decompression_buffer;
 	}
 	return record;
 }
@@ -1819,7 +1821,7 @@ DecodeXLogRecord(XLogReaderState *state,
 	uint8		block_id;
 	XLogRecord *record1 = record;
 
-	record = XLogDecompressRecordIfNeeded(record);
+	record = XLogDecompressRecordIfNeeded(state, record, lsn);
 
 	if (!record)
 	{
