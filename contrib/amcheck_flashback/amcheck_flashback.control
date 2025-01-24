@@ -1,0 +1,5 @@
+# amcheck_flashback extension
+comment = 'functions for verifying relation integrity'
+default_version = '1.3'
+module_pathname = '$libdir/amcheck_flashback'
+relocatable = true
