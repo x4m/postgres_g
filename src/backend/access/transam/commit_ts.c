@@ -747,16 +747,7 @@ ActivateCommitTs(void)
 
 	/* Create the current segment file, if necessary */
 	if (!SimpleLruDoesPhysicalPageExist(CommitTsCtl, pageno))
-	{
-		LWLock	   *lock = SimpleLruGetBankLock(CommitTsCtl, pageno);
-		int			slotno;
-
-		LWLockAcquire(lock, LW_EXCLUSIVE);
-		slotno = ZeroCommitTsPage(pageno, false);
-		SimpleLruWritePage(CommitTsCtl, slotno);
-		Assert(!CommitTsCtl->shared->page_dirty[slotno]);
-		LWLockRelease(lock);
-	}
+		BootStrapSlruPage(CommitTsCtl, pageno, ZeroCommitTsPage);
 
 	/* Change the activation status in shared memory. */
 	LWLockAcquire(CommitTsLock, LW_EXCLUSIVE);
@@ -1023,19 +1014,8 @@ commit_ts_redo(XLogReaderState *record)
 	if (info == COMMIT_TS_ZEROPAGE)
 	{
 		int64		pageno;
-		int			slotno;
-		LWLock	   *lock;
-
 		memcpy(&pageno, XLogRecGetData(record), sizeof(pageno));
-
-		lock = SimpleLruGetBankLock(CommitTsCtl, pageno);
-		LWLockAcquire(lock, LW_EXCLUSIVE);
-
-		slotno = ZeroCommitTsPage(pageno, false);
-		SimpleLruWritePage(CommitTsCtl, slotno);
-		Assert(!CommitTsCtl->shared->page_dirty[slotno]);
-
-		LWLockRelease(lock);
+		BootStrapSlruPage(CommitTsCtl, pageno, ZeroCommitTsPage);
 	}
 	else if (info == COMMIT_TS_TRUNCATE)
 	{

@@ -214,5 +214,6 @@ extern bool SlruScanDirCbReportPresence(SlruCtl ctl, char *filename,
 extern bool SlruScanDirCbDeleteAll(SlruCtl ctl, char *filename, int64 segpage,
 								   void *data);
 extern bool check_slru_buffers(const char *name, int *newval);
+extern void BootStrapSlruPage( SlruCtl ctl, int64 pageno, int(*zerofunc)(int64, bool) );
 
 #endif							/* SLRU_H */

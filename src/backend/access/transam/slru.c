@@ -1850,3 +1850,38 @@ SlruSyncFileTag(SlruCtl ctl, const FileTag *ftag, char *path)
 	errno = save_errno;
 	return result;
 }
+
+/*
+ * BootStrapSlruPage is a workhorse for functions bootstraping
+ *  SLRU pages, including:
+ *		BootStrapMultiXact,
+ *		BootStrapCLOG,
+ *		ActivateCommitTs,
+ *		multixact_redo,
+ *		commit_ts_redo.
+ *
+ * It performs all of the rut such as acquiring a lock, zeroing,
+ * ensuring that a bootstrapped page is written out, and releasing the lock.
+ *
+ * A caller has to provide a proper zerofunc appropriate for the type of 
+ * the page.
+ *
+ */
+void
+BootStrapSlruPage(SlruCtl ctl, int64 pageno, int(*zerofunc)(int64, bool) )
+{
+	int			slotno;
+	LWLock	   *lock;
+
+	lock = SimpleLruGetBankLock(ctl, pageno);
+	LWLockAcquire(lock, LW_EXCLUSIVE);
+
+	/* Create and zero the page*/
+	slotno = (*zerofunc)(pageno, false);
+
+	/* Make sure it's written out */
+	SimpleLruWritePage(ctl, slotno);
+	Assert(!ctl->shared->page_dirty[slotno]);
+
+	LWLockRelease(lock);
+}

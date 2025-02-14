@@ -74,7 +74,7 @@ static SlruCtlData SubTransCtlData;
 #define SubTransCtl  (&SubTransCtlData)
 
 
-static int	ZeroSUBTRANSPage(int64 pageno);
+static int	ZeroSUBTRANSPage(int64 pageno, bool unused);
 static bool SubTransPagePrecedes(int64 page1, int64 page2);
 
 
@@ -269,19 +269,7 @@ check_subtrans_buffers(int *newval, void **extra, GucSource source)
 void
 BootStrapSUBTRANS(void)
 {
-	int			slotno;
-	LWLock	   *lock = SimpleLruGetBankLock(SubTransCtl, 0);
-
-	LWLockAcquire(lock, LW_EXCLUSIVE);
-
-	/* Create and zero the first page of the subtrans log */
-	slotno = ZeroSUBTRANSPage(0);
-
-	/* Make sure it's written out */
-	SimpleLruWritePage(SubTransCtl, slotno);
-	Assert(!SubTransCtl->shared->page_dirty[slotno]);
-
-	LWLockRelease(lock);
+	BootStrapSlruPage(SubTransCtl, 0, ZeroSUBTRANSPage);
 }
 
 /*
@@ -291,10 +279,16 @@ BootStrapSUBTRANS(void)
  * The slot number of the new page is returned.
  *
  * Control lock must be held at entry, and will be held at exit.
+ *
+ * "bool unused" is a parameter required to provide matching of the
+ * ZeroSUBTRANSPage function to the zerofunc function prototype
+ * used by BootStrapSlruPage.
  */
 static int
-ZeroSUBTRANSPage(int64 pageno)
+ZeroSUBTRANSPage(int64 pageno, bool unused)
 {
+	(void)unused; /* Supress compiler warning */
+
 	return SimpleLruZeroPage(SubTransCtl, pageno);
 }
 
@@ -335,7 +329,7 @@ StartupSUBTRANS(TransactionId oldestActiveXID)
 			prevlock = lock;
 		}
 
-		(void) ZeroSUBTRANSPage(startPage);
+		(void) ZeroSUBTRANSPage(startPage, false);
 		if (startPage == endPage)
 			break;
 
@@ -395,7 +389,7 @@ ExtendSUBTRANS(TransactionId newestXact)
 	LWLockAcquire(lock, LW_EXCLUSIVE);
 
 	/* Zero the page */
-	ZeroSUBTRANSPage(pageno);
+	ZeroSUBTRANSPage(pageno, false);
 
 	LWLockRelease(lock);
 }
