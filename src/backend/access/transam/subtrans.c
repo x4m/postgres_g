@@ -74,7 +74,6 @@ static SlruCtlData SubTransCtlData;
 #define SubTransCtl  (&SubTransCtlData)
 
 
-static int	ZeroSUBTRANSPage(int64 pageno);
 static bool SubTransPagePrecedes(int64 page1, int64 page2);
 
 
@@ -269,33 +268,11 @@ check_subtrans_buffers(int *newval, void **extra, GucSource source)
 void
 BootStrapSUBTRANS(void)
 {
-	int			slotno;
-	LWLock	   *lock = SimpleLruGetBankLock(SubTransCtl, 0);
-
-	LWLockAcquire(lock, LW_EXCLUSIVE);
-
-	/* Create and zero the first page of the subtrans log */
-	slotno = ZeroSUBTRANSPage(0);
-
-	/* Make sure it's written out */
-	SimpleLruWritePage(SubTransCtl, slotno);
-	Assert(!SubTransCtl->shared->page_dirty[slotno]);
-
-	LWLockRelease(lock);
-}
-
-/*
- * Initialize (or reinitialize) a page of SUBTRANS to zeroes.
- *
- * The page is not actually written, just set up in shared memory.
- * The slot number of the new page is returned.
- *
- * Control lock must be held at entry, and will be held at exit.
- */
-static int
-ZeroSUBTRANSPage(int64 pageno)
-{
-	return SimpleLruZeroPage(SubTransCtl, pageno);
+	/*
+	 * Nullify the page (pageno = 0), don't insert an XLog record, 
+	 * save the page on a disk
+	 */
+	BootStrapSlruPage(SubTransCtl, 0, 0, true);
 }
 
 /*
@@ -335,7 +312,7 @@ StartupSUBTRANS(TransactionId oldestActiveXID)
 			prevlock = lock;
 		}
 
-		(void) ZeroSUBTRANSPage(startPage);
+		(void) SimpleLruZeroPage(SubTransCtl, startPage);
 		if (startPage == endPage)
 			break;
 
@@ -379,7 +356,6 @@ void
 ExtendSUBTRANS(TransactionId newestXact)
 {
 	int64		pageno;
-	LWLock	   *lock;
 
 	/*
 	 * No work except at first XID of a page.  But beware: just after
@@ -391,13 +367,11 @@ ExtendSUBTRANS(TransactionId newestXact)
 
 	pageno = TransactionIdToPage(newestXact);
 
-	lock = SimpleLruGetBankLock(SubTransCtl, pageno);
-	LWLockAcquire(lock, LW_EXCLUSIVE);
-
-	/* Zero the page */
-	ZeroSUBTRANSPage(pageno);
-
-	LWLockRelease(lock);
+	/*
+	 * Zero the page, don't make an XLOG entry about it,
+	 * don't write the page on a disk
+	 */
+	BootStrapSlruPage(SubTransCtl, pageno, 0, false);
 }
 
 

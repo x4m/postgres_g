@@ -1390,3 +1390,17 @@ InitXLogInsert(void)
 		hdr_scratch = MemoryContextAllocZero(xloginsert_cxt,
 											 HEADER_SCRATCH_SIZE);
 }
+
+/*
+ * Write a simple xlog record.
+ *
+ * Useful for SLRU zeropages. In this case the simpledata is usually the number of 
+ * a nullified SLRU page.
+ */
+void
+XLogSimpleInsert(int64 simpledata, RmgrId rmid, uint8 info)
+{
+	XLogBeginInsert();
+	XLogRegisterData(&simpledata, sizeof(simpledata));
+	(void) XLogInsert(rmid, info);
+}
