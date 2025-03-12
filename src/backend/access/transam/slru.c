@@ -190,7 +190,6 @@ static bool SlruScanDirCbDeleteCutoff(SlruCtl ctl, char *filename,
 static void SlruInternalDeleteSegment(SlruCtl ctl, int64 segno);
 static inline void SlruRecentlyUsed(SlruShared shared, int slotno);
 
-
 /*
  * Initialization of shared memory
  */
@@ -361,6 +360,50 @@ check_slru_buffers(const char *name, int *newval)
 	GUC_check_errdetail("\"%s\" must be a multiple of %d.", name,
 						SLRU_BANK_SIZE);
 	return false;
+}
+
+/*
+ * BootStrapSlruPage is one of the functions that nullify an SLRU page.
+ * It performs:
+ * 		1. locking the page,
+ * 		2. nullifying the page,
+ * 		3. logging (optionally),
+ * 		4. writing out (optionally),
+ * 		5. releasing the lock.
+ *
+ * XLogInsertFunc is a parameter pointing to a function emitting an XLog
+ * record. The implementation of this function usually enclosed in
+ * a corresponding SLRU-page module (commit_ts.c, multixaxt.c and others).
+ * If XLogInsertFunc equals to zero, XLog record emition is not going to
+ * be accomplished. Caller must provide a correct XLogInsertFunc pointer
+ * or provide its equality to zero.
+ *
+ * The writePage parameter commands whether to write a page on a disk or not.
+ */
+void
+BootStrapSlruPage(SlruCtl ctl, int64 pageno,
+				  void (*XLogInsertFunc)(int64 pageno), bool writePage)
+{
+	int			slotno;
+	LWLock	   *lock;
+
+	lock = SimpleLruGetBankLock(ctl, pageno);
+	LWLockAcquire(lock, LW_EXCLUSIVE);
+
+	/* Create and zero the page*/
+	slotno = SimpleLruZeroPage(ctl, pageno);
+
+	if (XLogInsertFunc)
+		XLogInsertFunc(pageno);
+
+	if (writePage)
+	{
+		/* Make sure it's written out */
+		SimpleLruWritePage(ctl, slotno);
+		Assert(!ctl->shared->page_dirty[slotno]);
+	}
+
+	LWLockRelease(lock);
 }
 
 /*

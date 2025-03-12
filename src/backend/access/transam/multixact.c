@@ -401,8 +401,6 @@ static void mXactCachePut(MultiXactId multi, int nmembers,
 static char *mxstatus_to_string(MultiXactStatus status);
 
 /* management of SLRU infrastructure */
-static int	ZeroMultiXactOffsetPage(int64 pageno, bool writeXlog);
-static int	ZeroMultiXactMemberPage(int64 pageno, bool writeXlog);
 static bool MultiXactOffsetPagePrecedes(int64 page1, int64 page2);
 static bool MultiXactMemberPagePrecedes(int64 page1, int64 page2);
 static bool MultiXactOffsetPrecedes(MultiXactOffset offset1,
@@ -413,7 +411,9 @@ static bool MultiXactOffsetWouldWrap(MultiXactOffset boundary,
 									 MultiXactOffset start, uint32 distance);
 static bool SetOffsetVacuumLimit(bool is_startup);
 static bool find_multixact_start(MultiXactId multi, MultiXactOffset *result);
-static void WriteMZeroPageXlogRec(int64 pageno, uint8 info);
+static inline void WriteMZeroPageXlogRec(int64 pageno, uint8 info);
+static void WriteMMembersZeroPageXlogRec(int64 pageno);
+static void WriteMOffserZeroPageXlogRec(int64 pageno);
 static void WriteMTruncateXlogRec(Oid oldestMultiDB,
 								  MultiXactId startTruncOff,
 								  MultiXactId endTruncOff,
@@ -2033,70 +2033,12 @@ check_multixact_member_buffers(int *newval, void **extra, GucSource source)
 void
 BootStrapMultiXact(void)
 {
-	int			slotno;
-	LWLock	   *lock;
-
-	lock = SimpleLruGetBankLock(MultiXactOffsetCtl, 0);
-	LWLockAcquire(lock, LW_EXCLUSIVE);
-
-	/* Create and zero the first page of the offsets log */
-	slotno = ZeroMultiXactOffsetPage(0, false);
-
-	/* Make sure it's written out */
-	SimpleLruWritePage(MultiXactOffsetCtl, slotno);
-	Assert(!MultiXactOffsetCtl->shared->page_dirty[slotno]);
-
-	LWLockRelease(lock);
-
-	lock = SimpleLruGetBankLock(MultiXactMemberCtl, 0);
-	LWLockAcquire(lock, LW_EXCLUSIVE);
-
-	/* Create and zero the first page of the members log */
-	slotno = ZeroMultiXactMemberPage(0, false);
-
-	/* Make sure it's written out */
-	SimpleLruWritePage(MultiXactMemberCtl, slotno);
-	Assert(!MultiXactMemberCtl->shared->page_dirty[slotno]);
-
-	LWLockRelease(lock);
-}
-
-/*
- * Initialize (or reinitialize) a page of MultiXactOffset to zeroes.
- * If writeXlog is true, also emit an XLOG record saying we did this.
- *
- * The page is not actually written, just set up in shared memory.
- * The slot number of the new page is returned.
- *
- * Control lock must be held at entry, and will be held at exit.
- */
-static int
-ZeroMultiXactOffsetPage(int64 pageno, bool writeXlog)
-{
-	int			slotno;
-
-	slotno = SimpleLruZeroPage(MultiXactOffsetCtl, pageno);
-
-	if (writeXlog)
-		WriteMZeroPageXlogRec(pageno, XLOG_MULTIXACT_ZERO_OFF_PAGE);
-
-	return slotno;
-}
-
-/*
- * Ditto, for MultiXactMember
- */
-static int
-ZeroMultiXactMemberPage(int64 pageno, bool writeXlog)
-{
-	int			slotno;
-
-	slotno = SimpleLruZeroPage(MultiXactMemberCtl, pageno);
-
-	if (writeXlog)
-		WriteMZeroPageXlogRec(pageno, XLOG_MULTIXACT_ZERO_MEM_PAGE);
-
-	return slotno;
+	/*
+	 * Nullify the page (pageno = 0), don't insert an XLog record,
+	 * save the page on a disk
+	 */
+	BootStrapSlruPage(MultiXactOffsetCtl, 0, 0, true);
+	BootStrapSlruPage(MultiXactMemberCtl, 0, 0, true);
 }
 
 /*
@@ -2134,7 +2076,7 @@ MaybeExtendOffsetSlru(void)
 		 * with creating a new segment file even if the page we're writing is
 		 * not the first in it, so this is enough.
 		 */
-		slotno = ZeroMultiXactOffsetPage(pageno, false);
+		slotno = SimpleLruZeroPage(MultiXactOffsetCtl, pageno);
 		SimpleLruWritePage(MultiXactOffsetCtl, slotno);
 	}
 
@@ -2553,7 +2495,6 @@ static void
 ExtendMultiXactOffset(MultiXactId multi)
 {
 	int64		pageno;
-	LWLock	   *lock;
 
 	/*
 	 * No work except at first MultiXactId of a page.  But beware: just after
@@ -2564,14 +2505,8 @@ ExtendMultiXactOffset(MultiXactId multi)
 		return;
 
 	pageno = MultiXactIdToOffsetPage(multi);
-	lock = SimpleLruGetBankLock(MultiXactOffsetCtl, pageno);
-
-	LWLockAcquire(lock, LW_EXCLUSIVE);
-
-	/* Zero the page and make an XLOG entry about it */
-	ZeroMultiXactOffsetPage(pageno, true);
-
-	LWLockRelease(lock);
+	/* Zero the page, make an XLOG entry about it, don't write the page on a disk */
+	BootStrapSlruPage(MultiXactOffsetCtl, pageno, WriteMOffserZeroPageXlogRec, false);
 }
 
 /*
@@ -2604,17 +2539,9 @@ ExtendMultiXactMember(MultiXactOffset offset, int nmembers)
 		if (flagsoff == 0 && flagsbit == 0)
 		{
 			int64		pageno;
-			LWLock	   *lock;
-
 			pageno = MXOffsetToMemberPage(offset);
-			lock = SimpleLruGetBankLock(MultiXactMemberCtl, pageno);
-
-			LWLockAcquire(lock, LW_EXCLUSIVE);
-
-			/* Zero the page and make an XLOG entry about it */
-			ZeroMultiXactMemberPage(pageno, true);
-
-			LWLockRelease(lock);
+			/* Zero the page, make an XLOG entry about it, don't write the page on a disk */
+			BootStrapSlruPage(MultiXactMemberCtl, pageno, WriteMMembersZeroPageXlogRec, false);
 		}
 
 		/*
@@ -3351,12 +3278,28 @@ MultiXactOffsetPrecedes(MultiXactOffset offset1, MultiXactOffset offset2)
  * Write an xlog record reflecting the zeroing of either a MEMBERs or
  * OFFSETs page (info shows which)
  */
-static void
+static inline void
 WriteMZeroPageXlogRec(int64 pageno, uint8 info)
 {
-	XLogBeginInsert();
-	XLogRegisterData(&pageno, sizeof(pageno));
-	(void) XLogInsert(RM_MULTIXACT_ID, info);
+	XLogInsertInt64(RM_MULTIXACT_ID, info, pageno);
+}
+
+/*
+ * Write a ZEROPAGE xlog record of a MULTIXACT MEMBERs page
+ */
+static void
+WriteMMembersZeroPageXlogRec(int64 pageno)
+{
+	WriteMZeroPageXlogRec(pageno, XLOG_MULTIXACT_ZERO_MEM_PAGE);
+}
+
+/*
+ * Write a ZEROPAGE xlog record of a MULTIXACT OFFSETs page
+ */
+static void
+WriteMOffserZeroPageXlogRec(int64 pageno)
+{
+	WriteMZeroPageXlogRec(pageno, XLOG_MULTIXACT_ZERO_OFF_PAGE);
 }
 
 /*
@@ -3401,36 +3344,18 @@ multixact_redo(XLogReaderState *record)
 	if (info == XLOG_MULTIXACT_ZERO_OFF_PAGE)
 	{
 		int64		pageno;
-		int			slotno;
-		LWLock	   *lock;
-
 		memcpy(&pageno, XLogRecGetData(record), sizeof(pageno));
-
-		lock = SimpleLruGetBankLock(MultiXactOffsetCtl, pageno);
-		LWLockAcquire(lock, LW_EXCLUSIVE);
-
-		slotno = ZeroMultiXactOffsetPage(pageno, false);
-		SimpleLruWritePage(MultiXactOffsetCtl, slotno);
-		Assert(!MultiXactOffsetCtl->shared->page_dirty[slotno]);
-
-		LWLockRelease(lock);
+		/* Zero the page, don't make an XLOG entry about it,
+		 * write the page on a disk */
+		BootStrapSlruPage(MultiXactOffsetCtl, pageno, 0, true);
 	}
 	else if (info == XLOG_MULTIXACT_ZERO_MEM_PAGE)
 	{
 		int64		pageno;
-		int			slotno;
-		LWLock	   *lock;
-
 		memcpy(&pageno, XLogRecGetData(record), sizeof(pageno));
-
-		lock = SimpleLruGetBankLock(MultiXactMemberCtl, pageno);
-		LWLockAcquire(lock, LW_EXCLUSIVE);
-
-		slotno = ZeroMultiXactMemberPage(pageno, false);
-		SimpleLruWritePage(MultiXactMemberCtl, slotno);
-		Assert(!MultiXactMemberCtl->shared->page_dirty[slotno]);
-
-		LWLockRelease(lock);
+		/* Zero the page, don't make an XLOG entry about it,
+		 * write the page on a disk */
+		BootStrapSlruPage(MultiXactMemberCtl, pageno, 0, true);
 	}
 	else if (info == XLOG_MULTIXACT_CREATE_ID)
 	{

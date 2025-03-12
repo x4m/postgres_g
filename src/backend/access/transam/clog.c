@@ -110,7 +110,6 @@ static SlruCtlData XactCtlData;
 #define XactCtl (&XactCtlData)
 
 
-static int	ZeroCLOGPage(int64 pageno, bool writeXlog);
 static bool CLOGPagePrecedes(int64 page1, int64 page2);
 static void WriteZeroPageXlogRec(int64 pageno);
 static void WriteTruncateXlogRec(int64 pageno, TransactionId oldestXact,
@@ -832,41 +831,11 @@ check_transaction_buffers(int *newval, void **extra, GucSource source)
 void
 BootStrapCLOG(void)
 {
-	int			slotno;
-	LWLock	   *lock = SimpleLruGetBankLock(XactCtl, 0);
-
-	LWLockAcquire(lock, LW_EXCLUSIVE);
-
-	/* Create and zero the first page of the commit log */
-	slotno = ZeroCLOGPage(0, false);
-
-	/* Make sure it's written out */
-	SimpleLruWritePage(XactCtl, slotno);
-	Assert(!XactCtl->shared->page_dirty[slotno]);
-
-	LWLockRelease(lock);
-}
-
-/*
- * Initialize (or reinitialize) a page of CLOG to zeroes.
- * If writeXlog is true, also emit an XLOG record saying we did this.
- *
- * The page is not actually written, just set up in shared memory.
- * The slot number of the new page is returned.
- *
- * Control lock must be held at entry, and will be held at exit.
- */
-static int
-ZeroCLOGPage(int64 pageno, bool writeXlog)
-{
-	int			slotno;
-
-	slotno = SimpleLruZeroPage(XactCtl, pageno);
-
-	if (writeXlog)
-		WriteZeroPageXlogRec(pageno);
-
-	return slotno;
+	/*
+	 * Nullify the page (pageno = 0), don't insert an XLog record,
+	 * save the page on a disk
+	 */
+	BootStrapSlruPage(XactCtl, 0, 0, true);
 }
 
 /*
@@ -959,7 +928,6 @@ void
 ExtendCLOG(TransactionId newestXact)
 {
 	int64		pageno;
-	LWLock	   *lock;
 
 	/*
 	 * No work except at first XID of a page.  But beware: just after
@@ -970,14 +938,12 @@ ExtendCLOG(TransactionId newestXact)
 		return;
 
 	pageno = TransactionIdToPage(newestXact);
-	lock = SimpleLruGetBankLock(XactCtl, pageno);
 
-	LWLockAcquire(lock, LW_EXCLUSIVE);
-
-	/* Zero the page and make an XLOG entry about it */
-	ZeroCLOGPage(pageno, true);
-
-	LWLockRelease(lock);
+	/*
+	 * Zero the page, make an XLOG entry about it,
+	 * don't write the page on a disk
+	 */
+	BootStrapSlruPage(XactCtl, pageno, WriteZeroPageXlogRec, false);
 }
 
 
@@ -1073,9 +1039,7 @@ CLOGPagePrecedes(int64 page1, int64 page2)
 static void
 WriteZeroPageXlogRec(int64 pageno)
 {
-	XLogBeginInsert();
-	XLogRegisterData(&pageno, sizeof(pageno));
-	(void) XLogInsert(RM_CLOG_ID, CLOG_ZEROPAGE);
+	XLogInsertInt64(RM_CLOG_ID, CLOG_ZEROPAGE, pageno);
 }
 
 /*
@@ -1114,19 +1078,9 @@ clog_redo(XLogReaderState *record)
 	if (info == CLOG_ZEROPAGE)
 	{
 		int64		pageno;
-		int			slotno;
-		LWLock	   *lock;
-
 		memcpy(&pageno, XLogRecGetData(record), sizeof(pageno));
-
-		lock = SimpleLruGetBankLock(XactCtl, pageno);
-		LWLockAcquire(lock, LW_EXCLUSIVE);
-
-		slotno = ZeroCLOGPage(pageno, false);
-		SimpleLruWritePage(XactCtl, slotno);
-		Assert(!XactCtl->shared->page_dirty[slotno]);
-
-		LWLockRelease(lock);
+		/* Zero the page, don't make an XLOG entry about it, write the page on a disk */
+		BootStrapSlruPage(XactCtl, pageno, 0, true);
 	}
 	else if (info == CLOG_TRUNCATE)
 	{
