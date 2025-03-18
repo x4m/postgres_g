@@ -16,8 +16,6 @@ if ($ENV{enable_injection_points} ne 'yes')
 }
 
 # Initialize postgres
-my $psql_err = '';
-my $psql_out = '';
 my $node = PostgreSQL::Test::Cluster->new('node');
 $node->init;
 
@@ -47,7 +45,7 @@ $psql_session->query_until(
 		create table a as select random() r from generate_series(1,100) x;
 		create index on a(r);
 		delete from a;
-		vacuum (index_cleanup on) a;
+		vacuum (index_cleanup on, parallel 0) a;
 	));
 
 # Wait until an vacuum worker starts.

@@ -1089,7 +1089,7 @@ btvacuumscan(IndexVacuumInfo *info, IndexBulkDeleteResult *stats,
 		if (p.current_blocknum >= num_pages)
 			break;
 
-		/* In 007_vacuum_btree test we need to coordinate two distinguishable points here */
+		/* In 008_vacuum_btree test we need to coordinate two distinguishable points here */
 		INJECTION_POINT("nbtree-vacuum-1");
 		INJECTION_POINT("nbtree-vacuum-2");
 
@@ -1135,7 +1135,7 @@ btvacuumscan(IndexVacuumInfo *info, IndexBulkDeleteResult *stats,
  * btvacuumpage --- VACUUM one page
  *
  * This processes a single page for btvacuumscan().  In some cases we must
- * backtrack to re-examine and VACUUM pages that were the scanblkno during
+ * backtrack to re-examine and VACUUM pages that were on buf's page during
  * a previous call here.  This is how we handle page splits (that happened
  * after our cycleid was acquired) whose right half page happened to reuse
  * a block that we might have processed at some point before it was
@@ -1165,9 +1165,6 @@ backtrack:
 
 	attempt_pagedel = false;
 	backtrack_to = P_NONE;
-
-	/* call vacuum_delay_point while not holding any buffer lock */
-	vacuum_delay_point(false);
 
 	_bt_lockbuf(rel, buf, BT_READ);
 	page = BufferGetPage(buf);
@@ -1456,6 +1453,9 @@ backtrack:
 	{
 		blkno = backtrack_to;
 
+		/* call vacuum_delay_point while not holding any buffer lock */
+		vacuum_delay_point(false);
+
 		/*
 		 * We can't use _bt_getbuf() here because it always applies
 		 * _bt_checkpage(), which will barf on an all-zero page. We want to
@@ -1466,6 +1466,9 @@ backtrack:
 								info->strategy);
 		goto backtrack;
 	}
+
+	/* call vacuum_delay_point while not holding any buffer lock */
+	vacuum_delay_point(false);
 	return scanblkno;
 }
 
