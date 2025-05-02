@@ -142,6 +142,8 @@ bool		XLOG_DEBUG = false;
 
 int			wal_segment_size = DEFAULT_XLOG_SEG_SIZE;
 
+XLogRecPtr RecoveryEndOfLog;
+
 /*
  * Number of WAL insertion locks to use. A higher value allows more insertions
  * to happen concurrently, but adds some CPU overhead to flushing the WAL,
@@ -6040,7 +6042,7 @@ StartupXLOG(void)
 	 * Finish WAL recovery.
 	 */
 	endOfRecoveryInfo = FinishWalRecovery();
-	EndOfLog = endOfRecoveryInfo->endOfLog;
+	RecoveryEndOfLog = EndOfLog = endOfRecoveryInfo->endOfLog;
 	EndOfLogTLI = endOfRecoveryInfo->endOfLogTLI;
 	abortedRecPtr = endOfRecoveryInfo->abortedRecPtr;
 	missingContrecPtr = endOfRecoveryInfo->missingContrecPtr;

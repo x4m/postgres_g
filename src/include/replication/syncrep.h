@@ -107,4 +107,7 @@ extern void syncrep_yyerror(SyncRepConfigData **syncrep_parse_result_p, char **s
 extern void syncrep_scanner_init(const char *str, yyscan_t *yyscannerp);
 extern void syncrep_scanner_finish(yyscan_t yyscanner);
 
+extern void assign_synchronous_commit(int newval, void *extra);
+extern bool StartupSyncRepEstablished(void);
+
 #endif							/* _SYNCREP_H */

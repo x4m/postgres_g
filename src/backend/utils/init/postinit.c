@@ -42,6 +42,7 @@
 #include "postmaster/postmaster.h"
 #include "replication/slot.h"
 #include "replication/slotsync.h"
+#include "replication/syncrep.h"
 #include "replication/walsender.h"
 #include "storage/aio_subsys.h"
 #include "storage/bufmgr.h"
@@ -1213,6 +1214,16 @@ InitPostgres(const char *in_dbname, Oid dboid,
 	/* Apply PostAuthDelay as soon as we've read all options */
 	if (PostAuthDelay > 0)
 		pg_usleep(PostAuthDelay * 1000000L);
+
+	/* Check if we need to wait for startup synchronous replication */
+	if (!am_walsender &&
+		!superuser() &&
+		!StartupSyncRepEstablished())
+	{
+		ereport(FATAL,
+				(errcode(ERRCODE_CANNOT_CONNECT_NOW),
+				 errmsg("cannot connect until synchronous replication is established with standbys according to startup_synchronous_standby_level")));
+	}
 
 	/*
 	 * Initialize various default states that can't be set up until we've
