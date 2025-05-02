@@ -75,6 +75,7 @@
 #include <unistd.h>
 
 #include "access/xact.h"
+#include "access/xlogrecovery.h"
 #include "common/int.h"
 #include "miscadmin.h"
 #include "pgstat.h"
@@ -1137,4 +1138,43 @@ assign_synchronous_commit(int newval, void *extra)
 			SyncRepWaitMode = SYNC_REP_NO_WAIT;
 			break;
 	}
+}
+
+/*
+ * Check if startup synchronous replication is established with the required standbys
+ * based on the synchronous_commit level.
+ */
+bool
+StartupSyncRepEstablished(void)
+{
+	XLogRecPtr replication_lsn = 0;
+	int mode;
+	bool result;
+
+	switch (startup_synchronous_commit)
+	{
+		case SYNCHRONOUS_COMMIT_REMOTE_WRITE:
+			mode = SYNC_REP_WAIT_WRITE;
+			break;
+		case SYNCHRONOUS_COMMIT_REMOTE_FLUSH:
+			mode = SYNC_REP_WAIT_FLUSH;
+			break;
+		case SYNCHRONOUS_COMMIT_REMOTE_APPLY:
+			mode = SYNC_REP_WAIT_APPLY;
+			break;
+		default:
+		/* If startup_synchronous_commit is not set to a synchronous level, no need to check */
+			return true;
+	}
+
+	LWLockAcquire(SyncRepLock, LW_SHARED);
+	replication_lsn = WalSndCtl->lsn[mode];
+	LWLockRelease(SyncRepLock);
+
+	Assert(GetEndOfRecoveryPtr() != InvalidXLogRecPtr);
+	result = (!(WalSndCtl->sync_standbys_status & SYNC_STANDBY_DEFINED)) ||
+			replication_lsn >= GetEndOfRecoveryPtr();
+	if (result)
+		SetSyncRepEstablished();
+	return result;
 }

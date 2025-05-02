@@ -5174,6 +5174,16 @@ struct config_enum ConfigureNamesEnum[] =
 	},
 
 	{
+		{"startup_synchronous_standby_level", PGC_SUSET, REPLICATION_PRIMARY,
+			gettext_noop("Sets the synchronization level neccesary to start node."),
+			NULL
+		},
+		&startup_synchronous_commit,
+		SYNCHRONOUS_COMMIT_OFF, synchronous_commit_options,
+		NULL, NULL, NULL
+	},
+
+	{
 		{"archive_mode", PGC_POSTMASTER, WAL_ARCHIVING,
 			gettext_noop("Allows archiving of WAL files using \"archive_command\"."),
 			NULL

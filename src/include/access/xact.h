@@ -81,6 +81,7 @@ typedef enum
 
 /* Synchronous commit level */
 extern PGDLLIMPORT int synchronous_commit;
+extern PGDLLIMPORT int startup_synchronous_commit;
 
 /* used during logical streaming of a transaction */
 extern PGDLLIMPORT TransactionId CheckXidAlive;

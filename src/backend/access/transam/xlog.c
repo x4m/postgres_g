@@ -562,6 +562,10 @@ typedef struct XLogCtlData
 	XLogRecPtr	lastFpwDisableRecPtr;
 
 	slock_t		info_lck;		/* locks shared variables shown above */
+
+	/* TODO */
+	XLogRecPtr	recoveryEndOfLog;
+	bool		syncRepEstablished;
 } XLogCtlData;
 
 /*
@@ -6040,7 +6044,8 @@ StartupXLOG(void)
 	 * Finish WAL recovery.
 	 */
 	endOfRecoveryInfo = FinishWalRecovery();
-	EndOfLog = endOfRecoveryInfo->endOfLog;
+	Assert(!XLogCtl->syncRepEstablished);
+	XLogCtl->recoveryEndOfLog = EndOfLog = endOfRecoveryInfo->endOfLog;
 	EndOfLogTLI = endOfRecoveryInfo->endOfLogTLI;
 	abortedRecPtr = endOfRecoveryInfo->abortedRecPtr;
 	missingContrecPtr = endOfRecoveryInfo->missingContrecPtr;
@@ -9686,4 +9691,19 @@ SetWalWriterSleeping(bool sleeping)
 	SpinLockAcquire(&XLogCtl->info_lck);
 	XLogCtl->WalWriterSleeping = sleeping;
 	SpinLockRelease(&XLogCtl->info_lck);
+}
+
+XLogRecPtr
+GetEndOfRecoveryPtr()
+{
+	return XLogCtl->recoveryEndOfLog;
+}
+
+void SetSyncRepEstablished()
+{
+	XLogCtl->syncRepEstablished = true;
+}
+bool IsSyncRepEstablished()
+{
+	return XLogCtl->syncRepEstablished;
 }

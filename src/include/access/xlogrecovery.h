@@ -155,4 +155,8 @@ extern void RecoveryRequiresIntParameter(const char *param_name, int currValue, 
 
 extern void xlog_outdesc(StringInfo buf, XLogReaderState *record);
 
+extern XLogRecPtr GetEndOfRecoveryPtr(void);
+extern void SetSyncRepEstablished(void);
+extern bool IsSyncRepEstablished(void);
+
 #endif							/* XLOGRECOVERY_H */
