@@ -5174,11 +5174,11 @@ struct config_enum ConfigureNamesEnum[] =
 	},
 
 	{
-		{"startup_synchronous_standby_level", PGC_SUSET, REPLICATION_PRIMARY,
+		{"failover_synchronous_standby_level", PGC_SUSET, REPLICATION_PRIMARY,
 			gettext_noop("Sets the synchronization level neccesary to start node."),
 			NULL
 		},
-		&startup_synchronous_commit,
+		&failover_synchronous_standby_level,
 		SYNCHRONOUS_COMMIT_OFF, synchronous_commit_options,
 		NULL, NULL, NULL
 	},

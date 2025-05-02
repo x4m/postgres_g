@@ -239,6 +239,7 @@
 					# unrecoverable data corruption)
 #synchronous_commit = on		# synchronization level;
 					# off, local, remote_write, remote_apply, or on
+#failover_synchronous_standby_level = of	# same levels as for synchronous_commit
 #wal_sync_method = fsync		# the default is the first option
 					# supported by the operating system:
 					#   open_datasync

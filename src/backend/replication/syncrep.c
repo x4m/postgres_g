@@ -318,11 +318,17 @@ SyncRepWaitForLSN(XLogRecPtr lsn, bool commit)
 		if (QueryCancelPending)
 		{
 			QueryCancelPending = false;
-			ereport(WARNING,
-					(errmsg("canceling wait for synchronous replication due to user request"),
-					 errdetail("The transaction has already committed locally, but might not have been replicated to the standby.")));
+			if (failover_synchronous_standby_level < SYNCHRONOUS_COMMIT_REMOTE_WRITE)
+			{
+				ereport(WARNING,
+						(errmsg("canceling wait for synchronous replication due to user request"),
+						 errdetail("The transaction has already committed locally, but might not have been replicated to the standby.")));
 			SyncRepCancelWait();
 			break;
+			}
+			ereport(WARNING,
+				(errmsg("user requested cancel of waiting for synchronous replication"),
+				 errdetail("The transaction has already committed locally and cannot be rolled back, but have not been replicated according to synchronous_standby_names.")));
 		}
 
 		/*
@@ -1151,7 +1157,7 @@ StartupSyncRepEstablished(void)
 	int mode;
 	bool result;
 
-	switch (startup_synchronous_commit)
+	switch (failover_synchronous_standby_level)
 	{
 		case SYNCHRONOUS_COMMIT_REMOTE_WRITE:
 			mode = SYNC_REP_WAIT_WRITE;
@@ -1163,7 +1169,7 @@ StartupSyncRepEstablished(void)
 			mode = SYNC_REP_WAIT_APPLY;
 			break;
 		default:
-		/* If startup_synchronous_commit is not set to a synchronous level, no need to check */
+		/* If failover_synchronous_standby_level is not set to a synchronous level, no need to check */
 			return true;
 	}
 
