@@ -1222,7 +1222,7 @@ InitPostgres(const char *in_dbname, Oid dboid,
 	{
 		ereport(FATAL,
 				(errcode(ERRCODE_CANNOT_CONNECT_NOW),
-				 errmsg("cannot connect until synchronous replication is established with standbys according to startup_synchronous_standby_level")));
+				 errmsg("cannot connect until synchronous replication is established with standbys according to failover_synchronous_standby_level")));
 	}
 
 	/*
