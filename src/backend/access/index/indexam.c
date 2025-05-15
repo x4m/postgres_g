@@ -104,11 +104,35 @@ do { \
 			 CppAsString(pname), RelationGetRelationName(scan->indexRelation)); \
 } while(0)
 
+/*
+ * Lookup table from relation oid to the relation descriptor and
+ * IndexFetchTableData structure.  Because only once we should call
+ * table_index_fetch_begin() for each partition but in scan->xs_heapfetch we
+ * will overwrite with the current partition so if we come back to the old
+ * partition which we already have scanned once then we should use the same
+ * xs_heapfetch and that we can get from the cache.
+ */
+typedef struct GlobalIndexPartitionCacheData
+{
+	MemoryContext pdir_mcxt;
+	HTAB	*pdir_hash;
+} GlobalIndexPartitionCacheData;
+
+typedef struct GlobalIndexPartitionCacheEntry
+{
+	Oid 		reloid;
+	Relation	relation;
+	IndexFetchTableData *heapfetch;
+} GlobalIndexPartitionCacheEntry;
+
 static IndexScanDesc index_beginscan_internal(Relation indexRelation,
 											  int nkeys, int norderbys, Snapshot snapshot,
 											  ParallelIndexScanDesc pscan, bool temp_snap);
 static inline void validate_relation_kind(Relation r);
-
+static GlobalIndexPartitionCacheEntry *globalindex_partition_entry_lookup(
+											GlobalIndexPartitionCache pdir,
+											Oid relid);
+static void globalindex_partition_cache_reset(GlobalIndexPartitionCache pdir);
 
 /* ----------------------------------------------------------------
  *				   index_ interface functions
@@ -270,12 +294,29 @@ index_beginscan(Relation heapRelation,
 	 * Save additional parameters into the scandesc.  Everything else was set
 	 * up by RelationGetIndexScan.
 	 */
-	scan->heapRelation = heapRelation;
 	scan->xs_snapshot = snapshot;
 	scan->instrument = instrument;
 
-	/* prepare to fetch index matches from table */
-	scan->xs_heapfetch = table_index_fetch_begin(heapRelation);
+	/*
+	 * For global index do not set the heapRelation and xs_heapfetch because
+	 * while scanning the index we might get tids belongs to different
+	 * partitions so we will initialize these fields when we actually fetch the
+	 * tid from the index as that time we will know the relation oid from where
+	 * we need to fetch the tid.
+	 */
+	if (scan->xs_global_index)
+	{
+		scan->heapRelation = NULL;
+		scan->xs_heapfetch = NULL;
+	}
+	else
+	{
+		scan->heapRelation = heapRelation;
+
+		/* prepare to fetch index matches from table */
+		scan->xs_heapfetch = table_index_fetch_begin(heapRelation);
+	}
+
 
 	return scan;
 }
@@ -365,7 +406,23 @@ index_rescan(IndexScanDesc scan,
 	Assert(norderbys == scan->numberOfOrderBys);
 
 	/* Release resources (like buffer pins) from table accesses */
-	if (scan->xs_heapfetch)
+	if (scan->xs_global_index)
+	{
+		/*
+		 * For the global index, also reset the xs_global_index_cache.
+		 * Essentially, the global index will have multiple entries of
+		 * xs_heapfetch corresponding to each partition. These entries will be
+		 * reset inside  globalindex_partition_cache_reset(). Here, we can
+		 * simply set xs_heapfetch  and heapRelation to NULL in the scan
+		 * descriptor. For more details, refer  to the comments inside
+		 * index_beginscan().
+		 */
+		scan->heapRelation = NULL;
+		scan->xs_heapfetch = NULL;
+		if (scan->xs_global_index_cache)
+			globalindex_partition_cache_reset(scan->xs_global_index_cache);
+	}
+	else if (scan->xs_heapfetch)
 		table_index_fetch_reset(scan->xs_heapfetch);
 
 	scan->kill_prior_tuple = false; /* for safety */
@@ -386,7 +443,18 @@ index_endscan(IndexScanDesc scan)
 	CHECK_SCAN_PROCEDURE(amendscan);
 
 	/* Release resources (like buffer pins) from table accesses */
-	if (scan->xs_heapfetch)
+	if (scan->xs_global_index)
+	{
+		/*
+		 * For global index also reset the cache, interanlly this will
+		 * deallocate the index fetch handle for each partition.
+		 */
+		if (scan->xs_global_index_cache)
+			globalindex_partition_cache_destroy(scan->xs_global_index_cache);
+		scan->heapRelation = NULL;
+		scan->xs_heapfetch = NULL;
+	}
+	else if (scan->xs_heapfetch)
 	{
 		table_index_fetch_end(scan->xs_heapfetch);
 		scan->xs_heapfetch = NULL;
@@ -442,7 +510,18 @@ index_restrpos(IndexScanDesc scan)
 	CHECK_SCAN_PROCEDURE(amrestrpos);
 
 	/* release resources (like buffer pins) from table accesses */
-	if (scan->xs_heapfetch)
+	if (scan->xs_global_index)
+	{
+		/*
+		 * For global index also reset the cache, interanlly this will reset
+		 * the index fetch handle for each partition.
+		 */
+		if (scan->xs_global_index_cache)
+			globalindex_partition_cache_reset(scan->xs_global_index_cache);
+		scan->heapRelation = NULL;
+		scan->xs_heapfetch = NULL;
+	}
+	else if (scan->xs_heapfetch)
 		table_index_fetch_reset(scan->xs_heapfetch);
 
 	scan->kill_prior_tuple = false; /* for safety */
@@ -742,6 +821,15 @@ index_getnext_slot(IndexScanDesc scan, ScanDirection direction, TupleTableSlot *
 		 * the index.
 		 */
 		Assert(ItemPointerIsValid(&scan->xs_heaptid));
+
+		/*
+		 * For global index we need to get the heapoid of the parittion
+		 * relation from the scan descriptor stored by index scan and fetch the
+		 * tuple from that relation.
+		 */
+		if (scan->xs_global_index)
+			global_indexscan_setup_partrel(scan);
+
 		if (index_fetch_heap(scan, slot))
 			return true;
 	}
@@ -1084,4 +1172,147 @@ index_opclass_options(Relation indrel, AttrNumber attnum, Datum attoptions,
 	(void) FunctionCall1(procinfo, PointerGetDatum(&relopts));
 
 	return build_local_reloptions(&relopts, attoptions, validate);
+}
+
+/*
+ * Helper function for index_getnext_slot() and IndexOnlyNext for setting up
+ * a proper scan->heapRelation and scan->xs_heapfetch during global index scan
+ * as global index will return tids which belongs to different partitions.
+ */
+void
+global_indexscan_setup_partrel(IndexScanDesc scan)
+{
+	Oid		relid;
+	GlobalIndexPartitionCacheEntry *entry;
+
+	relid = scan->xs_heapoid;
+
+	/*
+	 * During a global index scan, we might encounter index entries that belong
+	 * to different partitions, which could be interleaved.  Each time we get
+	 * a new index tuple, we need to verify if the scan->heapRelation matches
+	 * the relid of that tuple. If it does not, we fetch the corresponding
+	 * entry from the cache and store it in the scan descriptor.
+	 */
+	if (scan->heapRelation == NULL)
+	{
+		entry = globalindex_partition_entry_lookup(
+								scan->xs_global_index_cache, relid);
+
+		scan->heapRelation = entry->relation;
+		scan->xs_heapfetch = entry->heapfetch;
+	}
+	else if (scan->heapRelation &&
+				relid != RelationGetRelid(scan->heapRelation))
+	{
+		table_index_fetch_reset(scan->xs_heapfetch);
+
+		entry = globalindex_partition_entry_lookup(
+								scan->xs_global_index_cache, relid);
+		scan->heapRelation = entry->relation;
+		scan->xs_heapfetch = entry->heapfetch;
+	}
+}
+
+/*
+ * create_globalindex_partition_cache - Create index scan partition cache
+ *
+ * For more details about this cache refer comments atop
+ * GlobalIndexPartitionCacheData structure.
+ */
+GlobalIndexPartitionCache
+create_globalindex_partition_cache(MemoryContext mcxt)
+{
+	MemoryContext oldcontext = MemoryContextSwitchTo(mcxt);
+	GlobalIndexPartitionCache pdir;
+	HASHCTL		ctl;
+
+	MemSet(&ctl, 0, sizeof(HASHCTL));
+	ctl.keysize = sizeof(Oid);
+	ctl.entrysize = sizeof(GlobalIndexPartitionCacheEntry);
+	ctl.hcxt = mcxt;
+
+	pdir = palloc(sizeof(GlobalIndexPartitionCacheData));
+	pdir->pdir_mcxt = mcxt;
+	pdir->pdir_hash = hash_create("globalIndex partitionId cache", 256, &ctl,
+								  HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
+
+	MemoryContextSwitchTo(oldcontext);
+	return pdir;
+}
+
+/*
+ * globalindex_partition_entry_lookup
+ *
+ * Lookup the relation descriptor and index heap fetch handle for the given
+ * relid.  If the entry is not found, it will open the relation, initialize the
+ * index fetch on that relation, and store it in the cache for subsequent
+ * references.
+ */
+static GlobalIndexPartitionCacheEntry *
+globalindex_partition_entry_lookup(GlobalIndexPartitionCache pdir, Oid relid)
+{
+	GlobalIndexPartitionCacheEntry *pde;
+	bool		found;
+	Relation	part_rel;
+
+	Assert(OidIsValid(relid));
+	Assert(pdir);
+	pde = hash_search(pdir->pdir_hash, &relid, HASH_FIND, &found);
+	if (found)
+		return pde;
+	else
+	{
+		pde = hash_search(pdir->pdir_hash, &relid, HASH_ENTER, &found);
+		part_rel = relation_open(relid, AccessShareLock);
+		pde->relation = part_rel;
+		pde->heapfetch = table_index_fetch_begin(part_rel);
+	}
+
+	return pde;
+}
+
+/*
+ * globalindex_partition_entry_lookup - destory the cache
+ *
+ * This will destory the GlobalIndexPartitionCache and also deallocate index
+ * fetch for each cache entry whereever it was initialized.
+ */
+void
+globalindex_partition_cache_destroy(GlobalIndexPartitionCache pdir)
+{
+	HASH_SEQ_STATUS status;
+	GlobalIndexPartitionCacheEntry *pde;
+
+	hash_seq_init(&status, pdir->pdir_hash);
+	while ((pde = hash_seq_search(&status)) != NULL)
+	{
+		if (pde->heapfetch)
+		{
+			table_index_fetch_end(pde->heapfetch);
+			pde->heapfetch = NULL;
+		}
+
+		relation_close(pde->relation, NoLock);
+	}
+}
+
+/*
+ * globalindex_partition_entry_lookup - reset the cache
+ *
+ * This will reset the GlobalIndexPartitionCache and also reset the index
+ * fetch for each cache entry if it was initialized.
+ */
+static void
+globalindex_partition_cache_reset(GlobalIndexPartitionCache pdir)
+{
+	HASH_SEQ_STATUS status;
+	GlobalIndexPartitionCacheEntry *entry;
+
+	hash_seq_init(&status, pdir->pdir_hash);
+	while ((entry = hash_seq_search(&status)))
+	{
+		if (entry->heapfetch)
+			table_index_fetch_reset(entry->heapfetch);
+	}
 }

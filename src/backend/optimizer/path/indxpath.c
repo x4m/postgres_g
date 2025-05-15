@@ -21,6 +21,7 @@
 #include "access/sysattr.h"
 #include "catalog/pg_am.h"
 #include "catalog/pg_amop.h"
+#include "catalog/pg_index_partitions.h"
 #include "catalog/pg_operator.h"
 #include "catalog/pg_opfamily.h"
 #include "catalog/pg_type.h"
@@ -246,6 +247,7 @@ create_index_paths(PlannerInfo *root, RelOptInfo *rel)
 	IndexClauseSet jclauseset;
 	IndexClauseSet eclauseset;
 	ListCell   *lc;
+	bool		ispartitioned = IS_PARTITIONED_REL(rel);
 
 	/* Skip the whole mess if no indexes */
 	if (rel->indexlist == NIL)
@@ -258,6 +260,22 @@ create_index_paths(PlannerInfo *root, RelOptInfo *rel)
 	foreach(lc, rel->indexlist)
 	{
 		IndexOptInfo *index = (IndexOptInfo *) lfirst(lc);
+
+		/*
+		 * For partitioned relations, we can only consider global index scan
+		 * paths.  And for non partitioned relation ignore the indirect
+		 * global indexes.
+		 */
+		if ((ispartitioned && index->idxkind != INDEX_GLOBAL_DIRECT) ||
+			(!ispartitioned && index->idxkind != INDEX_LOCAL))
+			continue;
+
+		/*
+		 * For non partitioned table we should not get the global index info.
+		 * Check comments in get_relation_info() where we are adding
+		 * IndexOptInfo nodes.
+		 */
+		Assert(ispartitioned || index->idxkind != INDEX_GLOBAL_DIRECT);
 
 		/* Protect limited-size array in IndexClauseSets */
 		Assert(index->nkeycolumns <= INDEX_MAX_KEYS);
@@ -2228,6 +2246,7 @@ check_index_only(RelOptInfo *rel, IndexOptInfo *index)
 {
 	bool		result;
 	Bitmapset  *attrs_used = NULL;
+	Bitmapset  *rowidvar = NULL;
 	Bitmapset  *index_canreturn_attrs = NULL;
 	ListCell   *lc;
 	int			i;
@@ -2247,6 +2266,21 @@ check_index_only(RelOptInfo *rel, IndexOptInfo *index)
 	 * because attr_needed isn't computed for inheritance child rels.
 	 */
 	pull_varattnos((Node *) rel->reltarget->exprs, rel->relid, &attrs_used);
+
+	/*
+	 * FIXME: Ugly hack to avoid global index only scan during update/delete.
+	 * In normal case it is avoided because reltarget will have junkattribute
+	 * which would not match with index_canreturn_attrs.  But with global index
+	 * we are creating this scan on parent table so we would have extra
+	 * ROWID_VAR but that would not get caught while calling pull_varattnos
+	 * with rel->relid so we are searching here with sepecific ROWID_VAR.
+	 */
+	if (rel->nparts != 0)
+	{
+		pull_varattnos((Node *) rel->reltarget->exprs, ROWID_VAR, &rowidvar);
+		if (rowidvar != NULL)
+			return false;
+	}
 
 	/*
 	 * Add all the attributes used by restriction clauses; but consider only
@@ -2276,9 +2310,11 @@ check_index_only(RelOptInfo *rel, IndexOptInfo *index)
 
 		/*
 		 * For the moment, we just ignore index expressions.  It might be nice
-		 * to do something with them, later.
+		 * to do something with them, later.  For global index we also add
+		 * an internal partition id attribute so just ignore that as we don't
+		 * need to return that attribute from index.
 		 */
-		if (attno == 0)
+		if (attno == 0 || attno == PartitionIdAttributeNumber)
 			continue;
 
 		if (index->canreturn[i])

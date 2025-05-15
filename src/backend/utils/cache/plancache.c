@@ -1928,6 +1928,21 @@ AcquireExecutorLocks(List *stmt_list, bool acquire)
 			else
 				UnlockRelationOid(rte->relid, rte->rellockmode);
 		}
+
+		/*
+		 * Loop through the lockrelOids derived based on the result relations
+		 * and acquire lock on all the relation.  We may store the lockmode as
+		 * well along with the oid but we can dirtectly use RowExclusiveLock
+		 * because these are derived from result relations and result relations
+		 * are locked in this mode.
+		 */
+		foreach_oid(relid, plannedstmt->lockrelOids)
+		{
+			if (acquire)
+				LockRelationOid(relid, RowExclusiveLock);
+			else
+				UnlockRelationOid(relid, RowExclusiveLock);
+		}
 	}
 }
 

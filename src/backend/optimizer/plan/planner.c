@@ -22,6 +22,7 @@
 #include "access/parallel.h"
 #include "access/sysattr.h"
 #include "access/table.h"
+#include "catalog/partition.h"
 #include "catalog/pg_aggregate.h"
 #include "catalog/pg_inherits.h"
 #include "catalog/pg_proc.h"
@@ -58,6 +59,7 @@
 #include "parser/parsetree.h"
 #include "partitioning/partdesc.h"
 #include "rewrite/rewriteManip.h"
+#include "storage/lmgr.h"
 #include "utils/backend_status.h"
 #include "utils/lsyscache.h"
 #include "utils/rel.h"
@@ -267,7 +269,7 @@ static bool group_by_has_partkey(RelOptInfo *input_rel,
 static int	common_prefix_cmp(const void *a, const void *b);
 static List *generate_setop_child_grouplist(SetOperationStmt *op,
 											List *targetlist);
-
+static void lock_additional_rel(PlannerInfo *root);
 
 /*****************************************************************************
  *
@@ -581,6 +583,7 @@ standard_planner(Query *parse, const char *query_string, int cursorOptions,
 	result->utilityStmt = parse->utilityStmt;
 	result->stmt_location = parse->stmt_location;
 	result->stmt_len = parse->stmt_len;
+	result->lockrelOids = glob->lockRelOids;
 
 	result->jitFlags = PGJIT_NONE;
 	if (jit_enabled && jit_above_cost >= 0 &&
@@ -1175,6 +1178,13 @@ subquery_planner(PlannerGlobal *glob, Query *parse, PlannerInfo *parent_root,
 	 * extParam/allParam calculations later.
 	 */
 	SS_identify_outer_params(root);
+
+	/*
+	 * Prepare a list of additional relation OIDs to be locked if there is any
+	 * global index on the result relation.  Also lock those OIDs, for more
+	 * details refer function header comments.
+	 */
+	lock_additional_rel(root);
 
 	/*
 	 * If any initPlans were created in this query level, adjust the surviving
@@ -7748,12 +7758,13 @@ apply_scanjoin_target_to_paths(PlannerInfo *root,
 	bool		rel_is_partitioned = IS_PARTITIONED_REL(rel);
 	PathTarget *scanjoin_target;
 	ListCell   *lc;
+	List	   *global_index_path_list = NIL;
 
 	/* This recurses, so be paranoid. */
 	check_stack_depth();
 
 	/*
-	 * If the rel is partitioned, we want to drop its existing paths and
+	 * If the rel is partitioned, we want to drop its existing append paths and
 	 * generate new ones.  This function would still be correct if we kept the
 	 * existing paths: we'd modify them to generate the correct target above
 	 * the partitioning Append, and then they'd compete on cost with paths
@@ -7770,9 +7781,57 @@ apply_scanjoin_target_to_paths(PlannerInfo *root,
 	 * stanza.  Hence, zap the main pathlist here, then allow
 	 * generate_useful_gather_paths to add path(s) to the main list, and
 	 * finally zap the partial pathlist.
+	 *
+	 * Note: All the partitioned rel paths which are build by appending child
+	 * rel paths will be rebuilt again so we need to preserve the global index
+	 * paths which are directly created on the partitioned relation.
 	 */
 	if (rel_is_partitioned)
+	{
+		List	*newtarget = NIL;
+		PathTarget *index_scanjoin_target;
+
+		/*
+		 * Preprocess the scanjoin_targets and replace ROWID_VAR with the
+		 * partitioned rel's varno, TODO - explain the reasoning here.
+		 */
+		foreach(lc, scanjoin_targets)
+		{
+			PathTarget *target = lfirst_node(PathTarget, lc);
+
+			target = copy_pathtarget(target);
+			target->exprs = (List *)
+				adjust_appendrel_rowid_vars(root, (Node *) target->exprs,
+											rel->relid);
+			newtarget = lappend(newtarget, target);
+		}
+		/* Extract SRF-free scan/join target. */
+		index_scanjoin_target = linitial_node(PathTarget, newtarget);
+
+		/*
+		 * As explained in above comments, skip all paths other than the
+		 * global index paths as other paths will be build again. So process
+		 * the global index paths and apply the index_scanjoin_target to them.
+		 */
+		foreach(lc, rel->pathlist)
+		{
+			Path	*path = (Path *) lfirst(lc);
+			Path	*newpath;
+
+			if (nodeTag(path) != T_IndexPath)
+				continue;
+
+			newpath = (Path *) create_projection_path(root, rel, path,
+													  index_scanjoin_target);
+			global_index_path_list = lappend(global_index_path_list, newpath);
+		}
+
+		/*
+		 * For now set the rel->pathlist to NIL and once we have regenerated
+		 * the append paths add the other paths back to the list.
+		 */
 		rel->pathlist = NIL;
+	}
 
 	/*
 	 * If the scan/join target is not parallel-safe, partial paths cannot
@@ -7935,6 +7994,9 @@ apply_scanjoin_target_to_paths(PlannerInfo *root,
 
 		/* Build new paths for this relation by appending child paths. */
 		add_paths_to_append_rel(root, rel, live_children);
+
+		if (global_index_path_list)
+			rel->pathlist = list_concat(rel->pathlist, global_index_path_list);
 	}
 
 	/*
@@ -8247,4 +8309,77 @@ generate_setop_child_grouplist(SetOperationStmt *op, List *targetlist)
 	Assert(ct == NULL);
 
 	return grouplist;
+}
+
+
+/*
+ * lock_additional_rel
+ *	Lock additional relations to be locked in presence of a global index and
+ *  also add those Oids to PlannerGlobal so that
+ *
+ * During DML operations on tables with global indexes, it's necessary to
+ * lock the entire partition tree up to the partitioned relation that holds
+ * the global index.
+ */
+static void
+lock_additional_rel(PlannerInfo *root)
+{
+	Query	   *parse = root->parse;
+	RelOptInfo *rel;
+	ListCell   *lc;
+	List	   *lockreloids = NIL;
+
+	/* Nothing to do if there is no result relation. */
+	if (parse->resultRelation <= 0)
+		return;
+
+	/*
+	 * Fetch the RelOptInfo of the result relation.  If we haven't built it
+	 * already then do it now.
+	 */
+	rel = find_base_rel_noerr(root, parse->resultRelation);
+	if (rel == NULL)
+	{
+		RangeTblEntry  *rte = root->simple_rte_array[parse->resultRelation];
+
+		/*
+		 * If we don't have global index on the result relation then we don't
+		 * need to do anything.
+		 */
+		if (!get_rel_has_globalindex(rte->relid))
+			return;
+
+		rel = build_simple_rel(root, parse->resultRelation, NULL);
+	}
+
+	/*
+	 * Loop through all the indexes of the result relation and if it is a
+	 * global index then lock all the inheritors under the relation on which
+	 * this global index is created.  Also store the list of all the OIDs
+	 * in PlannerGlobal.
+	 */
+	foreach(lc, rel->indexlist)
+	{
+		IndexOptInfo *index = (IndexOptInfo *) lfirst(lc);
+		List		 *childrel = NIL;
+
+		if (index->idxkind == INDEX_LOCAL)
+			continue;
+
+		if (list_member_oid(lockreloids, index->indrelid))
+			continue;
+
+		/*
+		 * Acquire lock on top level parent on which the global index is
+		 * created and also lock all its inheritors.
+		 */
+		LockRelationOid(index->indrelid, RowExclusiveLock);
+		lockreloids = lappend_oid(lockreloids, index->indrelid);
+		childrel = find_all_inheritors(index->indrelid, RowExclusiveLock,
+										NULL);
+		lockreloids = list_concat(lockreloids, childrel);
+	}
+
+	root->glob->lockRelOids =
+				list_concat_unique_oid(root->glob->lockRelOids, lockreloids);
 }

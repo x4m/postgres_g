@@ -228,7 +228,15 @@ btgettuple(IndexScanDesc scan, ScanDirection dir)
 	BTScanOpaque so = (BTScanOpaque) scan->opaque;
 	bool		res;
 
-	Assert(scan->heapRelation != NULL);
+	/*
+	 * When working with global indexes, the scan's heap relation
+	 * (scan->heapRelation) is not set beforehand. Instead, it's populated by
+	 * the index scan interfaces, dynamically determined based on the TID being
+	 * processed. This is because global index tuples explicitly carry the heap
+	 * OID (along with the TID) to identify the originating heap relation.
+	 */
+	Assert(RelationIsGlobalIndex(scan->indexRelation) ||
+		   scan->heapRelation != NULL);
 
 	/* btree indexes are never lossy */
 	scan->xs_recheck = false;

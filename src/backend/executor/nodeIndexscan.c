@@ -911,6 +911,7 @@ ExecInitIndexScan(IndexScan *node, EState *estate, int eflags)
 	IndexScanState *indexstate;
 	Relation	currentRelation;
 	LOCKMODE	lockmode;
+	const TupleTableSlotOps *tts_cb;
 
 	/*
 	 * create state structure
@@ -936,11 +937,22 @@ ExecInitIndexScan(IndexScan *node, EState *estate, int eflags)
 	indexstate->ss.ss_currentScanDesc = NULL;	/* no heap scan here */
 
 	/*
+	 * FIXME: Global index scans on partitioned tables require
+	 * TTSOpsBufferHeapTuple, but partitioned tables normally get TTSOpsVirtual
+	 * (no TableAM).  We currently hack this by assuming partitions with global
+	 * indexes are Heap AM.  Proper TableAM integration for partitioned tables
+	 * is needed for slot allocation.
+	 */
+	if (get_rel_relkind(node->indexid) == RELKIND_GLOBAL_INDEX)
+		tts_cb = &TTSOpsBufferHeapTuple;
+	else
+		tts_cb = table_slot_callbacks(currentRelation);
+
+	/*
 	 * get the scan type from the relation descriptor.
 	 */
 	ExecInitScanTupleSlot(estate, &indexstate->ss,
-						  RelationGetDescr(currentRelation),
-						  table_slot_callbacks(currentRelation));
+						  RelationGetDescr(currentRelation), tts_cb);
 
 	/*
 	 * Initialize result type and projection.

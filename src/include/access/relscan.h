@@ -125,6 +125,8 @@ typedef struct IndexFetchTableData
 
 struct IndexScanInstrumentation;
 
+typedef struct GlobalIndexPartitionCacheData *GlobalIndexPartitionCache;
+
 /*
  * We use the same IndexScanDescData structure for both amgettuple-based
  * and amgetbitmap-based index scans.  Some fields are only relevant in
@@ -168,7 +170,9 @@ typedef struct IndexScanDescData
 	struct TupleDescData *xs_itupdesc;	/* rowtype descriptor of xs_itup */
 	HeapTuple	xs_hitup;		/* index data returned by AM, as HeapTuple */
 	struct TupleDescData *xs_hitupdesc; /* rowtype descriptor of xs_hitup */
-
+	Oid			xs_heapoid;		/* Oid of the partition relation , only valid
+								   for global indexes because global index can
+								   hold tuples from multiple partitions */
 	ItemPointerData xs_heaptid; /* result */
 	bool		xs_heap_continue;	/* T if must keep walking, potential
 									 * further results */
@@ -189,6 +193,8 @@ typedef struct IndexScanDescData
 
 	/* parallel index scan information, in shared memory */
 	struct ParallelIndexScanDescData *parallel_scan;
+	bool		xs_global_index;
+	GlobalIndexPartitionCache xs_global_index_cache;
 }			IndexScanDescData;
 
 /* Generic structure for parallel scans */

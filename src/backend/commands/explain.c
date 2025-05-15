@@ -1442,10 +1442,18 @@ ExplainNode(PlanState *planstate, List *ancestors,
 			pname = sname = "Gather Merge";
 			break;
 		case T_IndexScan:
-			pname = sname = "Index Scan";
+				if (get_rel_relkind(((IndexScan *) plan)->indexid) ==
+					RELKIND_GLOBAL_INDEX)
+					pname = sname = "Global Index Scan";
+				else
+					pname = sname = "Index Scan";
 			break;
 		case T_IndexOnlyScan:
-			pname = sname = "Index Only Scan";
+				if (get_rel_relkind(((IndexScan *) plan)->indexid) ==
+					RELKIND_GLOBAL_INDEX)
+					pname = sname = "Global Index Only Scan";
+				else
+					pname = sname = "Index Only Scan";
 			break;
 		case T_BitmapIndexScan:
 			pname = sname = "Bitmap Index Scan";

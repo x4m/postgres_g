@@ -22,6 +22,8 @@ extern AppendRelInfo *make_append_rel_info(Relation parentrel,
 										   Index parentRTindex, Index childRTindex);
 extern Node *adjust_appendrel_attrs(PlannerInfo *root, Node *node,
 									int nappinfos, AppendRelInfo **appinfos);
+extern Node *adjust_appendrel_rowid_vars(PlannerInfo *root, Node *node,
+										 int varno);
 extern Node *adjust_appendrel_attrs_multilevel(PlannerInfo *root, Node *node,
 											   RelOptInfo *childrel,
 											   RelOptInfo *parentrel);

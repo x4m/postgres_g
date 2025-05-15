@@ -32,6 +32,7 @@ typedef struct
 {
 	PlannerInfo *root;
 	int			nappinfos;
+	int			varno;
 	AppendRelInfo **appinfos;
 } adjust_appendrel_attrs_context;
 
@@ -41,7 +42,8 @@ static void make_inh_translation_list(Relation oldrelation,
 									  AppendRelInfo *appinfo);
 static Node *adjust_appendrel_attrs_mutator(Node *node,
 											adjust_appendrel_attrs_context *context);
-
+static Node *adjust_appendrel_rowid_vars_mutator(Node *node,
+								adjust_appendrel_attrs_context *context);
 
 /*
  * make_append_rel_info
@@ -527,6 +529,62 @@ adjust_appendrel_attrs_mutator(Node *node,
 	Assert(!IsA(node, JoinExpr));
 
 	return expression_tree_mutator(node, adjust_appendrel_attrs_mutator, context);
+}
+
+/*
+ * Replace ROWID_VAR with the varno.
+ *
+ * This is simmilar to the adjust_appendrel_attrs(), except here instead of
+ * preparing the scantarget for the appendrel we are preparing for the
+ * partitioned rel, so varno of the partitioned rel is passed as input and we
+ * need to replcae the ROWID_VAR with the input varno.
+ */
+Node *
+adjust_appendrel_rowid_vars(PlannerInfo *root, Node *node, int varno)
+{
+	adjust_appendrel_attrs_context context;
+
+	context.root = root;
+	context.nappinfos = 0;
+	context.varno = varno;
+
+	/* Should never be translating a Query tree. */
+	Assert(node == NULL || !IsA(node, Query));
+
+	return adjust_appendrel_rowid_vars_mutator(node, &context);
+}
+
+static Node *
+adjust_appendrel_rowid_vars_mutator(Node *node,
+									adjust_appendrel_attrs_context *context)
+{
+	if (node == NULL)
+		return NULL;
+	if (IsA(node, Var))
+	{
+		Var		   *var = (Var *) copyObject(node);
+
+		if (var->varno == ROWID_VAR)
+		{
+			RowIdentityVarInfo *ridinfo = (RowIdentityVarInfo *)
+						list_nth(context->root->row_identity_vars, var->varattno - 1);
+
+			/* Substitute the Var given in the RowIdentityVarInfo */
+			var = copyObject(ridinfo->rowidvar);
+
+			/* Replace the ROWID_VAR with the varno of the partitioned rel. */
+			var->varno = context->varno;
+			/* identity vars shouldn't have nulling rels */
+			Assert(var->varnullingrels == NULL);
+			/* varnosyn in the RowIdentityVarInfo is probably wrong */
+			var->varnosyn = 0;
+			var->varattnosyn = 0;
+		}
+
+		return (Node *) var;
+	}
+	return expression_tree_mutator(node, adjust_appendrel_rowid_vars_mutator,
+								   (void *) context);
 }
 
 /*

@@ -20,6 +20,7 @@
  */
 #include "postgres.h"
 
+#include "catalog/pg_inherits.h"
 #include "optimizer/appendinfo.h"
 #include "optimizer/clauses.h"
 #include "optimizer/optimizer.h"
@@ -28,7 +29,8 @@
 #include "optimizer/paths.h"
 #include "optimizer/placeholder.h"
 #include "optimizer/planmain.h"
-
+#include "storage/lmgr.h"
+#include "storage/lockdefs.h"
 
 /*
  * query_planner

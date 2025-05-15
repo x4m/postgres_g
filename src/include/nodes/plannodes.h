@@ -122,6 +122,9 @@ typedef struct PlannedStmt
 	/* OIDs of relations the plan depends on */
 	List	   *relationOids;
 
+	/* OIDs of relation to be locked */
+	List       *lockrelOids;
+
 	/* other dependencies, as PlanInvalItems */
 	List	   *invalItems;
 

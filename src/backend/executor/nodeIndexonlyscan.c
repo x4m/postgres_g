@@ -43,6 +43,7 @@
 #include "storage/bufmgr.h"
 #include "storage/predicate.h"
 #include "utils/builtins.h"
+#include "utils/lsyscache.h"
 #include "utils/rel.h"
 
 
@@ -123,6 +124,14 @@ IndexOnlyNext(IndexOnlyScanState *node)
 		bool		tuple_from_heap = false;
 
 		CHECK_FOR_INTERRUPTS();
+
+		/*
+		 * For global index we need to get the heapoid of the parittion
+		 * relation from the scan descriptor stored by index scan in order to
+		 * check the visibility map of that relation.
+		 */
+		if (scandesc->xs_global_index)
+			global_indexscan_setup_partrel(scandesc);
 
 		/*
 		 * We can skip the heap fetch if the TID references a heap page on
@@ -534,6 +543,7 @@ ExecInitIndexOnlyScan(IndexOnlyScan *node, EState *estate, int eflags)
 	TupleDesc	tupDesc;
 	int			indnkeyatts;
 	int			namecount;
+	const TupleTableSlotOps *tts_cb;
 
 	/*
 	 * create state structure
@@ -570,13 +580,24 @@ ExecInitIndexOnlyScan(IndexOnlyScan *node, EState *estate, int eflags)
 						  &TTSOpsVirtual);
 
 	/*
+	 * FIXME: Global index scans on partitioned tables require
+	 * TTSOpsBufferHeapTuple, but partitioned tables normally get TTSOpsVirtual
+	 * (no TableAM).  We currently hack this by assuming partitions with global
+	 * indexes are Heap AM.  Proper TableAM integration for partitioned tables
+	 * is needed for slot allocation.
+	 */
+	if (get_rel_relkind(node->indexid) == RELKIND_GLOBAL_INDEX)
+		tts_cb = &TTSOpsBufferHeapTuple;
+	else
+		tts_cb = table_slot_callbacks(currentRelation);
+
+	/*
 	 * We need another slot, in a format that's suitable for the table AM, for
 	 * when we need to fetch a tuple from the table for rechecking visibility.
 	 */
 	indexstate->ioss_TableSlot =
 		ExecAllocTableSlot(&estate->es_tupleTable,
-						   RelationGetDescr(currentRelation),
-						   table_slot_callbacks(currentRelation));
+						   RelationGetDescr(currentRelation), tts_cb);
 
 	/*
 	 * Initialize result type and projection info.  The node's targetlist will

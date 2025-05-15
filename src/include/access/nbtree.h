@@ -1009,6 +1009,9 @@ typedef BTVacuumPostingData *BTVacuumPosting;
 
 typedef struct BTScanPosItem	/* what we remember about each match */
 {
+	Oid		heapOid;	/* Oid of the partition relation , only valid for
+						   global indexes because global index can hold tuples
+						   from multiple partitions */
 	ItemPointerData heapTid;	/* TID of referenced heap item */
 	OffsetNumber indexOffset;	/* index item's location within page */
 	LocationIndex tupleOffset;	/* IndexTuple's offset in workspace, if any */

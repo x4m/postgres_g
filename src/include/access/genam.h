@@ -15,6 +15,8 @@
 #define GENAM_H
 
 #include "access/htup.h"
+#include "access/itup.h"
+#include "access/relscan.h"
 #include "access/sdir.h"
 #include "access/skey.h"
 #include "nodes/tidbitmap.h"
@@ -265,6 +267,10 @@ extern SysScanDesc systable_beginscan_ordered(Relation heapRelation,
 extern HeapTuple systable_getnext_ordered(SysScanDesc sysscan,
 										  ScanDirection direction);
 extern void systable_endscan_ordered(SysScanDesc sysscan);
+extern Relation globalindex_partition_rel_lookup(GlobalIndexPartitionCache pdir, Oid relid);
+extern void globalindex_partition_cache_destroy(GlobalIndexPartitionCache pdir);
+extern GlobalIndexPartitionCache create_globalindex_partition_cache(MemoryContext mcxt);
+extern void global_indexscan_setup_partrel(IndexScanDesc scan);
 extern void systable_inplace_update_begin(Relation relation,
 										  Oid indexId,
 										  bool indexOK,

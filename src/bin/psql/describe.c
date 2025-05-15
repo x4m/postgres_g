@@ -1923,7 +1923,8 @@ describeOneTableDetails(const char *schemaname,
 		attgenerated_col = cols++;
 	}
 	if (tableinfo.relkind == RELKIND_INDEX ||
-		tableinfo.relkind == RELKIND_PARTITIONED_INDEX)
+		tableinfo.relkind == RELKIND_PARTITIONED_INDEX ||
+		tableinfo.relkind == RELKIND_GLOBAL_INDEX)
 	{
 		if (pset.sversion >= 110000)
 		{
@@ -2308,7 +2309,8 @@ describeOneTableDetails(const char *schemaname,
 	}
 
 	if (tableinfo.relkind == RELKIND_INDEX ||
-		tableinfo.relkind == RELKIND_PARTITIONED_INDEX)
+		tableinfo.relkind == RELKIND_PARTITIONED_INDEX ||
+		tableinfo.relkind == RELKIND_GLOBAL_INDEX)
 	{
 		/* Footer information about an index */
 		PGresult   *result;
@@ -2412,7 +2414,8 @@ describeOneTableDetails(const char *schemaname,
 			/*
 			 * If it's a partitioned index, we'll print the tablespace below
 			 */
-			if (tableinfo.relkind == RELKIND_INDEX)
+			if (tableinfo.relkind == RELKIND_INDEX ||
+				tableinfo.relkind == RELKIND_GLOBAL_INDEX)
 				add_tablespace_footer(&cont, tableinfo.relkind,
 									  tableinfo.tablespace, true);
 		}
@@ -3666,6 +3669,7 @@ add_tablespace_footer(printTableContent *const cont, char relkind,
 		relkind == RELKIND_INDEX ||
 		relkind == RELKIND_PARTITIONED_TABLE ||
 		relkind == RELKIND_PARTITIONED_INDEX ||
+		relkind == RELKIND_GLOBAL_INDEX ||
 		relkind == RELKIND_TOASTVALUE)
 	{
 		/*
@@ -4055,6 +4059,7 @@ listTables(const char *tabtypes, const char *pattern, bool verbose, bool showSys
 					  " WHEN " CppAsString2(RELKIND_FOREIGN_TABLE) " THEN '%s'"
 					  " WHEN " CppAsString2(RELKIND_PARTITIONED_TABLE) " THEN '%s'"
 					  " WHEN " CppAsString2(RELKIND_PARTITIONED_INDEX) " THEN '%s'"
+					  " WHEN " CppAsString2(RELKIND_GLOBAL_INDEX) " THEN '%s'"
 					  " END as \"%s\",\n"
 					  "  pg_catalog.pg_get_userbyid(c.relowner) as \"%s\"",
 					  gettext_noop("Schema"),
@@ -4068,6 +4073,7 @@ listTables(const char *tabtypes, const char *pattern, bool verbose, bool showSys
 					  gettext_noop("foreign table"),
 					  gettext_noop("partitioned table"),
 					  gettext_noop("partitioned index"),
+					  gettext_noop("global index"),
 					  gettext_noop("Type"),
 					  gettext_noop("Owner"));
 	cols_so_far = 4;
@@ -4148,7 +4154,8 @@ listTables(const char *tabtypes, const char *pattern, bool verbose, bool showSys
 		appendPQExpBufferStr(&buf, CppAsString2(RELKIND_MATVIEW) ",");
 	if (showIndexes)
 		appendPQExpBufferStr(&buf, CppAsString2(RELKIND_INDEX) ","
-							 CppAsString2(RELKIND_PARTITIONED_INDEX) ",");
+							 CppAsString2(RELKIND_PARTITIONED_INDEX) ","
+							 CppAsString2(RELKIND_GLOBAL_INDEX) ",");
 	if (showSeq)
 		appendPQExpBufferStr(&buf, CppAsString2(RELKIND_SEQUENCE) ",");
 	if (showSystem || pattern)
