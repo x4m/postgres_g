@@ -421,19 +421,10 @@ do_analyze_rel(Relation onerel, const VacuumParams params,
 	 * an explicit column list in the ANALYZE command, however.
 	 *
 	 * If we are doing a recursive scan, we don't want to touch the parent's
-	 * indexes at all.  If we're processing a partitioned table, we need to
-	 * know if there are any indexes, but we don't want to process them.
+	 * indexes at all.  Partitioned table can also have global indexes so we
+	 * need to open indexes for the partitioned table as well.
 	 */
-	if (onerel->rd_rel->relkind == RELKIND_PARTITIONED_TABLE)
-	{
-		List	   *idxs = RelationGetIndexList(onerel);
-
-		Irel = NULL;
-		nindexes = 0;
-		hasindex = idxs != NIL;
-		list_free(idxs);
-	}
-	else if (!inh)
+	if (onerel->rd_rel->relkind == RELKIND_PARTITIONED_TABLE || !inh)
 	{
 		vac_open_indexes(onerel, AccessShareLock, &nindexes, &Irel);
 		hasindex = nindexes > 0;
@@ -651,24 +642,6 @@ do_analyze_rel(Relation onerel, const VacuumParams params,
 							InvalidMultiXactId,
 							NULL, NULL,
 							in_outer_xact);
-
-		/* Same for indexes */
-		for (ind = 0; ind < nindexes; ind++)
-		{
-			AnlIndexData *thisdata = &indexdata[ind];
-			double		totalindexrows;
-
-			totalindexrows = ceil(thisdata->tupleFract * totalrows);
-			vac_update_relstats(Irel[ind],
-								RelationGetNumberOfBlocks(Irel[ind]),
-								totalindexrows,
-								0, 0,
-								false,
-								InvalidTransactionId,
-								InvalidMultiXactId,
-								NULL, NULL,
-								in_outer_xact);
-		}
 	}
 	else if (onerel->rd_rel->relkind == RELKIND_PARTITIONED_TABLE)
 	{
@@ -679,6 +652,28 @@ do_analyze_rel(Relation onerel, const VacuumParams params,
 		CommandCounterIncrement();
 		vac_update_relstats(onerel, -1, totalrows,
 							0, 0, hasindex, InvalidTransactionId,
+							InvalidMultiXactId,
+							NULL, NULL,
+							in_outer_xact);
+	}
+
+	/* Same for indexes */
+	for (ind = 0; ind < nindexes; ind++)
+	{
+		AnlIndexData *thisdata = &indexdata[ind];
+		double		totalindexrows;
+
+		/* Nothing to be done for the partitioned indexes. */
+		if (Irel[ind]->rd_rel->relkind == RELKIND_PARTITIONED_INDEX)
+			continue;
+
+		totalindexrows = ceil(thisdata->tupleFract * totalrows);
+		vac_update_relstats(Irel[ind],
+							RelationGetNumberOfBlocks(Irel[ind]),
+							totalindexrows,
+							0, 0,
+							false,
+							InvalidTransactionId,
 							InvalidMultiXactId,
 							NULL, NULL,
 							in_outer_xact);

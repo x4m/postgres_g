@@ -150,7 +150,16 @@ typedef struct RelationData
 	MemoryContext rd_partcheckcxt;	/* private cxt for rd_partcheck, if any */
 
 	/* data managed by RelationGetIndexList: */
-	List	   *rd_indexlist;	/* list of OIDs of indexes on relation */
+
+	/*
+	 * List of OIDs of indexes on the relation, including the global indexes of
+	 * all its ancestors. We include the ancestor's global indexes because any
+	 * operation performed on this relation, such as insert or update, will
+	 * also affect the global indexes of the ancestors so wherever we need to
+	 * fetch the indexes we also need to fetch the global indexes of the
+	 * ancestors.
+	 */
+	List	   *rd_indexlist;
 	Oid			rd_pkindex;		/* OID of (deferrable?) primary key, if any */
 	bool		rd_ispkdeferrable;	/* is rd_pkindex a deferrable PK? */
 	Oid			rd_replidindex; /* OID of replica identity index, if any */
@@ -721,6 +730,12 @@ RelationCloseSmgr(Relation relation)
 	 RelationNeedsWAL(relation) && \
 	 (relation)->rd_rel->relkind != RELKIND_FOREIGN_TABLE &&	\
 	 !IsCatalogRelation(relation))
+
+/*
+ * Check whether the input relation is a global index or not.
+ */
+#define RelationIsGlobalIndex(relation) \
+	((relation)->rd_rel->relkind == RELKIND_GLOBAL_INDEX)
 
 /* routines in utils/cache/relcache.c */
 extern void RelationIncrementReferenceCount(Relation rel);

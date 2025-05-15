@@ -148,7 +148,12 @@ stats_lock_check_privileges(Oid reloid)
 	 */
 	switch (get_rel_relkind(reloid))
 	{
+		/*
+		 * FIXME, revalidate correct lock type for global index and update
+		 * comments in README.tuplock and other relavent places.
+		 */
 		case RELKIND_INDEX:
+		case RELKIND_GLOBAL_INDEX:
 			index_oid = reloid;
 			table_oid = IndexGetRelation(index_oid, false);
 			index_lockmode = AccessShareLock;

@@ -17,6 +17,7 @@
 #ifndef TABLEAM_H
 #define TABLEAM_H
 
+#include "c.h"
 #include "access/relscan.h"
 #include "access/sdir.h"
 #include "access/xact.h"
@@ -200,6 +201,11 @@ typedef struct TM_FailureData
  * ndeltids is 0 on return from call to tableam, in which case no index tuple
  * deletions are possible.  Simple deletion callers can rely on any entries
  * they know to be deletable appearing in the final array as deletable.
+ *
+ * Note: For global indexes, the TID alone is insufficient to identify the
+ * heap tuple. We also need the partition ID that indicates which partition the
+ * TID belongs to. Later, when accessing the heap, the partition ID can be
+ * converted to the corresponding relation ID.
  */
 typedef struct TM_IndexDelete
 {
@@ -247,6 +253,20 @@ typedef struct TM_IndexDeleteOp
 	TM_IndexDelete *deltids;
 	TM_IndexStatus *status;
 } TM_IndexDeleteOp;
+
+/*
+ * This maintain a entry with respect to each entry of *deltids in
+ * TM_IndexDeleteOp structure.  For each entry it will keep the partition ID
+ * for that tid and the index into the *deltids array.  We need this so that
+ * later we can sort deleted tids in partittion ID order in order to call the
+ * table AM method for checking the deleted tids status.
+ */
+typedef struct PartidDeltidMapping
+{
+	PartitionId		partid;	/* Partition ID of the entry in deltids array
+							   in TM_IndexDeleteOp. */
+	int				idx;	/* Index in deltids array in TM_IndexDeleteOp */
+} PartidDeltidMapping;
 
 /* "options" flag bits for table_tuple_insert */
 /* TABLE_INSERT_SKIP_WAL was 0x0001; RelationNeedsWAL() now governs */

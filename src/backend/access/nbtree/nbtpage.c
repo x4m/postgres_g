@@ -24,6 +24,7 @@
 
 #include "access/nbtree.h"
 #include "access/nbtxlog.h"
+#include "access/table.h"
 #include "access/tableam.h"
 #include "access/transam.h"
 #include "access/xlog.h"
@@ -1509,9 +1510,9 @@ _bt_delitems_cmp(const void *a, const void *b)
  * field (tableam will sort deltids for its own reasons, so we'll need to put
  * it back in leaf-page-wise order afterwards).
  */
-void
-_bt_delitems_delete_check(Relation rel, Buffer buf, Relation heapRel,
-						  TM_IndexDeleteOp *delstate)
+static void
+_bt_delitems_delete_check_guts(Relation rel, Buffer buf, Relation heapRel,
+							   TM_IndexDeleteOp *delstate)
 {
 	Page		page = BufferGetPage(buf);
 	TransactionId snapshotConflictHorizon;
@@ -1676,6 +1677,83 @@ _bt_delitems_delete_check(Relation rel, Buffer buf, Relation heapRel,
 	/* be tidy */
 	for (int i = 0; i < nupdatable; i++)
 		pfree(updatable[i]);
+}
+
+/*
+ * Try to delete item(s) from a btree leaf page during single-page cleanup.
+ *
+ * Refer to the detailed comments in '_bt_delitems_delete_check_guts' for more
+ * information. This function serves as a wrapper to handle the case of a
+ * global index, where we might have TIDs from multiple partitions. It calls
+ * the core functionality for each heap relation corresponding to each
+ * partition.
+ */
+void
+_bt_delitems_delete_check(Relation rel, Buffer buf, Relation heapRel,
+						  TM_IndexDeleteOp *delstate,
+						  PartidDeltidMapping *mapping)
+{
+	/*
+	 * For global index we need to delete the items for each partition
+	 * separately.
+	 */
+	if (RelationIsGlobalIndex(rel))
+	{
+		int		ndeltid;
+		int		starttid = 0;
+		Oid		prevpartid = InvalidPartitionId;
+		TM_IndexDeleteOp partdelstate = *delstate;
+
+		/*
+		 * Sort the mapping array in partittion id order so that we avoid
+		 * calling tableAM for same relation multiple times.
+		 */
+		qsort(mapping, delstate->ndeltids, sizeof(PartidDeltidMapping),
+			  _bt_indexdel_cmp);
+
+		for (ndeltid = 0; ndeltid < delstate->ndeltids; ndeltid++)
+		{
+
+			/*
+			 * If ndeltid is not same as the index present in the mapping then
+			 * swap it with the correct entry.
+			 */
+			if (mapping[ndeltid].idx != ndeltid)
+			{
+				int				idx = mapping[ndeltid].idx;
+				TM_IndexDelete	tmp = delstate->deltids[idx];
+
+				delstate->deltids[idx] = delstate->deltids[ndeltid];
+				delstate->deltids[ndeltid] = tmp;
+			}
+
+			/*
+			 * If this item belong to a different PartitionID mean we need to
+			 * process delete for all the items of the previous PartitionID.
+			 * Also if this is the last item then we need to process all the
+			 * items of the last PartitionId.
+			 */
+			if (PartIdIsValid(prevpartid) &&
+				(mapping[0].partid != prevpartid ||
+				 ndeltid == delstate->ndeltids - 1))
+			{
+				Oid			reloid = IndexGetPartitionReloid(rel, prevpartid);
+				Relation	childRel = table_open(reloid, AccessShareLock);
+
+				partdelstate.deltids = &delstate->deltids[starttid];
+				partdelstate.ndeltids = ndeltid - starttid;
+
+				_bt_delitems_delete_check_guts(rel, buf, childRel,
+											   &partdelstate);
+				starttid = ndeltid;
+				table_close(childRel, AccessShareLock);
+			}
+
+			prevpartid = mapping[ndeltid].partid;
+		}
+	}
+	else
+		_bt_delitems_delete_check_guts(rel, buf, heapRel, delstate);
 }
 
 /*

@@ -106,5 +106,6 @@ extern void RangeVarCallbackOwnsRelation(const RangeVar *relation,
 										 Oid relId, Oid oldRelId, void *arg);
 extern bool PartConstraintImpliedByRelConstraint(Relation scanrel,
 												 List *partConstraint);
-
+extern void AttachParittionsToGlobalIndex(Relation irel, List *reloids);
+extern void DetachFromGlobalIndexes(List *indexoids, List *reloids);
 #endif							/* TABLECMDS_H */

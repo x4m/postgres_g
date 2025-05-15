@@ -107,13 +107,16 @@
 #include "postgres.h"
 
 #include "access/genam.h"
+#include "access/relation.h"
 #include "access/relscan.h"
 #include "access/tableam.h"
 #include "access/xact.h"
 #include "catalog/index.h"
+#include "catalog/partition.h"
 #include "executor/executor.h"
 #include "nodes/nodeFuncs.h"
 #include "storage/lmgr.h"
+#include "utils/lsyscache.h"
 #include "utils/multirangetypes.h"
 #include "utils/rangetypes.h"
 #include "utils/snapmgr.h"
@@ -174,9 +177,11 @@ ExecOpenIndices(ResultRelInfo *resultRelInfo, bool speculative)
 		return;
 
 	/*
-	 * Get cached list of index OIDs
+	 * Get list of all the indexes including the global indexes of all its
+	 * ancestors.
 	 */
 	indexoidlist = RelationGetIndexList(resultRelation);
+
 	len = list_length(indexoidlist);
 	if (len == 0)
 		return;
@@ -212,6 +217,14 @@ ExecOpenIndices(ResultRelInfo *resultRelInfo, bool speculative)
 
 		/* extract index key information from the index's pg_index info */
 		ii = BuildIndexInfo(indexDesc);
+
+		/*
+		 * Fetch partition ID of the relation for the global index.  For more
+		 * details refer comments atop IndexInfo.
+		 */
+		 if (RelationIsGlobalIndex(indexDesc))
+			ii->ii_partid = IndexGetRelationPartitionId(indexDesc,
+														RelationGetRelid(resultRelation));
 
 		/*
 		 * If the indexes are to be used for speculative insertion, add extra

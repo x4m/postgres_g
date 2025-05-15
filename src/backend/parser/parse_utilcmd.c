@@ -1762,6 +1762,7 @@ generateClonedIndexStmt(RangeVar *heapRel, Relation source_idx,
 	index->unique = idxrec->indisunique;
 	index->nulls_not_distinct = idxrec->indnullsnotdistinct;
 	index->primary = idxrec->indisprimary;
+	index->global = (idxrelrec->relkind == RELKIND_GLOBAL_INDEX);
 	index->iswithoutoverlaps = (idxrec->indisprimary || idxrec->indisunique) && idxrec->indisexclusion;
 	index->transformed = true;	/* don't need transformIndexStmt */
 	index->concurrent = false;
@@ -1879,6 +1880,13 @@ generateClonedIndexStmt(RangeVar *heapRel, Relation source_idx,
 		Form_pg_attribute attr = TupleDescAttr(RelationGetDescr(source_idx),
 											   keyno);
 		int16		opt = source_idx->rd_indoption[keyno];
+
+		/*
+		 * We don't need to copy PartitionIdAttributeNumber as this will be
+		 * internally added by DefineIndex while creating a global index.
+		 */
+		if (attnum == PartitionIdAttributeNumber)
+			continue;
 
 		iparam = makeNode(IndexElem);
 
@@ -2528,6 +2536,8 @@ transformIndexConstraint(Constraint *constraint, CreateStmtContext *cxt)
 				Assert(attnum <= heap_rel->rd_att->natts);
 				attform = TupleDescAttr(heap_rel->rd_att, attnum - 1);
 			}
+			else if (attnum == PartitionIdAttributeNumber)
+				continue;
 			else
 				attform = SystemAttributeDefinition(attnum);
 			attname = pstrdup(NameStr(attform->attname));

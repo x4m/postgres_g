@@ -64,7 +64,8 @@ extern void index_check_primary_key(Relation heapRel,
 #define	INDEX_CREATE_CONCURRENT				(1 << 3)
 #define	INDEX_CREATE_IF_NOT_EXISTS			(1 << 4)
 #define	INDEX_CREATE_PARTITIONED			(1 << 5)
-#define INDEX_CREATE_INVALID				(1 << 6)
+#define INDEX_CREATE_GLOBAL					(1 << 6)
+#define INDEX_CREATE_INVALID				(1 << 7)
 
 extern Oid	index_create(Relation heapRelation,
 						 const char *indexRelationName,
@@ -86,7 +87,8 @@ extern Oid	index_create(Relation heapRelation,
 						 bits16 constr_flags,
 						 bool allow_system_table_mods,
 						 bool is_internal,
-						 Oid *constraintId);
+						 Oid *constraintId,
+						 List *inheritors);
 
 #define	INDEX_CONSTR_CREATE_MARK_AS_PRIMARY	(1 << 0)
 #define	INDEX_CONSTR_CREATE_DEFERRABLE		(1 << 1)
@@ -144,7 +146,10 @@ extern void index_build(Relation heapRelation,
 						IndexInfo *indexInfo,
 						bool isreindex,
 						bool parallel);
-
+extern void index_update_stats(Relation rel,
+							   bool hasindex,
+							   bool hasglobalindex,
+							   double reltuples);
 extern void validate_index(Oid heapId, Oid indexId, Snapshot snapshot);
 
 extern void index_set_state_flags(Oid indexId, IndexStateFlagsAction action);
@@ -153,7 +158,7 @@ extern Oid	IndexGetRelation(Oid indexId, bool missing_ok);
 
 extern void reindex_index(const ReindexStmt *stmt, Oid indexId,
 						  bool skip_constraint_checks, char persistence,
-						  const ReindexParams *params);
+						  const ReindexParams *params, Relation heapRelation);
 
 /* Flag bits for reindex_relation(): */
 #define REINDEX_REL_PROCESS_TOAST			0x01

@@ -1989,7 +1989,12 @@ describeOneTableDetails(const char *schemaname,
 	}
 
 	appendPQExpBufferStr(&buf, "\nFROM pg_catalog.pg_attribute a");
-	appendPQExpBuffer(&buf, "\nWHERE a.attrelid = '%s' AND a.attnum > 0 AND NOT a.attisdropped", oid);
+
+	/*
+	 * FIXME: partid column should be avoided only for global indexes.  And
+	 * shall we restrict usage of partid column.
+	 */
+	appendPQExpBuffer(&buf, "\nWHERE a.attrelid = '%s' AND a.attnum > 0 AND NOT a.attisdropped AND a.attname != 'partid'", oid);
 	appendPQExpBufferStr(&buf, "\nORDER BY a.attnum;");
 
 	res = PSQLexec(buf.data);
@@ -2050,6 +2055,14 @@ describeOneTableDetails(const char *schemaname,
 								  schemaname, relationname);
 			else
 				printfPQExpBuffer(&title, _("Partitioned table \"%s.%s\""),
+								  schemaname, relationname);
+			break;
+		case RELKIND_GLOBAL_INDEX:
+			if (tableinfo.relpersistence == 'u')
+				printfPQExpBuffer(&title, _("Unlogged global index \"%s.%s\""),
+								  schemaname, relationname);
+			else
+				printfPQExpBuffer(&title, _("Global index \"%s.%s\""),
 								  schemaname, relationname);
 			break;
 		default:

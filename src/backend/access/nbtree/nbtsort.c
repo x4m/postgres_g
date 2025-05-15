@@ -46,9 +46,11 @@
 #include "access/table.h"
 #include "access/xact.h"
 #include "catalog/index.h"
+#include "catalog/pg_inherits.h"
 #include "commands/progress.h"
 #include "executor/instrument.h"
 #include "miscadmin.h"
+#include "partitioning/partdesc.h"
 #include "pgstat.h"
 #include "storage/bulk_write.h"
 #include "tcop/tcopprot.h"
@@ -286,7 +288,9 @@ static void _bt_parallel_scan_and_sort(BTSpool *btspool, BTSpool *btspool2,
 									   BTShared *btshared, Sharedsort *sharedsort,
 									   Sharedsort *sharedsort2, int sortmem,
 									   bool progress);
-
+static double _bt_spool_scan_partitions(IndexInfo *indexInfo, Relation rel,
+										BTBuildState *buildstate,
+										Relation irel);
 
 /*
  *	btbuild() -- build a new btree index.
@@ -348,6 +352,68 @@ btbuild(Relation heap, Relation index, IndexInfo *indexInfo)
 #endif							/* BTREE_BUILD_STATS */
 
 	return result;
+}
+
+/*
+ * This is a wrapper function to call table_index_build_scan() for each leaf
+ * partition while building a global index.
+ */
+static double
+_bt_spool_scan_partitions(IndexInfo *indexInfo, Relation rel,
+						  BTBuildState *buildstate, Relation irel)
+{
+	double		reltuples = 0;
+	List	   *tableIds;
+
+	Assert(rel->rd_rel->relkind == RELKIND_PARTITIONED_TABLE);
+	Assert(RelationIsGlobalIndex(irel));
+
+	/*
+	 * To retrieve the tuple from all leaf relations, we need to obtain a list
+	 * of all inheritor relations. This operation should only be performed
+	 * during the creation of an index, reindexing, or truncating a relation.
+	 * In these cases, when a global index is involved, the caller already
+	 * holds the necessary locks on all inheritor relations. Therefore, we can
+	 * safely proceed with NoLock in this context.
+	 */
+	tableIds = find_all_inheritors(RelationGetRelid(rel), NoLock, NULL);
+
+	foreach_oid(tableOid, tableIds)
+	{
+		Relation	childrel = table_open(tableOid, NoLock);
+		double		curreltuples;
+
+		/*
+		 * Only leaf relation holds the data so we can ignore other inheritors.
+		 */
+		if (childrel->rd_rel->relkind != RELKIND_RELATION)
+		{
+			table_close(childrel, NoLock);
+			continue;
+		}
+
+		/*
+		 * Get partition id of this partition with respect to the global
+		 * index.
+		 */
+		indexInfo->ii_partid = IndexGetRelationPartitionId(irel, tableOid);
+		curreltuples = table_index_build_scan(childrel, irel, indexInfo, true,
+											  true, _bt_build_callback,
+											  (void *) buildstate, NULL);
+		reltuples += curreltuples;
+
+		/*
+		 * This is the right place to update the relation stats while building
+		 * the global index because at this point we know the individual
+		 * tuples for each partition.
+		 */
+		index_update_stats(childrel, true, true, curreltuples);
+		table_close(childrel, NoLock);
+	}
+
+	list_free(tableIds);
+
+	return reltuples;
 }
 
 /*
@@ -474,9 +540,19 @@ _bt_spools_heapscan(Relation heap, Relation index, BTBuildState *buildstate,
 
 	/* Fill spool using either serial or parallel heap scan */
 	if (!buildstate->btleader)
-		reltuples = table_index_build_scan(heap, index, indexInfo, true, true,
-										   _bt_build_callback, buildstate,
-										   NULL);
+	{
+		/*
+		 * If we are building a global index then we need to scan all the
+		 * child partitions and insert into the global index.
+		 */
+		if (RelationIsGlobalIndex(index))
+			reltuples = _bt_spool_scan_partitions(indexInfo, heap,
+												  buildstate, index);
+		else
+			reltuples = table_index_build_scan(heap, index, indexInfo, true,
+											   true, _bt_build_callback,
+											   buildstate, NULL);
+	}
 	else
 		reltuples = _bt_parallel_heapscan(buildstate,
 										  &indexInfo->ii_BrokenHotChain);

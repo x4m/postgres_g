@@ -1358,7 +1358,8 @@ doDeletion(const ObjectAddress *object, int flags)
 				char		relKind = get_rel_relkind(object->objectId);
 
 				if (relKind == RELKIND_INDEX ||
-					relKind == RELKIND_PARTITIONED_INDEX)
+					relKind == RELKIND_PARTITIONED_INDEX ||
+					relKind == RELKIND_GLOBAL_INDEX)
 				{
 					bool		concurrent = ((flags & PERFORM_DELETION_CONCURRENTLY) != 0);
 					bool		concurrent_lock_mode = ((flags & PERFORM_DELETION_CONCURRENT_LOCK) != 0);

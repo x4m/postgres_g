@@ -2253,6 +2253,27 @@ get_rel_relam(Oid relid)
 	return result;
 }
 
+/*
+ * get_rel_has_globalindex
+ *
+ *		Returns whether the relation has global index or not.
+ */
+bool
+get_rel_has_globalindex(Oid relid)
+{
+	HeapTuple	tp;
+	Form_pg_class reltup;
+	char		result;
+
+	tp = SearchSysCache1(RELOID, ObjectIdGetDatum(relid));
+	if (!HeapTupleIsValid(tp))
+		elog(ERROR, "cache lookup failed for relation %u", relid);
+	reltup = (Form_pg_class) GETSTRUCT(tp);
+	result = reltup->relhasglobalindex;
+	ReleaseSysCache(tp);
+
+	return result;
+}
 
 /*				---------- TRANSFORM CACHE ----------						 */
 

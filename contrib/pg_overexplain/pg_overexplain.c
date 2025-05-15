@@ -522,6 +522,9 @@ overexplain_range_table(PlannedStmt *plannedstmt, ExplainState *es)
 			case RELKIND_PARTITIONED_INDEX:
 				relkind = "partitioned_index";
 				break;
+			case RELKIND_GLOBAL_INDEX:
+				relkind = "global_index";
+				break;
 			case '\0':
 				relkind = NULL;
 				break;

@@ -269,6 +269,15 @@ get_relation_info(PlannerInfo *root, Oid relationObjectId, bool inhparent,
 			}
 
 			/*
+			 * TODO: Global index scan paths are not yet supported.
+			 */
+			if (RelationIsGlobalIndex(indexRelation))
+			{
+				index_close(indexRelation, NoLock);
+				continue;
+			}
+
+			/*
 			 * If the index is valid, but cannot yet be used, ignore it; but
 			 * mark the plan we are generating as transient. See
 			 * src/backend/access/heap/README.HOT for discussion.

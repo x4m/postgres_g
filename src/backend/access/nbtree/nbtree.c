@@ -1505,6 +1505,16 @@ backtrack:
 		nhtidslive = 0;
 		if (callback)
 		{
+			PartitionId		partid = InvalidPartitionId;
+
+			/*
+			 * If this is a global index then get the partition id for the
+			 * heap relation being vacuum so that we only call the callback
+			 * functions for the index tuple which belong to this partition.
+			 */
+			if (RelationIsGlobalIndex(rel) && !PartIdIsValid(partid))
+				partid = IndexGetRelationPartitionId(rel, RelationGetRelid(heaprel));
+
 			/* btbulkdelete callback tells us what to delete (or update) */
 			for (offnum = minoff;
 				 offnum <= maxoff;
@@ -1514,6 +1524,14 @@ backtrack:
 
 				itup = (IndexTuple) PageGetItem(page,
 												PageGetItemId(page, offnum));
+
+				/*
+				 * For global index only call the callback for the heap
+				 * relation which is being vacuumed;
+				 */
+				if (RelationIsGlobalIndex(rel) &&
+					BTreeTupleGetPartitionId(rel, itup) != partid)
+					continue;
 
 				Assert(!BTreeTupleIsPivot(itup));
 				if (!BTreeTupleIsPosting(itup))

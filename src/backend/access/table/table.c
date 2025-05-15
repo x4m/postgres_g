@@ -139,6 +139,7 @@ validate_relation_kind(Relation r)
 {
 	if (r->rd_rel->relkind == RELKIND_INDEX ||
 		r->rd_rel->relkind == RELKIND_PARTITIONED_INDEX ||
+		r->rd_rel->relkind == RELKIND_GLOBAL_INDEX ||
 		r->rd_rel->relkind == RELKIND_COMPOSITE_TYPE)
 		ereport(ERROR,
 				(errcode(ERRCODE_WRONG_OBJECT_TYPE),

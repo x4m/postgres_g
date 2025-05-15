@@ -45,6 +45,7 @@ CATALOG(pg_index_partitions,6015,IndexPartitionsRelationId)
 typedef FormData_pg_index_partitions *Form_pg_index_partitions;
 
 DECLARE_UNIQUE_INDEX_PKEY(pg_index_partitions_indexoid_partid_index, 6018, IndexPartitionsIndexId, pg_index_partitions, btree(indexoid oid_ops, partid int4_ops));
+DECLARE_INDEX(pg_index_partitions_reloid_index, 6019, IndexPartitionsReloidIndexId, pg_index_partitions, btree(reloid oid_ops));
 
 /*
  * Map over the pg_index_partitions table for a particular global index.  This
@@ -74,6 +75,28 @@ typedef struct IndexPartitionInfoEntry
 #define		FirstValidPartitionId		1
 #define		PartIdIsValid(partid)	((bool) ((partid) != InvalidPartitionId))
 
+/*
+ * The "partitionid" is a special purpose attribute this attribute is not have
+ * entry in the pg_attribute table.  But this is just used for getting the
+ * FormData_pg_attribute entry for partition id attribute.
+ *
+ * TODO: We need to find some better way than doing this.
+ */
+#define PartitionIdAttributeNumber				(-100)
+
+static const FormData_pg_attribute partitionid_attr = {
+	.attname = {""},
+	.atttypid = INT4OID,
+	.attlen = sizeof(int32),
+	.attnum = PartitionIdAttributeNumber,
+	.atttypmod = -1,
+	.attbyval = true,
+	.attalign = TYPALIGN_INT,
+	.attstorage = TYPSTORAGE_PLAIN,
+	.attnotnull = true,
+	.attislocal = true,
+};
+
 extern void BuildIndexPartitionInfo(Relation relation, MemoryContext context);
 extern PartitionId IndexGetRelationPartitionId(Relation irel, Oid reloid);
 extern Oid IndexGetPartitionReloid(Relation irel, PartitionId partid);
@@ -81,4 +104,5 @@ extern PartitionId IndexGetNextPartitionID(Relation irel);
 extern void DeleteIndexPartitionEntries(Oid indrelid);
 extern void InsertIndexPartitionEntry(Relation irel, Oid reloid, PartitionId partid);
 extern void InvalidateIndexPartitionEntries(List *reloids, Oid indexoid);
+extern List *IndexPartitionRelidGetGlobalIndexOids(Oid reloid);
 #endif							/* PG_INDEX_PARTITIONS_H */

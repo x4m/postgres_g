@@ -187,7 +187,14 @@ BuildIndexValueDescription(Relation indexRelation,
 	Oid			indrelid;
 	AclResult	aclresult;
 
-	indnkeyatts = IndexRelationGetNumberOfKeyAttributes(indexRelation);
+	/*
+	 * For global index skip the partitionID attribute while describing the
+	 * index values.
+	 */
+	if (RelationIsGlobalIndex(indexRelation))
+		indnkeyatts = IndexRelationGetNumberOfKeyAttributes(indexRelation) - 1;
+	else
+		indnkeyatts = IndexRelationGetNumberOfKeyAttributes(indexRelation);
 
 	/*
 	 * Check permissions- if the user does not have access to view all of the

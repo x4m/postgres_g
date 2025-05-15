@@ -189,6 +189,11 @@ cluster(ParseState *pstate, ClusterStmt *stmt, bool isTopLevel)
 						(errcode(ERRCODE_UNDEFINED_OBJECT),
 						 errmsg("index \"%s\" for table \"%s\" does not exist",
 								stmt->indexname, stmt->relation->relname)));
+			if (get_rel_relkind(indexOid) == RELKIND_GLOBAL_INDEX)
+				ereport(ERROR,
+						(errcode(ERRCODE_UNDEFINED_OBJECT),
+						 errmsg("can not cluster using global index \"%s\" ",
+								stmt->indexname)));
 		}
 
 		/* For non-partitioned tables, do what we came here to do. */

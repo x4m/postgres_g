@@ -60,9 +60,11 @@ get_partition_parent(Oid relid, bool even_if_detached)
 
 	result = get_partition_parent_worker(catalogRelation, relid,
 										 &detach_pending);
-
 	if (!OidIsValid(result))
-		elog(ERROR, "could not find tuple for parent of relation %u", relid);
+	{
+		table_close(catalogRelation, AccessShareLock);
+		return InvalidOid;
+	}
 
 	if (detach_pending && !even_if_detached)
 		elog(ERROR, "relation %u has no parent because it's being detached",

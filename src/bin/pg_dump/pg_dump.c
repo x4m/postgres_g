@@ -5688,6 +5688,7 @@ binary_upgrade_set_pg_class_oids(Archive *fout,
 						 "\n-- For binary upgrade, must preserve pg_class oids and relfilenodes\n");
 
 	if (entry->relkind != RELKIND_INDEX &&
+		entry->relkind != RELKIND_GLOBAL_INDEX &&
 		entry->relkind != RELKIND_PARTITIONED_INDEX)
 	{
 		appendPQExpBuffer(upgrade_buffer,

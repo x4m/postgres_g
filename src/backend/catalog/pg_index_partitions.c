@@ -254,9 +254,8 @@ IndexGetPartitionReloid(Relation irel, PartitionId partid)
  * InvalidateIndexPartitionEntries - Invalidate pg_index_partitions entries
  *
  * Set reloid as Invalid in pg_index_partitions entries with respect to the
- * given reloid.  If a valid global indexoids list is given then only
- * invalidate the reloid entires which are related to the input global index
- * oids.
+ * given reloid.  If a valid reloids list is given then only
+ * invalidate the reloid entires which are related to the input reloids.
  */
 void
 InvalidateIndexPartitionEntries(List *reloids, Oid indexoid)
@@ -339,4 +338,47 @@ IndexGetNextPartitionID(Relation irel)
 	irel->rd_indexpartinfo->max_partid = partid;
 
 	return partid;
+}
+
+/*
+ * IndexPartitionRelidGlobalIndexList - Get global index list for give reloid
+ *
+ * Get list of all the global index for given relation oid.
+ */
+List *
+IndexPartitionRelidGetGlobalIndexOids(Oid reloid)
+{
+	Relation	catalogRelation;
+	SysScanDesc scan;
+	ScanKeyData key;
+	HeapTuple	tuple;
+	List	   *globalindexoids = NIL;
+
+	/*
+	 * Find pg_inherits entries by inhparent.  (We need to scan them all in
+	 * order to verify that no other partition is pending detach.)
+	 */
+	catalogRelation = table_open(IndexPartitionsRelationId, RowExclusiveLock);
+
+	ScanKeyInit(&key,
+				Anum_pg_index_partitions_reloid,
+				BTEqualStrategyNumber, F_OIDEQ,
+				ObjectIdGetDatum(reloid));
+
+	scan = systable_beginscan(catalogRelation, IndexPartitionsReloidIndexId,
+							  true, NULL, 1, &key);
+
+	while ((tuple = systable_getnext(scan)) != NULL)
+	{
+		Form_pg_index_partitions form = (Form_pg_index_partitions) GETSTRUCT(tuple);
+
+		Assert(form->reloid == reloid);
+		globalindexoids = lappend_oid(globalindexoids, form->indexoid);
+	}
+
+	/* Done */
+	systable_endscan(scan);
+	table_close(catalogRelation, RowExclusiveLock);
+
+	return globalindexoids;
 }

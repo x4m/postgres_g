@@ -1429,6 +1429,7 @@ extractRelOptions(HeapTuple tuple, TupleDesc tupdesc,
 			break;
 		case RELKIND_INDEX:
 		case RELKIND_PARTITIONED_INDEX:
+		case RELKIND_GLOBAL_INDEX:
 			options = index_reloptions(amoptions, datum, false);
 			break;
 		case RELKIND_FOREIGN_TABLE:
