@@ -395,6 +395,10 @@ static const internalPQconninfoOption PQconninfoOptions[] = {
 
 	{"scram_server_key", NULL, NULL, NULL, "SCRAM-Server-Key", "D", SCRAM_MAX_KEY_LEN * 2,
 	offsetof(struct pg_conn, scram_server_key)},
+	{"check_all_addrs", "PGCHECKALLADDRS",
+		DefaultLoadBalanceHosts, NULL,
+		"Check-All-Addrs", "", 1,
+	offsetof(struct pg_conn, check_all_addrs)},
 
 	/* OAuth v2 */
 	{"oauth_issuer", NULL, NULL, NULL,
@@ -4478,11 +4482,11 @@ keep_going:						/* We will come back to here until there is
 						conn->status = CONNECTION_OK;
 						sendTerminateConn(conn);
 
-						/*
-						 * Try next host if any, but we don't want to consider
-						 * additional addresses for this host.
-						 */
-						conn->try_next_host = true;
+						if (strcmp(conn->check_all_addrs, "1") == 0)
+							conn->try_next_addr = true;
+						else
+							conn->try_next_host = true;
+
 						goto keep_going;
 					}
 				}
@@ -4533,11 +4537,11 @@ keep_going:						/* We will come back to here until there is
 						conn->status = CONNECTION_OK;
 						sendTerminateConn(conn);
 
-						/*
-						 * Try next host if any, but we don't want to consider
-						 * additional addresses for this host.
-						 */
-						conn->try_next_host = true;
+						if (strcmp(conn->check_all_addrs, "1") == 0)
+							conn->try_next_addr = true;
+						else
+							conn->try_next_host = true;
+
 						goto keep_going;
 					}
 				}
@@ -5171,6 +5175,7 @@ freePGconn(PGconn *conn)
 	free(conn->inBuffer);
 	free(conn->outBuffer);
 	free(conn->rowBuf);
+	free(conn->check_all_addrs);
 	termPQExpBuffer(&conn->errorMessage);
 	termPQExpBuffer(&conn->workBuffer);
 
