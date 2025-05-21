@@ -322,6 +322,7 @@ typedef struct WritebackContext
 } WritebackContext;
 
 /* in buf_init.c */
+extern PGDLLIMPORT int *dirtyFPI;
 extern PGDLLIMPORT BufferDescPadded *BufferDescriptors;
 extern PGDLLIMPORT ConditionVariableMinimallyPadded *BufferIOCVArray;
 extern PGDLLIMPORT WritebackContext BackendWritebackContext;
@@ -490,5 +491,8 @@ extern void DropRelationLocalBuffers(RelFileLocator rlocator,
 									 BlockNumber firstDelBlock);
 extern void DropRelationAllLocalBuffers(RelFileLocator rlocator);
 extern void AtEOXact_LocalBuffers(bool isCommit);
+
+extern void BumpBUsage(int c);
+extern int GetBUsage(int c);
 
 #endif							/* BUFMGR_INTERNALS_H */

@@ -774,7 +774,7 @@ heap_page_prune_and_freeze(Relation relation, Buffer buffer,
 		 * the buffer dirty below.
 		 */
 		if (!do_freeze && !do_prune)
-			MarkBufferDirtyHint(buffer, true);
+			MarkBufferDirtyHint(buffer, true,5);
 	}
 
 	if (do_prune || do_freeze)

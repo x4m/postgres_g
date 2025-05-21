@@ -19,6 +19,7 @@
 #include "storage/bufmgr.h"
 
 BufferDescPadded *BufferDescriptors;
+int *dirtyFPI;
 char	   *BufferBlocks;
 ConditionVariableMinimallyPadded *BufferIOCVArray;
 WritebackContext BackendWritebackContext;
@@ -76,6 +77,10 @@ BufferManagerShmemInit(void)
 	BufferDescriptors = (BufferDescPadded *)
 		ShmemInitStruct("Buffer Descriptors",
 						NBuffers * sizeof(BufferDescPadded),
+						&foundDescs);
+	dirtyFPI = (int *)
+		ShmemInitStruct("dirtyFPI",
+						100 * sizeof(int),
 						&foundDescs);
 
 	/* Align buffer pool on IO page size boundary. */
@@ -185,4 +190,15 @@ BufferManagerShmemSize(void)
 	size = add_size(size, mul_size(NBuffers, sizeof(CkptSortItem)));
 
 	return size;
+}
+
+
+void BumpBUsage(int c)
+{
+	dirtyFPI[c]++;
+}
+
+int GetBUsage(int c)
+{
+	return dirtyFPI[c];
 }

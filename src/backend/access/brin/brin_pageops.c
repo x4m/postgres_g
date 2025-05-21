@@ -547,7 +547,7 @@ brin_start_evacuating_page(Relation idxRel, Buffer buf)
 			 * is not WAL-logged, except accidentally.
 			 */
 			BrinPageFlags(page) |= BRIN_EVACUATE_PAGE;
-			MarkBufferDirtyHint(buf, true);
+			MarkBufferDirtyHint(buf, true,1);
 
 			return true;
 		}

@@ -5432,7 +5432,7 @@ IncrBufferRefCount(Buffer buffer)
  *	  (due to a race condition), so it cannot be used for important changes.
  */
 void
-MarkBufferDirtyHint(Buffer buffer, bool buffer_std)
+MarkBufferDirtyHint(Buffer buffer, bool buffer_std, int place)
 {
 	BufferDesc *bufHdr;
 	Page		page = BufferGetPage(buffer);
@@ -5521,6 +5521,7 @@ MarkBufferDirtyHint(Buffer buffer, bool buffer_std)
 			Assert((MyProc->delayChkptFlags & DELAY_CHKPT_START) == 0);
 			MyProc->delayChkptFlags |= DELAY_CHKPT_START;
 			delayChkptFlags = true;
+			BumpBUsage(place);
 			lsn = XLogSaveBufferForHint(buffer, buffer_std);
 		}
 

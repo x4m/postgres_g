@@ -610,7 +610,7 @@ _hash_kill_items(IndexScanDesc scan)
 	if (killedsomething)
 	{
 		opaque->hasho_flag |= LH_PAGE_HAS_DEAD_TUPLES;
-		MarkBufferDirtyHint(buf, true);
+		MarkBufferDirtyHint(buf, true,3);
 	}
 
 	if (so->hashso_bucket_buf == so->currPos.buf ||
