@@ -37,6 +37,7 @@
 #include <sys/file.h>
 #include <unistd.h>
 
+#include "access/heapam.h"
 #include "access/tableam.h"
 #include "access/xloginsert.h"
 #include "access/xlogutils.h"
@@ -5431,8 +5432,8 @@ IncrBufferRefCount(Buffer buffer)
  * 3. This function does not guarantee that the buffer is always marked dirty
  *	  (due to a race condition), so it cannot be used for important changes.
  */
-void
-MarkBufferDirtyHint(Buffer buffer, bool buffer_std)
+static void
+MarkBufferDirtyHintInternal(Buffer buffer, bool buffer_std, bool heap)
 {
 	BufferDesc *bufHdr;
 	Page		page = BufferGetPage(buffer);
@@ -5521,7 +5522,14 @@ MarkBufferDirtyHint(Buffer buffer, bool buffer_std)
 			Assert((MyProc->delayChkptFlags & DELAY_CHKPT_START) == 0);
 			MyProc->delayChkptFlags |= DELAY_CHKPT_START;
 			delayChkptFlags = true;
-			lsn = XLogSaveBufferForHint(buffer, buffer_std);
+			if (heap && !NeedFullPageWrites())
+			{
+				lsn = XLogSaveHintBits(buffer);
+			}
+			else
+			{
+				lsn = XLogSaveBufferForHint(buffer, buffer_std);
+			}
 		}
 
 		buf_state = LockBufHdr(bufHdr);
@@ -5562,6 +5570,18 @@ MarkBufferDirtyHint(Buffer buffer, bool buffer_std)
 				VacuumCostBalance += VacuumCostPageDirty;
 		}
 	}
+}
+
+void
+MarkBufferDirtyHint(Buffer buffer, bool buffer_std)
+{
+	MarkBufferDirtyHintInternal(buffer, buffer_std, false);
+}
+
+void
+MarkBufferDirtyHeapHint(Buffer buffer)
+{
+	MarkBufferDirtyHintInternal(buffer, true, true);
 }
 
 /*

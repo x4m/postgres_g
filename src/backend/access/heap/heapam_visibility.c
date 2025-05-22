@@ -73,6 +73,7 @@
 #include "access/transam.h"
 #include "access/xact.h"
 #include "access/xlog.h"
+#include "access/xloginsert.h"
 #include "storage/bufmgr.h"
 #include "storage/procarray.h"
 #include "utils/builtins.h"
@@ -129,6 +130,69 @@ SetHintBits(HeapTupleHeader tuple, Buffer buffer,
 
 	tuple->t_infomask |= infomask;
 	MarkBufferDirtyHint(buffer, true);
+}
+
+XLogRecPtr
+XLogSaveHintBits(Buffer buffer)
+{
+	XLogRecPtr	recptr = InvalidXLogRecPtr;
+	XLogRecPtr	lsn;
+	XLogRecPtr	RedoRecPtr;
+
+	/*
+	 * Ensure no checkpoint can change our view of RedoRecPtr.
+	 */
+	//Assert((MyProc->delayChkptFlags & DELAY_CHKPT_START) != 0);
+
+	/*
+	 * Update RedoRecPtr so that we can make the right decision
+	 */
+	RedoRecPtr = GetRedoRecPtr();
+
+	/*
+	 * We assume page LSN is first data on *every* page that can be passed to
+	 * XLogInsert, whether it has the standard page layout or not. Since we're
+	 * only holding a share-lock on the page, we must take the buffer header
+	 * lock when we look at the LSN.
+	 */
+	lsn = BufferGetLSNAtomic(buffer);
+
+	if (lsn <= RedoRecPtr)
+	{
+		/* Log hints only */
+		Page		page = BufferGetPage(buffer);
+		OffsetNumber offnum,
+					maxoff;
+		int i = 0;
+		struct OffsetInfomask {
+			OffsetNumber offnum;
+			uint16 infomask;
+		} array[MaxOffsetNumber];
+		maxoff = PageGetMaxOffsetNumber(page);
+		for (offnum = FirstOffsetNumber;
+			offnum <= maxoff;
+			offnum = OffsetNumberNext(offnum))
+		{
+			ItemId		itemid;
+			HeapTupleHeader tupleheader;
+			itemid = PageGetItemId(page, offnum);
+
+			if (!ItemIdIsUsed(itemid) || ItemIdIsRedirected(itemid) || ItemIdIsDead(itemid))
+				continue;
+
+			tupleheader = (HeapTupleHeader) PageGetItem(page, itemid);
+			array[i].offnum = offnum;
+			array[i].infomask = tupleheader->t_infomask;
+			i++;
+		}
+
+		XLogBeginInsert();
+		XLogRegisterData(&i, sizeof(int32));
+		XLogRegisterData(&array, sizeof(struct OffsetInfomask)*i);
+		recptr = XLogInsert(RM_HEAP2_ID, XLOG_HEAP2_HINTS);
+	}
+
+	return recptr;
 }
 
 /*

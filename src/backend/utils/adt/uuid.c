@@ -652,6 +652,8 @@ generate_uuidv7(uint64 unix_ts_ms, uint32 sub_ms)
 	return uuid;
 }
 
+
+extern XLogRecPtr GetXLogInsertRecPtr(void);
 /*
  * Generate UUID version 7 with the current timestamp.
  */
@@ -660,6 +662,7 @@ uuidv7(PG_FUNCTION_ARGS)
 {
 	int64		ns = get_real_time_ns_ascending();
 	pg_uuid_t  *uuid = generate_uuidv7(ns / NS_PER_MS, ns % NS_PER_MS);
+	elog(WARNING,"Total WAL %llu Mb", GetXLogInsertRecPtr() / (1024*1024));
 
 	PG_RETURN_UUID_P(uuid);
 }

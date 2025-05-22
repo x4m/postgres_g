@@ -65,4 +65,6 @@ extern XLogRecPtr XLogSaveBufferForHint(Buffer buffer, bool buffer_std);
 
 extern void InitXLogInsert(void);
 
+extern bool NeedFullPageWrites(void);
+
 #endif							/* XLOGINSERT_H */

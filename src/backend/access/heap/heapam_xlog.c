@@ -411,6 +411,15 @@ heap_xlog_delete(XLogReaderState *record)
 }
 
 /*
+ * Replay XLOG_HEAP_DELETE records.
+ */
+static void
+heap_xlog_hints(XLogReaderState *record)
+{
+	// TODO
+}
+
+/*
  * Replay XLOG_HEAP_INSERT records.
  */
 static void
@@ -1255,6 +1264,8 @@ heap2_redo(XLogReaderState *record)
 		case XLOG_HEAP2_REWRITE:
 			heap_xlog_logical_rewrite(record);
 			break;
+		case XLOG_HEAP2_HINTS:
+			heap_xlog_hints(record);
 		default:
 			elog(PANIC, "heap2_redo: unknown op code %u", info);
 	}

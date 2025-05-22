@@ -1040,6 +1040,7 @@ XLogCheckBufferNeedsBackup(Buffer buffer)
 	return false;				/* buffer does not need to be backed up */
 }
 
+
 /*
  * Write a backup block if needed when we are setting a hint. Note that
  * this may be called for a variety of page types, not just heaps.

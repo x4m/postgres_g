@@ -452,4 +452,6 @@ heap_execute_freeze_tuple(HeapTupleHeader tuple, HeapTupleFreeze *frz)
 	tuple->t_infomask2 = frz->t_infomask2;
 }
 
+extern XLogRecPtr XLogSaveHintBits(Buffer buffer);
+
 #endif							/* HEAPAM_H */

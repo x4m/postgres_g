@@ -9687,3 +9687,9 @@ SetWalWriterSleeping(bool sleeping)
 	XLogCtl->WalWriterSleeping = sleeping;
 	SpinLockRelease(&XLogCtl->info_lck);
 }
+
+
+bool NeedFullPageWrites()
+{
+	return XLogCtl->Insert.fullPageWrites || XLogCtl->Insert.runningBackups > 0;
+}
