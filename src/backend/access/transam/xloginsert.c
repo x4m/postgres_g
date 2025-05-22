@@ -1040,6 +1040,7 @@ XLogCheckBufferNeedsBackup(Buffer buffer)
 	return false;				/* buffer does not need to be backed up */
 }
 
+extern void BumpBUsage(int c);
 /*
  * Write a backup block if needed when we are setting a hint. Note that
  * this may be called for a variety of page types, not just heaps.
@@ -1062,7 +1063,7 @@ XLogCheckBufferNeedsBackup(Buffer buffer)
  * a correctness perspective.
  */
 XLogRecPtr
-XLogSaveBufferForHint(Buffer buffer, bool buffer_std)
+XLogSaveBufferForHint(Buffer buffer, bool buffer_std, int place)
 {
 	XLogRecPtr	recptr = InvalidXLogRecPtr;
 	XLogRecPtr	lsn;
@@ -1094,6 +1095,8 @@ XLogSaveBufferForHint(Buffer buffer, bool buffer_std)
 		RelFileLocator rlocator;
 		ForkNumber	forkno;
 		BlockNumber blkno;
+
+		BumpBUsage(place);
 
 		/*
 		 * Copy buffer so we don't have to worry about concurrent hint bit or

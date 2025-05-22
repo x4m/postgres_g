@@ -192,7 +192,7 @@ BufferManagerShmemSize(void)
 	return size;
 }
 
-
+extern void BumpBUsage(int c);
 void BumpBUsage(int c)
 {
 	dirtyFPI[c]++;

@@ -61,7 +61,7 @@ extern void log_newpages(RelFileLocator *rlocator, ForkNumber forknum, int num_p
 extern XLogRecPtr log_newpage_buffer(Buffer buffer, bool page_std);
 extern void log_newpage_range(Relation rel, ForkNumber forknum,
 							  BlockNumber startblk, BlockNumber endblk, bool page_std);
-extern XLogRecPtr XLogSaveBufferForHint(Buffer buffer, bool buffer_std);
+extern XLogRecPtr XLogSaveBufferForHint(Buffer buffer, bool buffer_std, int place);
 
 extern void InitXLogInsert(void);
 

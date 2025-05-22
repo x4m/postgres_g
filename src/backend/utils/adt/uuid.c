@@ -666,7 +666,7 @@ uuidv7(PG_FUNCTION_ARGS)
 	{
 		elog(WARNING, "level %d usage %d", i,GetBUsage(i));
 	}
-	elog(WARNING,"Total WAL %ld Mb", GetXLogInsertRecPtr() / (1024*1024));
+	elog(WARNING,"Total WAL %llu Mb", GetXLogInsertRecPtr() / (1024*1024));
 
 	PG_RETURN_UUID_P(uuid);
 }

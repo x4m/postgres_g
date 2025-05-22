@@ -5521,8 +5521,7 @@ MarkBufferDirtyHint(Buffer buffer, bool buffer_std, int place)
 			Assert((MyProc->delayChkptFlags & DELAY_CHKPT_START) == 0);
 			MyProc->delayChkptFlags |= DELAY_CHKPT_START;
 			delayChkptFlags = true;
-			BumpBUsage(place);
-			lsn = XLogSaveBufferForHint(buffer, buffer_std);
+			lsn = XLogSaveBufferForHint(buffer, buffer_std, place);
 		}
 
 		buf_state = LockBufHdr(bufHdr);

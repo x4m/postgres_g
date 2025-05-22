@@ -492,7 +492,7 @@ extern void DropRelationLocalBuffers(RelFileLocator rlocator,
 extern void DropRelationAllLocalBuffers(RelFileLocator rlocator);
 extern void AtEOXact_LocalBuffers(bool isCommit);
 
-extern void BumpBUsage(int c);
+
 extern int GetBUsage(int c);
 
 #endif							/* BUFMGR_INTERNALS_H */
