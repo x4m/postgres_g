@@ -431,6 +431,12 @@ static void find_next_unskippable_block(LVRelState *vacrel, bool *skipsallvis);
 static bool lazy_scan_new_or_empty(LVRelState *vacrel, Buffer buf,
 								   BlockNumber blkno, Page page,
 								   bool sharelock, Buffer vmbuffer);
+static bool identify_and_fix_vm_corruption(Relation relation,
+										   BlockNumber heap_blk,
+										   Buffer heap_buffer, Page heap_page,
+										   bool heap_blk_known_av,
+										   int64 nlpdead_items,
+										   Buffer vmbuffer);
 static int	lazy_scan_prune(LVRelState *vacrel, Buffer buf,
 							BlockNumber blkno, Page page,
 							Buffer vmbuffer, bool all_visible_according_to_vm,
@@ -1933,6 +1939,66 @@ lazy_scan_new_or_empty(LVRelState *vacrel, Buffer buf, BlockNumber blkno,
 	return false;
 }
 
+/*
+ * When updating the visibility map after phase I heap vacuuming, we take the
+ * opportunity to identify and fix any VM corruption.
+ *
+ * heap_blk_known_av is the visibility status of the heap page collected
+ * while finding the next unskippable block in heap_vac_scan_next_block().
+ */
+static bool
+identify_and_fix_vm_corruption(Relation relation,
+							   BlockNumber heap_blk,
+							   Buffer heap_buffer, Page heap_page,
+							   bool heap_blk_known_av,
+							   int64 nlpdead_items,
+							   Buffer vmbuffer)
+{
+	/*
+	 * As of PostgreSQL 9.2, the visibility map bit should never be set if the
+	 * page-level bit is clear.  However, it's possible that the bit got
+	 * cleared after heap_vac_scan_next_block() was called, so we must recheck
+	 * with buffer lock before concluding that the VM is corrupt.
+	 */
+	if (heap_blk_known_av && !PageIsAllVisible(heap_page) &&
+		visibilitymap_get_status(relation, heap_blk, &vmbuffer) != 0)
+	{
+		elog(WARNING, "page is not marked all-visible but visibility map bit is set in relation \"%s\" page %u",
+			 RelationGetRelationName(relation), heap_blk);
+		visibilitymap_clear(relation, heap_blk, vmbuffer,
+							VISIBILITYMAP_VALID_BITS);
+		return true;
+	}
+
+	/*
+	 * It's possible for the value returned by
+	 * GetOldestNonRemovableTransactionId() to move backwards, so it's not
+	 * wrong for us to see tuples that appear to not be visible to everyone
+	 * yet, while PD_ALL_VISIBLE is already set. The real safe xmin value
+	 * never moves backwards, but GetOldestNonRemovableTransactionId() is
+	 * conservative and sometimes returns a value that's unnecessarily small,
+	 * so if we see that contradiction it just means that the tuples that we
+	 * think are not visible to everyone yet actually are, and the
+	 * PD_ALL_VISIBLE flag is correct.
+	 *
+	 * There should never be LP_DEAD items on a page with PD_ALL_VISIBLE set,
+	 * however.
+	 */
+	if (nlpdead_items > 0 && PageIsAllVisible(heap_page))
+	{
+		elog(WARNING, "page containing LP_DEAD items is marked as all-visible in relation \"%s\" page %u",
+			 RelationGetRelationName(relation), heap_blk);
+		PageClearAllVisible(heap_page);
+		MarkBufferDirty(heap_buffer);
+		visibilitymap_clear(relation, heap_blk, vmbuffer,
+							VISIBILITYMAP_VALID_BITS);
+		return true;
+	}
+
+	return false;
+}
+
+
 /* qsort comparator for sorting OffsetNumbers */
 static int
 cmpOffsetNumbers(const void *a, const void *b)
@@ -2079,9 +2145,14 @@ lazy_scan_prune(LVRelState *vacrel,
 	/*
 	 * Handle setting visibility map bit based on information from the VM (as
 	 * of last heap_vac_scan_next_block() call), and from all_visible and
-	 * all_frozen variables
+	 * all_frozen variables. Start by looking for any VM corruption.
 	 */
-	if (!all_visible_according_to_vm && presult.all_visible)
+	if (identify_and_fix_vm_corruption(vacrel->rel, blkno, buf, page,
+									   all_visible_according_to_vm, presult.lpdead_items, vmbuffer))
+	{
+		/* Don't update the VM if we just cleared corruption in it */
+	}
+	else if (!all_visible_according_to_vm && presult.all_visible)
 	{
 		uint8		old_vmbits;
 		uint8		flags = VISIBILITYMAP_ALL_VISIBLE;
@@ -2131,45 +2202,6 @@ lazy_scan_prune(LVRelState *vacrel,
 			vacrel->vm_new_frozen_pages++;
 			*vm_page_frozen = true;
 		}
-	}
-
-	/*
-	 * As of PostgreSQL 9.2, the visibility map bit should never be set if the
-	 * page-level bit is clear.  However, it's possible that the bit got
-	 * cleared after heap_vac_scan_next_block() was called, so we must recheck
-	 * with buffer lock before concluding that the VM is corrupt.
-	 */
-	else if (all_visible_according_to_vm && !PageIsAllVisible(page) &&
-			 visibilitymap_get_status(vacrel->rel, blkno, &vmbuffer) != 0)
-	{
-		elog(WARNING, "page is not marked all-visible but visibility map bit is set in relation \"%s\" page %u",
-			 vacrel->relname, blkno);
-		visibilitymap_clear(vacrel->rel, blkno, vmbuffer,
-							VISIBILITYMAP_VALID_BITS);
-	}
-
-	/*
-	 * It's possible for the value returned by
-	 * GetOldestNonRemovableTransactionId() to move backwards, so it's not
-	 * wrong for us to see tuples that appear to not be visible to everyone
-	 * yet, while PD_ALL_VISIBLE is already set. The real safe xmin value
-	 * never moves backwards, but GetOldestNonRemovableTransactionId() is
-	 * conservative and sometimes returns a value that's unnecessarily small,
-	 * so if we see that contradiction it just means that the tuples that we
-	 * think are not visible to everyone yet actually are, and the
-	 * PD_ALL_VISIBLE flag is correct.
-	 *
-	 * There should never be LP_DEAD items on a page with PD_ALL_VISIBLE set,
-	 * however.
-	 */
-	else if (presult.lpdead_items > 0 && PageIsAllVisible(page))
-	{
-		elog(WARNING, "page containing LP_DEAD items is marked as all-visible in relation \"%s\" page %u",
-			 vacrel->relname, blkno);
-		PageClearAllVisible(page);
-		MarkBufferDirty(buf);
-		visibilitymap_clear(vacrel->rel, blkno, vmbuffer,
-							VISIBILITYMAP_VALID_BITS);
 	}
 
 	/*
