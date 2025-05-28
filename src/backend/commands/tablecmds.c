@@ -1519,6 +1519,17 @@ DropErrorMsgWrongType(const char *relname, char wrongkind, char rightkind)
 			 (wentry->kind != '\0') ? errhint("%s", _(wentry->drophint_msg)) : 0));
 }
 
+static void
+table_drop_xact_callback(XactEvent event, void *arg, XLogRecPtr drop_lsn)
+{
+	char* relName = (char*) arg;
+	if (event != XACT_EVENT_COMMIT)
+		return;
+	elog(LOG, "dropping table \"%s\", lsn=%X/%X",
+		relName, /* Fallback in case of NULL */
+	(uint32)(drop_lsn >> 32), (uint32)drop_lsn);
+}
+
 /*
  * RemoveRelations
  *		Implements DROP TABLE, DROP INDEX, DROP SEQUENCE, DROP VIEW,
@@ -1626,6 +1637,23 @@ RemoveRelations(DropStmt *drop)
 		relOid = RangeVarGetRelidExtended(rel, lockmode, RVR_MISSING_OK,
 										  RangeVarCallbackForDropRelation,
 										  &state);
+
+
+
+		/*
+		 * Log the LSN of a permanent table before deletion. This allows tracking
+		 * the last WAL position before the relation is dropped, which can be
+		 * useful for recovery or debugging purposes.
+		 */
+		if (state.actual_relpersistence == RELPERSISTENCE_PERMANENT &&
+			(state.actual_relkind == RELKIND_RELATION ||
+			 (state.actual_relkind == RELKIND_PARTITIONED_TABLE && !has_superclass(relOid))))
+		{
+			MemoryContext oldcontext;
+			oldcontext = MemoryContextSwitchTo(TopMemoryContext);
+			RegisterXactCallback(table_drop_xact_callback, strdup(rel->relname));
+			MemoryContextSwitchTo(oldcontext);
+		}
 
 		/* Not there? */
 		if (!OidIsValid(relOid))

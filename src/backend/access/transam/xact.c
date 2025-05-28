@@ -338,7 +338,7 @@ static void AtCommit_Memory(void);
 static void AtStart_Cache(void);
 static void AtStart_Memory(void);
 static void AtStart_ResourceOwner(void);
-static void CallXactCallbacks(XactEvent event);
+static void CallXactCallbacks(XactEvent event, XLogRecPtr lsn);
 static void CallSubXactCallbacks(SubXactEvent event,
 								 SubTransactionId mySubid,
 								 SubTransactionId parentSubid);
@@ -1312,7 +1312,7 @@ AtSubStart_ResourceOwner(void)
  * If you change this function, see RecordTransactionCommitPrepared also.
  */
 static TransactionId
-RecordTransactionCommit(void)
+RecordTransactionCommit(XLogRecPtr *commit_lsn)
 {
 	TransactionId xid = GetTopTransactionIdIfAny();
 	bool		markXidCommitted = TransactionIdIsValid(xid);
@@ -1439,7 +1439,7 @@ RecordTransactionCommit(void)
 		/*
 		 * Insert the commit XLOG record.
 		 */
-		XactLogCommitRecord(GetCurrentTransactionStopTimestamp(),
+		*commit_lsn = XactLogCommitRecord(GetCurrentTransactionStopTimestamp(),
 							nchildren, children, nrels, rels,
 							ndroppedstats, droppedstats,
 							nmsgs, invalMessages,
@@ -2230,6 +2230,7 @@ CommitTransaction(void)
 	TransactionState s = CurrentTransactionState;
 	TransactionId latestXid;
 	bool		is_parallel_worker;
+	XLogRecPtr	commit_lsn = 0;
 
 	is_parallel_worker = (s->blockState == TBLOCK_PARALLEL_INPROGRESS);
 
@@ -2278,7 +2279,7 @@ CommitTransaction(void)
 	 */
 
 	CallXactCallbacks(is_parallel_worker ? XACT_EVENT_PARALLEL_PRE_COMMIT
-					  : XACT_EVENT_PRE_COMMIT);
+					  : XACT_EVENT_PRE_COMMIT, commit_lsn);
 
 	/*
 	 * If this xact has started any unfinished parallel operation, clean up
@@ -2362,7 +2363,7 @@ CommitTransaction(void)
 		 * We need to mark our XIDs as committed in pg_xact.  This is where we
 		 * durably commit.
 		 */
-		latestXid = RecordTransactionCommit();
+		latestXid = RecordTransactionCommit(&commit_lsn);
 	}
 	else
 	{
@@ -2405,7 +2406,7 @@ CommitTransaction(void)
 	 */
 
 	CallXactCallbacks(is_parallel_worker ? XACT_EVENT_PARALLEL_COMMIT
-					  : XACT_EVENT_COMMIT);
+					  : XACT_EVENT_COMMIT, commit_lsn);
 
 	CurrentResourceOwner = NULL;
 	ResourceOwnerRelease(TopTransactionResourceOwner,
@@ -2553,7 +2554,7 @@ PrepareTransaction(void)
 			break;
 	}
 
-	CallXactCallbacks(XACT_EVENT_PRE_PREPARE);
+	CallXactCallbacks(XACT_EVENT_PRE_PREPARE, 0);
 
 	/*
 	 * The remaining actions cannot call any user-defined code, so it's safe
@@ -2713,7 +2714,7 @@ PrepareTransaction(void)
 	 * that cure could be worse than the disease.
 	 */
 
-	CallXactCallbacks(XACT_EVENT_PREPARE);
+	CallXactCallbacks(XACT_EVENT_PREPARE, 0);
 
 	ResourceOwnerRelease(TopTransactionResourceOwner,
 						 RESOURCE_RELEASE_BEFORE_LOCKS,
@@ -2960,9 +2961,9 @@ AbortTransaction(void)
 	if (TopTransactionResourceOwner != NULL)
 	{
 		if (is_parallel_worker)
-			CallXactCallbacks(XACT_EVENT_PARALLEL_ABORT);
+			CallXactCallbacks(XACT_EVENT_PARALLEL_ABORT, 0);
 		else
-			CallXactCallbacks(XACT_EVENT_ABORT);
+			CallXactCallbacks(XACT_EVENT_ABORT, 0);
 
 		ResourceOwnerRelease(TopTransactionResourceOwner,
 							 RESOURCE_RELEASE_BEFORE_LOCKS,
@@ -3835,7 +3836,7 @@ UnregisterXactCallback(XactCallback callback, void *arg)
 }
 
 static void
-CallXactCallbacks(XactEvent event)
+CallXactCallbacks(XactEvent event, XLogRecPtr lsn)
 {
 	XactCallbackItem *item;
 	XactCallbackItem *next;
@@ -3844,7 +3845,7 @@ CallXactCallbacks(XactEvent event)
 	{
 		/* allow callbacks to unregister themselves when called */
 		next = item->next;
-		item->callback(event, item->arg);
+		item->callback(event, item->arg, lsn);
 	}
 }
 
