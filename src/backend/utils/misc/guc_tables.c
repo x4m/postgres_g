@@ -638,6 +638,7 @@ char	   *role_string;
 /* should be static, but guc.c needs to get at this */
 bool		in_hot_standby_guc;
 
+bool log_ddl_lsn = false;
 
 /*
  * Displayable names for context types (enum GucContext)
@@ -2141,6 +2142,15 @@ struct config_bool ConfigureNamesBool[] =
 		&vacuum_truncate,
 		true,
 		NULL, NULL, NULL
+	},
+
+	{
+		{"log_ddl_lsn", PGC_USERSET, STATS_MONITORING,
+			gettext_noop("Logs LSN before DROP TABLE, DROP SCHEMA or TRUNCATE operations."),
+			NULL
+		},
+		&log_ddl_lsn,
+		false, NULL, NULL, NULL
 	},
 
 	/* End-of-list marker */

@@ -486,4 +486,6 @@ extern void GUC_check_errcode(int sqlerrcode);
 	pre_format_elog_string(errno, TEXTDOMAIN), \
 	GUC_check_errhint_string = format_elog_string
 
+extern bool log_ddl_lsn;
+
 #endif							/* GUC_H */

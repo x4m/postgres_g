@@ -16,6 +16,8 @@
 
 #include "access/table.h"
 #include "access/xact.h"
+#include "access/xlog.h"
+#include "access/xlogdefs.h"
 #include "catalog/dependency.h"
 #include "catalog/namespace.h"
 #include "catalog/objectaddress.h"
@@ -25,6 +27,7 @@
 #include "miscadmin.h"
 #include "parser/parse_type.h"
 #include "utils/acl.h"
+#include "utils/guc.h"
 #include "utils/lsyscache.h"
 
 
@@ -36,7 +39,6 @@ static bool schema_does_not_exist_skipping(List *object,
 										   const char **msg, char **name);
 static bool type_in_list_does_not_exist_skipping(List *typenames,
 												 const char **msg, char **name);
-
 
 /*
  * Drop one or more objects.
@@ -54,6 +56,9 @@ RemoveObjects(DropStmt *stmt)
 {
 	ObjectAddresses *objects;
 	ListCell   *cell1;
+	XLogRecPtr lsn = InvalidXLogRecPtr;
+	char *schemaname;
+	Oid schemaoid;
 
 	objects = new_object_addresses();
 
@@ -66,10 +71,17 @@ RemoveObjects(DropStmt *stmt)
 
 		/* Get an ObjectAddress for the object. */
 		address = get_object_address(stmt->removeType,
-									 object,
-									 &relation,
-									 AccessExclusiveLock,
-									 stmt->missing_ok);
+									object,
+									&relation,
+									AccessExclusiveLock,
+									stmt->missing_ok);
+
+		if (log_ddl_lsn && stmt->removeType == OBJECT_SCHEMA)
+		{
+			lsn = GetInsertRecPtr();
+			schemaoid = address.objectId;
+			schemaname = get_namespace_name(schemaoid);
+		}
 
 		/*
 		 * Issue NOTICE if supplied object was not found.  Note this is only
@@ -123,6 +135,10 @@ RemoveObjects(DropStmt *stmt)
 	performMultipleDeletions(objects, stmt->behavior, 0);
 
 	free_object_addresses(objects);
+
+	if(!XLogRecPtrIsInvalid(lsn))
+		ereport(NOTICE, (errmsg("drop schema \"%s\": oid=%u, lsn=%X/%X",
+			schemaname, schemaoid, (uint32) (lsn >> 32), (uint32) lsn)));
 }
 
 /*
@@ -521,4 +537,75 @@ does_not_exist_skipping(ObjectType objtype, Node *object)
 		ereport(NOTICE, (errmsg(msg, name)));
 	else
 		ereport(NOTICE, (errmsg(msg, name, args)));
+}
+
+static void
+schema_drop_xact_callback(XactEvent event, void *arg, XLogRecPtr drop_lsn)
+{
+	char* schemaName = (char*) arg;
+	if (event != XACT_EVENT_COMMIT)
+		return;
+	elog(NOTICE, "drop schema \"%s\": oid=%u, lsn=%X/%X",
+		schemaName, (uint32)(drop_lsn >> 32), (uint32)drop_lsn);
+}
+
+void
+DropSchemaCommand(DropSchemaStmt *stmt)
+{
+	List       *objects = NIL;
+	ListCell   *cell;
+	Oid         schemaoid = InvalidOid;
+	const char *schemaname = NULL;
+	XLogRecPtr  lsn = InvalidXLogRecPtr;
+
+	foreach(cell, stmt->schemas)
+	{
+		List       *object = (List *) lfirst(cell);
+		ObjectAddress address;
+		Relation    relation = NULL;
+		Oid         namespaceId = InvalidOid;
+
+		address = get_object_address(OBJECT_SCHEMA, object, &relation,
+								   AccessExclusiveLock, false);
+
+		namespaceId = address.objectId;
+		schemaoid = namespaceId;
+		schemaname = get_namespace_name(namespaceId);
+
+		/* Check permissions */
+		if (!pg_namespace_ownercheck(namespaceId, GetUserId()))
+			aclcheck_error(ACLCHECK_NOT_OWNER, OBJECT_SCHEMA,
+						  get_namespace_name(namespaceId));
+
+		/* Get the LSN before dropping */
+		if (stmt->behavior == DROP_CASCADE)
+			lsn = GetCurrentLSN();
+
+		/*
+		 * Make note if a temporary namespace has been accessed in this
+		 * transaction.
+		 */
+		if (OidIsValid(namespaceId) && isTempNamespace(namespaceId))
+			MyXactFlags |= XACT_FLAGS_ACCESSEDTEMPNAMESPACE;
+
+		/* Release any relcache reference count, but keep lock until commit. */
+		if (relation)
+			table_close(relation, NoLock);
+
+		add_exact_object_address(&address, objects);
+	}
+
+	/* Here we really delete them. */
+	performMultipleDeletions(objects, stmt->behavior, 0);
+
+	free_object_addresses(objects);
+
+	/* Register callback to log the LSN only after commit */
+	if (!XLogRecPtrIsInvalid(lsn))
+	{
+		MemoryContext oldcontext;
+		oldcontext = MemoryContextSwitchTo(TopMemoryContext);
+		RegisterXactCallback(schema_drop_xact_callback, strdup(schemaname));
+		MemoryContextSwitchTo(oldcontext);
+	}
 }
