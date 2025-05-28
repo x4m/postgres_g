@@ -41,6 +41,29 @@ static bool type_in_list_does_not_exist_skipping(List *typenames,
 												 const char **msg, char **name);
 
 /*
+ * Struct to hold schema drop log info for callback
+ */
+typedef struct SchemaDropLogInfo
+{
+	char *schemaname;
+	Oid schemaoid;
+	XLogRecPtr lsn;
+} SchemaDropLogInfo;
+
+static void
+schema_drop_xact_callback(XactEvent event, void *arg, XLogRecPtr drop_lsn)
+{
+	SchemaDropLogInfo *info = (SchemaDropLogInfo *) arg;
+	if (event == XACT_EVENT_COMMIT && !XLogRecPtrIsInvalid(info->lsn))
+	{
+		ereport(NOTICE, (errmsg("drop schema \"%s\": oid=%u, lsn=%X/%X",
+			info->schemaname, info->schemaoid, (uint32)(info->lsn >> 32), (uint32) info->lsn)));
+	}
+	pfree(info->schemaname);
+	pfree(info);
+}
+
+/*
  * Drop one or more objects.
  *
  * We don't currently handle all object types here.  Relations, for example,
@@ -57,8 +80,9 @@ RemoveObjects(DropStmt *stmt)
 	ObjectAddresses *objects;
 	ListCell   *cell1;
 	XLogRecPtr lsn = InvalidXLogRecPtr;
-	char *schemaname;
-	Oid schemaoid;
+	char *schemaname = NULL;
+	Oid schemaoid = InvalidOid;
+	bool log_schema = false;
 
 	objects = new_object_addresses();
 
@@ -76,11 +100,12 @@ RemoveObjects(DropStmt *stmt)
 									AccessExclusiveLock,
 									stmt->missing_ok);
 
-		if (log_ddl_lsn && stmt->removeType == OBJECT_SCHEMA)
+		if (log_ddl_lsn && stmt->removeType == OBJECT_SCHEMA && OidIsValid(address.objectId))
 		{
 			lsn = GetInsertRecPtr();
 			schemaoid = address.objectId;
-			schemaname = get_namespace_name(schemaoid);
+			schemaname = pstrdup(get_namespace_name(schemaoid));
+			log_schema = true;
 		}
 
 		/*
@@ -136,9 +161,14 @@ RemoveObjects(DropStmt *stmt)
 
 	free_object_addresses(objects);
 
-	if(!XLogRecPtrIsInvalid(lsn))
-		ereport(NOTICE, (errmsg("drop schema \"%s\": oid=%u, lsn=%X/%X",
-			schemaname, schemaoid, (uint32) (lsn >> 32), (uint32) lsn)));
+	if (log_schema && !XLogRecPtrIsInvalid(lsn))
+	{
+		SchemaDropLogInfo *info = palloc(sizeof(SchemaDropLogInfo));
+		info->schemaname = schemaname;
+		info->schemaoid = schemaoid;
+		info->lsn = lsn;
+		RegisterXactCallback(schema_drop_xact_callback, info);
+	}
 }
 
 /*
@@ -537,75 +567,4 @@ does_not_exist_skipping(ObjectType objtype, Node *object)
 		ereport(NOTICE, (errmsg(msg, name)));
 	else
 		ereport(NOTICE, (errmsg(msg, name, args)));
-}
-
-static void
-schema_drop_xact_callback(XactEvent event, void *arg, XLogRecPtr drop_lsn)
-{
-	char* schemaName = (char*) arg;
-	if (event != XACT_EVENT_COMMIT)
-		return;
-	elog(NOTICE, "drop schema \"%s\": oid=%u, lsn=%X/%X",
-		schemaName, (uint32)(drop_lsn >> 32), (uint32)drop_lsn);
-}
-
-void
-DropSchemaCommand(DropSchemaStmt *stmt)
-{
-	List       *objects = NIL;
-	ListCell   *cell;
-	Oid         schemaoid = InvalidOid;
-	const char *schemaname = NULL;
-	XLogRecPtr  lsn = InvalidXLogRecPtr;
-
-	foreach(cell, stmt->schemas)
-	{
-		List       *object = (List *) lfirst(cell);
-		ObjectAddress address;
-		Relation    relation = NULL;
-		Oid         namespaceId = InvalidOid;
-
-		address = get_object_address(OBJECT_SCHEMA, object, &relation,
-								   AccessExclusiveLock, false);
-
-		namespaceId = address.objectId;
-		schemaoid = namespaceId;
-		schemaname = get_namespace_name(namespaceId);
-
-		/* Check permissions */
-		if (!pg_namespace_ownercheck(namespaceId, GetUserId()))
-			aclcheck_error(ACLCHECK_NOT_OWNER, OBJECT_SCHEMA,
-						  get_namespace_name(namespaceId));
-
-		/* Get the LSN before dropping */
-		if (stmt->behavior == DROP_CASCADE)
-			lsn = GetCurrentLSN();
-
-		/*
-		 * Make note if a temporary namespace has been accessed in this
-		 * transaction.
-		 */
-		if (OidIsValid(namespaceId) && isTempNamespace(namespaceId))
-			MyXactFlags |= XACT_FLAGS_ACCESSEDTEMPNAMESPACE;
-
-		/* Release any relcache reference count, but keep lock until commit. */
-		if (relation)
-			table_close(relation, NoLock);
-
-		add_exact_object_address(&address, objects);
-	}
-
-	/* Here we really delete them. */
-	performMultipleDeletions(objects, stmt->behavior, 0);
-
-	free_object_addresses(objects);
-
-	/* Register callback to log the LSN only after commit */
-	if (!XLogRecPtrIsInvalid(lsn))
-	{
-		MemoryContext oldcontext;
-		oldcontext = MemoryContextSwitchTo(TopMemoryContext);
-		RegisterXactCallback(schema_drop_xact_callback, strdup(schemaname));
-		MemoryContextSwitchTo(oldcontext);
-	}
 }
