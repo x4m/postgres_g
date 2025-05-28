@@ -21,7 +21,7 @@
 #include "access/transam.h"
 #include "access/xlog.h"
 #include "access/xloginsert.h"
-#include "access/visibilitymapdefs.h"
+#include "access/visibilitymap.h"
 #include "commands/vacuum.h"
 #include "executor/instrument.h"
 #include "miscadmin.h"
@@ -177,6 +177,13 @@ static void heap_prune_record_unchanged_lp_redirect(PruneState *prstate, OffsetN
 
 static void page_verify_redirects(Page page);
 
+static bool identify_and_fix_vm_corruption(Relation relation,
+										   BlockNumber heap_blk,
+										   Buffer heap_buffer, Page heap_page,
+										   bool heap_blk_known_av,
+										   int64 nlpdead_items,
+										   Buffer vmbuffer);
+
 
 /*
  * Optionally prune and repair fragmentation in the specified page.
@@ -261,7 +268,9 @@ heap_page_prune_opt(Relation relation, Buffer buffer)
 			 * not the relation has indexes, since we cannot safely determine
 			 * that during on-access pruning with the current implementation.
 			 */
-			heap_page_prune_and_freeze(relation, buffer, vistest, 0,
+			heap_page_prune_and_freeze(relation, buffer, false,
+									   InvalidBuffer,
+									   vistest, 0,
 									   NULL, &presult, PRUNE_ON_ACCESS, &dummy_off_loc, NULL, NULL);
 
 			/*
@@ -294,6 +303,64 @@ heap_page_prune_opt(Relation relation, Buffer buffer)
 	}
 }
 
+/*
+ * When updating the visibility map after phase I heap vacuuming, we take the
+ * opportunity to identify and fix any VM corruption.
+ *
+ * heap_blk_known_av is the visibility status of the heap page collected
+ * while finding the next unskippable block in heap_vac_scan_next_block().
+ */
+static bool
+identify_and_fix_vm_corruption(Relation relation,
+							   BlockNumber heap_blk,
+							   Buffer heap_buffer, Page heap_page,
+							   bool heap_blk_known_av,
+							   int64 nlpdead_items,
+							   Buffer vmbuffer)
+{
+	/*
+	 * As of PostgreSQL 9.2, the visibility map bit should never be set if the
+	 * page-level bit is clear.  However, it's possible that the bit got
+	 * cleared after heap_vac_scan_next_block() was called, so we must recheck
+	 * with buffer lock before concluding that the VM is corrupt.
+	 */
+	if (heap_blk_known_av && !PageIsAllVisible(heap_page) &&
+		visibilitymap_get_status(relation, heap_blk, &vmbuffer) != 0)
+	{
+		elog(WARNING, "page is not marked all-visible but visibility map bit is set in relation \"%s\" page %u",
+			 RelationGetRelationName(relation), heap_blk);
+		visibilitymap_clear(relation, heap_blk, vmbuffer,
+							VISIBILITYMAP_VALID_BITS);
+		return true;
+	}
+
+	/*
+	 * It's possible for the value returned by
+	 * GetOldestNonRemovableTransactionId() to move backwards, so it's not
+	 * wrong for us to see tuples that appear to not be visible to everyone
+	 * yet, while PD_ALL_VISIBLE is already set. The real safe xmin value
+	 * never moves backwards, but GetOldestNonRemovableTransactionId() is
+	 * conservative and sometimes returns a value that's unnecessarily small,
+	 * so if we see that contradiction it just means that the tuples that we
+	 * think are not visible to everyone yet actually are, and the
+	 * PD_ALL_VISIBLE flag is correct.
+	 *
+	 * There should never be LP_DEAD items on a page with PD_ALL_VISIBLE set,
+	 * however.
+	 */
+	if (nlpdead_items > 0 && PageIsAllVisible(heap_page))
+	{
+		elog(WARNING, "page containing LP_DEAD items is marked as all-visible in relation \"%s\" page %u",
+			 RelationGetRelationName(relation), heap_blk);
+		PageClearAllVisible(heap_page);
+		MarkBufferDirty(heap_buffer);
+		visibilitymap_clear(relation, heap_blk, vmbuffer,
+							VISIBILITYMAP_VALID_BITS);
+		return true;
+	}
+
+	return false;
+}
 
 /*
  * Prune and repair fragmentation and potentially freeze tuples on the
@@ -313,6 +380,10 @@ heap_page_prune_opt(Relation relation, Buffer buffer)
  * the VM bits can be set.  They are always set to false when the
  * HEAP_PRUNE_FREEZE option is not set, because at the moment only callers
  * that also freeze need that information.
+ *
+ * blk_known_av is the visibility status of the heap block as of the last call
+ * to find_next_unskippable_block(). vmbuffer is the buffer that may already
+ * contain the required block of the visibility map.
  *
  * vistest is used to distinguish whether tuples are DEAD or RECENTLY_DEAD
  * (see heap_prune_satisfies_vacuum).
@@ -349,6 +420,8 @@ heap_page_prune_opt(Relation relation, Buffer buffer)
  */
 void
 heap_page_prune_and_freeze(Relation relation, Buffer buffer,
+						   bool blk_known_av,
+						   Buffer vmbuffer,
 						   GlobalVisState *vistest,
 						   int options,
 						   struct VacuumCutoffs *cutoffs,
@@ -897,6 +970,16 @@ heap_page_prune_and_freeze(Relation relation, Buffer buffer,
 	presult->lpdead_items = prstate.lpdead_items;
 	/* the presult->deadoffsets array was already filled in */
 
+	/*
+	 * Clear any VM corruption. This does not need to be done in a critical
+	 * section.
+	 */
+	presult->vm_corruption = false;
+	if (options & HEAP_PAGE_PRUNE_UPDATE_VM)
+		presult->vm_corruption = identify_and_fix_vm_corruption(relation,
+																blockno, buffer, page,
+																blk_known_av,
+																prstate.lpdead_items, vmbuffer);
 	if (prstate.freeze)
 	{
 		if (presult->nfrozen > 0)

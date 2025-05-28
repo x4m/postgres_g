@@ -42,6 +42,7 @@
 /* "options" flag bits for heap_page_prune_and_freeze */
 #define HEAP_PAGE_PRUNE_MARK_UNUSED_NOW		(1 << 0)
 #define HEAP_PAGE_PRUNE_FREEZE				(1 << 1)
+#define HEAP_PAGE_PRUNE_UPDATE_VM			(1 << 2)
 
 typedef struct BulkInsertStateData *BulkInsertState;
 struct TupleTableSlot;
@@ -247,6 +248,7 @@ typedef struct PruneFreezeResult
 	bool		all_visible;
 	bool		all_frozen;
 	TransactionId vm_conflict_horizon;
+	bool		vm_corruption;
 
 	/*
 	 * Whether or not the page makes rel truncation unsafe.  This is set to
@@ -380,6 +382,8 @@ extern TransactionId heap_index_delete_tuples(Relation rel,
 struct GlobalVisState;
 extern void heap_page_prune_opt(Relation relation, Buffer buffer);
 extern void heap_page_prune_and_freeze(Relation relation, Buffer buffer,
+									   bool blk_known_av,
+									   Buffer vmbuffer,
 									   struct GlobalVisState *vistest,
 									   int options,
 									   struct VacuumCutoffs *cutoffs,
