@@ -2152,11 +2152,26 @@ lazy_scan_prune(LVRelState *vacrel,
 	{
 		/* Don't update the VM if we just cleared corruption in it */
 	}
-	else if (!all_visible_according_to_vm && presult.all_visible)
+
+	/*
+	 * If the page isn't yet marked all-visible in the VM or it is and needs
+	 * to me marked all-frozen, update the VM Note that all_frozen is only
+	 * valid if all_visible is true, so we must check both all_visible and
+	 * all_frozen.
+	 */
+	else if (presult.all_visible &&
+			 (!all_visible_according_to_vm ||
+			  (presult.all_frozen && !VM_ALL_FROZEN(vacrel->rel, blkno, &vmbuffer))))
 	{
 		uint8		old_vmbits;
 		uint8		flags = VISIBILITYMAP_ALL_VISIBLE;
 
+		/*
+		 * If the page is all-frozen, we can pass InvalidTransactionId as our
+		 * cutoff_xid, since a snapshotConflictHorizon sufficient to make
+		 * everything safe for REDO was logged when the page's tuples were
+		 * frozen.
+		 */
 		if (presult.all_frozen)
 		{
 			Assert(!TransactionIdIsValid(presult.vm_conflict_horizon));
@@ -2169,21 +2184,28 @@ lazy_scan_prune(LVRelState *vacrel,
 		 * checksums are not enabled).  Regardless, set both bits so that we
 		 * get back in sync.
 		 *
-		 * NB: If the heap page is all-visible but the VM bit is not set, we
-		 * don't need to dirty the heap page.  However, if checksums are
-		 * enabled, we do need to make sure that the heap page is dirtied
-		 * before passing it to visibilitymap_set(), because it may be logged.
-		 * Given that this situation should only happen in rare cases after a
-		 * crash, it is not worth optimizing.
+		 * If the heap page is all-visible but the VM bit is not set, we don't
+		 * need to dirty the heap page.  However, if checksums are enabled, we
+		 * do need to make sure that the heap page is dirtied before passing
+		 * it to visibilitymap_set(), because it may be logged.
 		 */
-		PageSetAllVisible(page);
-		MarkBufferDirty(buf);
+		if (!PageIsAllVisible(page))
+		{
+			PageSetAllVisible(page);
+			MarkBufferDirty(buf);
+		}
 		old_vmbits = visibilitymap_set(vacrel->rel, blkno, buf,
 									   InvalidXLogRecPtr,
 									   vmbuffer, presult.vm_conflict_horizon,
 									   flags);
 
 		/*
+		 * Even if we are only setting the all-frozen bit, there is a small
+		 * chance that the VM was modified sometime between setting
+		 * all_visible_according_to_vm and checking the visibility during
+		 * pruning. Check the return value of old_vmbits to ensure the
+		 * visibility map counters used for logging are accurate.
+		 *
 		 * If the page wasn't already set all-visible and/or all-frozen in the
 		 * VM, count it as newly set for logging.
 		 */
@@ -2198,66 +2220,6 @@ lazy_scan_prune(LVRelState *vacrel,
 		}
 		else if ((old_vmbits & VISIBILITYMAP_ALL_FROZEN) == 0 &&
 				 presult.all_frozen)
-		{
-			vacrel->vm_new_frozen_pages++;
-			*vm_page_frozen = true;
-		}
-	}
-
-	/*
-	 * If the all-visible page is all-frozen but not marked as such yet, mark
-	 * it as all-frozen.  Note that all_frozen is only valid if all_visible is
-	 * true, so we must check both all_visible and all_frozen.
-	 */
-	else if (all_visible_according_to_vm && presult.all_visible &&
-			 presult.all_frozen && !VM_ALL_FROZEN(vacrel->rel, blkno, &vmbuffer))
-	{
-		uint8		old_vmbits;
-
-		/*
-		 * Avoid relying on all_visible_according_to_vm as a proxy for the
-		 * page-level PD_ALL_VISIBLE bit being set, since it might have become
-		 * stale -- even when all_visible is set
-		 */
-		if (!PageIsAllVisible(page))
-		{
-			PageSetAllVisible(page);
-			MarkBufferDirty(buf);
-		}
-
-		/*
-		 * Set the page all-frozen (and all-visible) in the VM.
-		 *
-		 * We can pass InvalidTransactionId as our cutoff_xid, since a
-		 * snapshotConflictHorizon sufficient to make everything safe for REDO
-		 * was logged when the page's tuples were frozen.
-		 */
-		Assert(!TransactionIdIsValid(presult.vm_conflict_horizon));
-		old_vmbits = visibilitymap_set(vacrel->rel, blkno, buf,
-									   InvalidXLogRecPtr,
-									   vmbuffer, InvalidTransactionId,
-									   VISIBILITYMAP_ALL_VISIBLE |
-									   VISIBILITYMAP_ALL_FROZEN);
-
-		/*
-		 * The page was likely already set all-visible in the VM. However,
-		 * there is a small chance that it was modified sometime between
-		 * setting all_visible_according_to_vm and checking the visibility
-		 * during pruning. Check the return value of old_vmbits anyway to
-		 * ensure the visibility map counters used for logging are accurate.
-		 */
-		if ((old_vmbits & VISIBILITYMAP_ALL_VISIBLE) == 0)
-		{
-			vacrel->vm_new_visible_pages++;
-			vacrel->vm_new_visible_frozen_pages++;
-			*vm_page_frozen = true;
-		}
-
-		/*
-		 * We already checked that the page was not set all-frozen in the VM
-		 * above, so we don't need to test the value of old_vmbits.
-		 */
-		else
 		{
 			vacrel->vm_new_frozen_pages++;
 			*vm_page_frozen = true;
