@@ -346,7 +346,7 @@ gin_check_posting_tree_parent_keys_consistency(Relation rel, BlockNumber posting
 				 * Check if this tuple is consistent with the downlink in the
 				 * parent.
 				 */
-				if (i == maxoff && ItemPointerIsValid(&stack->parentkey) &&
+				if (stack->parentblk != InvalidBlockNumber && i == maxoff &&
 					ItemPointerCompare(&stack->parentkey, &posting_item->key) < 0)
 					ereport(ERROR,
 							(errcode(ERRCODE_INDEX_CORRUPTED),
@@ -359,10 +359,14 @@ gin_check_posting_tree_parent_keys_consistency(Relation rel, BlockNumber posting
 				ptr->depth = stack->depth + 1;
 
 				/*
-				 * The rightmost parent key is always invalid item pointer.
-				 * Its value is 'Infinity' and not explicitly stored.
+				 * Set rightmost parent key to invalid item pointer. Its value
+				 * is 'Infinity' and not explicitly stored.
 				 */
-				ptr->parentkey = posting_item->key;
+				if (rightlink == InvalidBlockNumber)
+					ItemPointerSetInvalid(&ptr->parentkey);
+				else
+					ptr->parentkey = posting_item->key;
+
 				ptr->parentblk = stack->blkno;
 				ptr->blkno = BlockIdGetBlockNumber(&posting_item->child_blkno);
 				ptr->next = stack->next;
