@@ -360,7 +360,8 @@ identify_and_fix_vm_corruption(Relation relation,
 
 /*
  * Prune and repair fragmentation and potentially freeze tuples on the
- * specified page.
+ * specified page. If the page's visibility status has changed, update it in
+ * the VM.
  *
  * Caller must have pin and buffer cleanup lock on the page.  Note that we
  * don't update the FSM information for page on caller's behalf.  Caller might
@@ -436,6 +437,8 @@ heap_page_prune_and_freeze(Relation relation, Buffer buffer,
 	bool		do_freeze;
 	bool		do_prune;
 	bool		do_hint;
+	uint8		vmflags = 0;
+	uint8		old_vmbits = 0;
 	bool		hint_bit_fpi;
 	int64		fpi_before = pgWalUsage.wal_fpi;
 
@@ -936,7 +939,7 @@ heap_page_prune_and_freeze(Relation relation, Buffer buffer,
 	 *
 	 * Now that freezing has been finalized, unset all_visible if there are
 	 * any LP_DEAD items on the page.  It needs to reflect the present state
-	 * of the page, as expected by our caller.
+	 * of the page, as expected for updating the visibility map.
 	 */
 	if (prstate.all_visible && prstate.lpdead_items == 0)
 	{
@@ -952,31 +955,91 @@ heap_page_prune_and_freeze(Relation relation, Buffer buffer,
 	presult->hastup = prstate.hastup;
 
 	/*
-	 * For callers planning to update the visibility map, the conflict horizon
-	 * for that record must be the newest xmin on the page.  However, if the
-	 * page is completely frozen, there can be no conflict and the
-	 * vm_conflict_horizon should remain InvalidTransactionId.  This includes
-	 * the case that we just froze all the tuples; the prune-freeze record
-	 * included the conflict XID already so the caller doesn't need it.
+	 * If updating the visibility map, the conflict horizon for that record
+	 * must be the newest xmin on the page.  However, if the page is
+	 * completely frozen, there can be no conflict and the vm_conflict_horizon
+	 * should remain InvalidTransactionId.  This includes the case that we
+	 * just froze all the tuples; the prune-freeze record included the
+	 * conflict XID already so the VM update record doesn't need it.
 	 */
 	if (presult->all_frozen)
 		presult->vm_conflict_horizon = InvalidTransactionId;
 	else
 		presult->vm_conflict_horizon = prstate.visibility_cutoff_xid;
 
+	/*
+	 * Handle setting visibility map bit based on information from the VM (as
+	 * of last heap_vac_scan_next_block() call), and from all_visible and
+	 * all_frozen variables.
+	 */
+	if (options & HEAP_PAGE_PRUNE_UPDATE_VM)
+	{
+		if (identify_and_fix_vm_corruption(relation,
+										   blockno, buffer, page,
+										   blk_known_av,
+										   prstate.lpdead_items, vmbuffer))
+		{
+			/* If we fix corruption, don't update the VM further */
+		}
+
+		/*
+		 * If the page isn't yet marked all-visible in the VM or it is and
+		 * needs to me marked all-frozen, update the VM Note that all_frozen
+		 * is only valid if all_visible is true, so we must check both
+		 * all_visible and all_frozen.
+		 */
+		else if (presult->all_visible &&
+				 (!blk_known_av ||
+				  (presult->all_frozen && !VM_ALL_FROZEN(relation, blockno, &vmbuffer))))
+		{
+			Assert(prstate.lpdead_items == 0);
+			vmflags = VISIBILITYMAP_ALL_VISIBLE;
+
+			/*
+			 * If the page is all-frozen, we can pass InvalidTransactionId as
+			 * our cutoff_xid, since a snapshotConflictHorizon sufficient to
+			 * make everything safe for REDO was logged when the page's tuples
+			 * were frozen.
+			 */
+			if (presult->all_frozen)
+			{
+				Assert(!TransactionIdIsValid(presult->vm_conflict_horizon));
+				vmflags |= VISIBILITYMAP_ALL_FROZEN;
+			}
+
+			/*
+			 * It's possible for the VM bit to be clear and the page-level bit
+			 * to be set if checksums are not enabled.
+			 *
+			 * And even if we are just planning to update the frozen bit in
+			 * the VM, we shouldn't rely on all_visible_according_to_vm as a
+			 * proxy for the page-level PD_ALL_VISIBLE bit being set, since it
+			 * might have become stale.
+			 *
+			 * If the heap page is all-visible but the VM bit is not set, we
+			 * don't need to dirty the heap page.  However, if checksums are
+			 * enabled, we do need to make sure that the heap page is dirtied
+			 * before passing it to visibilitymap_set(), because it may be
+			 * logged.
+			 */
+			if (!PageIsAllVisible(page) || XLogHintBitIsNeeded())
+			{
+				PageSetAllVisible(page);
+				MarkBufferDirty(buffer);
+			}
+
+			old_vmbits = visibilitymap_set(relation, blockno, buffer, InvalidXLogRecPtr,
+										   vmbuffer, presult->vm_conflict_horizon,
+										   vmflags);
+		}
+	}
+
 	presult->lpdead_items = prstate.lpdead_items;
 	/* the presult->deadoffsets array was already filled in */
 
-	/*
-	 * Clear any VM corruption. This does not need to be done in a critical
-	 * section.
-	 */
-	presult->vm_corruption = false;
-	if (options & HEAP_PAGE_PRUNE_UPDATE_VM)
-		presult->vm_corruption = identify_and_fix_vm_corruption(relation,
-																blockno, buffer, page,
-																blk_known_av,
-																prstate.lpdead_items, vmbuffer);
+	presult->old_vmbits = old_vmbits;
+	presult->new_vmbits = vmflags;
+
 	if (prstate.freeze)
 	{
 		if (presult->nfrozen > 0)
