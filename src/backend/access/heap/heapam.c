@@ -2493,9 +2493,6 @@ heap_multi_insert(Relation relation, TupleTableSlot **slots, int ntuples,
 		/*
 		 * If the page is all visible, need to clear that, unless we're only
 		 * going to add further frozen rows to it.
-		 *
-		 * If we're only adding already frozen rows to a previously empty
-		 * page, mark it as all-visible.
 		 */
 		if (PageIsAllVisible(page) && !(options & HEAP_INSERT_FROZEN))
 		{
@@ -2505,8 +2502,22 @@ heap_multi_insert(Relation relation, TupleTableSlot **slots, int ntuples,
 								BufferGetBlockNumber(buffer),
 								vmbuffer, VISIBILITYMAP_VALID_BITS);
 		}
+
+		/*
+		 * If we're only adding already frozen rows to a previously empty
+		 * page, mark it as all-frozen and update the visibility map. We're
+		 * already holding a pin on the vmbuffer.
+		 */
 		else if (all_frozen_set)
+		{
 			PageSetAllVisible(page);
+			LockBuffer(vmbuffer, BUFFER_LOCK_EXCLUSIVE);
+			visibilitymap_set_vmbyte(relation,
+									 BufferGetBlockNumber(buffer),
+									 vmbuffer,
+									 VISIBILITYMAP_ALL_VISIBLE |
+									 VISIBILITYMAP_ALL_FROZEN);
+		}
 
 		/*
 		 * XXX Should we set PageSetPrunable on this page ? See heap_insert()
@@ -2554,6 +2565,12 @@ heap_multi_insert(Relation relation, TupleTableSlot **slots, int ntuples,
 			xlrec->flags = 0;
 			if (all_visible_cleared)
 				xlrec->flags = XLH_INSERT_ALL_VISIBLE_CLEARED;
+
+			/*
+			 * We don't have to worry about including a conflict xid in the
+			 * WAL record as HEAP_INSERT_FROZEN intentionally violates
+			 * visibility rules.
+			 */
 			if (all_frozen_set)
 				xlrec->flags = XLH_INSERT_ALL_FROZEN_SET;
 
@@ -2616,7 +2633,10 @@ heap_multi_insert(Relation relation, TupleTableSlot **slots, int ntuples,
 
 			XLogBeginInsert();
 			XLogRegisterData(xlrec, tupledata - scratch.data);
+
 			XLogRegisterBuffer(0, buffer, REGBUF_STANDARD | bufflags);
+			if (all_frozen_set)
+				XLogRegisterBuffer(1, vmbuffer, 0);
 
 			XLogRegisterBufData(0, tupledata, totaldatalen);
 
@@ -2626,29 +2646,14 @@ heap_multi_insert(Relation relation, TupleTableSlot **slots, int ntuples,
 			recptr = XLogInsert(RM_HEAP2_ID, info);
 
 			PageSetLSN(page, recptr);
+			if (all_frozen_set)
+				PageSetLSN(BufferGetPage(vmbuffer), recptr);
 		}
 
 		END_CRIT_SECTION();
 
-		/*
-		 * If we've frozen everything on the page, update the visibilitymap.
-		 * We're already holding pin on the vmbuffer.
-		 */
 		if (all_frozen_set)
-		{
-			Assert(PageIsAllVisible(page));
-			Assert(visibilitymap_pin_ok(BufferGetBlockNumber(buffer), vmbuffer));
-
-			/*
-			 * It's fine to use InvalidTransactionId here - this is only used
-			 * when HEAP_INSERT_FROZEN is specified, which intentionally
-			 * violates visibility rules.
-			 */
-			visibilitymap_set(relation, BufferGetBlockNumber(buffer), buffer,
-							  InvalidXLogRecPtr, vmbuffer,
-							  InvalidTransactionId,
-							  VISIBILITYMAP_ALL_VISIBLE | VISIBILITYMAP_ALL_FROZEN);
-		}
+			LockBuffer(vmbuffer, BUFFER_LOCK_UNLOCK);
 
 		UnlockReleaseBuffer(buffer);
 		ndone += nthispage;

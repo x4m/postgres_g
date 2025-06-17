@@ -319,6 +319,65 @@ visibilitymap_set(Relation rel, BlockNumber heapBlk, Buffer heapBuf,
 }
 
 /*
+ * Set flags in the VM block contained in the passed in vmBuf.
+ *
+ * This function is for callers which include the VM changes in the same WAL
+ * record as the modifications of the heap page which rendered it all-visible.
+ * Callers separately logging the VM changes should invoke visibilitymap_set()
+ * instead.
+ *
+ * Caller must have pinned and exclusive locked the correct block of the VM in
+ * vmBuf.
+ *
+ * During normal operation (i.e. not recovery), this should be called in a
+ * critical section which also makes any necessary changes to the heap page
+ * and, if relevant, emits WAL.
+ *
+ * Caller is responsible for WAL logging the changes to the VM buffer and for
+ * making any changes needed to the associated heap page.
+ */
+uint8
+visibilitymap_set_vmbyte(Relation rel, BlockNumber heapBlk,
+						 Buffer vmBuf, uint8 flags)
+{
+	BlockNumber mapBlock = HEAPBLK_TO_MAPBLOCK(heapBlk);
+	uint32		mapByte = HEAPBLK_TO_MAPBYTE(heapBlk);
+	uint8		mapOffset = HEAPBLK_TO_OFFSET(heapBlk);
+	Page		page;
+	uint8	   *map;
+	uint8		status;
+
+#ifdef TRACE_VISIBILITYMAP
+	elog(DEBUG1, "vm_set %s %d", RelationGetRelationName(rel), heapBlk);
+#endif
+
+	/* Call in same critical section where WAL is emitted. */
+	Assert(InRecovery || CritSectionCount > 0);
+
+	/* Flags should be valid. Also never clear bits with this function */
+	Assert((flags & VISIBILITYMAP_VALID_BITS) == flags);
+
+	/* Must never set all_frozen bit without also setting all_visible bit */
+	Assert(flags != VISIBILITYMAP_ALL_FROZEN);
+
+	/* Check that we have the right VM page pinned */
+	if (!BufferIsValid(vmBuf) || BufferGetBlockNumber(vmBuf) != mapBlock)
+		elog(ERROR, "wrong VM buffer passed to visibilitymap_set");
+
+	page = BufferGetPage(vmBuf);
+	map = (uint8 *) PageGetContents(page);
+
+	status = (map[mapByte] >> mapOffset) & VISIBILITYMAP_VALID_BITS;
+	if (flags != status)
+	{
+		map[mapByte] |= (flags << mapOffset);
+		MarkBufferDirty(vmBuf);
+	}
+
+	return status;
+}
+
+/*
  *	visibilitymap_get_status - get status of bits
  *
  * Are all tuples on heapBlk visible to all or are marked frozen, according

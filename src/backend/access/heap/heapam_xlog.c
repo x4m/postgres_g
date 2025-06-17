@@ -552,6 +552,7 @@ heap_xlog_multi_insert(XLogReaderState *record)
 	int			i;
 	bool		isinit = (XLogRecGetInfo(record) & XLOG_HEAP_INIT_PAGE) != 0;
 	XLogRedoAction action;
+	Buffer		vmbuffer = InvalidBuffer;
 
 	/*
 	 * Insertion doesn't overwrite MVCC data, so no conflict processing is
@@ -572,11 +573,11 @@ heap_xlog_multi_insert(XLogReaderState *record)
 	if (xlrec->flags & XLH_INSERT_ALL_VISIBLE_CLEARED)
 	{
 		Relation	reln = CreateFakeRelcacheEntry(rlocator);
-		Buffer		vmbuffer = InvalidBuffer;
 
 		visibilitymap_pin(reln, blkno, &vmbuffer);
 		visibilitymap_clear(reln, blkno, vmbuffer, VISIBILITYMAP_VALID_BITS);
 		ReleaseBuffer(vmbuffer);
+		vmbuffer = InvalidBuffer;
 		FreeFakeRelcacheEntry(reln);
 	}
 
@@ -662,6 +663,42 @@ heap_xlog_multi_insert(XLogReaderState *record)
 	}
 	if (BufferIsValid(buffer))
 		UnlockReleaseBuffer(buffer);
+
+	buffer = InvalidBuffer;
+
+	/*
+	 * Now read and update the VM block. Even if we skipped updating the heap
+	 * page due to the file being dropped or truncated later in recovery, it's
+	 * still safe to update the visibility map.  Any WAL record that clears
+	 * the visibility map bit does so before checking the page LSN, so any
+	 * bits that need to be cleared will still be cleared.
+	 *
+	 * It is only okay to set the VM bits without holding the heap page lock
+	 * because we can expect no other writers of this page.
+	 */
+	if (xlrec->flags & XLH_INSERT_ALL_FROZEN_SET &&
+		XLogReadBufferForRedoExtended(record, 1, RBM_ZERO_ON_ERROR, false,
+									  &vmbuffer) == BLK_NEEDS_REDO)
+	{
+		Relation	reln = CreateFakeRelcacheEntry(rlocator);
+
+		visibilitymap_pin(reln, blkno, &vmbuffer);
+		visibilitymap_set_vmbyte(reln, blkno,
+								 vmbuffer,
+								 VISIBILITYMAP_ALL_VISIBLE |
+								 VISIBILITYMAP_ALL_FROZEN);
+
+		/*
+		 * It is not possible that the VM was already set for this heap page,
+		 * so the vmbuffer must have been modified and marked dirty.
+		 */
+		Assert(BufferIsDirty(vmbuffer));
+		PageSetLSN(BufferGetPage(vmbuffer), lsn);
+		FreeFakeRelcacheEntry(reln);
+	}
+
+	if (BufferIsValid(vmbuffer))
+		UnlockReleaseBuffer(vmbuffer);
 
 	/*
 	 * If the page is running low on free space, update the FSM as well.
