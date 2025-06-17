@@ -37,6 +37,8 @@ extern uint8 visibilitymap_set(Relation rel,
 							   Buffer vmBuf,
 							   TransactionId cutoff_xid,
 							   uint8 flags);
+extern uint8 visibilitymap_set_vmbyte(Relation rel, BlockNumber heapBlk,
+									  Buffer vmBuf, uint8 flags);
 extern uint8 visibilitymap_get_status(Relation rel, BlockNumber heapBlk, Buffer *vmbuf);
 extern void visibilitymap_count(Relation rel, BlockNumber *all_visible, BlockNumber *all_frozen);
 extern BlockNumber visibilitymap_prepare_truncate(Relation rel,
