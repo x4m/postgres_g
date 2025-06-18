@@ -1878,33 +1878,47 @@ lazy_scan_new_or_empty(LVRelState *vacrel, Buffer buf, BlockNumber blkno,
 		 */
 		if (!PageIsAllVisible(page))
 		{
+			uint8		new_vmbits = VISIBILITYMAP_ALL_VISIBLE |
+				VISIBILITYMAP_ALL_FROZEN;
+
 			START_CRIT_SECTION();
 
-			/* mark buffer dirty before writing a WAL record */
+			PageSetAllVisible(page);
 			MarkBufferDirty(buf);
 
-			/*
-			 * It's possible that another backend has extended the heap,
-			 * initialized the page, and then failed to WAL-log the page due
-			 * to an ERROR.  Since heap extension is not WAL-logged, recovery
-			 * might try to replay our record setting the page all-visible and
-			 * find that the page isn't initialized, which will cause a PANIC.
-			 * To prevent that, check whether the page has been previously
-			 * WAL-logged, and if not, do that now.
-			 */
-			if (RelationNeedsWAL(vacrel->rel) &&
-				PageGetLSN(page) == InvalidXLogRecPtr)
-				log_newpage_buffer(buf, true);
+			LockBuffer(vmbuffer, BUFFER_LOCK_EXCLUSIVE);
+			visibilitymap_set_vmbyte(vacrel->rel, blkno,
+									 vmbuffer, new_vmbits);
 
-			PageSetAllVisible(page);
-			visibilitymap_set(vacrel->rel, blkno, buf,
-							  InvalidXLogRecPtr,
-							  vmbuffer, InvalidTransactionId,
-							  VISIBILITYMAP_ALL_VISIBLE |
-							  VISIBILITYMAP_ALL_FROZEN);
+			if (RelationNeedsWAL(vacrel->rel))
+			{
+				/*
+				 * It's possible that another backend has extended the heap,
+				 * initialized the page, and then failed to WAL-log the page
+				 * due to an ERROR.  Since heap extension is not WAL-logged,
+				 * recovery might try to replay our record setting the page
+				 * all-visible and find that the page isn't initialized, which
+				 * will cause a PANIC. To prevent that, if the page hasn't
+				 * been previously WAL-logged, force a heap FPI.
+				 */
+				log_heap_prune_and_freeze(vacrel->rel, buf,
+										  PageGetLSN(page) == InvalidXLogRecPtr,
+										  vmbuffer,
+										  new_vmbits,
+										  true,
+										  InvalidTransactionId,
+										  false, PRUNE_VACUUM_SCAN,
+										  NULL, 0,
+										  NULL, 0,
+										  NULL, 0,
+										  NULL, 0);
+			}
+
 			END_CRIT_SECTION();
 
-			/* Count the newly all-frozen pages for logging */
+			LockBuffer(vmbuffer, BUFFER_LOCK_UNLOCK);
+
+			/* Count the newly all-frozen pages for logging. */
 			vacrel->vm_new_visible_pages++;
 			vacrel->vm_new_visible_frozen_pages++;
 		}
@@ -2918,6 +2932,7 @@ lazy_vacuum_heap_page(LVRelState *vacrel, BlockNumber blkno, Buffer buffer,
 	if (RelationNeedsWAL(vacrel->rel))
 	{
 		log_heap_prune_and_freeze(vacrel->rel, buffer,
+								  false,
 								  vmbuffer,
 								  vmflags,
 								  set_pd_all_vis,
