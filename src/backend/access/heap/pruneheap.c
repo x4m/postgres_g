@@ -836,6 +836,7 @@ heap_page_prune_and_freeze(Relation relation, Buffer buffer,
 				conflict_xid = prstate.latest_xid_removed;
 
 			log_heap_prune_and_freeze(relation, buffer,
+									  false,
 									  InvalidBuffer, 0, false,
 									  conflict_xid,
 									  true, reason,
@@ -2055,6 +2056,9 @@ heap_log_freeze_plan(HeapTupleFreeze *tuples, int ntuples,
  * case, vmbuffer should already have been updated and marked dirty and should
  * still be pinned and locked.
  *
+ * force_heap_fpi indicates that a full page image of the heap block should be
+ * forced.
+ *
  * set_pd_all_vis indicates that we set PD_ALL_VISIBLE and thus should update
  * the page LSN when checksums/wal_log_hints are enabled even if we did not
  * prune or freeze tuples on the page.
@@ -2065,6 +2069,7 @@ heap_log_freeze_plan(HeapTupleFreeze *tuples, int ntuples,
  */
 void
 log_heap_prune_and_freeze(Relation relation, Buffer buffer,
+						  bool force_heap_fpi,
 						  Buffer vmbuffer,
 						  uint8 vmflags,
 						  bool set_pd_all_vis,
@@ -2095,13 +2100,16 @@ log_heap_prune_and_freeze(Relation relation, Buffer buffer,
 
 	regbuf_flags = REGBUF_STANDARD;
 
+	if (force_heap_fpi)
+		regbuf_flags |= REGBUF_FORCE_IMAGE;
+
 	/*
 	 * We can avoid an FPI if the only modification we are making to the heap
 	 * page is to set PD_ALL_VISIBLE and checksums/wal_log_hints are disabled.
 	 */
-	if (!do_prune &&
-		nfrozen == 0 &&
-		(!set_pd_all_vis || !XLogHintBitIsNeeded()))
+	else if (!do_prune &&
+			 nfrozen == 0 &&
+			 (!set_pd_all_vis || !XLogHintBitIsNeeded()))
 		regbuf_flags |= REGBUF_NO_IMAGE;
 
 	/*

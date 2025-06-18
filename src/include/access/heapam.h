@@ -394,6 +394,7 @@ extern void heap_page_prune_execute(Buffer buffer, bool lp_truncate_only,
 									OffsetNumber *nowunused, int nunused);
 extern void heap_get_root_tuples(Page page, OffsetNumber *root_offsets);
 extern void log_heap_prune_and_freeze(Relation relation, Buffer buffer,
+									  bool force_heap_fpi,
 									  Buffer vmbuffer,
 									  uint8 vmflags,
 									  bool vm_modified_heap_page,
