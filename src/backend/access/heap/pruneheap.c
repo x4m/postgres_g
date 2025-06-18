@@ -21,6 +21,7 @@
 #include "access/transam.h"
 #include "access/xlog.h"
 #include "access/xloginsert.h"
+#include "access/visibilitymapdefs.h"
 #include "commands/vacuum.h"
 #include "executor/instrument.h"
 #include "miscadmin.h"
@@ -835,6 +836,7 @@ heap_page_prune_and_freeze(Relation relation, Buffer buffer,
 				conflict_xid = prstate.latest_xid_removed;
 
 			log_heap_prune_and_freeze(relation, buffer,
+									  InvalidBuffer, 0, false,
 									  conflict_xid,
 									  true, reason,
 									  prstate.frozen, prstate.nfrozen,
@@ -2046,12 +2048,23 @@ heap_log_freeze_plan(HeapTupleFreeze *tuples, int ntuples,
  * replaying 'unused' items depends on whether they were all previously marked
  * as dead.
  *
+ * If the VM is being updated, vmflags will contain the bits to set. In this
+ * case, vmbuffer should already have been updated and marked dirty and should
+ * still be pinned and locked.
+ *
+ * set_pd_all_vis indicates that we set PD_ALL_VISIBLE and thus should update
+ * the page LSN when checksums/wal_log_hints are enabled even if we did not
+ * prune or freeze tuples on the page.
+ *
  * Note: This function scribbles on the 'frozen' array.
  *
  * Note: This is called in a critical section, so careful what you do here.
  */
 void
 log_heap_prune_and_freeze(Relation relation, Buffer buffer,
+						  Buffer vmbuffer,
+						  uint8 vmflags,
+						  bool set_pd_all_vis,
 						  TransactionId conflict_xid,
 						  bool cleanup_lock,
 						  PruneReason reason,
@@ -2063,6 +2076,7 @@ log_heap_prune_and_freeze(Relation relation, Buffer buffer,
 	xl_heap_prune xlrec;
 	XLogRecPtr	recptr;
 	uint8		info;
+	uint8		regbuf_flags;
 
 	/* The following local variables hold data registered in the WAL record: */
 	xlhp_freeze_plan plans[MaxHeapTuplesPerPage];
@@ -2071,8 +2085,19 @@ log_heap_prune_and_freeze(Relation relation, Buffer buffer,
 	xlhp_prune_items dead_items;
 	xlhp_prune_items unused_items;
 	OffsetNumber frz_offsets[MaxHeapTuplesPerPage];
+	bool		do_prune = nredirected > 0 || ndead > 0 || nunused > 0;
 
 	xlrec.flags = 0;
+	regbuf_flags = REGBUF_STANDARD;
+
+	/*
+	 * We can avoid an FPI if the only modification we are making to the heap
+	 * page is to set PD_ALL_VISIBLE and checksums/wal_log_hints are disabled.
+	 */
+	if (!do_prune &&
+		nfrozen == 0 &&
+		(!set_pd_all_vis || !XLogHintBitIsNeeded()))
+		regbuf_flags |= REGBUF_NO_IMAGE;
 
 	/*
 	 * Prepare data for the buffer.  The arrays are not actually in the
@@ -2080,7 +2105,11 @@ log_heap_prune_and_freeze(Relation relation, Buffer buffer,
 	 * page image, the arrays can be omitted.
 	 */
 	XLogBeginInsert();
-	XLogRegisterBuffer(0, buffer, REGBUF_STANDARD);
+	XLogRegisterBuffer(0, buffer, regbuf_flags);
+
+	if (vmflags & VISIBILITYMAP_VALID_BITS)
+		XLogRegisterBuffer(1, vmbuffer, 0);
+
 	if (nfrozen > 0)
 	{
 		int			nplans;
@@ -2137,6 +2166,8 @@ log_heap_prune_and_freeze(Relation relation, Buffer buffer,
 	 * Prepare the main xl_heap_prune record.  We already set the XLHP_HAS_*
 	 * flag above.
 	 */
+	if (vmflags & VISIBILITYMAP_VALID_BITS)
+		xlrec.flags |= XLHP_HAS_VMFLAGS;
 	if (RelationIsAccessibleInLogicalDecoding(relation))
 		xlrec.flags |= XLHP_IS_CATALOG_REL;
 	if (TransactionIdIsValid(conflict_xid))
@@ -2151,6 +2182,8 @@ log_heap_prune_and_freeze(Relation relation, Buffer buffer,
 	XLogRegisterData(&xlrec, SizeOfHeapPrune);
 	if (TransactionIdIsValid(conflict_xid))
 		XLogRegisterData(&conflict_xid, sizeof(TransactionId));
+	if (vmflags & VISIBILITYMAP_VALID_BITS)
+		XLogRegisterData(&vmflags, sizeof(uint8));
 
 	switch (reason)
 	{
@@ -2169,5 +2202,16 @@ log_heap_prune_and_freeze(Relation relation, Buffer buffer,
 	}
 	recptr = XLogInsert(RM_HEAP2_ID, info);
 
-	PageSetLSN(BufferGetPage(buffer), recptr);
+	if (vmflags & VISIBILITYMAP_VALID_BITS)
+		PageSetLSN(BufferGetPage(vmbuffer), recptr);
+
+	/*
+	 * If pruning or freezing tuples or setting the page all-visible when
+	 * checksums or wal_hint_bits are enabled, we must bump the LSN. Torn
+	 * pages are possible if we update PD_ALL_VISIBLE without bumping the LSN,
+	 * but this is deemed okay for page hint updates.
+	 */
+	if (do_prune || nfrozen > 0 ||
+		(set_pd_all_vis && XLogHintBitIsNeeded()))
+		PageSetLSN(BufferGetPage(buffer), recptr);
 }

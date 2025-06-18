@@ -295,6 +295,9 @@ typedef struct xl_heap_prune
 
 #define SizeOfHeapPrune (offsetof(xl_heap_prune, flags) + sizeof(uint8))
 
+/* If the record should update the VM, this is the new value */
+#define		XLHP_HAS_VMFLAGS			(1 << 0)
+
 /* to handle recovery conflict during logical decoding on standby */
 #define		XLHP_IS_CATALOG_REL			(1 << 1)
 
