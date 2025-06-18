@@ -1886,8 +1886,8 @@ lazy_scan_new_or_empty(LVRelState *vacrel, Buffer buf, BlockNumber blkno,
 			MarkBufferDirty(buf);
 
 			LockBuffer(vmbuffer, BUFFER_LOCK_EXCLUSIVE);
-			visibilitymap_set_vmbits(vacrel->rel, blkno,
-									 vmbuffer, new_vmbits);
+			visibilitymap_set(vacrel->rel, blkno,
+							  vmbuffer, new_vmbits);
 
 			if (RelationNeedsWAL(vacrel->rel))
 			{
@@ -2753,9 +2753,9 @@ lazy_vacuum_heap_page(LVRelState *vacrel, BlockNumber blkno, Buffer buffer,
 		set_pd_all_vis = true;
 		PageSetAllVisible(page);
 		LockBuffer(vmbuffer, BUFFER_LOCK_EXCLUSIVE);
-		visibilitymap_set_vmbits(vacrel->rel,
-								 blkno,
-								 vmbuffer, vmflags);
+		visibilitymap_set(vacrel->rel,
+						  blkno,
+						  vmbuffer, vmflags);
 		conflict_xid = visibility_cutoff_xid;
 	}
 

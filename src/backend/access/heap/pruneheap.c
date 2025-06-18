@@ -980,8 +980,8 @@ heap_page_prune_and_freeze(Relation relation, Buffer buffer,
 		{
 			Assert(PageIsAllVisible(page));
 			LockBuffer(vmbuffer, BUFFER_LOCK_EXCLUSIVE);
-			old_vmbits = visibilitymap_set_vmbits(relation, blockno,
-												  vmbuffer, vmflags);
+			old_vmbits = visibilitymap_set(relation, blockno,
+										   vmbuffer, vmflags);
 
 			if (old_vmbits == vmflags)
 			{
