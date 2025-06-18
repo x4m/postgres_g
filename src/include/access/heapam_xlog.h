@@ -249,7 +249,7 @@ typedef struct xl_heap_update
  * Main data section:
  *
  *	xl_heap_prune
- *		uint8				flags
+ *		uint16				flags
  *	TransactionId			snapshot_conflict_horizon
  *
  * Block 0 data section:
@@ -284,7 +284,7 @@ typedef struct xl_heap_update
  */
 typedef struct xl_heap_prune
 {
-	uint8		flags;
+	uint16		flags;
 
 	/*
 	 * If XLHP_HAS_CONFLICT_HORIZON is set, the conflict horizon XID follows,
@@ -292,10 +292,22 @@ typedef struct xl_heap_prune
 	 */
 } xl_heap_prune;
 
-#define SizeOfHeapPrune (offsetof(xl_heap_prune, flags) + sizeof(uint8))
+#define SizeOfHeapPrune (offsetof(xl_heap_prune, flags) + sizeof(uint16))
 
-/* to handle recovery conflict during logical decoding on standby */
-#define		XLHP_IS_CATALOG_REL			(1 << 1)
+/*
+ * The xl_heap_prune record's flags may also contain which VM bits to set. As
+ * such, (1 << 0) and (1 << 1) are reserved for VISIBILITYMAP_ALL_VISIBLE and
+ * VISIBILITYMAP_ALL_FROZEN.
+ */
+
+/*
+ * To handle recovery conflict during logical decoding on standby, we must know
+ * if the table is a catalog table. Note that in visibilitymapdefs.h
+ * VISIBLITYMAP_XLOG_CATALOG_REL is also defined as (1 << 2). xl_heap_prune
+ * records should use XLHP_IS_CATALOG_REL, not VISIBILIYTMAP_XLOG_CATALOG_REL --
+ * even if they only contain updates to the VM.
+ */
+#define		XLHP_IS_CATALOG_REL			(1 << 2)
 
 /*
  * Does replaying the record require a cleanup-lock?
@@ -305,7 +317,7 @@ typedef struct xl_heap_prune
  * marks LP_DEAD line pointers as unused without moving any tuple data, an
  * ordinary exclusive lock is sufficient.
  */
-#define		XLHP_CLEANUP_LOCK	       (1 << 2)
+#define		XLHP_CLEANUP_LOCK	       (1 << 3)
 
 /*
  * If we remove or freeze any entries that contain xids, we need to include a
@@ -313,22 +325,22 @@ typedef struct xl_heap_prune
  * there are no queries running for which the removed tuples are still
  * visible, or which still consider the frozen XIDs as running.
  */
-#define		XLHP_HAS_CONFLICT_HORIZON   (1 << 3)
+#define		XLHP_HAS_CONFLICT_HORIZON   (1 << 4)
 
 /*
  * Indicates that an xlhp_freeze_plans sub-record and one or more
  * xlhp_freeze_plan sub-records are present.
  */
-#define		XLHP_HAS_FREEZE_PLANS		(1 << 4)
+#define		XLHP_HAS_FREEZE_PLANS		(1 << 5)
 
 /*
  * XLHP_HAS_REDIRECTIONS, XLHP_HAS_DEAD_ITEMS, and XLHP_HAS_NOW_UNUSED_ITEMS
  * indicate that xlhp_prune_items sub-records with redirected, dead, and
  * unused item offsets are present.
  */
-#define		XLHP_HAS_REDIRECTIONS		(1 << 5)
-#define		XLHP_HAS_DEAD_ITEMS	        (1 << 6)
-#define		XLHP_HAS_NOW_UNUSED_ITEMS   (1 << 7)
+#define		XLHP_HAS_REDIRECTIONS		(1 << 6)
+#define		XLHP_HAS_DEAD_ITEMS	        (1 << 7)
+#define		XLHP_HAS_NOW_UNUSED_ITEMS   (1 << 8)
 
 /*
  * xlhp_freeze_plan describes how to freeze a group of one or more heap tuples
@@ -497,7 +509,7 @@ extern XLogRecPtr log_heap_visible(Relation rel, Buffer heap_buffer,
 								   uint8 vmflags);
 
 /* in heapdesc.c, so it can be shared between frontend/backend code */
-extern void heap_xlog_deserialize_prune_and_freeze(char *cursor, uint8 flags,
+extern void heap_xlog_deserialize_prune_and_freeze(char *cursor, uint16 flags,
 												   int *nplans, xlhp_freeze_plan **plans,
 												   OffsetNumber **frz_offsets,
 												   int *nredirected, OffsetNumber **redirected,

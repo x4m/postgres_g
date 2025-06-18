@@ -103,7 +103,7 @@ plan_elem_desc(StringInfo buf, void *plan, void *data)
  * code, the latter of which is used in frontend (pg_waldump) code.
  */
 void
-heap_xlog_deserialize_prune_and_freeze(char *cursor, uint8 flags,
+heap_xlog_deserialize_prune_and_freeze(char *cursor, uint16 flags,
 									   int *nplans, xlhp_freeze_plan **plans,
 									   OffsetNumber **frz_offsets,
 									   int *nredirected, OffsetNumber **redirected,
@@ -279,13 +279,16 @@ heap2_desc(StringInfo buf, XLogReaderState *record)
 			TransactionId conflict_xid;
 
 			memcpy(&conflict_xid, rec + SizeOfHeapPrune, sizeof(TransactionId));
-
 			appendStringInfo(buf, "snapshotConflictHorizon: %u",
 							 conflict_xid);
 		}
 
 		appendStringInfo(buf, ", isCatalogRel: %c",
 						 xlrec->flags & XLHP_IS_CATALOG_REL ? 'T' : 'F');
+
+		if (xlrec->flags & VISIBILITYMAP_VALID_BITS)
+			appendStringInfo(buf, ", vm_flags: 0x%02X",
+							 xlrec->flags & VISIBILITYMAP_VALID_BITS);
 
 		if (XLogRecHasBlockData(record, 0))
 		{
