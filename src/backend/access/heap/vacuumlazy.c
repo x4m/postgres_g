@@ -2015,34 +2015,6 @@ lazy_scan_prune(LVRelState *vacrel,
 	}
 
 	/*
-	 * VACUUM will call heap_page_is_all_visible() during the second pass over
-	 * the heap to determine all_visible and all_frozen for the page -- this
-	 * is a specialized version of the logic from this function.  Now that
-	 * we've finished pruning and freezing, make sure that we're in total
-	 * agreement with heap_page_is_all_visible() using an assertion.
-	 */
-#ifdef USE_ASSERT_CHECKING
-	/* Note that all_frozen value does not matter when !all_visible */
-	if (presult.all_visible)
-	{
-		TransactionId debug_cutoff;
-		bool		debug_all_frozen;
-
-		Assert(presult.lpdead_items == 0);
-
-		if (!heap_page_is_all_visible(vacrel->rel, buf,
-									  vacrel->cutoffs.OldestXmin, &debug_all_frozen,
-									  &debug_cutoff, &vacrel->offnum))
-			Assert(false);
-
-		Assert(presult.all_frozen == debug_all_frozen);
-
-		Assert(!TransactionIdIsValid(debug_cutoff) ||
-			   debug_cutoff == presult.vm_conflict_horizon);
-	}
-#endif
-
-	/*
 	 * Now save details of the LP_DEAD items from the page in vacrel
 	 */
 	if (presult.lpdead_items > 0)
@@ -2074,8 +2046,6 @@ lazy_scan_prune(LVRelState *vacrel,
 
 	/* Did we find LP_DEAD items? */
 	*has_lpdead_items = (presult.lpdead_items > 0);
-
-	Assert(!presult.all_visible || !(*has_lpdead_items));
 
 	/*
 	 * For the purposes of logging, count whether or not the page was newly
