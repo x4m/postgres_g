@@ -235,19 +235,12 @@ typedef struct PruneFreezeResult
 	int			recently_dead_tuples;
 
 	/*
-	 * all_visible and all_frozen indicate the status of the page as reflected
-	 * in the visibility map after pruning, freezing, and setting any pages
-	 * all-visible in the visibility map.
+	 * old_vmbits are the state of the all-visible and all-frozen bits in the
+	 * visibility map before updating it during phase I of vacuuming.
+	 * new_vmbits are the state of those bits after phase I of vacuuming.
 	 *
-	 * vm_conflict_horizon is the newest xmin of live tuples on the page
-	 * (older than OldestXmin).  It will only be valid if we did not set the
-	 * page all-frozen in the VM.
-	 *
-	 * These are only set if the HEAP_PRUNE_FREEZE option is set.
+	 * These are only set if the HEAP_PAGE_PRUNE_UPDATE_VM option is set.
 	 */
-	bool		all_visible;
-	bool		all_frozen;
-	TransactionId vm_conflict_horizon;
 	uint8		old_vmbits;
 	uint8		new_vmbits;
 
