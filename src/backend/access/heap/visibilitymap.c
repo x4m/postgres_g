@@ -220,105 +220,6 @@ visibilitymap_pin_ok(BlockNumber heapBlk, Buffer vmbuf)
 }
 
 /*
- *	visibilitymap_set - set bit(s) on a previously pinned page
- *
- * recptr is the LSN of the XLOG record we're replaying, if we're in recovery,
- * or InvalidXLogRecPtr in normal running.  The VM page LSN is advanced to the
- * one provided; in normal running, we generate a new XLOG record and set the
- * page LSN to that value (though the heap page's LSN may *not* be updated;
- * see below).  cutoff_xid is the largest xmin on the page being marked
- * all-visible; it is needed for Hot Standby, and can be InvalidTransactionId
- * if the page contains no tuples.  It can also be set to InvalidTransactionId
- * when a page that is already all-visible is being marked all-frozen.
- *
- * Caller is expected to set the heap page's PD_ALL_VISIBLE bit before calling
- * this function. Except in recovery, caller should also pass the heap
- * buffer. When checksums are enabled and we're not in recovery, we must add
- * the heap buffer to the WAL chain to protect it from being torn.
- *
- * You must pass a buffer containing the correct map page to this function.
- * Call visibilitymap_pin first to pin the right one. This function doesn't do
- * any I/O.
- *
- * Returns the state of the page's VM bits before setting flags.
- */
-uint8
-visibilitymap_set(Relation rel, BlockNumber heapBlk, Buffer heapBuf,
-				  XLogRecPtr recptr, Buffer vmBuf, TransactionId cutoff_xid,
-				  uint8 flags)
-{
-	BlockNumber mapBlock = HEAPBLK_TO_MAPBLOCK(heapBlk);
-	uint32		mapByte = HEAPBLK_TO_MAPBYTE(heapBlk);
-	uint8		mapOffset = HEAPBLK_TO_OFFSET(heapBlk);
-	Page		page;
-	uint8	   *map;
-	uint8		status;
-
-#ifdef TRACE_VISIBILITYMAP
-	elog(DEBUG1, "vm_set %s %d", RelationGetRelationName(rel), heapBlk);
-#endif
-
-	Assert(InRecovery || XLogRecPtrIsInvalid(recptr));
-	Assert(InRecovery || PageIsAllVisible((Page) BufferGetPage(heapBuf)));
-	Assert((flags & VISIBILITYMAP_VALID_BITS) == flags);
-
-	/* Must never set all_frozen bit without also setting all_visible bit */
-	Assert(flags != VISIBILITYMAP_ALL_FROZEN);
-
-	/* Check that we have the right heap page pinned, if present */
-	if (BufferIsValid(heapBuf) && BufferGetBlockNumber(heapBuf) != heapBlk)
-		elog(ERROR, "wrong heap buffer passed to visibilitymap_set");
-
-	/* Check that we have the right VM page pinned */
-	if (!BufferIsValid(vmBuf) || BufferGetBlockNumber(vmBuf) != mapBlock)
-		elog(ERROR, "wrong VM buffer passed to visibilitymap_set");
-
-	page = BufferGetPage(vmBuf);
-	map = (uint8 *) PageGetContents(page);
-	LockBuffer(vmBuf, BUFFER_LOCK_EXCLUSIVE);
-
-	status = (map[mapByte] >> mapOffset) & VISIBILITYMAP_VALID_BITS;
-	if (flags != status)
-	{
-		START_CRIT_SECTION();
-
-		map[mapByte] |= (flags << mapOffset);
-		MarkBufferDirty(vmBuf);
-
-		if (RelationNeedsWAL(rel))
-		{
-			if (XLogRecPtrIsInvalid(recptr))
-			{
-				Assert(!InRecovery);
-				recptr = log_heap_visible(rel, heapBuf, vmBuf, cutoff_xid, flags);
-
-				/*
-				 * If data checksums are enabled (or wal_log_hints=on), we
-				 * need to protect the heap page from being torn.
-				 *
-				 * If not, then we must *not* update the heap page's LSN. In
-				 * this case, the FPI for the heap page was omitted from the
-				 * WAL record inserted above, so it would be incorrect to
-				 * update the heap page's LSN.
-				 */
-				if (XLogHintBitIsNeeded())
-				{
-					Page		heapPage = BufferGetPage(heapBuf);
-
-					PageSetLSN(heapPage, recptr);
-				}
-			}
-			PageSetLSN(page, recptr);
-		}
-
-		END_CRIT_SECTION();
-	}
-
-	LockBuffer(vmBuf, BUFFER_LOCK_UNLOCK);
-	return status;
-}
-
-/*
  * Set flags in the VM block contained in the passed in vmBuf.
  *
  * This function is for callers which include the VM changes in the same WAL
@@ -337,8 +238,8 @@ visibilitymap_set(Relation rel, BlockNumber heapBlk, Buffer heapBuf,
  * making any changes needed to the associated heap page.
  */
 uint8
-visibilitymap_set_vmbyte(Relation rel, BlockNumber heapBlk,
-						 Buffer vmBuf, uint8 flags)
+visibilitymap_set(Relation rel, BlockNumber heapBlk,
+				  Buffer vmBuf, uint8 flags)
 {
 	BlockNumber mapBlock = HEAPBLK_TO_MAPBLOCK(heapBlk);
 	uint32		mapByte = HEAPBLK_TO_MAPBYTE(heapBlk);

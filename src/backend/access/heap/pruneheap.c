@@ -959,8 +959,8 @@ heap_page_prune_and_freeze(Relation relation, Buffer buffer,
 		if (do_set_vm)
 		{
 			LockBuffer(vmbuffer, BUFFER_LOCK_EXCLUSIVE);
-			old_vmbits = visibilitymap_set_vmbyte(relation, blockno,
-												  vmbuffer, vmflags);
+			old_vmbits = visibilitymap_set(relation, blockno,
+										   vmbuffer, vmflags);
 
 			if (old_vmbits == vmflags)
 			{
