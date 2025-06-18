@@ -266,6 +266,7 @@ heap2_desc(StringInfo buf, XLogReaderState *record)
 {
 	char	   *rec = XLogRecGetData(record);
 	uint8		info = XLogRecGetInfo(record) & ~XLR_INFO_MASK;
+	char	   *maindataptr = rec + SizeOfHeapPrune;
 
 	info &= XLOG_HEAP_OPMASK;
 	if (info == XLOG_HEAP2_PRUNE_ON_ACCESS ||
@@ -278,7 +279,8 @@ heap2_desc(StringInfo buf, XLogReaderState *record)
 		{
 			TransactionId conflict_xid;
 
-			memcpy(&conflict_xid, rec + SizeOfHeapPrune, sizeof(TransactionId));
+			memcpy(&conflict_xid, maindataptr, sizeof(TransactionId));
+			maindataptr += sizeof(TransactionId);
 
 			appendStringInfo(buf, "snapshotConflictHorizon: %u",
 							 conflict_xid);
@@ -286,6 +288,15 @@ heap2_desc(StringInfo buf, XLogReaderState *record)
 
 		appendStringInfo(buf, ", isCatalogRel: %c",
 						 xlrec->flags & XLHP_IS_CATALOG_REL ? 'T' : 'F');
+
+		if (xlrec->flags & XLHP_HAS_VMFLAGS)
+		{
+			uint8		vmflags;
+
+			memcpy(&vmflags, maindataptr, sizeof(uint8));
+			maindataptr += sizeof(uint8);
+			appendStringInfo(buf, ", vm_flags: 0x%02X", vmflags);
+		}
 
 		if (XLogRecHasBlockData(record, 0))
 		{

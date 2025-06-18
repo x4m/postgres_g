@@ -464,11 +464,13 @@ static void dead_items_add(LVRelState *vacrel, BlockNumber blkno, OffsetNumber *
 						   int num_offsets);
 static void dead_items_reset(LVRelState *vacrel);
 static void dead_items_cleanup(LVRelState *vacrel);
-static bool heap_page_is_all_visible(Relation rel, Buffer buf,
-									 TransactionId OldestXmin,
-									 bool *all_frozen,
-									 TransactionId *visibility_cutoff_xid,
-									 OffsetNumber *logging_offnum);
+static bool heap_page_is_all_visible_except_lpdead(Relation rel, Buffer buf,
+												   TransactionId OldestXmin,
+												   OffsetNumber *deadoffsets,
+												   int allowed_num_offsets,
+												   bool *all_frozen,
+												   TransactionId *visibility_cutoff_xid,
+												   OffsetNumber *logging_offnum);
 static void update_relstats_all_indexes(LVRelState *vacrel);
 static void vacuum_error_callback(void *arg);
 static void update_vacuum_error_info(LVRelState *vacrel,
@@ -2847,8 +2849,11 @@ lazy_vacuum_heap_page(LVRelState *vacrel, BlockNumber blkno, Buffer buffer,
 	OffsetNumber unused[MaxHeapTuplesPerPage];
 	int			nunused = 0;
 	TransactionId visibility_cutoff_xid;
+	TransactionId conflict_xid = InvalidTransactionId;
 	bool		all_frozen;
 	LVSavedErrInfo saved_err_info;
+	uint8		vmflags = 0;
+	bool		set_pd_all_vis = false;
 
 	Assert(vacrel->do_index_vacuuming);
 
@@ -2858,6 +2863,20 @@ lazy_vacuum_heap_page(LVRelState *vacrel, BlockNumber blkno, Buffer buffer,
 	update_vacuum_error_info(vacrel, &saved_err_info,
 							 VACUUM_ERRCB_PHASE_VACUUM_HEAP, blkno,
 							 InvalidOffsetNumber);
+
+	if (heap_page_is_all_visible_except_lpdead(vacrel->rel, buffer,
+											   vacrel->cutoffs.OldestXmin,
+											   deadoffsets, num_offsets,
+											   &all_frozen, &visibility_cutoff_xid,
+											   &vacrel->offnum))
+	{
+		vmflags |= VISIBILITYMAP_ALL_VISIBLE;
+		if (all_frozen)
+		{
+			vmflags |= VISIBILITYMAP_ALL_FROZEN;
+			Assert(!TransactionIdIsValid(visibility_cutoff_xid));
+		}
+	}
 
 	START_CRIT_SECTION();
 
@@ -2878,6 +2897,18 @@ lazy_vacuum_heap_page(LVRelState *vacrel, BlockNumber blkno, Buffer buffer,
 	/* Attempt to truncate line pointer array now */
 	PageTruncateLinePointerArray(page);
 
+	if ((vmflags & VISIBILITYMAP_VALID_BITS) != 0)
+	{
+		Assert(!PageIsAllVisible(page));
+		set_pd_all_vis = true;
+		LockBuffer(vmbuffer, BUFFER_LOCK_EXCLUSIVE);
+		PageSetAllVisible(page);
+		visibilitymap_set_vmbyte(vacrel->rel,
+								 blkno,
+								 vmbuffer, vmflags);
+		conflict_xid = visibility_cutoff_xid;
+	}
+
 	/*
 	 * Mark buffer dirty before we write WAL.
 	 */
@@ -2887,7 +2918,10 @@ lazy_vacuum_heap_page(LVRelState *vacrel, BlockNumber blkno, Buffer buffer,
 	if (RelationNeedsWAL(vacrel->rel))
 	{
 		log_heap_prune_and_freeze(vacrel->rel, buffer,
-								  InvalidTransactionId,
+								  vmbuffer,
+								  vmflags,
+								  set_pd_all_vis,
+								  conflict_xid,
 								  false,	/* no cleanup lock required */
 								  PRUNE_VACUUM_CLEANUP,
 								  NULL, 0,	/* frozen */
@@ -2896,39 +2930,12 @@ lazy_vacuum_heap_page(LVRelState *vacrel, BlockNumber blkno, Buffer buffer,
 								  unused, nunused);
 	}
 
-	/*
-	 * End critical section, so we safely can do visibility tests (which
-	 * possibly need to perform IO and allocate memory!). If we crash now the
-	 * page (including the corresponding vm bit) might not be marked all
-	 * visible, but that's fine. A later vacuum will fix that.
-	 */
 	END_CRIT_SECTION();
 
-	/*
-	 * Now that we have removed the LP_DEAD items from the page, once again
-	 * check if the page has become all-visible.  The page is already marked
-	 * dirty, exclusively locked, and, if needed, a full page image has been
-	 * emitted.
-	 */
-	Assert(!PageIsAllVisible(page));
-	if (heap_page_is_all_visible(vacrel->rel, buffer, vacrel->cutoffs.OldestXmin,
-								 &all_frozen, &visibility_cutoff_xid, &vacrel->offnum))
+	if ((vmflags & VISIBILITYMAP_ALL_VISIBLE) != 0)
 	{
-		uint8		flags = VISIBILITYMAP_ALL_VISIBLE;
-
-		if (all_frozen)
-		{
-			Assert(!TransactionIdIsValid(visibility_cutoff_xid));
-			flags |= VISIBILITYMAP_ALL_FROZEN;
-		}
-
-		PageSetAllVisible(page);
-		visibilitymap_set(vacrel->rel, blkno, buffer,
-						  InvalidXLogRecPtr,
-						  vmbuffer, visibility_cutoff_xid,
-						  flags);
-
 		/* Count the newly set VM page for logging */
+		LockBuffer(vmbuffer, BUFFER_LOCK_UNLOCK);
 		vacrel->vm_new_visible_pages++;
 		if (all_frozen)
 			vacrel->vm_new_visible_frozen_pages++;
@@ -3595,6 +3602,25 @@ dead_items_cleanup(LVRelState *vacrel)
 }
 
 /*
+ * Wrapper for heap_page_is_all_visible_except_lpdead() which can be used for
+ * callers that expect no LP_DEAD on the page.
+ */
+bool
+heap_page_is_all_visible(Relation rel, Buffer buf,
+						 TransactionId OldestXmin,
+						 bool *all_frozen,
+						 TransactionId *visibility_cutoff_xid,
+						 OffsetNumber *logging_offnum)
+{
+
+	return heap_page_is_all_visible_except_lpdead(rel, buf, OldestXmin,
+												  NULL, 0,
+												  all_frozen,
+												  visibility_cutoff_xid,
+												  logging_offnum);
+}
+
+/*
  * Check if every tuple in the given page is visible to all current and future
  * transactions.
  *
@@ -3607,23 +3633,35 @@ dead_items_cleanup(LVRelState *vacrel)
  * visible tuples. Sets *all_frozen to true if every tuple on this page is
  * frozen.
  *
- * This is a stripped down version of lazy_scan_prune().  If you change
- * anything here, make sure that everything stays in sync.  Note that an
- * assertion calls us to verify that everybody still agrees.  Be sure to avoid
- * introducing new side-effects here.
+ * deadoffsets are the offsets we know about and are about to set LP_UNUSED.
+ * allowed_num_offsets is the number of those. As long as the LP_DEAD items we
+ * encounter on the page match those exactly, we can set the page all-visible
+ * in the VM.
+ *
+ * Callers looking to verify that the page is all-visible can call
+ * heap_page_is_all_visible().
+ *
+ * This is similar logic to that in heap_prune_record_unchanged_lp_normal() If
+ * you change anything here, make sure that everything stays in sync.  Note
+ * that an assertion calls us to verify that everybody still agrees.  Be sure
+ * to avoid introducing new side-effects here.
  */
 static bool
-heap_page_is_all_visible(Relation rel, Buffer buf,
-						 TransactionId OldestXmin,
-						 bool *all_frozen,
-						 TransactionId *visibility_cutoff_xid,
-						 OffsetNumber *logging_offnum)
+heap_page_is_all_visible_except_lpdead(Relation rel, Buffer buf,
+									   TransactionId OldestXmin,
+									   OffsetNumber *deadoffsets,
+									   int allowed_num_offsets,
+									   bool *all_frozen,
+									   TransactionId *visibility_cutoff_xid,
+									   OffsetNumber *logging_offnum)
 {
 	Page		page = BufferGetPage(buf);
 	BlockNumber blockno = BufferGetBlockNumber(buf);
 	OffsetNumber offnum,
 				maxoff;
 	bool		all_visible = true;
+	OffsetNumber current_dead_offsets[MaxHeapTuplesPerPage];
+	size_t		current_num_offsets = 0;
 
 	*visibility_cutoff_xid = InvalidTransactionId;
 	*all_frozen = true;
@@ -3655,9 +3693,8 @@ heap_page_is_all_visible(Relation rel, Buffer buf,
 		 */
 		if (ItemIdIsDead(itemid))
 		{
-			all_visible = false;
-			*all_frozen = false;
-			break;
+			current_dead_offsets[current_num_offsets++] = offnum;
+			continue;
 		}
 
 		Assert(ItemIdIsNormal(itemid));
@@ -3724,7 +3761,23 @@ heap_page_is_all_visible(Relation rel, Buffer buf,
 	/* Clear the offset information once we have processed the given page. */
 	*logging_offnum = InvalidOffsetNumber;
 
-	return all_visible;
+	/* If we already know it's not all-visible, return false */
+	if (!all_visible)
+		return false;
+
+	/* If we weren't allowed any dead offsets, we're done */
+	if (allowed_num_offsets == 0)
+		return current_num_offsets == 0;
+
+	/* If the number of dead offsets has changed, that's wrong */
+	if (current_num_offsets != allowed_num_offsets)
+		return false;
+
+	Assert(deadoffsets);
+
+	/* The dead offsets must be the same dead offsets */
+	return memcmp(current_dead_offsets, deadoffsets,
+				  allowed_num_offsets * sizeof(OffsetNumber)) == 0;
 }
 
 /*
