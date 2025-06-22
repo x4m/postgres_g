@@ -1,0 +1,349 @@
+--
+-- GLOBAL index tests
+--
+CREATE TABLE range_parted (
+	a int,
+	b int
+) PARTITION BY RANGE (a);
+--create some partitions and insert data
+CREATE TABLE range_parted_1 PARTITION OF range_parted FOR VALUES FROM (1) TO (100000);
+CREATE TABLE range_parted_2 PARTITION OF range_parted FOR VALUES FROM (100000) TO (200000);
+CREATE TABLE range_parted_3 PARTITION OF range_parted FOR VALUES FROM (200000) TO (300000);
+INSERT INTO range_parted SELECT i,i%100 FROM generate_series(1,299999) AS i;
+--Create global index
+CREATE INDEX global_idx ON range_parted(b) global;
+INSERT INTO range_parted SELECT i,i%200 FROM generate_series(1,299999) AS i;
+EXPLAIN (COSTS OFF) SELECT * FROM range_parted WHERE b = 7;
+                     QUERY PLAN                     
+----------------------------------------------------
+ Global Index Scan using global_idx on range_parted
+   Index Cond: (b = 7)
+(2 rows)
+
+SELECT * FROM range_parted WHERE b = 7 LIMIT 10;
+  a  | b 
+-----+---
+   7 | 7
+ 107 | 7
+ 207 | 7
+ 307 | 7
+ 407 | 7
+ 507 | 7
+ 607 | 7
+ 707 | 7
+ 807 | 7
+ 907 | 7
+(10 rows)
+
+EXPLAIN (COSTS OFF) SELECT * FROM range_parted WHERE b = 110;
+                     QUERY PLAN                     
+----------------------------------------------------
+ Global Index Scan using global_idx on range_parted
+   Index Cond: (b = 110)
+(2 rows)
+
+SELECT * FROM range_parted WHERE b = 110 LIMIT 10;
+  a   |  b  
+------+-----
+  110 | 110
+  310 | 110
+  510 | 110
+  710 | 110
+  910 | 110
+ 1110 | 110
+ 1310 | 110
+ 1510 | 110
+ 1710 | 110
+ 1910 | 110
+(10 rows)
+
+SELECT * FROM range_parted WHERE b = 250 LIMIT 10;
+ a | b 
+---+---
+(0 rows)
+
+UPDATE range_parted SET b=b+100;
+EXPLAIN (COSTS OFF) SELECT * FROM range_parted WHERE b = 250;
+                     QUERY PLAN                     
+----------------------------------------------------
+ Global Index Scan using global_idx on range_parted
+   Index Cond: (b = 250)
+(2 rows)
+
+SELECT * FROM range_parted WHERE b = 250 LIMIT 10;
+  a   |  b  
+------+-----
+  150 | 250
+  350 | 250
+  550 | 250
+  750 | 250
+  950 | 250
+ 1150 | 250
+ 1350 | 250
+ 1550 | 250
+ 1750 | 250
+ 1950 | 250
+(10 rows)
+
+--attach partition
+CREATE TABLE range_parted_4(a int, b int);
+INSERT INTO range_parted_4 SELECT i,i%300 + 100 FROM generate_series(300000,300300) as i;
+ALTER TABLE range_parted ATTACH PARTITION range_parted_4 FOR VALUES FROM (300000) to (400000);
+EXPLAIN (COSTS OFF) SELECT * FROM range_parted WHERE b = 350;
+                     QUERY PLAN                     
+----------------------------------------------------
+ Global Index Scan using global_idx on range_parted
+   Index Cond: (b = 350)
+(2 rows)
+
+SELECT * FROM range_parted WHERE b = 350 LIMIT 10;
+   a    |  b  
+--------+-----
+ 300250 | 350
+(1 row)
+
+CREATE TABLE range_parted_5(a int, b int) PARTITION BY RANGE (a);
+CREATE TABLE range_parted_5_1 PARTITION OF range_parted_5 FOR VALUES FROM (400000) TO (450000);
+CREATE TABLE range_parted_5_2 PARTITION OF range_parted_5 FOR VALUES FROM (450000) TO (460000);
+INSERT INTO range_parted_5 SELECT i,i%100 + 500 FROM generate_series(400000,459999) AS i;
+CREATE INDEX global_idx_1 ON range_parted_5(b) global;
+EXPLAIN (COSTS OFF) SELECT * FROM range_parted_5 WHERE b = 550;
+                       QUERY PLAN                       
+--------------------------------------------------------
+ Global Index Scan using global_idx_1 on range_parted_5
+   Index Cond: (b = 550)
+(2 rows)
+
+SELECT * FROM range_parted_5 WHERE b = 550 LIMIT 5;
+   a    |  b  
+--------+-----
+ 400050 | 550
+ 400150 | 550
+ 400250 | 550
+ 400350 | 550
+ 400450 | 550
+(5 rows)
+
+--attach to the top partition
+ALTER TABLE range_parted ATTACH PARTITION range_parted_5 FOR VALUES FROM (400000) to (500000);
+EXPLAIN (COSTS OFF) SELECT * FROM range_parted WHERE b = 550;
+                     QUERY PLAN                     
+----------------------------------------------------
+ Global Index Scan using global_idx on range_parted
+   Index Cond: (b = 550)
+(2 rows)
+
+SELECT * FROM range_parted WHERE b = 550 LIMIT 5;
+   a    |  b  
+--------+-----
+ 400050 | 550
+ 400150 | 550
+ 400250 | 550
+ 400350 | 550
+ 400450 | 550
+(5 rows)
+
+-- Check index only scan
+EXPLAIN (COSTS OFF) SELECT b FROM range_parted WHERE b = 550 LIMIT 5;
+                          QUERY PLAN                           
+---------------------------------------------------------------
+ Limit
+   ->  Global Index Only Scan using global_idx on range_parted
+         Index Cond: (b = 550)
+(3 rows)
+
+SELECT b FROM range_parted WHERE b = 550 LIMIT 5;
+  b  
+-----
+ 550
+ 550
+ 550
+ 550
+ 550
+(5 rows)
+
+-- Attach to level-1 partition (test with multi level global index)
+CREATE TABLE range_parted_6(a int, b int);
+INSERT INTO range_parted_6 SELECT i,i%100 + 600 FROM generate_series(460000,490000) AS i;
+ALTER TABLE range_parted_5 ATTACH PARTITION range_parted_6 FOR VALUES FROM (460000) to (500000);
+EXPLAIN (COSTS OFF) SELECT * FROM range_parted WHERE b = 650;
+                     QUERY PLAN                     
+----------------------------------------------------
+ Global Index Scan using global_idx on range_parted
+   Index Cond: (b = 650)
+(2 rows)
+
+SELECT * FROM range_parted WHERE b = 650 LIMIT 5;
+   a    |  b  
+--------+-----
+ 460050 | 650
+ 460150 | 650
+ 460250 | 650
+ 460350 | 650
+ 460450 | 650
+(5 rows)
+
+-- Update the leaf and check we are inserting that in multi-level global index
+UPDATE range_parted SET b=b+1000;
+EXPLAIN (COSTS OFF) SELECT * FROM range_parted WHERE b = 1650;
+                     QUERY PLAN                     
+----------------------------------------------------
+ Global Index Scan using global_idx on range_parted
+   Index Cond: (b = 1650)
+(2 rows)
+
+--SELECT * FROM range_parted WHERE b = 1650 LIMIT 5;
+EXPLAIN (COSTS OFF) SELECT * FROM range_parted_5 WHERE b = 1650;
+                       QUERY PLAN                       
+--------------------------------------------------------
+ Global Index Scan using global_idx_1 on range_parted_5
+   Index Cond: (b = 1650)
+(2 rows)
+
+--SELECT * FROM range_parted_5 WHERE b = 1650 LIMIT 5;
+-- Conditional update using global index
+EXPLAIN (COSTS OFF) UPDATE range_parted SET b=b+1000 where b = 1650;
+                        QUERY PLAN                        
+----------------------------------------------------------
+ Update on range_parted
+   Update on range_parted_1 range_parted
+   Update on range_parted_2 range_parted
+   Update on range_parted_3 range_parted
+   Update on range_parted_4 range_parted
+   Update on range_parted_5_1 range_parted
+   Update on range_parted_5_2 range_parted
+   Update on range_parted_6 range_parted
+   ->  Global Index Scan using global_idx on range_parted
+         Index Cond: (b = 1650)
+(10 rows)
+
+UPDATE range_parted SET b=b+1000 where b = 1650;
+EXPLAIN (COSTS OFF) SELECT * FROM range_parted_5 WHERE b = 2650;
+                       QUERY PLAN                       
+--------------------------------------------------------
+ Global Index Scan using global_idx_1 on range_parted_5
+   Index Cond: (b = 2650)
+(2 rows)
+
+--SELECT * FROM range_parted_5 WHERE b = 2650 LIMIT 5;
+--Detach partition
+ALTER TABLE range_parted DETACH PARTITION range_parted_5;
+EXPLAIN (COSTS OFF) SELECT * FROM range_parted WHERE b = 550;
+                     QUERY PLAN                     
+----------------------------------------------------
+ Global Index Scan using global_idx on range_parted
+   Index Cond: (b = 550)
+(2 rows)
+
+SELECT * FROM range_parted WHERE b = 550 LIMIT 5;
+ a | b 
+---+---
+(0 rows)
+
+--Reattach the partition
+ALTER TABLE range_parted ATTACH PARTITION range_parted_5 FOR VALUES FROM (400000) to (500000);
+EXPLAIN (COSTS OFF) SELECT * FROM range_parted WHERE b = 550;
+                     QUERY PLAN                     
+----------------------------------------------------
+ Global Index Scan using global_idx on range_parted
+   Index Cond: (b = 550)
+(2 rows)
+
+SELECT * FROM range_parted WHERE b = 550 LIMIT 5;
+ a | b 
+---+---
+(0 rows)
+
+--Drop the partitioned table
+DROP TABLE range_parted_5;
+EXPLAIN (COSTS OFF) SELECT * FROM range_parted WHERE b = 550;
+                     QUERY PLAN                     
+----------------------------------------------------
+ Global Index Scan using global_idx on range_parted
+   Index Cond: (b = 550)
+(2 rows)
+
+SELECT * FROM range_parted WHERE b = 550 LIMIT 5;
+ a | b 
+---+---
+(0 rows)
+
+-- Test unique global index
+TRUNCATE TABLE range_parted;
+INSERT INTO range_parted VALUES(1,2);
+INSERT INTO range_parted VALUES(2,2);
+CREATE UNIQUE INDEX global_idx_unique ON range_parted(b) global; -- Fail with duplicate
+ERROR:  could not create unique index "global_idx_unique"
+DETAIL:  Key (b)=(2) is duplicated.
+TRUNCATE TABLE range_parted;
+INSERT INTO range_parted VALUES(1,2);
+CREATE UNIQUE INDEX global_idx_unique ON range_parted(b) global;
+INSERT INTO range_parted VALUES(1,2); -- Fail with duplicate
+ERROR:  duplicate key value violates unique constraint "global_idx_unique"
+DETAIL:  Key (b)=(2) already exists.
+DROP INDEX global_idx_unique;
+INSERT INTO range_parted VALUES(1,2); -- Now this should pass
+-- multiple level multiple type partitions
+CREATE TABLE parent_table (
+    id INT,
+    category TEXT,
+    sub_category TEXT,
+    value INT
+) PARTITION BY RANGE (id);
+DO $$
+DECLARE
+    range_start INT;
+    range_end INT;
+    range_partition_name TEXT;
+    list_partition_name TEXT;
+    hash_partition_name TEXT;
+    i INT;
+    j INT;
+    k INT;
+BEGIN
+    -- Create range partitions
+    FOR i IN 0..10 LOOP
+        range_start := i * 1000;
+        range_end := (i + 1) * 1000;
+        range_partition_name := format('parent_table_%s', i);
+        EXECUTE format('CREATE TABLE %I PARTITION OF parent_table FOR VALUES FROM (%s) TO (%s) PARTITION BY LIST(category)', range_partition_name, range_start, range_end);
+
+        -- Create list partitions within each range partition
+        FOR j IN 1..10 LOOP
+            list_partition_name := format('%s_list_%s', range_partition_name, j);
+            EXECUTE format('CREATE TABLE %I PARTITION OF %I FOR VALUES IN (''%s'') PARTITION BY HASH (id)', list_partition_name, range_partition_name, j);
+
+            -- Create hash partitions within each list partition
+            FOR k IN 0..4 LOOP
+                hash_partition_name := format('%s_hash_%s', list_partition_name, k);
+                EXECUTE format('CREATE TABLE %I PARTITION OF %I FOR VALUES WITH (MODULUS 5, REMAINDER %s)', hash_partition_name, list_partition_name, k);
+            END LOOP;
+        END LOOP;
+    END LOOP;
+END $$;
+DO $$
+DECLARE
+    i INT := 1;
+BEGIN
+    WHILE i <= 10000 LOOP
+        INSERT INTO parent_table (id, category, sub_category, value)
+        VALUES (i, '' || (i % 10 + 1), '' || (i % 10 + 1), i);
+        i := i + 1;
+    END LOOP;
+END $$;
+CREATE INDEX global_index_v ON parent_table(value) global;
+EXPLAIN (COSTS OFF) SELECT * FROM parent_table WHERE value = 9000;
+                       QUERY PLAN                       
+--------------------------------------------------------
+ Global Index Scan using global_index_v on parent_table
+   Index Cond: (value = 9000)
+(2 rows)
+
+SELECT * FROM parent_table WHERE value = 9000;
+  id  | category | sub_category | value 
+------+----------+--------------+-------
+ 9000 | 1        | 1            |  9000
+(1 row)
+
+-- Cleanup
+DROP TABLE range_parted;
