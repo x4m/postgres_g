@@ -1480,8 +1480,18 @@ retry:
 			LWLockRelease(lock);
 			CHECK_FOR_INTERRUPTS();
 
-			ConditionVariableSleep(&MultiXactState->nextoff_cv,
-								   WAIT_EVENT_MULTIXACT_CREATION);
+			if (ConditionVariableTimedSleep(&MultiXactState->nextoff_cv, 1,
+								   WAIT_EVENT_MULTIXACT_CREATION))
+			{
+				if (RecoveryInProgress() && !InRecovery)
+				{
+					CheckRecoveryConflictDeadlock();
+				}
+				else
+				{
+					Assert(false);
+				}
+			}
 			slept = true;
 			goto retry;
 		}
