@@ -1480,8 +1480,11 @@ retry:
 			LWLockRelease(lock);
 			CHECK_FOR_INTERRUPTS();
 
-			ConditionVariableSleep(&MultiXactState->nextoff_cv,
-								   WAIT_EVENT_MULTIXACT_CREATION);
+			if (ConditionVariableTimedSleep(&MultiXactState->nextoff_cv, 1000,
+								   WAIT_EVENT_MULTIXACT_CREATION))
+			{
+				elog(WARNING, "Timed out: nextMXact %u tmpMXact %u", nextMXact, tmpMXact);
+			}
 			slept = true;
 			goto retry;
 		}
