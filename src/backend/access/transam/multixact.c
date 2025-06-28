@@ -1480,10 +1480,11 @@ retry:
 			LWLockRelease(lock);
 			CHECK_FOR_INTERRUPTS();
 
-			if (ConditionVariableTimedSleep(&MultiXactState->nextoff_cv, 1000,
+			if (ConditionVariableTimedSleep(&MultiXactState->nextoff_cv, 1,
 								   WAIT_EVENT_MULTIXACT_CREATION))
 			{
-				elog(WARNING, "Timed out: nextMXact %u tmpMXact %u", nextMXact, tmpMXact);
+				if (RecoveryInProgress() && !InRecovery)
+					CheckRecoveryConflictDeadlock();
 			}
 			slept = true;
 			goto retry;
