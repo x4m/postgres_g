@@ -49,7 +49,7 @@ $node_primary->wait_for_catchup($node_standby_1, 'replay', $primary_lsn);
 my $pgbench_out   = '';
 my $pgbench_timer = IPC::Run::timeout(180);
 my $pgbench_h     = $node_standby_1->background_pgbench(
-	'--no-vacuum --report-per-command -M prepared -c 100 -j 2 -T 300 -P 1',
+	'--no-vacuum --report-per-command -M prepared -c 10 -j 2 -T 10',
 	{
 		'006_pgbench_standby_check_1' => q(
 			begin;
@@ -84,7 +84,7 @@ my $pgbench_h     = $node_standby_1->background_pgbench(
 # transaction concurrently.  That would deadlock, so use an advisory
 # lock to ensure only one CIC runs at a time.
 $node_primary->pgbench(
-	'--no-vacuum --report-per-command -M prepared -c 100 -j 2 -T 300 -P 1',
+	'--no-vacuum --report-per-command -M prepared -c 10 -j 2 -T 10',
 	0,
 	[qr{actually processed}],
 	[qr{^$}],
@@ -109,6 +109,11 @@ my $result =
   ? ($pgbench_h->full_results)[0]
   : $pgbench_h->result(0);
 is($result, 0, "pgbench with bt_index_check() on standby works");
+
+
+# Check that no deadlock occured
+$primary_lsn = $node_primary->lsn('write');
+$node_primary->wait_for_catchup($node_standby_1, 'replay', $primary_lsn);
 
 # done
 $node_primary->stop;

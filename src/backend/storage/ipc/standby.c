@@ -390,6 +390,7 @@ ResolveRecoveryConflictWithVirtualXIDs(VirtualTransactionId *waitlist,
 				 */
 				Assert(VirtualTransactionIdIsValid(*waitlist));
 				pid = CancelVirtualTransaction(*waitlist, reason);
+				elog(WARNING, "Cancelling pid %d", pid);
 
 				/*
 				 * Wait a little bit for it to die so that we avoid flooding

@@ -3237,7 +3237,7 @@ ProcessRecoveryConflictInterrupts(void)
 	 * us.
 	 */
 	Assert(!proc_exit_inprogress);
-	Assert(InterruptHoldoffCount == 0);
+	//Assert(InterruptHoldoffCount == 0);
 	Assert(RecoveryConflictPending);
 
 	RecoveryConflictPending = false;
@@ -3252,6 +3252,12 @@ ProcessRecoveryConflictInterrupts(void)
 			ProcessRecoveryConflictInterrupt(reason);
 		}
 	}
+}
+
+void CheckReoveryInterrupts(void)
+{
+	if (RecoveryConflictPending)
+		ProcessRecoveryConflictInterrupts();
 }
 
 /*

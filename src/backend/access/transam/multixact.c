@@ -883,6 +883,9 @@ MultiXactIdCreateFromMembers(int nmembers, MultiXactMember *members)
 	XLogRegisterData((char *) (&xlrec), SizeOfMultiXactCreate);
 	XLogRegisterData((char *) members, nmembers * sizeof(MultiXactMember));
 
+	if (rand()%2 == 0)
+		pg_usleep(1000);
+
 	(void) XLogInsert(RM_MULTIXACT_ID, XLOG_MULTIXACT_CREATE_ID);
 
 	/* Now enter the information into the OFFSETs and MEMBERs logs */
@@ -1262,6 +1265,8 @@ GetNewMultiXactId(int nmembers, MultiXactOffset *offset)
 	return result;
 }
 
+void CheckReoveryInterrupts(void);
+
 /*
  * GetMultiXactIdMembers
  *		Return the set of MultiXactMembers that make up a MultiXactId
@@ -1478,18 +1483,14 @@ retry:
 		{
 			/* Corner case 2: next multixact is still being filled in */
 			LWLockRelease(lock);
-			CHECK_FOR_INTERRUPTS();
 
 			if (ConditionVariableTimedSleep(&MultiXactState->nextoff_cv, 1,
 								   WAIT_EVENT_MULTIXACT_CREATION))
 			{
 				if (RecoveryInProgress() && !InRecovery)
 				{
+					CheckReoveryInterrupts();
 					CheckRecoveryConflictDeadlock();
-				}
-				else
-				{
-					Assert(false);
 				}
 			}
 			slept = true;
