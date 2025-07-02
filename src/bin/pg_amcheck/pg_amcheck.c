@@ -151,6 +151,7 @@ typedef struct DatabaseInfo
 	char	   *amcheck_schema; /* escaped, quoted literal */
 	bool		is_checkunique;
 	bool		gist_supported;
+	bool		gin_supported;
 } DatabaseInfo;
 
 typedef struct RelationInfo
@@ -181,6 +182,8 @@ static void prepare_btree_command(PQExpBuffer sql, RelationInfo *rel,
 								  PGconn *conn);
 static void prepare_gist_command(PQExpBuffer sql, RelationInfo *rel,
 								 PGconn *conn);
+static void prepare_gin_command(PQExpBuffer sql, RelationInfo *rel,
+								PGconn *conn);
 static void run_command(ParallelSlot *slot, const char *sql);
 static bool verify_heap_slot_handler(PGresult *res, PGconn *conn,
 									 void *context);
@@ -291,6 +294,7 @@ main(int argc, char *argv[])
 	int			encoding = pg_get_encoding_from_locale(NULL, false);
 	ConnParams	cparams;
 	bool		gist_warn_printed = false;
+	bool		gin_warn_printed = false;
 
 	pg_logging_init(argv[0]);
 	progname = get_progname(argv[0]);
@@ -634,6 +638,9 @@ main(int argc, char *argv[])
 		/* GiST indexes are supported in 1.6+ */
 		dat->gist_supported = ((vmaj == 1 && vmin >= 6) || vmaj > 1);
 
+		/* GIN indexes are supported in 1.5+ */
+		dat->gin_supported = ((vmaj == 1 && vmin >= 5) || vmaj > 1);
+
 		PQclear(result);
 
 		compile_relation_list_one_db(conn, &relations, dat, &pagestotal);
@@ -805,6 +812,17 @@ main(int argc, char *argv[])
 					gist_warn_printed = true;
 				}
 			}
+			else if (rel->amoid == GIN_AM_OID)
+			{
+				if (rel->datinfo->gin_supported)
+					prepare_gin_command(&sql, rel, free_slot->connection);
+				else
+				{
+					if (!gin_warn_printed)
+						pg_log_warning("GIN verification is not supported by installed amcheck version");
+					gin_warn_printed = true;
+				}
+			}
 			else
 				/* should not happen at this stage */
 				pg_log_info("Verification of index type %u not supported",
@@ -953,6 +971,27 @@ prepare_gist_command(PQExpBuffer sql, RelationInfo *rel, PGconn *conn)
 					  "AND i.indisready AND i.indisvalid AND i.indislive",
 					  rel->datinfo->amcheck_schema,
 					  (opts.heapallindexed ? "true" : "false"),
+					  rel->reloid);
+}
+
+/*
+ * prepare_gin_command
+ * Similar to btree equivalent prepares command to check GIN index.
+ */
+static void
+prepare_gin_command(PQExpBuffer sql, RelationInfo *rel, PGconn *conn)
+{
+	resetPQExpBuffer(sql);
+
+	appendPQExpBuffer(sql,
+					  "SELECT %s.gin_index_check("
+					  "index := c.oid)"
+					  "\nFROM pg_catalog.pg_class c, pg_catalog.pg_index i "
+					  "WHERE c.oid = %u "
+					  "AND c.oid = i.indexrelid "
+					  "AND c.relpersistence != 't' "
+					  "AND i.indisready AND i.indisvalid AND i.indislive",
+					  rel->datinfo->amcheck_schema,
 					  rel->reloid);
 }
 
@@ -1253,6 +1292,8 @@ help(const char *progname)
 	printf(_("      --parent-check              check index parent/child relationships\n"));
 	printf(_("      --rootdescend               search from root page to refind tuples\n"));
 	printf(_("\nGiST index checking options:\n"));
+	printf(_("      --heapallindexed            check that all heap tuples are found within indexes\n"));
+	printf(_("\nGIN index checking options:\n"));
 	printf(_("      --heapallindexed            check that all heap tuples are found within indexes\n"));
 	printf(_("\nConnection options:\n"));
 	printf(_("  -h, --host=HOSTNAME             database server host or socket directory\n"));
@@ -1968,27 +2009,27 @@ compile_relation_list_one_db(PGconn *conn, SimplePtrList *relations,
 	appendPQExpBuffer(&sql,
 					  "\nc.oid, c.relam as amoid, n.nspname, c.relname, "
 					  "c.reltoastrelid, c.relpages, c.relam = %u AS is_heap, "
-					  "(c.relam = %u OR c.relam = %u) AS is_index"
+					  "(c.relam = %u OR c.relam = %u OR c.relam = %u) AS is_index"
 					  "\nFROM pg_catalog.pg_class c "
 					  "INNER JOIN pg_catalog.pg_namespace n "
 					  "ON c.relnamespace = n.oid",
-					  HEAP_TABLE_AM_OID, BTREE_AM_OID, GIST_AM_OID);
+					  HEAP_TABLE_AM_OID, BTREE_AM_OID, GIST_AM_OID, GIN_AM_OID);
 	if (!opts.allrel)
 		appendPQExpBuffer(&sql,
 						  "\nINNER JOIN include_pat ip"
 						  "\nON (n.nspname ~ ip.nsp_regex OR ip.nsp_regex IS NULL)"
 						  "\nAND (c.relname ~ ip.rel_regex OR ip.rel_regex IS NULL)"
 						  "\nAND (c.relam = %u OR NOT ip.heap_only)"
-						  "\nAND ((c.relam = %u OR c.relam = %u) OR NOT ip.index_only)",
-						  HEAP_TABLE_AM_OID, BTREE_AM_OID, GIST_AM_OID);
+						  "\nAND ((c.relam = %u OR c.relam = %u OR c.relam = %u) OR NOT ip.index_only)",
+						  HEAP_TABLE_AM_OID, BTREE_AM_OID, GIST_AM_OID, GIN_AM_OID);
 	if (opts.excludetbl || opts.excludeidx || opts.excludensp)
 		appendPQExpBuffer(&sql,
 						  "\nLEFT OUTER JOIN exclude_pat ep"
 						  "\nON (n.nspname ~ ep.nsp_regex OR ep.nsp_regex IS NULL)"
 						  "\nAND (c.relname ~ ep.rel_regex OR ep.rel_regex IS NULL)"
 						  "\nAND (c.relam = %u OR NOT ep.heap_only OR ep.rel_regex IS NULL)"
-						  "\nAND ((c.relam = %u OR c.relam = %u) OR NOT ep.index_only OR ep.rel_regex IS NULL)",
-						  HEAP_TABLE_AM_OID, BTREE_AM_OID, GIST_AM_OID);
+						  "\nAND ((c.relam = %u OR c.relam = %u OR c.relam = %u) OR NOT ep.index_only OR ep.rel_regex IS NULL)",
+						  HEAP_TABLE_AM_OID, BTREE_AM_OID, GIST_AM_OID, GIN_AM_OID);
 
 	/*
 	 * Exclude temporary tables and indexes, which must necessarily belong to
@@ -2027,7 +2068,7 @@ compile_relation_list_one_db(PGconn *conn, SimplePtrList *relations,
 						  HEAP_TABLE_AM_OID, PG_TOAST_NAMESPACE);
 	else
 		appendPQExpBuffer(&sql,
-						  " AND c.relam IN (%u, %u, %u)"
+						  " AND c.relam IN (%u, %u, %u, %u)"
 						  "AND c.relkind IN ("
 						  CppAsString2(RELKIND_RELATION) ", "
 						  CppAsString2(RELKIND_SEQUENCE) ", "
@@ -2039,10 +2080,10 @@ compile_relation_list_one_db(PGconn *conn, SimplePtrList *relations,
 						  CppAsString2(RELKIND_SEQUENCE) ", "
 						  CppAsString2(RELKIND_MATVIEW) ", "
 						  CppAsString2(RELKIND_TOASTVALUE) ")) OR "
-						  "((c.relam = %u OR c.relam = %u) AND c.relkind = "
+						  "((c.relam = %u OR c.relam = %u OR c.relam = %u) AND c.relkind = "
 						  CppAsString2(RELKIND_INDEX) "))",
-						  HEAP_TABLE_AM_OID, BTREE_AM_OID, GIST_AM_OID,
-						  HEAP_TABLE_AM_OID, BTREE_AM_OID, GIST_AM_OID);
+						  HEAP_TABLE_AM_OID, BTREE_AM_OID, GIST_AM_OID, GIN_AM_OID,
+						  HEAP_TABLE_AM_OID, BTREE_AM_OID, GIST_AM_OID, GIN_AM_OID);
 
 	appendPQExpBufferStr(&sql,
 						 "\nORDER BY c.oid)");
@@ -2100,9 +2141,9 @@ compile_relation_list_one_db(PGconn *conn, SimplePtrList *relations,
 			appendPQExpBufferStr(&sql,
 								 "\nWHERE true");
 		appendPQExpBuffer(&sql,
-						  " AND (c.relam = %u or c.relam = %u) "
+						  " AND (c.relam = %u or c.relam = %u or c.relam = %u) "
 						  "AND c.relkind = " CppAsString2(RELKIND_INDEX),
-						  BTREE_AM_OID, GIST_AM_OID);
+						  BTREE_AM_OID, GIST_AM_OID, GIN_AM_OID);
 		if (opts.no_toast_expansion)
 			appendPQExpBuffer(&sql,
 							  " AND c.relnamespace != %u",

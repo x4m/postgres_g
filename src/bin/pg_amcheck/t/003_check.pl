@@ -1,4 +1,3 @@
-
 # Copyright (c) 2021-2025, PostgreSQL Global Development Group
 
 use strict;
@@ -185,7 +184,7 @@ for my $dbname (qw(db1 db2 db3))
 	# schemas.  The schemas are all identical to start, but
 	# we will corrupt them differently later.
 	#
-	for my $schema (qw(s1 s2 s3 s4 s5 s6))
+	for my $schema (qw(s1 s2 s3 s4 s5 s6 s7))
 	{
 		$node->safe_psql(
 			$dbname, qq(
@@ -295,20 +294,22 @@ plan_to_remove_toast_file('db1', 's4.t2');
 plan_to_remove_relation_file('db1', 's5.t1_gist');
 plan_to_corrupt_first_page('db1', 's5.t2_gist');
 
-# Corrupt all other object types in schema "s6".  We don't have amcheck support
+# Corrupt GIN index in schema "s6"
+plan_to_remove_relation_file('db1', 's6.t1_gin');
+plan_to_corrupt_first_page('db1', 's6.t2_gin');
+
+# Corrupt all other object types in schema "s7".  We don't have amcheck support
 # for these types, but we check that their corruption does not trigger any
 # errors in pg_amcheck
-plan_to_remove_relation_file('db1', 's6.seq1');
-plan_to_remove_relation_file('db1', 's6.t1_hash');
-plan_to_remove_relation_file('db1', 's6.t1_gin');
-plan_to_remove_relation_file('db1', 's6.t1_brin');
-plan_to_remove_relation_file('db1', 's6.t1_spgist');
+plan_to_remove_relation_file('db1', 's7.seq1');
+plan_to_remove_relation_file('db1', 's7.t1_hash');
+plan_to_remove_relation_file('db1', 's7.t1_brin');
+plan_to_remove_relation_file('db1', 's7.t1_spgist');
 
-plan_to_corrupt_first_page('db1', 's6.seq2');
-plan_to_corrupt_first_page('db1', 's6.t2_hash');
-plan_to_corrupt_first_page('db1', 's6.t2_gin');
-plan_to_corrupt_first_page('db1', 's6.t2_brin');
-plan_to_corrupt_first_page('db1', 's6.t2_spgist');
+plan_to_corrupt_first_page('db1', 's7.seq2');
+plan_to_corrupt_first_page('db1', 's7.t2_hash');
+plan_to_corrupt_first_page('db1', 's7.t2_brin');
+plan_to_corrupt_first_page('db1', 's7.t2_spgist');
 
 
 # Database 'db2' corruptions
@@ -475,10 +476,22 @@ $node->command_checks_all(
 	[$no_output_re],
 	'pg_amcheck schema s5 reports GiST index errors');
 
-# Check that no corruption is reported in schema db1.s6
-$node->command_checks_all([ @cmd, '-s', 's6', 'db1' ],
+# In schema db1.s6 we should see GIN corruption messages on stdout, and
+# nothing on stderr.
+#
+$node->command_checks_all(
+	[ @cmd, '-s', 's6', 'db1' ],
+	2,
+	[
+		$missing_file_re,
+	],
+	[$no_output_re],
+	'pg_amcheck schema s6 reports GIN index errors');
+
+# Check that no corruption is reported in schema db1.s7
+$node->command_checks_all([ @cmd, '-s', 's7', 'db1' ],
 	0, [$no_output_re], [$no_output_re],
-	'pg_amcheck over schema s6 reports no corruption');
+	'pg_amcheck over schema s7 reports no corruption');
 
 # In schema db1.s1, only indexes are corrupt.  Verify that when we exclude
 # the indexes, no corruption is reported about the schema.
@@ -663,5 +676,14 @@ $node->command_checks_all(
 	[
 		qr/pg_amcheck: warning: GiST verification is not supported by installed amcheck version/
 	],
-	'pg_amcheck smoke test --checkunique');
+	'pg_amcheck smoke test GiST version warning');
+
+$node->command_checks_all(
+	[ @cmd, '-s', 's6', 'db1' ],
+	0,
+	[$no_output_re],
+	[
+		qr/pg_amcheck: warning: GIN verification is not supported by installed amcheck version/
+	],
+	'pg_amcheck smoke test GIN version warning');
 done_testing();
