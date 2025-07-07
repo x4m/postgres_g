@@ -109,7 +109,8 @@ BitmapTableScanSetup(BitmapHeapScanState *node)
 			table_beginscan_bm(node->ss.ss_currentRelation,
 							   node->ss.ps.state->es_snapshot,
 							   0,
-							   NULL);
+							   NULL,
+							   node->modifies_rel);
 	}
 
 	node->ss.ss_currentScanDesc->st.rs_tbmiterator = tbmiterator;
@@ -360,6 +361,9 @@ ExecInitBitmapHeapScan(BitmapHeapScan *node, EState *estate, int eflags)
 	scanstate->initialized = false;
 	scanstate->pstate = NULL;
 	scanstate->recheck = true;
+	scanstate->modifies_rel =
+		bms_is_member(node->scan.scanrelid,
+					  estate->es_modified_relids);
 
 	/*
 	 * Miscellaneous initialization

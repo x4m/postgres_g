@@ -106,12 +106,13 @@ IndexNext(IndexScanState *node)
 		 * We reach here if the index scan is not parallel, or if we're
 		 * serially executing an index scan that was planned to be parallel.
 		 */
-		scandesc = index_beginscan(node->ss.ss_currentRelation,
-								   node->iss_RelationDesc,
-								   estate->es_snapshot,
-								   &node->iss_Instrument,
-								   node->iss_NumScanKeys,
-								   node->iss_NumOrderByKeys);
+		scandesc = index_beginscan_vmset(node->ss.ss_currentRelation,
+										 node->iss_RelationDesc,
+										 estate->es_snapshot,
+										 &node->iss_Instrument,
+										 node->iss_NumScanKeys,
+										 node->iss_NumOrderByKeys,
+										 node->iss_ModifiesBaseRel);
 
 		node->iss_ScanDesc = scandesc;
 
@@ -934,6 +935,10 @@ ExecInitIndexScan(IndexScan *node, EState *estate, int eflags)
 
 	indexstate->ss.ss_currentRelation = currentRelation;
 	indexstate->ss.ss_currentScanDesc = NULL;	/* no heap scan here */
+
+	indexstate->iss_ModifiesBaseRel =
+		bms_is_member(node->scan.scanrelid,
+					  estate->es_modified_relids);
 
 	/*
 	 * get the scan type from the relation descriptor.

@@ -49,6 +49,10 @@
 char	   *default_table_access_method = DEFAULT_TABLE_ACCESS_METHOD;
 bool		synchronize_seqscans = true;
 
+/* Helper for table_beginscan_parallel() and table_beginscan_parallel_vmset() */
+static TableScanDesc table_beginscan_parallel_common(Relation relation, ParallelTableScanDesc pscan,
+													 uint32 flags);
+
 
 /* ----------------------------------------------------------------------------
  * Slot functions.
@@ -162,12 +166,14 @@ table_parallelscan_initialize(Relation rel, ParallelTableScanDesc pscan,
 	}
 }
 
-TableScanDesc
-table_beginscan_parallel(Relation relation, ParallelTableScanDesc pscan)
+/*
+ * Common helper for table_beginscan_parallel() and table_beginscan_parallel_vmset()
+ */
+static TableScanDesc
+table_beginscan_parallel_common(Relation relation, ParallelTableScanDesc pscan,
+								uint32 flags)
 {
 	Snapshot	snapshot;
-	uint32		flags = SO_TYPE_SEQSCAN |
-		SO_ALLOW_STRAT | SO_ALLOW_SYNC | SO_ALLOW_PAGEMODE;
 
 	Assert(RelFileLocatorEquals(relation->rd_locator, pscan->phs_locator));
 
@@ -186,6 +192,31 @@ table_beginscan_parallel(Relation relation, ParallelTableScanDesc pscan)
 
 	return relation->rd_tableam->scan_begin(relation, snapshot, 0, NULL,
 											pscan, flags);
+}
+
+TableScanDesc
+table_beginscan_parallel(Relation relation, ParallelTableScanDesc pscan)
+{
+	uint32		flags = SO_TYPE_SEQSCAN |
+		SO_ALLOW_STRAT | SO_ALLOW_SYNC | SO_ALLOW_PAGEMODE;
+
+	return table_beginscan_parallel_common(relation, pscan, flags);
+}
+
+/*
+ * Parallel version of table_beginscan_vmset()
+ */
+TableScanDesc
+table_beginscan_parallel_vmset(Relation relation, ParallelTableScanDesc pscan,
+							   bool modifies_rel)
+{
+	uint32		flags = SO_TYPE_SEQSCAN |
+		SO_ALLOW_STRAT | SO_ALLOW_SYNC | SO_ALLOW_PAGEMODE;
+
+	if (!modifies_rel)
+		flags |= SO_ALLOW_VM_SET;
+
+	return table_beginscan_parallel_common(relation, pscan, flags);
 }
 
 

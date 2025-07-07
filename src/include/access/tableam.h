@@ -62,6 +62,8 @@ typedef enum ScanOptions
 
 	/* unregister snapshot at scan end? */
 	SO_TEMP_SNAPSHOT = 1 << 9,
+	/* whether or not scan should attempt to set the VM */
+	SO_ALLOW_VM_SET = 1 << 10,
 }			ScanOptions;
 
 /*
@@ -877,6 +879,25 @@ table_beginscan(Relation rel, Snapshot snapshot,
 }
 
 /*
+ * Similar to table_beginscan(), but allows the caller to indicate whether the
+ * query modifies the relation. This is used when the caller wants to attempt
+ * marking pages in the relation as all-visible in the visibility map during
+ * on-access pruning.
+ */
+static inline TableScanDesc
+table_beginscan_vmset(Relation rel, Snapshot snapshot,
+					  int nkeys, struct ScanKeyData *key, bool modifies_rel)
+{
+	uint32		flags = SO_TYPE_SEQSCAN |
+		SO_ALLOW_STRAT | SO_ALLOW_SYNC | SO_ALLOW_PAGEMODE;
+
+	if (!modifies_rel)
+		flags |= SO_ALLOW_VM_SET;
+
+	return rel->rd_tableam->scan_begin(rel, snapshot, nkeys, key, NULL, flags);
+}
+
+/*
  * Like table_beginscan(), but for scanning catalog. It'll automatically use a
  * snapshot appropriate for scanning catalog relations.
  */
@@ -913,9 +934,12 @@ table_beginscan_strat(Relation rel, Snapshot snapshot,
  */
 static inline TableScanDesc
 table_beginscan_bm(Relation rel, Snapshot snapshot,
-				   int nkeys, struct ScanKeyData *key)
+				   int nkeys, struct ScanKeyData *key, bool modifies_rel)
 {
 	uint32		flags = SO_TYPE_BITMAPSCAN | SO_ALLOW_PAGEMODE;
+
+	if (!modifies_rel)
+		flags |= SO_ALLOW_VM_SET;
 
 	return rel->rd_tableam->scan_begin(rel, snapshot, nkeys, key,
 									   NULL, flags);
@@ -1124,6 +1148,10 @@ extern void table_parallelscan_initialize(Relation rel,
  */
 extern TableScanDesc table_beginscan_parallel(Relation relation,
 											  ParallelTableScanDesc pscan);
+
+extern TableScanDesc table_beginscan_parallel_vmset(Relation relation,
+													ParallelTableScanDesc pscan,
+													bool modifies_rel);
 
 /*
  * Restart a parallel scan.  Call this in the leader process.  Caller is

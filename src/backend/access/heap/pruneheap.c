@@ -158,6 +158,7 @@ typedef struct
 	bool		all_visible;
 	bool		all_frozen;
 	TransactionId visibility_cutoff_xid;
+	TransactionId oldest_xmin;
 } PruneState;
 
 /* Local functions */
@@ -203,9 +204,13 @@ static bool identify_and_fix_vm_corruption(Relation relation,
  * if there's not any use in pruning.
  *
  * Caller must have pin on the buffer, and must *not* have a lock on it.
+ *
+ * If allow_vmset is true, it is okay for pruning to set the visibility map if
+ * the page is all visible.
  */
 void
-heap_page_prune_opt(Relation relation, Buffer buffer)
+heap_page_prune_opt(Relation relation, Buffer buffer,
+					Buffer *vmbuffer, bool allow_vmset)
 {
 	Page		page = BufferGetPage(buffer);
 	TransactionId prune_xid;
@@ -260,6 +265,9 @@ heap_page_prune_opt(Relation relation, Buffer buffer)
 		if (!ConditionalLockBufferForCleanup(buffer))
 			return;
 
+		/* Caller should not pass a vmbuffer if allow_vmset is false. */
+		Assert(allow_vmset || vmbuffer == NULL);
+
 		/*
 		 * Now that we have buffer lock, get accurate information about the
 		 * page's free space, and recheck the heuristic about whether to
@@ -269,6 +277,13 @@ heap_page_prune_opt(Relation relation, Buffer buffer)
 		{
 			OffsetNumber dummy_off_loc;
 			PruneFreezeResult presult;
+			int			options = 0;
+
+			if (allow_vmset)
+			{
+				visibilitymap_pin(relation, BufferGetBlockNumber(buffer), vmbuffer);
+				options = HEAP_PAGE_PRUNE_UPDATE_VM;
+			}
 
 			/*
 			 * For now, pass mark_unused_now as false regardless of whether or
@@ -276,8 +291,8 @@ heap_page_prune_opt(Relation relation, Buffer buffer)
 			 * that during on-access pruning with the current implementation.
 			 */
 			heap_page_prune_and_freeze(relation, buffer, false,
-									   InvalidBuffer,
-									   vistest, 0,
+									   vmbuffer ? *vmbuffer : InvalidBuffer,
+									   vistest, options,
 									   NULL, &presult, PRUNE_ON_ACCESS, &dummy_off_loc, NULL, NULL);
 
 			/*
@@ -467,6 +482,10 @@ heap_page_prune_and_freeze(Relation relation, Buffer buffer,
 	prstate.mark_unused_now = (options & HEAP_PAGE_PRUNE_MARK_UNUSED_NOW) != 0;
 	prstate.freeze = (options & HEAP_PAGE_PRUNE_FREEZE) != 0;
 	prstate.update_vm = (options & HEAP_PAGE_PRUNE_UPDATE_VM) != 0;
+	if (cutoffs)
+		prstate.oldest_xmin = cutoffs->OldestXmin;
+	else
+		prstate.oldest_xmin = OldestXminFromGlobalVisState(vistest);
 	prstate.cutoffs = cutoffs;
 
 	/*
@@ -878,6 +897,20 @@ heap_page_prune_and_freeze(Relation relation, Buffer buffer,
 	if (prstate.update_vm)
 	{
 		/*
+		 * If this is on-access and we aren't actually pruning, don't set the
+		 * VM if doing so would newly dirty the heap page or, if the page is
+		 * already dirty, if the WAL record emitted would have to contain an
+		 * FPI of the heap page. This should rarely happen, as we only attempt
+		 * on-access pruning when pd_prune_xid is valid.
+		 */
+		if (reason == PRUNE_ON_ACCESS &&
+			!do_prune && !do_freeze &&
+			(!BufferIsDirty(buffer) || XLogCheckBufferNeedsBackup(buffer)))
+		{
+			/* Don't update the VM */
+		}
+
+		/*
 		 * Clear any VM corruption. This does not need to be in a critical
 		 * section, so we do it first. If PD_ALL_VISIBLE is incorrectly set,
 		 * we may mark the heap page buffer dirty here and could end up doing
@@ -885,9 +918,9 @@ heap_page_prune_and_freeze(Relation relation, Buffer buffer,
 		 * of VM corruption, so we don't have to worry about the extra
 		 * performance overhead.
 		 */
-		if (identify_and_fix_vm_corruption(relation,
-										   blockno, buffer, page,
-										   blk_known_av, prstate.lpdead_items, vmbuffer))
+		else if (identify_and_fix_vm_corruption(relation,
+												blockno, buffer, page,
+												blk_known_av, prstate.lpdead_items, vmbuffer))
 		{
 			/* If we fix corruption, don't update the VM further */
 		}
@@ -1013,7 +1046,7 @@ heap_page_prune_and_freeze(Relation relation, Buffer buffer,
 			 */
 			else if (do_freeze)
 			{
-				conflict_xid = prstate.cutoffs->OldestXmin;
+				conflict_xid = prstate.oldest_xmin;
 				TransactionIdRetreat(conflict_xid);
 			}
 
@@ -1071,12 +1104,10 @@ heap_page_prune_and_freeze(Relation relation, Buffer buffer,
 		TransactionId debug_cutoff;
 		bool		debug_all_frozen;
 
-		Assert(cutoffs);
-
 		Assert(prstate.lpdead_items == 0);
 
 		if (!heap_page_is_all_visible(relation, buffer,
-									  cutoffs->OldestXmin,
+									  prstate.oldest_xmin,
 									  &debug_all_frozen,
 									  &debug_cutoff, off_loc))
 			Assert(false);
@@ -1136,9 +1167,8 @@ heap_prune_satisfies_vacuum(PruneState *prstate, HeapTuple tup, Buffer buffer)
 	 * vacuuming the relation. OldestXmin is used for freezing determination
 	 * and we cannot freeze dead tuples' xmaxes.
 	 */
-	if (prstate->cutoffs &&
-		TransactionIdIsValid(prstate->cutoffs->OldestXmin) &&
-		NormalTransactionIdPrecedes(dead_after, prstate->cutoffs->OldestXmin))
+	if (TransactionIdIsValid(prstate->oldest_xmin) &&
+		NormalTransactionIdPrecedes(dead_after, prstate->oldest_xmin))
 		return HEAPTUPLE_DEAD;
 
 	/*
@@ -1607,8 +1637,7 @@ heap_prune_record_unchanged_lp_normal(Page page, PruneState *prstate, OffsetNumb
 				 * could use GlobalVisTestIsRemovableXid instead, if a
 				 * non-freezing caller wanted to set the VM bit.
 				 */
-				Assert(prstate->cutoffs);
-				if (!TransactionIdPrecedes(xmin, prstate->cutoffs->OldestXmin))
+				if (!TransactionIdPrecedes(xmin, prstate->oldest_xmin))
 				{
 					prstate->all_visible = false;
 					break;

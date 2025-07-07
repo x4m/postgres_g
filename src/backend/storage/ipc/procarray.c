@@ -4134,6 +4134,18 @@ GlobalVisTestFor(Relation rel)
 }
 
 /*
+ * Returns maybe_needed as a 32-bit TransactionId. Can be used in callers that
+ * need to compare transaction IDs to a single value and are okay with using
+ * the more conservative boundary.
+ */
+TransactionId
+OldestXminFromGlobalVisState(GlobalVisState *state)
+{
+	return XidFromFullTransactionId(state->maybe_needed);
+}
+
+
+/*
  * Return true if it's worth updating the accurate maybe_needed boundary.
  *
  * As it is somewhat expensive to determine xmin horizons, we don't want to
