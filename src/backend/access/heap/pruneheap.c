@@ -1480,6 +1480,7 @@ heap_prune_record_unchanged_lp_normal(Page page, PruneState *prstate, OffsetNumb
 	{
 		bool		totally_frozen;
 
+		Assert(prstate->cutoffs);
 		if ((heap_prepare_freeze_tuple(htup,
 									   prstate->cutoffs,
 									   &prstate->pagefrz,
