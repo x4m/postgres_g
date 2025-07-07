@@ -101,6 +101,7 @@ extern bool GlobalVisTestIsRemovableXid(GlobalVisState *state, TransactionId xid
 extern bool GlobalVisTestIsRemovableFullXid(GlobalVisState *state, FullTransactionId fxid);
 extern bool GlobalVisCheckRemovableXid(Relation rel, TransactionId xid);
 extern bool GlobalVisCheckRemovableFullXid(Relation rel, FullTransactionId fxid);
+extern TransactionId OldestXminFromGlobalVisState(GlobalVisState *state);
 
 /*
  * Utility functions for implementing visibility routines in table AMs.

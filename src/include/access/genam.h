@@ -180,6 +180,11 @@ extern IndexScanDesc index_beginscan(Relation heapRelation,
 									 Snapshot snapshot,
 									 IndexScanInstrumentation *instrument,
 									 int nkeys, int norderbys);
+extern IndexScanDesc index_beginscan_vmset(Relation heapRelation,
+										   Relation indexRelation,
+										   Snapshot snapshot,
+										   IndexScanInstrumentation *instrument,
+										   int nkeys, int norderbys, bool modifies_heap_rel);
 extern IndexScanDesc index_beginscan_bitmap(Relation indexRelation,
 											Snapshot snapshot,
 											IndexScanInstrumentation *instrument,
@@ -206,6 +211,12 @@ extern IndexScanDesc index_beginscan_parallel(Relation heaprel,
 											  IndexScanInstrumentation *instrument,
 											  int nkeys, int norderbys,
 											  ParallelIndexScanDesc pscan);
+
+extern IndexScanDesc index_beginscan_parallel_vmset(Relation heaprel, Relation indexrel,
+													IndexScanInstrumentation *instrument,
+													int nkeys, int norderbys,
+													ParallelIndexScanDesc pscan,
+													bool modifies_rel);
 extern ItemPointer index_getnext_tid(IndexScanDesc scan,
 									 ScanDirection direction);
 struct TupleTableSlot;

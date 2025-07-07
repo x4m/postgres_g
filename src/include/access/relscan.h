@@ -121,6 +121,12 @@ typedef struct ParallelBlockTableScanWorkerData *ParallelBlockTableScanWorker;
 typedef struct IndexFetchTableData
 {
 	Relation	rel;
+
+	/*
+	 * Some optimizations can only be performed if the query does not modify
+	 * the underlying relation. Track that here.
+	 */
+	bool		modifies_base_rel;
 } IndexFetchTableData;
 
 struct IndexScanInstrumentation;

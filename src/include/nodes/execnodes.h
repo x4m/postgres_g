@@ -680,6 +680,12 @@ typedef struct EState
 									 * ExecDoInitialPruning() */
 	const char *es_sourceText;	/* Source text from QueryDesc */
 
+	/*
+	 * RT indexes of relations modified by the query either through
+	 * UPDATE/DELETE/INSERT/MERGE or SELECT FOR UPDATE
+	 */
+	Bitmapset  *es_modified_relids;
+
 	JunkFilter *es_junkFilter;	/* top-level junk filter, if any */
 
 	/* If query can insert/delete tuples, the command ID to mark them with */
@@ -1631,6 +1637,13 @@ typedef struct SeqScanState
 {
 	ScanState	ss;				/* its first field is NodeTag */
 	Size		pscan_len;		/* size of parallel heap scan descriptor */
+
+	/*
+	 * Whether or not the query modifies the relation scanned by this node.
+	 * This is used to avoid the overhead of optimizations that are only
+	 * effective for tables not modified by the query.
+	 */
+	bool		modifies_rel;
 } SeqScanState;
 
 /* ----------------
@@ -1702,6 +1715,7 @@ typedef struct
  *		OrderByTypByVals   is the datatype of order by expression pass-by-value?
  *		OrderByTypLens	   typlens of the datatypes of order by expressions
  *		PscanLen		   size of parallel index scan descriptor
+ *		ModifiesBaseRel    true if query modifies base relation
  * ----------------
  */
 typedef struct IndexScanState
@@ -1731,6 +1745,7 @@ typedef struct IndexScanState
 	bool	   *iss_OrderByTypByVals;
 	int16	   *iss_OrderByTypLens;
 	Size		iss_PscanLen;
+	bool		iss_ModifiesBaseRel;
 } IndexScanState;
 
 /* ----------------
@@ -1888,6 +1903,7 @@ typedef struct SharedBitmapHeapInstrumentation
  *		pstate			   shared state for parallel bitmap scan
  *		sinstrument		   statistics for parallel workers
  *		recheck			   do current page's tuples need recheck
+ *		modifies_rel	   does the query modify the base relation
  * ----------------
  */
 typedef struct BitmapHeapScanState
@@ -1900,6 +1916,7 @@ typedef struct BitmapHeapScanState
 	ParallelBitmapHeapState *pstate;
 	SharedBitmapHeapInstrumentation *sinstrument;
 	bool		recheck;
+	bool		modifies_rel;
 } BitmapHeapScanState;
 
 /* ----------------
