@@ -231,7 +231,7 @@ heap_page_prune_opt(Relation relation, Buffer buffer)
 	 */
 	vistest = GlobalVisTestFor(relation);
 
-	if (!GlobalVisTestIsRemovableXid(vistest, prune_xid))
+	if (!GlobalVisXidVisibleToAll(vistest, prune_xid))
 		return;
 
 	/*
@@ -574,9 +574,9 @@ heap_page_prune_and_freeze(Relation relation, Buffer buffer,
 	 * Determining HTSV only once for each tuple is required for correctness,
 	 * to deal with cases where running HTSV twice could result in different
 	 * results.  For example, RECENTLY_DEAD can turn to DEAD if another
-	 * checked item causes GlobalVisTestIsRemovableFullXid() to update the
-	 * horizon, or INSERT_IN_PROGRESS can change to DEAD if the inserting
-	 * transaction aborts.
+	 * checked item causes GlobalVisXidVisibleToAll() to update the horizon,
+	 * or INSERT_IN_PROGRESS can change to DEAD if the inserting transaction
+	 * aborts.
 	 *
 	 * It's also good for performance. Most commonly tuples within a page are
 	 * stored at decreasing offsets (while the items are stored at increasing
@@ -1173,11 +1173,11 @@ heap_prune_satisfies_vacuum(PruneState *prstate, HeapTuple tup, Buffer buffer)
 	 * Determine whether or not the tuple is considered dead when compared
 	 * with the provided GlobalVisState. On-access pruning does not provide
 	 * VacuumCutoffs. And for vacuum, even if the tuple's xmax is not older
-	 * than OldestXmin, GlobalVisTestIsRemovableXid() could find the row dead
-	 * if the GlobalVisState has been updated since the beginning of vacuuming
+	 * than OldestXmin, GlobalVisXidVisibleToAll() could find the row dead if
+	 * the GlobalVisState has been updated since the beginning of vacuuming
 	 * the relation.
 	 */
-	if (GlobalVisTestIsRemovableXid(prstate->vistest, dead_after))
+	if (GlobalVisXidVisibleToAll(prstate->vistest, dead_after))
 		return HEAPTUPLE_DEAD;
 
 	return res;

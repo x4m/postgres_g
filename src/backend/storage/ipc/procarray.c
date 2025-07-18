@@ -4181,8 +4181,7 @@ GlobalVisUpdate(void)
  * See comment for GlobalVisState for details.
  */
 bool
-GlobalVisTestIsRemovableFullXid(GlobalVisState *state,
-								FullTransactionId fxid)
+GlobalVisFullXidVisibleToAll(GlobalVisState *state, FullTransactionId fxid)
 {
 	/*
 	 * If fxid is older than maybe_needed bound, it definitely is visible to
@@ -4223,7 +4222,7 @@ GlobalVisTestIsRemovableFullXid(GlobalVisState *state,
  * relfrozenxid).
  */
 bool
-GlobalVisTestIsRemovableXid(GlobalVisState *state, TransactionId xid)
+GlobalVisXidVisibleToAll(GlobalVisState *state, TransactionId xid)
 {
 	FullTransactionId fxid;
 
@@ -4237,7 +4236,7 @@ GlobalVisTestIsRemovableXid(GlobalVisState *state, TransactionId xid)
 	 */
 	fxid = FullXidRelativeTo(state->definitely_needed, xid);
 
-	return GlobalVisTestIsRemovableFullXid(state, fxid);
+	return GlobalVisFullXidVisibleToAll(state, fxid);
 }
 
 /*
@@ -4251,12 +4250,12 @@ GlobalVisCheckRemovableFullXid(Relation rel, FullTransactionId fxid)
 
 	state = GlobalVisTestFor(rel);
 
-	return GlobalVisTestIsRemovableFullXid(state, fxid);
+	return GlobalVisFullXidVisibleToAll(state, fxid);
 }
 
 /*
  * Convenience wrapper around GlobalVisTestFor() and
- * GlobalVisTestIsRemovableXid(), see their comments.
+ * GlobalVisTestIsVisibleXid(), see their comments.
  */
 bool
 GlobalVisCheckRemovableXid(Relation rel, TransactionId xid)
@@ -4265,7 +4264,7 @@ GlobalVisCheckRemovableXid(Relation rel, TransactionId xid)
 
 	state = GlobalVisTestFor(rel);
 
-	return GlobalVisTestIsRemovableXid(state, xid);
+	return GlobalVisXidVisibleToAll(state, xid);
 }
 
 /*
