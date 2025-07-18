@@ -341,7 +341,7 @@ static MemoryContext MXactContext = NULL;
 /* internal MultiXactId management */
 static void MultiXactIdSetOldestVisible(void);
 static void RecordNewMultiXact(MultiXactId multi, MultiXactOffset offset,
-							   int nmembers, MultiXactMember *members);
+							   int nmembers, MultiXactMember *members, bool redo);
 static MultiXactId GetNewMultiXactId(int nmembers, MultiXactOffset *offset);
 
 /* MultiXact cache management */
@@ -843,7 +843,7 @@ MultiXactIdCreateFromMembers(int nmembers, MultiXactMember *members)
 	(void) XLogInsert(RM_MULTIXACT_ID, XLOG_MULTIXACT_CREATE_ID);
 
 	/* Now enter the information into the OFFSETs and MEMBERs logs */
-	RecordNewMultiXact(multi, offset, nmembers, members);
+	RecordNewMultiXact(multi, offset, nmembers, members, false);
 
 	/* Done with critical section */
 	END_CRIT_SECTION();
@@ -865,7 +865,7 @@ MultiXactIdCreateFromMembers(int nmembers, MultiXactMember *members)
  */
 static void
 RecordNewMultiXact(MultiXactId multi, MultiXactOffset offset,
-				   int nmembers, MultiXactMember *members)
+				   int nmembers, MultiXactMember *members, bool redo)
 {
 	int			pageno;
 	int			prev_pageno;
@@ -891,6 +891,43 @@ RecordNewMultiXact(MultiXactId multi, MultiXactOffset offset,
 	offptr += entryno;
 
 	*offptr = offset;
+
+	if (redo) // TODO: AB: I do not want to call RecoveryInProgress() here
+	{
+		MultiXactId next = multi + 1; /* we do not care about wrapraound here */
+		int			next_pageno = MultiXactIdToOffsetPage(next);
+		if (next_pageno == pageno)
+		{
+			offptr[1] = offset + nmembers;
+		}
+		else
+		{
+			int	next_slotno;
+			MultiXactOffset *next_offptr;
+			int	next_entryno = MultiXactIdToOffsetEntry(next);
+
+			if (!SimpleLruDoesPhysicalPageExist(MultiXactOffsetCtl, next_pageno))
+			{
+				int			slotno;
+
+				/* Copypasted comment from MaybeExtendOffsetSlru */
+				/*
+				* Fortunately for us, SimpleLruWritePage is already prepared to deal
+				* with creating a new segment file even if the page we're writing is
+				* not the first in it, so this is enough.
+				*/
+				next_slotno = ZeroMultiXactOffsetPage(next_pageno, false);
+				SimpleLruWritePage(MultiXactOffsetCtl, next_slotno);
+			}
+			else
+			{
+				next_slotno = SimpleLruReadPage(MultiXactOffsetCtl, next_pageno, true, next);
+			}
+			next_offptr = (MultiXactOffset *) MultiXactOffsetCtl->shared->page_buffer[next_slotno];
+			next_offptr[next_slotno] = offset + nmembers;
+			MultiXactMemberCtl->shared->page_dirty[next_slotno] = true;
+		}
+	}
 
 	MultiXactOffsetCtl->shared->page_dirty[slotno] = true;
 
@@ -1393,6 +1430,8 @@ retry:
 			/* Corner case 2: next multixact is still being filled in */
 			LWLockRelease(MultiXactOffsetSLRULock);
 			CHECK_FOR_INTERRUPTS();
+			/* CHECK_FOR_INTERRUPTS above would be critical for avoiding conflicts with recovery, yet caller might hold LWLock rendegin CHECK_FOR_INTERRUPTS disfunctional */
+			Assert(!RecoveryInProgress());
 			pg_usleep(1000L);
 			goto retry;
 		}
@@ -3286,7 +3325,7 @@ multixact_redo(XLogReaderState *record)
 
 		/* Store the data back into the SLRU files */
 		RecordNewMultiXact(xlrec->mid, xlrec->moff, xlrec->nmembers,
-						   xlrec->members);
+						   xlrec->members, true);
 
 		/* Make sure nextMXact/nextOffset are beyond what this record has */
 		MultiXactAdvanceNextMXact(xlrec->mid + 1,
