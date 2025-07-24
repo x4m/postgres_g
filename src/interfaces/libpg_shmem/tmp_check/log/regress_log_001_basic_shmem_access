@@ -1,0 +1,125 @@
+[18:10:34.873](0.005s) ok 1 - test_shmem_access binary exists and is executable
+Usage: test_shmem_access <postmaster_pid>
+
+Connect to PostgreSQL shared memory and access internal structures.
+
+Arguments:
+  postmaster_pid    PID of the PostgreSQL postmaster process
+
+Example:
+  test_shmem_access 12345
+
+Note: This program requires read access to PostgreSQL's shared memory.
+You may need to run it as the same user as PostgreSQL or with
+appropriate permissions.
+[18:10:35.042](0.169s) ok 2 - test_shmem_access fails when run without arguments
+PostgreSQL Shared Memory Access Test
+=====================================
+
+Checking if PID 999999 is a PostgreSQL postmaster...
+Debug: About to call PgShmemConnectByPid...
+Debug: Connection failed with error code: 1
+Debug: Error message: Invalid or non-existent process ID
+[18:10:35.048](0.007s) ok 3 - test_shmem_access fails gracefully with invalid PID
+# Checking port 31774
+# Found port 31774
+Name: shmem_test
+Data directory: /Users/x4mmm/postgres/src/interfaces/libpg_shmem/tmp_check/t_001_basic_shmem_access_shmem_test_data/pgdata
+Backup directory: /Users/x4mmm/postgres/src/interfaces/libpg_shmem/tmp_check/t_001_basic_shmem_access_shmem_test_data/backup
+Archive directory: /Users/x4mmm/postgres/src/interfaces/libpg_shmem/tmp_check/t_001_basic_shmem_access_shmem_test_data/archives
+Connection string: port=31774 host=/var/folders/d8/jy0s85hx4fg_y2wndc_yvl_h0000gp/T/UVnMGUQSfV
+Log file: /Users/x4mmm/postgres/src/interfaces/libpg_shmem/tmp_check/log/001_basic_shmem_access_shmem_test.log
+[18:10:35.158](0.110s) # initializing database system by copying initdb template
+# Running: cp -RPp /Users/x4mmm/postgres/tmp_install/initdb-template /Users/x4mmm/postgres/src/interfaces/libpg_shmem/tmp_check/t_001_basic_shmem_access_shmem_test_data/pgdata
+# Running: /Users/x4mmm/postgres/src/interfaces/libpg_shmem/../../../src/test/regress/pg_regress --config-auth /Users/x4mmm/postgres/src/interfaces/libpg_shmem/tmp_check/t_001_basic_shmem_access_shmem_test_data/pgdata
+### Starting node "shmem_test"
+# Running: pg_ctl --wait --pgdata /Users/x4mmm/postgres/src/interfaces/libpg_shmem/tmp_check/t_001_basic_shmem_access_shmem_test_data/pgdata --log /Users/x4mmm/postgres/src/interfaces/libpg_shmem/tmp_check/log/001_basic_shmem_access_shmem_test.log --options --cluster-name=shmem_test start
+waiting for server to start.... done
+server started
+# Postmaster PID for node "shmem_test" is 68317
+[18:10:35.623](0.465s) ok 4 - postmaster.pid file exists
+[18:10:35.623](0.000s) ok 5 - Got postmaster PID: 68317
+[18:10:35.623](0.000s) # Testing connection to PID 68317
+[18:10:35.623](0.000s) # Node data directory: /Users/x4mmm/postgres/src/interfaces/libpg_shmem/tmp_check/t_001_basic_shmem_access_shmem_test_data/pgdata
+[18:10:35.623](0.000s) # postmaster.pid file exists at: /Users/x4mmm/postgres/src/interfaces/libpg_shmem/tmp_check/t_001_basic_shmem_access_shmem_test_data/pgdata/postmaster.pid
+[18:10:35.623](0.000s) # postmaster.pid content: 68317 | /Users/x4mmm/postgres/src/interfaces/libpg_shmem/tmp_check/t_001_basic_shmem_access_shmem_test_data/pgdata | 1753362635
+[18:10:35.623](0.000s) # Set PGDATA_FOR_TEST to: /Users/x4mmm/postgres/src/interfaces/libpg_shmem/tmp_check/t_001_basic_shmem_access_shmem_test_data/pgdata
+[18:10:35.623](0.000s) # Process 68317 alive before test: yes
+[18:10:35.633](0.009s) # Process 68317 alive after test: yes
+[18:10:35.633](0.000s) # Return code: 0
+[18:10:35.633](0.000s) # STDOUT: PostgreSQL Shared Memory Access Test
+# =====================================
+# 
+# Checking if PID 68317 is a PostgreSQL postmaster...
+# Debug: About to call PgShmemConnectByPid...
+# DEBUG: PgShmemConnectByPid ENTRY - PID 68317
+# Debug: PgShmemConnectByPid called for PID 68317
+# Debug: Checking if process is alive and is a postmaster
+# Debug: Process appears to be alive
+# Debug: About to call find_postmaster_shmem_info
+# Debug: find_postmaster_shmem_info called for PID 68317
+# Debug: About to call pg_shmem_find_datadir_by_pid
+# Debug: pg_shmem_find_datadir_by_pid called for PID 68317
+# Debug: Found matching postmaster.pid via PGDATA_FOR_TEST env var: /Users/x4mmm/postgres/src/interfaces/libpg_shmem/tmp_check/t_001_basic_shmem_access_shmem_test_data/pgdata
+# Debug: pg_shmem_find_datadir_by_pid succeeded, datadir: /Users/x4mmm/postgres/src/interfaces/libpg_shmem/tmp_check/t_001_basic_shmem_access_shmem_test_data/pgdata
+# Debug: postmaster.pid line 1: 68317
+# Debug: Parsed PID: 68317
+# Debug: postmaster.pid line 2: /Users/x4mmm/postgres/src/interfaces/libpg_shmem/tmp_check/t_001_basic_shmem_access_shmem_test_data/pgdata
+# Debug: postmaster.pid line 3: 1753362635
+# Debug: postmaster.pid line 4: 31774
+# Debug: postmaster.pid line 5: /var/folders/d8/jy0s85hx4fg_y2wndc_yvl_h0000gp/T/UVnMGUQSfV
+# Debug: postmaster.pid line 6: 
+# Debug: postmaster.pid line 7:  74280037  91947010
+# Debug: Parsed shared memory ID: 91947010, key: 74280037
+# Debug: postmaster.pid line 8: ready   
+# Debug: Finished parsing postmaster.pid, lock_pid=68317, expected_pid=68317
+# Debug: Successfully extracted shared memory ID: 91947010
+# Debug: find_postmaster_shmem_info succeeded
+# Debug: About to call attach_to_segment with segment_id=91947010
+# Debug: attach_to_segment entry, checking HAVE_SYS_SHM_H
+# Debug: HAVE_SYS_SHM_H is defined, proceeding with System V IPC
+# Debug: attach_to_segment called with segment_id=91947010
+# Debug: Calling shmctl(IPC_STAT) on segment 91947010
+# Debug: shmctl(IPC_STAT) succeeded, segment size: 56
+# Debug: Calling shmat() on segment 91947010 with SHM_RDONLY
+# Debug: shmat() succeeded, attached at address 0x100fe0000, size 56
+# Debug: attach_to_segment succeeded, address=0x100fe0000, size=56
+# Successfully connected to PostgreSQL shared memory
+# 
+# Connection Information:
+#   Postmaster PID:     68317
+#   Segment Size:       56 bytes (0.00 MB)
+#   Segment ID:         91947010
+#   Segment Address:    0x100fe0000
+#   PostgreSQL Version: 0
+#   System Identifier:  0
+# 
+# Testing structure access...
+# Structure: XLOG Ctl
+#   Status:         Requested structure not found in shared memory: Hash table traversal not yet implemented
+# 
+# Structure: Control File
+#   Status:         Requested structure not found in shared memory: Hash table traversal not yet implemented
+# 
+# Structure: Proc Array
+#   Status:         Requested structure not found in shared memory: Hash table traversal not yet implemented
+# 
+# Testing XLOG Ctl structure access...
+# ✗ XLOG Ctl structure not found: Requested structure not found in shared memory: XLOG Ctl
+# 
+# Connection validation...
+# ✓ Connection is still valid
+# ✓ PostgreSQL postmaster is still running
+# 
+# Disconnecting from shared memory...
+# ✓ Disconnected successfully
+# 
+# Test completed successfully!
+[18:10:35.633](0.000s) ok 6 - test_shmem_access connected successfully to postmaster
+[18:10:35.633](0.000s) ok 7 - Connection success message found in output
+### Stopping node "shmem_test" using mode fast
+# Running: pg_ctl --pgdata /Users/x4mmm/postgres/src/interfaces/libpg_shmem/tmp_check/t_001_basic_shmem_access_shmem_test_data/pgdata --mode fast stop
+waiting for server to shut down.... done
+server stopped
+# No postmaster PID for node "shmem_test"
+[18:10:35.739](0.106s) 1..7

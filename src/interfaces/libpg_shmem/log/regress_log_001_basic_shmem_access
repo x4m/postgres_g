@@ -1,0 +1,11 @@
+[17:23:11.074](0.007s) 1..7
+# Checking port 17823
+# Found port 17823
+Name: shmem_test
+Data directory: tmp_check/t_001_basic_shmem_access_shmem_test_data/pgdata
+Backup directory: tmp_check/t_001_basic_shmem_access_shmem_test_data/backup
+Archive directory: tmp_check/t_001_basic_shmem_access_shmem_test_data/archives
+Connection string: port=17823 host=/var/folders/d8/jy0s85hx4fg_y2wndc_yvl_h0000gp/T/ZQZGoVNSKz
+Log file: log/001_basic_shmem_access_shmem_test.log
+Can't exec "pg_config": No such file or directory at ../../../src/test/perl/PostgreSQL/Test/Cluster.pm line 1714.
+[17:23:11.083](0.009s) Bail out!  pg_config failed: 

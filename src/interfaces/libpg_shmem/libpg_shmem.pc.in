@@ -1,0 +1,12 @@
+prefix=@prefix@
+exec_prefix=@exec_prefix@
+libdir=@libdir@
+includedir=@includedir@
+
+Name: libpg_shmem
+Description: PostgreSQL Shared Memory Access Library
+Version: @VERSION@
+Requires: 
+Libs: -L${libdir} -lpg_shmem
+Libs.private: -lpgcommon_shlib -lpgport_shlib
+Cflags: -I${includedir} 

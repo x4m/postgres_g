@@ -1,0 +1,11 @@
+2025-07-24 18:10:35.531 +05 postmaster[68317] LOG:  starting PostgreSQL 19devel on aarch64-apple-darwin24.5.0, compiled by Apple clang version 17.0.0 (clang-1700.0.13.5), 64-bit
+2025-07-24 18:10:35.531 +05 postmaster[68317] LOG:  listening on Unix socket "/var/folders/d8/jy0s85hx4fg_y2wndc_yvl_h0000gp/T/UVnMGUQSfV/.s.PGSQL.31774"
+2025-07-24 18:10:35.534 +05 startup[68323] LOG:  database system was shut down at 2025-07-24 18:10:34 +05
+2025-07-24 18:10:35.535 +05 postmaster[68317] LOG:  database system is ready to accept connections
+2025-07-24 18:10:35.636 +05 postmaster[68317] LOG:  received fast shutdown request
+2025-07-24 18:10:35.636 +05 postmaster[68317] LOG:  aborting any active transactions
+2025-07-24 18:10:35.636 +05 postmaster[68317] LOG:  background worker "logical replication launcher" (PID 68326) exited with exit code 1
+2025-07-24 18:10:35.637 +05 checkpointer[68321] LOG:  shutting down
+2025-07-24 18:10:35.637 +05 checkpointer[68321] LOG:  checkpoint starting: shutdown fast
+2025-07-24 18:10:35.637 +05 checkpointer[68321] LOG:  checkpoint complete: wrote 0 buffers (0.0%), wrote 3 SLRU buffers; 0 WAL file(s) added, 0 removed, 0 recycled; write=0.001 s, sync=0.001 s, total=0.001 s; sync files=0, longest=0.000 s, average=0.000 s; distance=0 kB, estimate=0 kB; lsn=0/017893B8, redo lsn=0/017893B8
+2025-07-24 18:10:35.639 +05 postmaster[68317] LOG:  database system is shut down

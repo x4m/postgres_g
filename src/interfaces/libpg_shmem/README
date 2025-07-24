@@ -1,0 +1,214 @@
+PostgreSQL Shared Memory Access Library (libpg_shmem)
+====================================================
+
+OVERVIEW
+--------
+
+The PostgreSQL Shared Memory Access Library (libpg_shmem) allows external
+processes to connect to and read from a running PostgreSQL instance's shared
+memory segments. This library is designed primarily for compute-storage
+separation scenarios where external processes need to access PostgreSQL's
+internal data structures directly.
+
+WARNING
+-------
+
+This is an advanced library intended for PostgreSQL developers and system
+integrators who understand PostgreSQL internals. Improper usage can:
+
+- Crash your external process
+- Potentially impact PostgreSQL performance
+- Access inconsistent data if not properly synchronized
+- Break when PostgreSQL versions change
+
+Only use this library if you understand the risks and have a legitimate
+need for direct shared memory access.
+
+FEATURES
+--------
+
+- Connect to PostgreSQL shared memory by postmaster PID
+- Access named shared memory structures (e.g., "XLOG Ctl", "Control File")
+- Safe memory validation and bounds checking
+- Cross-platform support (Linux, macOS, other POSIX systems)
+- Version compatibility checking
+- Error handling with descriptive messages
+
+BUILDING
+--------
+
+The library is built as part of the PostgreSQL build system:
+
+    cd postgres
+    ./configure
+    make -C src/interfaces/libpg_shmem
+
+Or build all interfaces:
+
+    make -C src/interfaces
+
+USAGE
+-----
+
+Basic usage example:
+
+```c
+#include "libpg_shmem-fe.h"
+
+int main(int argc, char *argv[])
+{
+    pid_t postmaster_pid = 12345;  // PostgreSQL postmaster PID
+    PgShmemConn *conn;
+    PgShmemError error;
+    void *xlog_ctl;
+
+    // Connect to shared memory
+    conn = PgShmemConnectByPid(postmaster_pid, &error);
+    if (!conn) {
+        fprintf(stderr, "Failed to connect: %s\n", PgShmemErrorMessage(error));
+        exit(1);
+    }
+
+    // Access the XLOG control structure
+    xlog_ctl = PgShmemGetXLogCtl(conn, &error);
+    if (xlog_ctl) {
+        printf("XLOG Ctl found at: %p\n", xlog_ctl);
+        
+        // Read data from the structure
+        // WARNING: Ensure proper synchronization when reading!
+    } else {
+        printf("XLOG Ctl not found: %s\n", PgShmemErrorMessage(error));
+    }
+
+    // Disconnect
+    PgShmemDisconnect(conn);
+    return 0;
+}
+```
+
+Compile with:
+
+    gcc -o myprogram myprogram.c $(pkg-config --cflags --libs libpg_shmem)
+
+Or manually:
+
+    gcc -o myprogram myprogram.c -lpg_shmem
+
+TESTING
+-------
+
+A test program is included to demonstrate the library:
+
+    cd src/interfaces/libpg_shmem
+    make test_shmem_access
+    ./test_shmem_access <postmaster_pid>
+
+Example:
+
+    ./test_shmem_access 12345
+
+COMMON STRUCTURES
+-----------------
+
+The library provides convenience functions for accessing common PostgreSQL
+shared memory structures:
+
+- PgShmemGetXLogCtl()     - WAL control structure
+- PgShmemGetControlFile() - Control file data
+- PgShmemGetProcArray()   - Process array
+
+You can also access any named structure:
+
+    void *ptr = PgShmemFindStruct(conn, "Structure Name", &error);
+
+SAFETY CONSIDERATIONS
+--------------------
+
+1. **Read-Only Access**: The library only provides read-only access to shared
+   memory. Writing to PostgreSQL shared memory from external processes is
+   extremely dangerous and not supported.
+
+2. **Synchronization**: PostgreSQL uses locks and memory barriers to ensure
+   data consistency. External processes should be aware that data may be
+   in an inconsistent state when read.
+
+3. **Version Compatibility**: Shared memory structures change between
+   PostgreSQL versions. Always check compatibility:
+
+   ```c
+   if (!PgShmemCheckCompatibility(pg_version)) {
+       fprintf(stderr, "Incompatible PostgreSQL version\n");
+       exit(1);
+   }
+   ```
+
+4. **Process Lifetime**: Always check if the PostgreSQL process is still
+   running before accessing shared memory:
+
+   ```c
+   if (!PgShmemPostmasterAlive(conn)) {
+       fprintf(stderr, "PostgreSQL is no longer running\n");
+       exit(1);
+   }
+   ```
+
+LIMITATIONS
+-----------
+
+- Read-only access (by design)
+- Limited to System V shared memory (most common PostgreSQL configuration)
+- Requires same-user access or appropriate permissions
+- Structure layout may change between PostgreSQL versions
+- Hash table traversal not yet fully implemented (placeholder)
+
+SUPPORTED PLATFORMS
+-------------------
+
+- Linux (all distributions)
+- macOS
+- Other POSIX-compliant systems with System V shared memory support
+
+Windows support could be added but is not currently implemented.
+
+TROUBLESHOOTING
+---------------
+
+Common issues:
+
+1. **Permission Denied**: Run as the same user as PostgreSQL or ensure your
+   user has access to PostgreSQL's shared memory.
+
+2. **Invalid PID**: Ensure the PID is correct and the process is a PostgreSQL
+   postmaster (not a backend process).
+
+3. **Structure Not Found**: The structure name may have changed between
+   PostgreSQL versions, or the structure may not be initialized yet.
+
+4. **Magic Number Mismatch**: The shared memory segment may not belong to
+   PostgreSQL, or it may be corrupted.
+
+API REFERENCE
+-------------
+
+See libpg_shmem-fe.h for the complete API documentation.
+
+Key functions:
+- PgShmemConnectByPid() - Connect to shared memory
+- PgShmemDisconnect() - Disconnect from shared memory
+- PgShmemFindStruct() - Find a named structure
+- PgShmemGetStructCopy() - Get a safe copy of a structure
+- PgShmemErrorMessage() - Get error message string
+
+LICENSE
+-------
+
+Same as PostgreSQL: PostgreSQL License (similar to BSD/MIT)
+
+CONTRIBUTING
+------------
+
+This library is part of the PostgreSQL project. For bugs or improvements,
+please follow the PostgreSQL contribution guidelines.
+
+For questions about compute-storage separation use cases, please consult
+the PostgreSQL mailing lists. 
