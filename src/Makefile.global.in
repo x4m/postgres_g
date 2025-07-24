@@ -619,6 +619,14 @@ libpq = -L$(libpq_builddir) -lpq
 # appears to handle them differently.
 libpq_pgport = $(libpq)
 
+# libpg_shmem is for use by client executables that need to access PostgreSQL
+# shared memory directly (for compute-storage separation scenarios).
+ifdef PGXS
+libpg_shmem_pgport = -L$(libdir) -lpgcommon_shlib -lpgport_shlib -lpg_shmem
+else
+libpg_shmem_pgport = -L$(top_builddir)/src/interfaces/libpg_shmem -lpg_shmem -L$(top_builddir)/src/common -lpgcommon_shlib -L$(top_builddir)/src/port -lpgport_shlib
+endif
+
 # libpq_pgport_shlib is the same idea, but for use in client shared libraries.
 # We need those clients to use the shlib variants.  (Ideally, users of this
 # macro would strip libpgport and libpgcommon from $(LIBS), but no harm is
