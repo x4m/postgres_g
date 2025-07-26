@@ -820,6 +820,13 @@ MultiXactIdCreateFromMembers(int nmembers, MultiXactMember *members)
 	if (rand()%2 == 0)
 		pg_usleep(1000);
 
+	
+	if (multi == 2)
+	{
+		pg_usleep(10000000000);
+		elog(PANIC,"boom");
+	}
+
 	(void) XLogInsert(RM_MULTIXACT_ID, XLOG_MULTIXACT_CREATE_ID);
 
 	/* Now enter the information into the OFFSETs and MEMBERs logs */
@@ -854,6 +861,8 @@ RecordNewMultiXact(MultiXactId multi, MultiXactOffset offset,
 	MultiXactOffset *offptr;
 	int			i;
 
+	elog(WARNING,"Record multi %d", multi);
+
 	LWLockAcquire(MultiXactOffsetSLRULock, LW_EXCLUSIVE);
 
 	pageno = MultiXactIdToOffsetPage(multi);
@@ -871,6 +880,10 @@ RecordNewMultiXact(MultiXactId multi, MultiXactOffset offset,
 	offptr += entryno;
 
 	*offptr = offset;
+	if (RecoveryInProgress() || MultiXactIdToOffsetPage(multi+1) == pageno)
+	{
+		//offptr[1] = offset + nmembers;
+	}
 
 	MultiXactOffsetCtl->shared->page_dirty[slotno] = true;
 
@@ -1336,6 +1349,7 @@ retry:
 	offset = *offptr;
 
 	Assert(offset != 0);
+	elog(WARNING, "Get Members multi %d", multi);
 
 	/*
 	 * Use the same increment rule as GetNewMultiXactId(), that is, don't
@@ -1367,6 +1381,8 @@ retry:
 		offptr = (MultiXactOffset *) MultiXactOffsetCtl->shared->page_buffer[slotno];
 		offptr += entryno;
 		nextMXOffset = *offptr;
+
+		elog(WARNING, "next multi %d nextMXOffset %d", tmpMXact, nextMXOffset);
 
 		if (nextMXOffset == 0)
 		{
