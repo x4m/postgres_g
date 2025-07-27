@@ -140,6 +140,9 @@ $node->wait_for_event('client backend', 'multixact-create-from-members');
 $node->safe_psql('postgres',
 	q{SELECT injection_points_detach('multixact-create-from-members')});
 
+$node->safe_psql('postgres',
+	q{checkpoint;});
+
 # One more multitransaction to effectivelt emit WAL record about next
 # multitransaction (to avaoid corener case 1).
 $node->safe_psql('postgres',
