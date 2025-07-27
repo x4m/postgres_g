@@ -116,6 +116,45 @@ $node->safe_psql('postgres',
 $observer->quit;
 $creator->quit;
 
+
+# Another multixact test: loosing some multixact must not affect reading near
+# multixacts, even after a crash.
+my $bg_psql = $node->background_psql('postgres');
+
+my $multi = $bg_psql->query_safe(
+	q(SELECT test_create_multixact();));
+
+# The space for next multi will be allocated, but it will never be actually
+# recorded.
+$node->safe_psql('postgres',
+	q{SELECT injection_points_attach('multixact-create-from-members','wait');}
+);
+
+$bg_psql->query_until(
+	qr/deploying lost multi/, q(
+\echo deploying lost multi
+	SELECT test_create_multixact();
+));
+
+$node->wait_for_event('client backend', 'multixact-create-from-members');
+$node->safe_psql('postgres',
+	q{SELECT injection_points_detach('multixact-create-from-members')});
+
+# One more multitransaction to effectivelt emit WAL record about next
+# multitransaction (to avaoid corener case 1).
+$node->safe_psql('postgres',
+	q{SELECT test_create_multixact();});
+
+# All set and done, it's time for hard restart
+$node->kill9;
+$node->poll_start;
+$bg_psql->{run}->finish;
+
+# Verify thet recorded multi is readble, this call must not hang.
+# Also note that all injection points disappeared after server restart.
+$node->safe_psql('postgres',
+	qq{SELECT test_read_multixact('$multi'::xid);});
+
 $node->stop;
 
 # If we reached this point - everything is OK.

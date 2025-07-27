@@ -67,7 +67,7 @@ log_ipcs();
 # Upon postmaster death, postmaster children exit automatically.
 $gnat->kill9;
 log_ipcs();
-poll_start($gnat);    # gnat recycles its former shm key.
+$gnat->poll_start;    # gnat recycles its former shm key.
 log_ipcs();
 
 note "removing the conflicting shmem ...";
@@ -82,7 +82,7 @@ log_ipcs();
 # the higher-keyed segment that the previous postmaster was using.
 # That's not great, but key collisions should be rare enough to not
 # make this a big problem.
-poll_start($gnat);
+$gnat->poll_start;
 log_ipcs();
 $gnat->stop;
 log_ipcs();
@@ -174,43 +174,11 @@ $slow_client->finish;    # client has detected backend termination
 log_ipcs();
 
 # now startup should work
-poll_start($gnat);
+$gnat->poll_start;
 log_ipcs();
 
 # finish testing
 $gnat->stop;
 log_ipcs();
-
-
-# We may need retries to start a new postmaster.  Causes:
-# - kernel is slow to deliver SIGKILL
-# - postmaster parent is slow to waitpid()
-# - postmaster child is slow to exit in response to SIGQUIT
-# - postmaster child is slow to exit after postmaster death
-sub poll_start
-{
-	my ($node) = @_;
-
-	my $max_attempts = 10 * $PostgreSQL::Test::Utils::timeout_default;
-	my $attempts = 0;
-
-	while ($attempts < $max_attempts)
-	{
-		$node->start(fail_ok => 1) && return 1;
-
-		# Wait 0.1 second before retrying.
-		usleep(100_000);
-
-		# Clean up in case the start attempt just timed out or some such.
-		$node->stop('fast', fail_ok => 1);
-
-		$attempts++;
-	}
-
-	# Try one last time without fail_ok, which will BAIL_OUT unless it
-	# succeeds.
-	$node->start && return 1;
-	return 0;
-}
 
 done_testing();
