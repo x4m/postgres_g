@@ -18,6 +18,10 @@ if ($ENV{enable_injection_points} ne 'yes')
 {
 	plan skip_all => 'Injection points not supported by this build';
 }
+if ($windows_os)
+{
+	plan skip_all => 'Kill9 works unpredicatably on Windows';
+}
 
 my ($node, $result);
 
@@ -25,96 +29,87 @@ $node = PostgreSQL::Test::Cluster->new('mike');
 $node->init;
 $node->append_conf('postgresql.conf',
 	"shared_preload_libraries = 'test_slru,injection_points'");
+# Set the cluster's next multitransaction to 0xFFFFFFF0.
+my $node_pgdata = $node->data_dir;
+command_ok(
+	[
+		'pg_resetwal',
+		'--multixact-ids' => '0xFFFFFFF0,0xFFFFFFF0',
+		$node_pgdata
+	],
+	"set the cluster's next multitransaction to 0xFFFFFFF0");
+command_ok(
+	[
+		'dd',
+		'if=/dev/zero',
+		"of=$node_pgdata/pg_multixact/offsets/FFFF",
+		'bs=4',
+		'count=65536'
+	],
+	"init SLRU file");
+
+command_ok(
+	[
+		'rm',
+		"$node_pgdata/pg_multixact/offsets/0000",
+	],
+	"drop old SLRU file");
+
 $node->start;
 $node->safe_psql('postgres', q(CREATE EXTENSION injection_points));
 $node->safe_psql('postgres', q(CREATE EXTENSION test_slru));
 
-# Test for Multixact generation edge case
-$node->safe_psql('postgres',
-	q{select injection_points_attach('test-multixact-read','wait')});
-$node->safe_psql('postgres',
-	q{select injection_points_attach('multixact-get-members-cv-sleep','wait')}
-);
+# Another multixact test: loosing some multixact must not affect reading near
+# multixacts, even after a crash.
+my $bg_psql = $node->background_psql('postgres');
 
-# This session must observe sleep on the condition variable while generating a
-# multixact.  To achieve this it first will create a multixact, then pause
-# before reading it.
-my $observer = $node->background_psql('postgres');
+my $multi = $bg_psql->query_safe(
+	q(SELECT test_create_multixact();));
 
-# This query will create a multixact, and hang just before reading it.
-$observer->query_until(
-	qr/start/,
-	q{
-	\echo start
-	SELECT test_read_multixact(test_create_multixact());
-});
-$node->wait_for_event('client backend', 'test-multixact-read');
-
-# This session will create the next Multixact. This is necessary to avoid
-# multixact.c's non-sleeping edge case 1.
-my $creator = $node->background_psql('postgres');
+# The space for next multi will be allocated, but it will never be actually
+# recorded.
 $node->safe_psql('postgres',
 	q{SELECT injection_points_attach('multixact-create-from-members','wait');}
 );
 
-# We expect this query to hang in the critical section after generating new
-# multixact, but before filling its offset into SLRU.
-# Running an injection point inside a critical section requires it to be
-# loaded beforehand.
-$creator->query_until(
-	qr/start/, q{
-	\echo start
+$bg_psql->query_until(
+	qr/deploying lost multi/, q(
+\echo deploying lost multi
 	SELECT test_create_multixact();
-});
+));
 
 $node->wait_for_event('client backend', 'multixact-create-from-members');
-
-# Ensure we have the backends waiting that we expect
-is( $node->safe_psql(
-		'postgres',
-		q{SELECT string_agg(wait_event, ', ' ORDER BY wait_event)
-		FROM pg_stat_activity WHERE wait_event_type = 'InjectionPoint'}
-	),
-	'multixact-create-from-members, test-multixact-read',
-	"matching injection point waits");
-
-# Now wake observer to get it to read the initial multixact.  A subsequent
-# multixact already exists, but that one doesn't have an offset assigned, so
-# this will hit multixact.c's edge case 2.
-$node->safe_psql('postgres',
-	q{SELECT injection_points_wakeup('test-multixact-read')});
-$node->wait_for_event('client backend', 'multixact-get-members-cv-sleep');
-
-# Ensure we have the backends waiting that we expect
-is( $node->safe_psql(
-		'postgres',
-		q{SELECT string_agg(wait_event, ', ' ORDER BY wait_event)
-		FROM pg_stat_activity WHERE wait_event_type = 'InjectionPoint'}
-	),
-	'multixact-create-from-members, multixact-get-members-cv-sleep',
-	"matching injection point waits");
-
-# Now we have two backends waiting in multixact-create-from-members and
-# multixact-get-members-cv-sleep.  Also we have 3 injections points set to wait.
-# If we wakeup multixact-get-members-cv-sleep it will happen again, so we must
-# detach it first. So let's detach all injection points, then wake up all
-# backends.
-
-$node->safe_psql('postgres',
-	q{SELECT injection_points_detach('test-multixact-read')});
 $node->safe_psql('postgres',
 	q{SELECT injection_points_detach('multixact-create-from-members')});
-$node->safe_psql('postgres',
-	q{SELECT injection_points_detach('multixact-get-members-cv-sleep')});
 
 $node->safe_psql('postgres',
-	q{SELECT injection_points_wakeup('multixact-create-from-members')});
-$node->safe_psql('postgres',
-	q{SELECT injection_points_wakeup('multixact-get-members-cv-sleep')});
+	q{checkpoint;});
 
-# Background psql will now be able to read the result and disconnect.
-$observer->quit;
-$creator->quit;
+# One more multitransaction to effectivelt emit WAL record about next
+# multitransaction (to avaoid corener case 1).
+$node->safe_psql('postgres',
+	q{SELECT test_create_multixact();});
+
+# All set and done, it's time for hard restart
+$node->kill9;
+$node->stop('immediate', fail_ok => 1);
+$node->poll_start;
+$bg_psql->{run}->finish;
+
+# Verify thet recorded multi is readble, this call must not hang.
+# Also note that all injection points disappeared after server restart.
+my $timed_out = 0;
+$node->safe_psql(
+	'postgres',
+	qq{SELECT test_read_multixact('$multi'::xid);},
+	timeout => $PostgreSQL::Test::Utils::timeout_default,
+	timed_out => \$timed_out);
+ok($timed_out == 0, 'recorded multi is readble');
+
+# Test mxidwraparound
+foreach my $i (1 .. 32) {
+$node->safe_psql('postgres',q{SELECT test_create_multixact();});
+}
 
 $node->stop;
 
