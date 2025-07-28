@@ -276,12 +276,6 @@ typedef struct MultiXactStateData
 	MultiXactOffset offsetStopLimit;	/* known if oldestOffsetKnown */
 
 	/*
-	 * This is used to sleep until a multixact offset is written when we want
-	 * to create the next one.
-	 */
-	ConditionVariable nextoff_cv;
-
-	/*
 	 * Per-backend data starts here.  We have two arrays stored in the area
 	 * immediately following the MultiXactStateData struct. Each is indexed by
 	 * ProcNumber.
@@ -388,7 +382,7 @@ static MemoryContext MXactContext = NULL;
 /* internal MultiXactId management */
 static void MultiXactIdSetOldestVisible(void);
 static void RecordNewMultiXact(MultiXactId multi, MultiXactOffset offset,
-							   int nmembers, MultiXactMember *members, bool redo);
+							   int nmembers, MultiXactMember *members);
 static MultiXactId GetNewMultiXactId(int nmembers, MultiXactOffset *offset);
 
 /* MultiXact cache management */
@@ -889,7 +883,7 @@ MultiXactIdCreateFromMembers(int nmembers, MultiXactMember *members)
 	(void) XLogInsert(RM_MULTIXACT_ID, XLOG_MULTIXACT_CREATE_ID);
 
 	/* Now enter the information into the OFFSETs and MEMBERs logs */
-	RecordNewMultiXact(multi, offset, nmembers, members, false);
+	RecordNewMultiXact(multi, offset, nmembers, members);
 
 	/* Done with critical section */
 	END_CRIT_SECTION();
@@ -911,7 +905,7 @@ MultiXactIdCreateFromMembers(int nmembers, MultiXactMember *members)
  */
 static void
 RecordNewMultiXact(MultiXactId multi, MultiXactOffset offset,
-				   int nmembers, MultiXactMember *members, bool redo)
+				   int nmembers, MultiXactMember *members)
 {
 	int64		pageno;
 	int64		prev_pageno;
@@ -921,9 +915,19 @@ RecordNewMultiXact(MultiXactId multi, MultiXactOffset offset,
 	int			i;
 	LWLock	   *lock;
 	LWLock	   *prevlock = NULL;
+	MultiXactId next = multi + 1;
+	int			next_pageno;
 
 	pageno = MultiXactIdToOffsetPage(multi);
 	entryno = MultiXactIdToOffsetEntry(multi);
+
+	/*
+	 * We must also fill next offset to keep current multi readable
+	 * Handle wraparound as GetMultiXactIdMembers() does it.
+	 */
+	if (next < FirstMultiXactId)
+		next = FirstMultiXactId;
+	next_pageno = MultiXactIdToOffsetPage(next);
 
 	lock = SimpleLruGetBankLock(MultiXactOffsetCtl, pageno);
 	LWLockAcquire(lock, LW_EXCLUSIVE);
@@ -939,73 +943,55 @@ RecordNewMultiXact(MultiXactId multi, MultiXactOffset offset,
 	offptr = (MultiXactOffset *) MultiXactOffsetCtl->shared->page_buffer[slotno];
 	offptr += entryno;
 
-	if (redo)
-	{
-		/*
-		 * We might have filled this offset previosuly.
-		 * Cross-check for correctness.
-		 */
-		Assert((*offptr == 0) || (*offptr == offset));
-	}
+	/*
+	 * We might have filled this offset previosuly.
+	 * Cross-check for correctness.
+	 */
+	Assert((*offptr == 0) || (*offptr == offset));
 
 	*offptr = offset;
+	MultiXactOffsetCtl->shared->page_dirty[slotno] = true;
 
-	if (redo)
+	if (next_pageno == pageno)
 	{
-		/*
-		 * We want to avoid edge case 2 in redo, because we cannot wait for
-		 * startup process in GetMultiXactIdMembers() without risk of a deadlock.
-		 */
-		MultiXactId next = multi + 1;
-		int			next_pageno;
-		/* Handle wraparound as GetMultiXactIdMembers() does it. */
-		if (next < FirstMultiXactId)
-			next = FirstMultiXactId;
-		next_pageno = MultiXactIdToOffsetPage(next);
-		if (next_pageno == pageno)
+		offptr[1] = offset + nmembers;
+	}
+	else
+	{
+		int	next_slotno;
+		MultiXactOffset *next_offptr;
+		int	next_entryno = MultiXactIdToOffsetEntry(next);
+		Assert(next_entryno == 0); /* This is an overflow-only branch */
+
+		/* Swap the lock for a lock of next page */
+		LWLockRelease(lock);
+		lock = SimpleLruGetBankLock(MultiXactOffsetCtl, next_pageno);
+		LWLockAcquire(lock, LW_EXCLUSIVE);
+
+		if (SimpleLruDoesPhysicalPageExist(MultiXactOffsetCtl, next_pageno))
 		{
-			offptr[1] = offset + nmembers;
+			/* Just read a next page */
+			next_slotno = SimpleLruReadPage(MultiXactOffsetCtl, next_pageno, true, next);
 		}
 		else
 		{
-			int	next_slotno;
-			MultiXactOffset *next_offptr;
-			int	next_entryno = MultiXactIdToOffsetEntry(next);
-			Assert(next_entryno == 0); /* This is an overflow-only branch */
-
-			if (SimpleLruDoesPhysicalPageExist(MultiXactOffsetCtl, next_pageno))
-			{
-				/* Just read a next page */
-				next_slotno = SimpleLruReadPage(MultiXactOffsetCtl, next_pageno, true, next);
-			}
-			else
-			{
-				/*
-				 * We have to create a new page.
-				 * SimpleLruWritePage is already prepared to deal
-				 * with creating a new segment file. We do not need to handle
-				 * race conditions, because this code is only executed in redo
-				 * and we hold MultiXactOffsetSLRULock.
-				 */
-				next_slotno = SimpleLruZeroPage(MultiXactOffsetCtl, next_pageno);
-				SimpleLruWritePage(MultiXactOffsetCtl, next_slotno);
-			}
-			next_offptr = (MultiXactOffset *) MultiXactOffsetCtl->shared->page_buffer[next_slotno];
-			next_offptr[next_entryno] = offset + nmembers;
-			MultiXactMemberCtl->shared->page_dirty[next_slotno] = true;
+			/*
+			 * We have to create a new page.
+			 * SimpleLruWritePage is already prepared to deal
+			 * with creating a new segment file. We do not need to handle
+			 * race conditions, because this code is only executed in redo
+			 * and we hold appropriate lock of MultiXactOffsetCtl.
+			 */
+			next_slotno = SimpleLruZeroPage(MultiXactOffsetCtl, next_pageno);
+			SimpleLruWritePage(MultiXactOffsetCtl, next_slotno);
 		}
+		next_offptr = (MultiXactOffset *) MultiXactOffsetCtl->shared->page_buffer[next_slotno];
+		next_offptr[next_entryno] = offset + nmembers;
+		MultiXactMemberCtl->shared->page_dirty[next_slotno] = true;
 	}
-
-	MultiXactOffsetCtl->shared->page_dirty[slotno] = true;
 
 	/* Release MultiXactOffset SLRU lock. */
 	LWLockRelease(lock);
-
-	/*
-	 * If anybody was waiting to know the offset of this multixact ID we just
-	 * wrote, they can read it now, so wake them up.
-	 */
-	ConditionVariableBroadcast(&MultiXactState->nextoff_cv);
 
 	prev_pageno = -1;
 
@@ -1365,7 +1351,6 @@ GetMultiXactIdMembers(MultiXactId multi, MultiXactMember **members,
 	MultiXactOffset nextOffset;
 	MultiXactMember *ptr;
 	LWLock	   *lock;
-	bool		slept = false;
 
 	debug_elog3(DEBUG2, "GetMembers: asked for %u", multi);
 
@@ -1444,7 +1429,10 @@ GetMultiXactIdMembers(MultiXactId multi, MultiXactMember **members,
 	 * 1. This multixact may be the latest one created, in which case there is
 	 * no next one to look at.  In this case the nextOffset value we just
 	 * saved is the correct endpoint.
+	 * TODO: how does it work on Standby?  MultiXactState->nextMXact does not seem to be up-to date.
+	 * nextMXact and nextOffset are in sync, so nothing bad can happen, but nextMXact seems mostly random. 
 	 *
+	 * THIS IS NOT POSSIBLE ANYMORE, KEEP IT FOR HISTORIC REASONS.
 	 * 2. The next multixact may still be in process of being filled in: that
 	 * is, another process may have done GetNewMultiXactId but not yet written
 	 * the offset entry for that ID.  In that scenario, it is guaranteed that
@@ -1470,7 +1458,6 @@ GetMultiXactIdMembers(MultiXactId multi, MultiXactMember **members,
 	 * cases, so it seems better than holding the MultiXactGenLock for a long
 	 * time on every multixact creation.
 	 */
-retry:
 	pageno = MultiXactIdToOffsetPage(multi);
 	entryno = MultiXactIdToOffsetEntry(multi);
 
@@ -1534,22 +1521,10 @@ retry:
 
 		if (nextMXOffset == 0)
 		{
-			/* Corner case 2: next multixact is still being filled in */
-			LWLockRelease(lock);
-			CHECK_FOR_INTERRUPTS();
-			/*
-			 * CHECK_FOR_INTERRUPTS above would be critical for avoiding
-			 * conflicts with recovery, yet caller might hold LWLock rendering
-			 * CHECK_FOR_INTERRUPTS disfunctional.
-			 */
-			Assert(!RecoveryInProgress());
-
-			INJECTION_POINT("multixact-get-members-cv-sleep", NULL);
-
-			ConditionVariableSleep(&MultiXactState->nextoff_cv,
-								   WAIT_EVENT_MULTIXACT_CREATION);
-			slept = true;
-			goto retry;
+			ereport(ERROR,
+					(errcode(ERRCODE_DATA_CORRUPTED),
+					 errmsg("MultiXact %d has invalid next offset",
+							multi)));
 		}
 
 		length = nextMXOffset - offset;
@@ -1557,12 +1532,6 @@ retry:
 
 	LWLockRelease(lock);
 	lock = NULL;
-
-	/*
-	 * If we slept above, clean up state; it's no longer needed.
-	 */
-	if (slept)
-		ConditionVariableCancelSleep();
 
 	ptr = (MultiXactMember *) palloc(length * sizeof(MultiXactMember));
 
@@ -2053,7 +2022,6 @@ MultiXactShmemInit(void)
 
 		/* Make sure we zero out the per-backend state */
 		MemSet(MultiXactState, 0, SHARED_MULTIXACT_STATE_SIZE);
-		ConditionVariableInit(&MultiXactState->nextoff_cv);
 	}
 	else
 		Assert(found);
@@ -2203,8 +2171,7 @@ TrimMultiXact(void)
 	 * TrimCLOG() for background.  Unlike CLOG, some WAL record covers every
 	 * pg_multixact SLRU mutation.  Since, also unlike CLOG, we ignore the WAL
 	 * rule "write xlog before data," nextMXact successors may carry obsolete,
-	 * nonzero offset values.  Zero those so case 2 of GetMultiXactIdMembers()
-	 * operates normally.
+	 * nonzero offset values.
 	 */
 	entryno = MultiXactIdToOffsetEntry(nextMXact);
 	if (entryno != 0)
@@ -3410,7 +3377,7 @@ multixact_redo(XLogReaderState *record)
 
 		/* Store the data back into the SLRU files */
 		RecordNewMultiXact(xlrec->mid, xlrec->moff, xlrec->nmembers,
-						   xlrec->members, true);
+						   xlrec->members);
 
 		/* Make sure nextMXact/nextOffset are beyond what this record has */
 		MultiXactAdvanceNextMXact(xlrec->mid + 1,
