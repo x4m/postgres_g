@@ -54,7 +54,7 @@ step flush: SELECT FROM pg_stat_force_next_flush();
 step result: SELECT heap_blks_read + heap_blks_hit - counter.heap_accesses AS new_heap_accesses FROM counter, pg_statio_all_tables WHERE relname = 'kill_prior_tuple';
 new_heap_accesses
 -----------------
-                1
+                2
 (1 row)
 
 step measure: UPDATE counter SET heap_accesses = (SELECT heap_blks_read + heap_blks_hit FROM pg_statio_all_tables WHERE relname = 'kill_prior_tuple');
@@ -130,7 +130,7 @@ step flush: SELECT FROM pg_stat_force_next_flush();
 step result: SELECT heap_blks_read + heap_blks_hit - counter.heap_accesses AS new_heap_accesses FROM counter, pg_statio_all_tables WHERE relname = 'kill_prior_tuple';
 new_heap_accesses
 -----------------
-                1
+                2
 (1 row)
 
 step measure: UPDATE counter SET heap_accesses = (SELECT heap_blks_read + heap_blks_hit FROM pg_statio_all_tables WHERE relname = 'kill_prior_tuple');
@@ -283,7 +283,7 @@ step flush: SELECT FROM pg_stat_force_next_flush();
 step result: SELECT heap_blks_read + heap_blks_hit - counter.heap_accesses AS new_heap_accesses FROM counter, pg_statio_all_tables WHERE relname = 'kill_prior_tuple';
 new_heap_accesses
 -----------------
-                1
+                2
 (1 row)
 
 step measure: UPDATE counter SET heap_accesses = (SELECT heap_blks_read + heap_blks_hit FROM pg_statio_all_tables WHERE relname = 'kill_prior_tuple');
