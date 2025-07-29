@@ -1494,8 +1494,11 @@ heap_prune_record_dead(PruneState *prstate, OffsetNumber offnum,
 
 	/*
 	 * Deliberately delay unsetting all_visible until later during pruning.
-	 * Removable dead tuples shouldn't preclude freezing the page.
+	 * Removable dead tuples shouldn't preclude freezing the page. If we won't
+	 * attempt freezing, just unset all-visible now, though.
 	 */
+	if (!prstate->attempt_freeze)
+		prstate->all_visible = prstate->all_frozen = false;
 
 	/* Record the dead offset for vacuum */
 	prstate->deadoffsets[prstate->lpdead_items++] = offnum;
@@ -1753,8 +1756,11 @@ heap_prune_record_unchanged_lp_dead(Page page, PruneState *prstate, OffsetNumber
 	 * Similarly, don't unset all_visible until later, at the end of
 	 * heap_page_prune_and_freeze().  This will allow us to attempt to freeze
 	 * the page after pruning.  As long as we unset it before updating the
-	 * visibility map, this will be correct.
+	 * visibility map, this will be correct. If we won't attempt freezing,
+	 * though, just unset all-visible now.
 	 */
+	if (!prstate->attempt_freeze)
+		prstate->all_visible = prstate->all_frozen = false;
 
 	/* Record the dead offset for vacuum */
 	prstate->deadoffsets[prstate->lpdead_items++] = offnum;
