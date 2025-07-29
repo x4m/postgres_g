@@ -464,7 +464,7 @@ static void dead_items_add(LVRelState *vacrel, BlockNumber blkno, OffsetNumber *
 static void dead_items_reset(LVRelState *vacrel);
 static void dead_items_cleanup(LVRelState *vacrel);
 static bool heap_page_would_be_all_visible(Relation rel, Buffer buf,
-										   TransactionId OldestXmin,
+										   GlobalVisState *vistest,
 										   OffsetNumber *deadoffsets,
 										   int ndeadoffsets,
 										   bool *all_frozen,
@@ -2715,7 +2715,7 @@ lazy_vacuum_heap_page(LVRelState *vacrel, BlockNumber blkno, Buffer buffer,
 							 InvalidOffsetNumber);
 
 	if (heap_page_would_be_all_visible(vacrel->rel, buffer,
-									   vacrel->cutoffs.OldestXmin,
+									   vacrel->vistest,
 									   deadoffsets, num_offsets,
 									   &all_frozen, &visibility_cutoff_xid,
 									   &vacrel->offnum))
@@ -3458,13 +3458,13 @@ dead_items_cleanup(LVRelState *vacrel)
  */
 bool
 heap_page_is_all_visible(Relation rel, Buffer buf,
-						 TransactionId OldestXmin,
+						 GlobalVisState *vistest,
 						 bool *all_frozen,
 						 TransactionId *visibility_cutoff_xid,
 						 OffsetNumber *logging_offnum)
 {
 
-	return heap_page_would_be_all_visible(rel, buf, OldestXmin,
+	return heap_page_would_be_all_visible(rel, buf, vistest,
 										  NULL, 0,
 										  all_frozen,
 										  visibility_cutoff_xid,
@@ -3483,7 +3483,7 @@ heap_page_is_all_visible(Relation rel, Buffer buf,
  * Returns true if the page is all-visible other than the provided
  * deadoffsets and false otherwise.
  *
- * OldestXmin is used to determine visibility.
+ * vistest is used to determine visibility.
  *
  * *all_frozen is an output parameter indicating to the caller if every tuple
  * on the page is frozen.
@@ -3504,7 +3504,7 @@ heap_page_is_all_visible(Relation rel, Buffer buf,
  */
 static bool
 heap_page_would_be_all_visible(Relation rel, Buffer buf,
-							   TransactionId OldestXmin,
+							   GlobalVisState *vistest,
 							   OffsetNumber *deadoffsets,
 							   int ndeadoffsets,
 							   bool *all_frozen,
@@ -3576,8 +3576,8 @@ heap_page_would_be_all_visible(Relation rel, Buffer buf,
 		tuple.t_len = ItemIdGetLength(itemid);
 		tuple.t_tableOid = RelationGetRelid(rel);
 
-		switch (HeapTupleSatisfiesVacuum(&tuple, OldestXmin,
-										 buf))
+		switch (HeapTupleSatisfiesVacuumGlobalVis(&tuple, vistest,
+												  buf))
 		{
 			case HEAPTUPLE_LIVE:
 				{
@@ -3596,8 +3596,7 @@ heap_page_would_be_all_visible(Relation rel, Buffer buf,
 					 * that everyone sees it as committed?
 					 */
 					xmin = HeapTupleHeaderGetXmin(tuple.t_data);
-					if (!TransactionIdPrecedes(xmin,
-											   OldestXmin))
+					if (!GlobalVisXidVisibleToAll(vistest, xmin))
 					{
 						all_visible = false;
 						*all_frozen = false;

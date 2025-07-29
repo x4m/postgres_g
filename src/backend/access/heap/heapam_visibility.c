@@ -1190,6 +1190,34 @@ HeapTupleSatisfiesVacuum(HeapTuple htup, TransactionId OldestXmin,
 }
 
 /*
+ * Nearly the same as HeapTupleSatisfiesVacuum, but uses a GlobalVisState to
+ * determine whether or not a tuple is HEAPTUPLE_DEAD Or
+ * HEAPTUPLE_RECENTLY_DEAD. It serves the same purpose but can be used by
+ * callers that have not calculated a single OldestXmin value.
+ */
+HTSV_Result
+HeapTupleSatisfiesVacuumGlobalVis(HeapTuple htup, GlobalVisState *vistest,
+								  Buffer buffer)
+{
+	TransactionId dead_after = InvalidTransactionId;
+	HTSV_Result res;
+
+	res = HeapTupleSatisfiesVacuumHorizon(htup, buffer, &dead_after);
+
+	if (res == HEAPTUPLE_RECENTLY_DEAD)
+	{
+		Assert(TransactionIdIsValid(dead_after));
+
+		if (GlobalVisXidVisibleToAll(vistest, dead_after))
+			res = HEAPTUPLE_DEAD;
+	}
+	else
+		Assert(!TransactionIdIsValid(dead_after));
+
+	return res;
+}
+
+/*
  * Work horse for HeapTupleSatisfiesVacuum and similar routines.
  *
  * In contrast to HeapTupleSatisfiesVacuum this routine, when encountering a

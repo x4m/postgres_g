@@ -342,7 +342,7 @@ extern void heap_inplace_unlock(Relation relation,
 								HeapTuple oldtup, Buffer buffer);
 
 extern bool heap_page_is_all_visible(Relation rel, Buffer buf,
-									 TransactionId OldestXmin,
+									 GlobalVisState *vistest,
 									 bool *all_frozen,
 									 TransactionId *visibility_cutoff_xid,
 									 OffsetNumber *logging_offnum);
@@ -415,6 +415,8 @@ extern TM_Result HeapTupleSatisfiesUpdate(HeapTuple htup, CommandId curcid,
 										  Buffer buffer);
 extern HTSV_Result HeapTupleSatisfiesVacuum(HeapTuple htup, TransactionId OldestXmin,
 											Buffer buffer);
+extern HTSV_Result HeapTupleSatisfiesVacuumGlobalVis(HeapTuple htup,
+													 GlobalVisState *vistest, Buffer buffer);
 extern HTSV_Result HeapTupleSatisfiesVacuumHorizon(HeapTuple htup, Buffer buffer,
 												   TransactionId *dead_after);
 extern void HeapTupleSetHintBits(HeapTupleHeader tuple, Buffer buffer,
