@@ -2166,6 +2166,7 @@ heap_insert(Relation relation, HeapTuple tup, CommandId cid,
 	TransactionId xid = GetCurrentTransactionId();
 	HeapTuple	heaptup;
 	Buffer		buffer;
+	Page		page;
 	Buffer		vmbuffer = InvalidBuffer;
 	bool		all_visible_cleared = false;
 
@@ -2225,15 +2226,19 @@ heap_insert(Relation relation, HeapTuple tup, CommandId cid,
 	}
 
 	/*
-	 * XXX Should we set PageSetPrunable on this page ?
+	 * Set pd_prune_xid to trigger heap_page_prune_and_freeze() once the page
+	 * is full so that we can set the page all-visible in the VM.
 	 *
-	 * The inserting transaction may eventually abort thus making this tuple
-	 * DEAD and hence available for pruning. Though we don't want to optimize
-	 * for aborts, if no other tuple in this page is UPDATEd/DELETEd, the
-	 * aborted tuple will never be pruned until next vacuum is triggered.
+	 * Setting pd_prune_xid is also handy if the inserting transaction
+	 * eventually aborts making this tuple DEAD and hence available for
+	 * pruning. If no other tuple in this page is UPDATEd/DELETEd, the aborted
+	 * tuple would never otherwise be pruned until next vacuum is triggered.
 	 *
-	 * If you do add PageSetPrunable here, add it in heap_xlog_insert too.
+	 * Don't set it if we are in bootstrap mode, though.
 	 */
+	page = BufferGetPage(buffer);
+	if (TransactionIdIsNormal(xid))
+		PageSetPrunable(page, xid);
 
 	MarkBufferDirty(buffer);
 
@@ -2243,7 +2248,6 @@ heap_insert(Relation relation, HeapTuple tup, CommandId cid,
 		xl_heap_insert xlrec;
 		xl_heap_header xlhdr;
 		XLogRecPtr	recptr;
-		Page		page = BufferGetPage(buffer);
 		uint8		info = XLOG_HEAP_INSERT;
 		int			bufflags = 0;
 
@@ -2607,8 +2611,13 @@ heap_multi_insert(Relation relation, TupleTableSlot **slots, int ntuples,
 		}
 
 		/*
-		 * XXX Should we set PageSetPrunable on this page ? See heap_insert()
+		 * Set pd_prune_xid. See heap_insert() for more on why we do this when
+		 * inserting tuples. This only makes sense if we aren't already
+		 * setting the page frozen in the VM. We also don't set it in
+		 * bootstrap mode.
 		 */
+		if (!all_frozen_set && TransactionIdIsNormal(xid))
+			PageSetPrunable(page, xid);
 
 		MarkBufferDirty(buffer);
 
