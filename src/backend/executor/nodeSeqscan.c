@@ -65,13 +65,18 @@ SeqNext(SeqScanState *node)
 
 	if (scandesc == NULL)
 	{
+		bool		modifies_rel =
+			bms_is_member(((Scan *) node->ss.ps.plan)->scanrelid,
+						  estate->es_modified_relids);
+
 		/*
 		 * We reach here if the scan is not parallel, or if we're serially
 		 * executing a scan that was planned to be parallel.
 		 */
-		scandesc = table_beginscan(node->ss.ss_currentRelation,
-								   estate->es_snapshot,
-								   0, NULL);
+		scandesc = table_beginscan_vmset(node->ss.ss_currentRelation,
+										 estate->es_snapshot,
+										 0, NULL, modifies_rel);
+
 		node->ss.ss_currentScanDesc = scandesc;
 	}
 
@@ -366,6 +371,7 @@ ExecSeqScanInitializeDSM(SeqScanState *node,
 						 ParallelContext *pcxt)
 {
 	EState	   *estate = node->ss.ps.state;
+	bool		modifies_rel;
 	ParallelTableScanDesc pscan;
 
 	pscan = shm_toc_allocate(pcxt->toc, node->pscan_len);
@@ -373,8 +379,11 @@ ExecSeqScanInitializeDSM(SeqScanState *node,
 								  pscan,
 								  estate->es_snapshot);
 	shm_toc_insert(pcxt->toc, node->ss.ps.plan->plan_node_id, pscan);
+	modifies_rel = bms_is_member(((Scan *) node->ss.ps.plan)->scanrelid,
+								 estate->es_modified_relids);
 	node->ss.ss_currentScanDesc =
-		table_beginscan_parallel(node->ss.ss_currentRelation, pscan);
+		table_beginscan_parallel_vmset(node->ss.ss_currentRelation, pscan,
+									   modifies_rel);
 }
 
 /* ----------------------------------------------------------------
@@ -404,8 +413,13 @@ ExecSeqScanInitializeWorker(SeqScanState *node,
 							ParallelWorkerContext *pwcxt)
 {
 	ParallelTableScanDesc pscan;
+	bool		modifies_rel =
+		bms_is_member(((Scan *) node->ss.ps.plan)->scanrelid,
+					  node->ss.ps.state->es_modified_relids);
 
 	pscan = shm_toc_lookup(pwcxt->toc, node->ss.ps.plan->plan_node_id, false);
 	node->ss.ss_currentScanDesc =
-		table_beginscan_parallel(node->ss.ss_currentRelation, pscan);
+		table_beginscan_parallel_vmset(node->ss.ss_currentRelation,
+									   pscan,
+									   modifies_rel);
 }

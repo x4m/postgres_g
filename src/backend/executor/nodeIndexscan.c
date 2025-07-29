@@ -102,16 +102,22 @@ IndexNext(IndexScanState *node)
 
 	if (scandesc == NULL)
 	{
+
+		bool		modifies_base_rel =
+			bms_is_member(((Scan *) node->ss.ps.plan)->scanrelid,
+						  estate->es_modified_relids);
+
 		/*
 		 * We reach here if the index scan is not parallel, or if we're
 		 * serially executing an index scan that was planned to be parallel.
 		 */
-		scandesc = index_beginscan(node->ss.ss_currentRelation,
-								   node->iss_RelationDesc,
-								   estate->es_snapshot,
-								   &node->iss_Instrument,
-								   node->iss_NumScanKeys,
-								   node->iss_NumOrderByKeys);
+		scandesc = index_beginscan_vmset(node->ss.ss_currentRelation,
+										 node->iss_RelationDesc,
+										 estate->es_snapshot,
+										 &node->iss_Instrument,
+										 node->iss_NumScanKeys,
+										 node->iss_NumOrderByKeys,
+										 modifies_base_rel);
 
 		node->iss_ScanDesc = scandesc;
 

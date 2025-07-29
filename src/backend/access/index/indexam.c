@@ -290,6 +290,32 @@ index_beginscan(Relation heapRelation,
 }
 
 /*
+ * Similar to index_beginscan(), but allows the caller to indicate whether the
+ * query modifies the underlying base relation. This is used when the caller
+ * wants to attempt marking pages in the base relation as all-visible in the
+ * visibility map during on-access pruning.
+ */
+IndexScanDesc
+index_beginscan_vmset(Relation heapRelation,
+					  Relation indexRelation,
+					  Snapshot snapshot,
+					  IndexScanInstrumentation *instrument,
+					  int nkeys, int norderbys, bool modifies_base_rel)
+{
+	IndexScanDesc scan;
+
+	scan = index_beginscan(heapRelation,
+						   indexRelation,
+						   snapshot,
+						   instrument,
+						   nkeys, norderbys);
+
+	scan->xs_heapfetch->modifies_base_rel = modifies_base_rel;
+
+	return scan;
+}
+
+/*
  * index_beginscan_bitmap - start a scan of an index with amgetbitmap
  *
  * As above, caller had better be holding some lock on the parent heap
@@ -617,6 +643,26 @@ index_beginscan_parallel(Relation heaprel, Relation indexrel,
 	/* prepare to fetch index matches from table */
 	scan->xs_heapfetch = table_index_fetch_begin(heaprel);
 
+	return scan;
+}
+
+/*
+ * Parallel version of index_beginscan_vmset()
+ */
+IndexScanDesc
+index_beginscan_parallel_vmset(Relation heaprel, Relation indexrel,
+							   IndexScanInstrumentation *instrument,
+							   int nkeys, int norderbys,
+							   ParallelIndexScanDesc pscan,
+							   bool modifies_base_rel)
+{
+	IndexScanDesc scan;
+
+	scan = index_beginscan_parallel(heaprel, indexrel,
+									instrument,
+									nkeys, norderbys,
+									pscan);
+	scan->xs_heapfetch->modifies_base_rel = modifies_base_rel;
 	return scan;
 }
 

@@ -916,6 +916,10 @@ InitPlan(QueryDesc *queryDesc, int eflags)
 					break;
 			}
 
+			/* If it has a rowmark, the relation is modified */
+			estate->es_modified_relids = bms_add_member(estate->es_modified_relids,
+														rc->rti);
+
 			/* Check that relation is a legal target for marking */
 			if (relation)
 				CheckValidRowMarkRel(relation, rc->markType);

@@ -198,9 +198,13 @@ static bool identify_and_fix_vm_corruption(Relation relation,
  * if there's not any use in pruning.
  *
  * Caller must have pin on the buffer, and must *not* have a lock on it.
+ *
+ * If vmbuffer is not NULL, it is okay for pruning to set the visibility map if
+ * the page is all visible. We will take care of pinning and, if needed,
+ * reading in the page of the visibility map.
  */
 void
-heap_page_prune_opt(Relation relation, Buffer buffer)
+heap_page_prune_opt(Relation relation, Buffer buffer, Buffer *vmbuffer)
 {
 	Page		page = BufferGetPage(buffer);
 	TransactionId prune_xid;
@@ -264,6 +268,13 @@ heap_page_prune_opt(Relation relation, Buffer buffer)
 		{
 			OffsetNumber dummy_off_loc;
 			PruneFreezeResult presult;
+			int			options = 0;
+
+			if (vmbuffer)
+			{
+				visibilitymap_pin(relation, BufferGetBlockNumber(buffer), vmbuffer);
+				options = HEAP_PAGE_PRUNE_UPDATE_VM;
+			}
 
 			/*
 			 * For now, pass mark_unused_now as false regardless of whether or
@@ -271,9 +282,10 @@ heap_page_prune_opt(Relation relation, Buffer buffer)
 			 * that during on-access pruning with the current implementation.
 			 */
 			heap_page_prune_and_freeze(relation, buffer, false,
-									   InvalidBuffer,
-									   vistest, 0,
-									   NULL, &presult, PRUNE_ON_ACCESS, &dummy_off_loc, NULL, NULL);
+									   vmbuffer ? *vmbuffer : InvalidBuffer,
+									   vistest, options,
+									   NULL, &presult, PRUNE_ON_ACCESS,
+									   &dummy_off_loc, NULL, NULL);
 
 			/*
 			 * Report the number of tuples reclaimed to pgstats.  This is
@@ -513,12 +525,17 @@ heap_page_prune_and_freeze(Relation relation, Buffer buffer,
 	 * all-frozen for use in opportunistic freezing and to update the VM if
 	 * the caller requests it.
 	 *
-	 * Currently, only VACUUM attempts freezing and setting the VM bits. But
-	 * other callers could do either one. The visibility bookkeeping is
-	 * required for opportunistic freezing (in addition to setting the VM
-	 * bits) because we only consider opportunistically freezing tuples if the
-	 * whole page would become all-frozen or if the whole page will be frozen
-	 * except for dead tuples that will be removed by vacuum.
+	 * Currently, only VACUUM attempts freezing. But other callers could. The
+	 * visibility bookkeeping is required for opportunistic freezing (in
+	 * addition to setting the VM bits) because we only consider
+	 * opportunistically freezing tuples if the whole page would become
+	 * all-frozen or if the whole page will be frozen except for dead tuples
+	 * that will be removed by vacuum. But if consider_update_vm is false,
+	 * we'll not set the VM even if the page is discovered to be all-visible.
+	 *
+	 * If only HEAP_PAGE_PRUNE_UPDATE_VM is passed and not
+	 * HEAP_PAGE_PRUNE_FREEZE, prstate.all_frozen must be initialized to false
+	 * because we will not call heap_prepare_freeze_tuple() on each tuple.
 	 *
 	 * If only updating the VM, we must initialize all_frozen to false, as
 	 * heap_prepare_freeze_tuple() will not be called for each tuple on the
@@ -530,7 +547,7 @@ heap_page_prune_and_freeze(Relation relation, Buffer buffer,
 	 * whether or not to freeze but before deciding whether or not to update
 	 * the VM so that we don't set the VM bit incorrectly.
 	 *
-	 * If not freezing or updating the VM, we otherwise avoid the extra
+	 * If not freezing and not updating the VM, we avoid the extra
 	 * bookkeeping. Initializing all_visible to false allows skipping the work
 	 * to update them in heap_prune_record_unchanged_lp_normal().
 	 */
@@ -879,12 +896,30 @@ heap_page_prune_and_freeze(Relation relation, Buffer buffer,
 		prstate.all_frozen = false;
 	}
 
+	/*
+	 * If this is an on-access call and we're not actually pruning, avoid
+	 * setting the visibility map if it would newly dirty the heap page or, if
+	 * the page is already dirty, if doing so would require including a
+	 * full-page image (FPI) of the heap page in the WAL. This situation
+	 * should be rare, as on-access pruning is only attempted when
+	 * pd_prune_xid is valid.
+	 */
+	if (reason == PRUNE_ON_ACCESS &&
+		prstate.consider_update_vm &&
+		prstate.all_visible &&
+		!do_prune && !do_freeze &&
+		(!BufferIsDirty(buffer) || XLogCheckBufferNeedsBackup(buffer)))
+	{
+		prstate.consider_update_vm = false;
+		prstate.all_visible = prstate.all_frozen = false;
+	}
+
 	Assert(!prstate.all_frozen || prstate.all_visible);
 
 	/*
-	 * Handle setting visibility map bit based on information from the VM (as
-	 * of last heap_vac_scan_next_block() call), and from all_visible and
-	 * all_frozen variables.
+	 * Handle setting visibility map bit based on information from the VM (if
+	 * provided, e.g. by vacuum from the last heap_vac_scan_next_block()
+	 * call), and from all_visible and all_frozen variables.
 	 */
 	if (prstate.consider_update_vm)
 	{
@@ -2275,8 +2310,8 @@ heap_log_freeze_plan(HeapTupleFreeze *tuples, int ntuples,
  * - Reaping: During vacuum phase III, items that are already LP_DEAD are
  *   marked as unused.
  *
- * - VM updates: After vacuum phases I and III, the heap page may be marked
- *   all-visible and all-frozen.
+ * - VM updates: After vacuum phases I and III and on-access, the heap page
+ *   may be marked all-visible and all-frozen.
  *
  * These changes all happen together, so we use a singel WAL record for them
  * all.

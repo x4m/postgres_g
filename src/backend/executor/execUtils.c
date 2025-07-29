@@ -893,6 +893,8 @@ ExecInitResultRelation(EState *estate, ResultRelInfo *resultRelInfo,
 		estate->es_result_relations = (ResultRelInfo **)
 			palloc0(estate->es_range_table_size * sizeof(ResultRelInfo *));
 	estate->es_result_relations[rti - 1] = resultRelInfo;
+	estate->es_modified_relids = bms_add_member(estate->es_modified_relids,
+												rti);
 
 	/*
 	 * Saving in the list allows to avoid needlessly traversing the whole

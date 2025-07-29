@@ -94,6 +94,13 @@ typedef struct HeapScanDescData
 	 */
 	ParallelBlockTableScanWorkerData *rs_parallelworkerdata;
 
+	/*
+	 * For sequential scans and bitmap heap scans. If the relation is not
+	 * being modified, on-access pruning may read in the current heap page's
+	 * corresponding VM block to this buffer.
+	 */
+	Buffer		rs_vmbuffer;
+
 	/* these fields only used in page-at-a-time mode and for bitmap scans */
 	uint32		rs_cindex;		/* current tuple's index in vistuples */
 	uint32		rs_ntuples;		/* number of visible tuples on page */
@@ -116,8 +123,18 @@ typedef struct IndexFetchHeapData
 {
 	IndexFetchTableData xs_base;	/* AM independent part of the descriptor */
 
-	Buffer		xs_cbuf;		/* current heap buffer in scan, if any */
-	/* NB: if xs_cbuf is not InvalidBuffer, we hold a pin on that buffer */
+	/*
+	 * Current heap buffer in scan, if any. NB: if xs_cbuf is not
+	 * InvalidBuffer, we hold a pin on that buffer.
+	 */
+	Buffer		xs_cbuf;
+
+	/*
+	 * For index scans that do not modify the underlying heap table, on-access
+	 * pruning may read in the current heap page's corresponding VM block to
+	 * this buffer.
+	 */
+	Buffer		xs_vmbuffer;
 } IndexFetchHeapData;
 
 /* Result codes for HeapTupleSatisfiesVacuum */
@@ -374,7 +391,8 @@ extern TransactionId heap_index_delete_tuples(Relation rel,
 
 /* in heap/pruneheap.c */
 struct GlobalVisState;
-extern void heap_page_prune_opt(Relation relation, Buffer buffer);
+extern void heap_page_prune_opt(Relation relation, Buffer buffer,
+								Buffer *vmbuffer);
 extern void heap_page_prune_and_freeze(Relation relation, Buffer buffer,
 									   bool blk_known_av,
 									   Buffer vmbuffer,
