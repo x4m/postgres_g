@@ -179,6 +179,22 @@ static void heap_prune_record_unchanged_lp_redirect(PruneState *prstate, OffsetN
 
 static void page_verify_redirects(Page page);
 
+static bool heap_page_will_freeze(Relation relation, Buffer buffer,
+								  bool do_prune,
+								  bool do_hint_full_or_prunable,
+								  bool did_tuple_hint_fpi,
+								  PruneState *prstate,
+								  bool *all_frozen_except_lp_dead);
+
+static bool heap_page_will_update_vm(Relation relation,
+									 Buffer buffer, BlockNumber blockno, Page page,
+									 PruneReason reason,
+									 bool do_prune, bool do_freeze,
+									 bool blk_known_av,
+									 PruneState *prstate,
+									 Buffer *vmbuffer, uint8 *vmflags,
+									 bool *set_pd_all_visible);
+
 static bool identify_and_fix_vm_corruption(Relation relation,
 										   BlockNumber heap_blk,
 										   Buffer heap_buffer, Page heap_page,
@@ -375,6 +391,249 @@ identify_and_fix_vm_corruption(Relation relation,
 
 	return false;
 }
+
+
+/*
+ * Determine whether to set the visibility map bits based on information from
+ * the PruneState and blk_known_av, which some callers will provide after
+ * previously examining this heap page's VM bits (e.g. vacuum from the last
+ * heap_vac_scan_next_block() call).
+ *
+ * We pass in blockno and page even those can be derived from buffer to avoid
+ * extra BufferGetBlock() and BufferGetBlockNumber() calls.
+ *
+ * This should be called only after do_freeze has been decided (and do_prune
+ * has been set), as these factor into our heuristic-based decision.
+ *
+ * prstate and vmbuffer are input/output fields. vmflags and and
+ * set_pd_all_visible are output fields.
+ *
+ * Returns true if the caller should set one or both of the VM bits and false
+ * otherwise.
+ */
+static bool
+heap_page_will_update_vm(Relation relation,
+						 Buffer buffer, BlockNumber blockno, Page page,
+						 PruneReason reason,
+						 bool do_prune, bool do_freeze,
+						 bool blk_known_av,
+						 PruneState *prstate,
+						 Buffer *vmbuffer, uint8 *vmflags,
+						 bool *set_pd_all_visible)
+{
+	bool		do_set_vm = false;
+
+	/*
+	 * If the caller specified not to update the VM, validate everything is in
+	 * the right state and exit.
+	 */
+	if (!prstate->consider_update_vm)
+	{
+		Assert(!prstate->all_visible && !prstate->all_frozen);
+		/* We don't set only the page level visibility hint */
+		Assert(!(*set_pd_all_visible));
+		Assert(*vmflags == 0);
+		return false;
+	}
+
+	/*
+	 * If this is an on-access call and we're not actually pruning, avoid
+	 * setting the visibility map if it would newly dirty the heap page or, if
+	 * the page is already dirty, if doing so would require including a
+	 * full-page image (FPI) of the heap page in the WAL. This situation
+	 * should be rare, as on-access pruning is only attempted when
+	 * pd_prune_xid is valid.
+	 */
+	if (reason == PRUNE_ON_ACCESS &&
+		prstate->consider_update_vm &&
+		prstate->all_visible &&
+		!do_prune && !do_freeze &&
+		(!BufferIsDirty(buffer) || XLogCheckBufferNeedsBackup(buffer)))
+	{
+		prstate->consider_update_vm = false;
+		prstate->all_visible = prstate->all_frozen = false;
+	}
+
+	Assert(!prstate->all_frozen || prstate->all_visible);
+
+	/*
+	 * Clear any VM corruption. This does not need to be in a critical
+	 * section, so we do it first. If PD_ALL_VISIBLE is incorrectly set, we
+	 * may mark the heap page buffer dirty here and could end up doing so
+	 * again later. This is not a correctness issue and is in the path of VM
+	 * corruption, so we don't have to worry about the extra performance
+	 * overhead.
+	 */
+	if (identify_and_fix_vm_corruption(relation,
+									   blockno, buffer, page,
+									   blk_known_av, prstate->lpdead_items,
+									   *vmbuffer))
+	{
+		/* If we fix corruption, don't update the VM further */
+	}
+
+	/* Determine if we actually need to set the VM and which bits to set. */
+	else if (prstate->all_visible &&
+			 (!blk_known_av ||
+			  (prstate->all_frozen && !VM_ALL_FROZEN(relation, blockno, vmbuffer))))
+	{
+		*vmflags |= VISIBILITYMAP_ALL_VISIBLE;
+		if (prstate->all_frozen)
+			*vmflags |= VISIBILITYMAP_ALL_FROZEN;
+	}
+
+	do_set_vm = *vmflags & VISIBILITYMAP_VALID_BITS;
+
+	/*
+	 * Don't set PD_ALL_VISIBLE unless we also plan to set the VM. While it is
+	 * correct for a heap page to have PD_ALL_VISIBLE even if the VM is not
+	 * set, we strongly prefer to keep them in sync.
+	 *
+	 * Prior to Postgres 19, it was possible for the page-level bit to be set
+	 * and the VM bit to be clear. This could happen if we crashed after
+	 * setting PD_ALL_VISIBLE but before setting bits in the VM.
+	 */
+	*set_pd_all_visible = do_set_vm && !PageIsAllVisible(page);
+	return do_set_vm;
+}
+
+/*
+ * Decide if we want to go ahead with freezing according to the freeze plans we
+ * prepared for the given buffer or not. If the caller specified we should not
+ * freeze tuples, it exits early.
+ *
+ * do_prune, do_hint_full_or_prunable, and did_tuple_hint_fpi must all have
+ * been decided before calling this function.
+ *
+ * prstate is an input/output parameter. all_frozen_except_lp_dead is set and
+ * used later to determine the snapshot conflict horizon for the record.
+ *
+ * Returns true if we should use our freeze plans and freeze tuples on the page
+ * and false otherwise.
+ */
+static bool
+heap_page_will_freeze(Relation relation, Buffer buffer,
+					  bool do_prune,
+					  bool do_hint_full_or_prunable,
+					  bool did_tuple_hint_fpi,
+					  PruneState *prstate,
+					  bool *all_frozen_except_lp_dead)
+{
+	bool		do_freeze = false;
+
+	/*
+	 * If the caller specified we should not attempt to freeze any tuples,
+	 * validate that everything is in the right state and exit.
+	 */
+	if (!prstate->attempt_freeze)
+	{
+		Assert(!prstate->all_frozen && prstate->nfrozen == 0);
+		Assert(prstate->lpdead_items == 0 || !prstate->all_visible);
+		Assert(!(*all_frozen_except_lp_dead));
+		return false;
+	}
+
+	if (prstate->pagefrz.freeze_required)
+	{
+		/*
+		 * heap_prepare_freeze_tuple indicated that at least one XID/MXID from
+		 * before FreezeLimit/MultiXactCutoff is present.  Must freeze to
+		 * advance relfrozenxid/relminmxid.
+		 */
+		do_freeze = true;
+	}
+	else
+	{
+		/*
+		 * Opportunistically freeze the page if we are generating an FPI
+		 * anyway and if doing so means that we can set the page all-frozen
+		 * afterwards (might not happen until VACUUM's final heap pass).
+		 *
+		 * XXX: Previously, we knew if pruning emitted an FPI by checking
+		 * pgWalUsage.wal_fpi before and after pruning.  Once the freeze and
+		 * prune records were combined, this heuristic couldn't be used
+		 * anymore.  The opportunistic freeze heuristic must be improved;
+		 * however, for now, try to approximate the old logic.
+		 */
+		if (prstate->all_visible && prstate->all_frozen && prstate->nfrozen > 0)
+		{
+			/*
+			 * Freezing would make the page all-frozen.  Have already emitted
+			 * an FPI or will do so anyway?
+			 */
+			if (RelationNeedsWAL(relation))
+			{
+				if (did_tuple_hint_fpi)
+					do_freeze = true;
+				else if (do_prune)
+				{
+					if (XLogCheckBufferNeedsBackup(buffer))
+						do_freeze = true;
+				}
+				else if (do_hint_full_or_prunable)
+				{
+					if (XLogHintBitIsNeeded() && XLogCheckBufferNeedsBackup(buffer))
+						do_freeze = true;
+				}
+			}
+		}
+	}
+
+	if (do_freeze)
+	{
+		/*
+		 * Validate the tuples we will be freezing before entering the
+		 * critical section.
+		 */
+		heap_pre_freeze_checks(buffer, prstate->frozen, prstate->nfrozen);
+	}
+	else if (prstate->nfrozen > 0)
+	{
+		/*
+		 * The page contained some tuples that were not already frozen, and we
+		 * chose not to freeze them now.  The page won't be all-frozen then.
+		 */
+		Assert(!prstate->pagefrz.freeze_required);
+
+		prstate->all_frozen = false;
+		prstate->nfrozen = 0;	/* avoid miscounts in instrumentation */
+	}
+	else
+	{
+		/*
+		 * We have no freeze plans to execute.  The page might already be
+		 * all-frozen (perhaps only following pruning), though.  Such pages
+		 * can be marked all-frozen in the VM by our caller, even though none
+		 * of its tuples were newly frozen here.
+		 */
+	}
+
+	/*
+	 * It was convenient to ignore LP_DEAD items in all_visible earlier on to
+	 * make the choice of whether or not to freeze the page unaffected by the
+	 * short-term presence of LP_DEAD items.  These LP_DEAD items were
+	 * effectively assumed to be LP_UNUSED items in the making.  It doesn't
+	 * matter which vacuum heap pass (initial pass or final pass) ends up
+	 * setting the page all-frozen, as long as the ongoing VACUUM does it.
+	 *
+	 * Now that freezing has been finalized, unset all_visible if there are
+	 * any LP_DEAD items on the page. It needs to reflect the present state of
+	 * the page when using it to determine whether or not to update the VM.
+	 *
+	 * Keep track of whether or not the page was all-frozen except LP_DEAD
+	 * items for the purposes of calculating the snapshot conflict horizon,
+	 * though.
+	 */
+	*all_frozen_except_lp_dead = prstate->all_frozen;
+	if (prstate->lpdead_items > 0)
+	{
+		prstate->all_visible = false;
+		prstate->all_frozen = false;
+	}
+
+	return do_freeze;
+}
+
 
 /*
  * Prune and repair fragmentation and potentially freeze tuples on the
@@ -766,19 +1025,29 @@ heap_page_prune_and_freeze(Relation relation, Buffer buffer,
 	/* Clear the offset information once we have processed the given page. */
 	*off_loc = InvalidOffsetNumber;
 
-	do_prune = prstate.nredirected > 0 ||
-		prstate.ndead > 0 ||
-		prstate.nunused > 0;
-
 	/*
 	 * After processing all the live tuples on the page, if the newest xmin
 	 * amongst them is not visible to everyone, the page cannot be
-	 * all-visible.
+	 * all-visible. This must be done before we decide whether or not to
+	 * opportunistically freeze below because we do not want to
+	 * opportunistically freeze the page if there are live tuples not visible
+	 * to everyone, which would prevent setting the page frozen in the VM.
 	 */
 	if (prstate.all_visible &&
 		TransactionIdIsNormal(prstate.visibility_cutoff_xid) &&
 		!GlobalVisXidVisibleToAll(prstate.vistest, prstate.visibility_cutoff_xid))
 		prstate.all_visible = prstate.all_frozen = false;
+
+	/*
+	 * Now decide based on information collected while examining every tuple
+	 * which actions to take. If there are any prunable tuples, we'll prune
+	 * them. However, we will decide based on options specified by the caller
+	 * and various heuristics whether or not to freeze any tuples and whether
+	 * or not the page should be set all-visible/all-frozen in the VM.
+	 */
+	do_prune = prstate.nredirected > 0 ||
+		prstate.ndead > 0 ||
+		prstate.nunused > 0;
 
 	/*
 	 * Even if we don't prune anything, if we found a new value for the
@@ -790,182 +1059,32 @@ heap_page_prune_and_freeze(Relation relation, Buffer buffer,
 		PageIsFull(page);
 
 	/*
-	 * Decide if we want to go ahead with freezing according to the freeze
-	 * plans we prepared, or not.
+	 * We must decide whether or not to freeze before deciding if and what to
+	 * set in the VM.
 	 */
-	do_freeze = false;
-	if (prstate.attempt_freeze)
-	{
-		if (prstate.pagefrz.freeze_required)
-		{
-			/*
-			 * heap_prepare_freeze_tuple indicated that at least one XID/MXID
-			 * from before FreezeLimit/MultiXactCutoff is present.  Must
-			 * freeze to advance relfrozenxid/relminmxid.
-			 */
-			do_freeze = true;
-		}
-		else
-		{
-			/*
-			 * Opportunistically freeze the page if we are generating an FPI
-			 * anyway and if doing so means that we can set the page
-			 * all-frozen afterwards (might not happen until VACUUM's final
-			 * heap pass).
-			 *
-			 * XXX: Previously, we knew if pruning emitted an FPI by checking
-			 * pgWalUsage.wal_fpi before and after pruning.  Once the freeze
-			 * and prune records were combined, this heuristic couldn't be
-			 * used anymore.  The opportunistic freeze heuristic must be
-			 * improved; however, for now, try to approximate the old logic.
-			 */
-			if (prstate.all_visible && prstate.all_frozen && prstate.nfrozen > 0)
-			{
-				/*
-				 * Freezing would make the page all-frozen.  Have already
-				 * emitted an FPI or will do so anyway?
-				 */
-				if (RelationNeedsWAL(relation))
-				{
-					if (did_tuple_hint_fpi)
-						do_freeze = true;
-					else if (do_prune)
-					{
-						if (XLogCheckBufferNeedsBackup(buffer))
-							do_freeze = true;
-					}
-					else if (do_hint_full_or_prunable)
-					{
-						if (XLogHintBitIsNeeded() && XLogCheckBufferNeedsBackup(buffer))
-							do_freeze = true;
-					}
-				}
-			}
-		}
-	}
+	do_freeze = heap_page_will_freeze(relation, buffer,
+									  do_prune,
+									  do_hint_full_or_prunable,
+									  did_tuple_hint_fpi,
+									  &prstate,
+									  &all_frozen_except_lp_dead);
 
-	if (do_freeze)
-	{
-		/*
-		 * Validate the tuples we will be freezing before entering the
-		 * critical section.
-		 */
-		heap_pre_freeze_checks(buffer, prstate.frozen, prstate.nfrozen);
-	}
-	else if (prstate.nfrozen > 0)
-	{
-		/*
-		 * The page contained some tuples that were not already frozen, and we
-		 * chose not to freeze them now.  The page won't be all-frozen then.
-		 */
-		Assert(!prstate.pagefrz.freeze_required);
-
-		prstate.all_frozen = false;
-		prstate.nfrozen = 0;	/* avoid miscounts in instrumentation */
-	}
-	else
-	{
-		/*
-		 * We have no freeze plans to execute.  The page might already be
-		 * all-frozen (perhaps only following pruning), though.  Such pages
-		 * can be marked all-frozen in the VM by our caller, even though none
-		 * of its tuples were newly frozen here.
-		 */
-	}
-
-	/*
-	 * It was convenient to ignore LP_DEAD items in all_visible earlier on to
-	 * make the choice of whether or not to freeze the page unaffected by the
-	 * short-term presence of LP_DEAD items.  These LP_DEAD items were
-	 * effectively assumed to be LP_UNUSED items in the making.  It doesn't
-	 * matter which vacuum heap pass (initial pass or final pass) ends up
-	 * setting the page all-frozen, as long as the ongoing VACUUM does it.
-	 *
-	 * Now that freezing has been finalized, unset all_visible if there are
-	 * any LP_DEAD items on the page. It needs to reflect the present state of
-	 * the page when using it to determine whether or not to update the VM.
-	 *
-	 * Keep track of whether or not the page was all-frozen except LP_DEAD
-	 * items for the purposes of calculating the snapshot conflict horizon,
-	 * though.
-	 */
-	all_frozen_except_lp_dead = prstate.all_frozen;
-	if (prstate.lpdead_items > 0)
-	{
-		prstate.all_visible = false;
-		prstate.all_frozen = false;
-	}
-
-	/*
-	 * If this is an on-access call and we're not actually pruning, avoid
-	 * setting the visibility map if it would newly dirty the heap page or, if
-	 * the page is already dirty, if doing so would require including a
-	 * full-page image (FPI) of the heap page in the WAL. This situation
-	 * should be rare, as on-access pruning is only attempted when
-	 * pd_prune_xid is valid.
-	 */
-	if (reason == PRUNE_ON_ACCESS &&
-		prstate.consider_update_vm &&
-		prstate.all_visible &&
-		!do_prune && !do_freeze &&
-		(!BufferIsDirty(buffer) || XLogCheckBufferNeedsBackup(buffer)))
-	{
-		prstate.consider_update_vm = false;
-		prstate.all_visible = prstate.all_frozen = false;
-	}
-
-	Assert(!prstate.all_frozen || prstate.all_visible);
-
-	/*
-	 * Handle setting visibility map bit based on information from the VM (if
-	 * provided, e.g. by vacuum from the last heap_vac_scan_next_block()
-	 * call), and from all_visible and all_frozen variables.
-	 */
-	if (prstate.consider_update_vm)
-	{
-		/*
-		 * Clear any VM corruption. This does not need to be in a critical
-		 * section, so we do it first. If PD_ALL_VISIBLE is incorrectly set,
-		 * we may mark the heap page buffer dirty here and could end up doing
-		 * so again later. This is not a correctness issue and is in the path
-		 * of VM corruption, so we don't have to worry about the extra
-		 * performance overhead.
-		 */
-		if (identify_and_fix_vm_corruption(relation,
-										   blockno, buffer, page,
-										   blk_known_av, prstate.lpdead_items, vmbuffer))
-		{
-			/* If we fix corruption, don't update the VM further */
-		}
-
-		/* Determine if we actually need to set the VM and which bits to set. */
-		else if (prstate.all_visible &&
-				 (!blk_known_av ||
-				  (prstate.all_frozen && !VM_ALL_FROZEN(relation, blockno, &vmbuffer))))
-		{
-			vmflags |= VISIBILITYMAP_ALL_VISIBLE;
-			if (prstate.all_frozen)
-				vmflags |= VISIBILITYMAP_ALL_FROZEN;
-		}
-	}
-
-	do_set_vm = vmflags & VISIBILITYMAP_VALID_BITS;
-
-	/*
-	 * Don't set PD_ALL_VISIBLE unless we also plan to set the VM. While it is
-	 * correct for a heap page to have PD_ALL_VISIBLE even if the VM is not
-	 * set, we strongly prefer to keep them in sync.
-	 *
-	 * Prior to Postgres 19, it was possible for the page-level bit to be set
-	 * and the VM bit to be clear. This could happen if we crashed after
-	 * setting PD_ALL_VISIBLE but before setting bits in the VM.
-	 */
-	set_pd_all_visible = do_set_vm && !PageIsAllVisible(page);
+	do_set_vm = heap_page_will_update_vm(relation,
+										 buffer, blockno, page,
+										 reason,
+										 do_prune, do_freeze,
+										 blk_known_av,
+										 &prstate,
+										 &vmbuffer,
+										 &vmflags, &set_pd_all_visible);
 
 	/* Save these for the caller in case we later zero out vmflags */
 	presult->new_vmbits = vmflags;
 
-	/* Any error while applying the changes is critical */
+	/*
+	 * Time to actually make the changes to the page and log them. Any error
+	 * while applying the changes is critical.
+	 */
 	START_CRIT_SECTION();
 
 	if (do_hint_full_or_prunable)
