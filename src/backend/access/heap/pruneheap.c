@@ -43,7 +43,7 @@ typedef struct
 	/* whether or not dead items can be set LP_UNUSED during pruning */
 	bool		mark_unused_now;
 	/* whether to attempt freezing tuples */
-	bool		freeze;
+	bool		attempt_freeze;
 
 	/*
 	 * Whether or not to consider updating the VM. There is some bookkeeping
@@ -452,7 +452,7 @@ heap_page_prune_and_freeze(Relation relation, Buffer buffer,
 	bool		do_set_vm;
 	uint8		vmflags = 0;
 	uint8		old_vmbits = 0;
-	bool		hint_bit_fpi;
+	bool		did_tuple_hint_fpi;
 	int64		fpi_before = pgWalUsage.wal_fpi;
 	bool		all_frozen_except_lp_dead = false;
 	bool		set_pd_all_visible = false;
@@ -460,7 +460,7 @@ heap_page_prune_and_freeze(Relation relation, Buffer buffer,
 	/* Copy parameters to prstate */
 	prstate.vistest = vistest;
 	prstate.mark_unused_now = (options & HEAP_PAGE_PRUNE_MARK_UNUSED_NOW) != 0;
-	prstate.freeze = (options & HEAP_PAGE_PRUNE_FREEZE) != 0;
+	prstate.attempt_freeze = (options & HEAP_PAGE_PRUNE_FREEZE) != 0;
 	prstate.consider_update_vm = (options & HEAP_PAGE_PRUNE_UPDATE_VM) != 0;
 	prstate.cutoffs = cutoffs;
 
@@ -485,7 +485,7 @@ heap_page_prune_and_freeze(Relation relation, Buffer buffer,
 
 	/* initialize page freezing working state */
 	prstate.pagefrz.freeze_required = false;
-	if (prstate.freeze)
+	if (prstate.attempt_freeze)
 	{
 		Assert(new_relfrozen_xid && new_relmin_mxid);
 		prstate.pagefrz.FreezePageRelfrozenXid = *new_relfrozen_xid;
@@ -535,7 +535,7 @@ heap_page_prune_and_freeze(Relation relation, Buffer buffer,
 	 * bookkeeping. Initializing all_visible to false allows skipping the work
 	 * to update them in heap_prune_record_unchanged_lp_normal().
 	 */
-	if (prstate.freeze)
+	if (prstate.attempt_freeze)
 	{
 		prstate.all_visible = true;
 		prstate.all_frozen = true;
@@ -653,7 +653,7 @@ heap_page_prune_and_freeze(Relation relation, Buffer buffer,
 	 * If checksums are enabled, heap_prune_satisfies_vacuum() may have caused
 	 * an FPI to be emitted.
 	 */
-	hint_bit_fpi = fpi_before != pgWalUsage.wal_fpi;
+	did_tuple_hint_fpi = fpi_before != pgWalUsage.wal_fpi;
 
 	/*
 	 * Process HOT chains.
@@ -770,7 +770,7 @@ heap_page_prune_and_freeze(Relation relation, Buffer buffer,
 	 * plans we prepared, or not.
 	 */
 	do_freeze = false;
-	if (prstate.freeze)
+	if (prstate.attempt_freeze)
 	{
 		if (prstate.pagefrz.freeze_required)
 		{
@@ -803,7 +803,7 @@ heap_page_prune_and_freeze(Relation relation, Buffer buffer,
 				 */
 				if (RelationNeedsWAL(relation))
 				{
-					if (hint_bit_fpi)
+					if (did_tuple_hint_fpi)
 						do_freeze = true;
 					else if (do_prune)
 					{
@@ -1128,7 +1128,7 @@ heap_page_prune_and_freeze(Relation relation, Buffer buffer,
 	presult->lpdead_items = prstate.lpdead_items;
 	/* the presult->deadoffsets array was already filled in */
 
-	if (prstate.freeze)
+	if (prstate.attempt_freeze)
 	{
 		if (presult->nfrozen > 0)
 		{
@@ -1715,7 +1715,7 @@ heap_prune_record_unchanged_lp_normal(Page page, PruneState *prstate, OffsetNumb
 	 * to update the VM, we have to call heap_prepare_freeze_tuple() on every
 	 * tuple to know whether or not the page will be totally frozen.
 	 */
-	if (prstate->freeze)
+	if (prstate->attempt_freeze)
 	{
 		bool		totally_frozen;
 
