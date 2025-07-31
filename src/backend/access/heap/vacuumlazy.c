@@ -1991,11 +1991,11 @@ lazy_scan_prune(LVRelState *vacrel,
 	if (vacrel->nindexes == 0)
 		prune_options |= HEAP_PAGE_PRUNE_MARK_UNUSED_NOW;
 
-	heap_page_prune_and_freeze(rel, buf,
+	heap_page_prune_and_freeze(rel, buf, prune_options,
 							   all_visible_according_to_vm,
 							   vmbuffer,
-							   vacrel->vistest, prune_options,
-							   &vacrel->cutoffs, &presult, PRUNE_VACUUM_SCAN,
+							   vacrel->vistest,
+							   &vacrel->cutoffs, PRUNE_VACUUM_SCAN, &presult,
 							   &vacrel->offnum,
 							   &vacrel->NewRelfrozenXid, &vacrel->NewRelminMxid);
 

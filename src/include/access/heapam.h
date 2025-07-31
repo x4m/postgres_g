@@ -394,13 +394,13 @@ struct GlobalVisState;
 extern void heap_page_prune_opt(Relation relation, Buffer buffer,
 								Buffer *vmbuffer);
 extern void heap_page_prune_and_freeze(Relation relation, Buffer buffer,
+									   int options,
 									   bool blk_known_av,
 									   Buffer vmbuffer,
 									   struct GlobalVisState *vistest,
-									   int options,
 									   struct VacuumCutoffs *cutoffs,
-									   PruneFreezeResult *presult,
 									   PruneReason reason,
+									   PruneFreezeResult *presult,
 									   OffsetNumber *off_loc,
 									   TransactionId *new_relfrozen_xid,
 									   MultiXactId *new_relmin_mxid);

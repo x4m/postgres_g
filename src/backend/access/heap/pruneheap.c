@@ -297,10 +297,10 @@ heap_page_prune_opt(Relation relation, Buffer buffer, Buffer *vmbuffer)
 			 * not the relation has indexes, since we cannot safely determine
 			 * that during on-access pruning with the current implementation.
 			 */
-			heap_page_prune_and_freeze(relation, buffer, false,
+			heap_page_prune_and_freeze(relation, buffer, options, false,
 									   vmbuffer ? *vmbuffer : InvalidBuffer,
-									   vistest, options,
-									   NULL, &presult, PRUNE_ON_ACCESS,
+									   vistest,
+									   NULL, PRUNE_ON_ACCESS, &presult,
 									   &dummy_off_loc, NULL, NULL);
 
 			/*
@@ -645,6 +645,15 @@ heap_page_will_freeze(Relation relation, Buffer buffer,
  * also need to account for a reduction in the length of the line pointer
  * array following array truncation by us.
  *
+ * options:
+ *   MARK_UNUSED_NOW indicates that dead items can be set LP_UNUSED during
+ *   pruning.
+ *
+ *   FREEZE indicates that we will also freeze tuples, and will return
+ *   'all_visible', 'all_frozen' flags to the caller.
+ *
+ *   UPDATE_VM indicates that we will set the page's status in the VM.
+ *
  * If the HEAP_PRUNE_FREEZE option is set, we will also freeze tuples if it's
  * required in order to advance relfrozenxid / relminmxid, or if it's
  * considered advantageous for overall system performance to do so now.  The
@@ -663,29 +672,20 @@ heap_page_will_freeze(Relation relation, Buffer buffer,
  * contain the required block of the visibility map.
  *
  * vistest is used to distinguish whether tuples are DEAD or RECENTLY_DEAD
- * (see heap_prune_satisfies_vacuum).
- *
- * options:
- *   MARK_UNUSED_NOW indicates that dead items can be set LP_UNUSED during
- *   pruning.
- *
- *   FREEZE indicates that we will also freeze tuples, and will return
- *   'all_visible', 'all_frozen' flags to the caller.
- *
- *   UPDATE_VM indicates that we will set the page's status in the VM.
+ * (see heap_prune_satisfies_vacuum). It is an input parameter.
  *
  * cutoffs contains the freeze cutoffs, established by VACUUM at the beginning
  * of vacuuming the relation.  Required if HEAP_PRUNE_FREEZE option is set.
  * cutoffs->OldestXmin is also used to determine if dead tuples are
- * HEAPTUPLE_RECENTLY_DEAD or HEAPTUPLE_DEAD.
+ * HEAPTUPLE_RECENTLY_DEAD or HEAPTUPLE_DEAD. It is an input parameter.
+ *
+ * reason indicates why the pruning is performed.  It is included in the WAL
+ * record for debugging and analysis purposes, but otherwise has no effect.
  *
  * presult contains output parameters needed by callers, such as the number of
  * tuples removed and the offsets of dead items on the page after pruning.
  * heap_page_prune_and_freeze() is responsible for initializing it.  Required
  * by all callers.
- *
- * reason indicates why the pruning is performed.  It is included in the WAL
- * record for debugging and analysis purposes, but otherwise has no effect.
  *
  * off_loc is the offset location required by the caller to use in error
  * callback.
@@ -699,13 +699,13 @@ heap_page_will_freeze(Relation relation, Buffer buffer,
  */
 void
 heap_page_prune_and_freeze(Relation relation, Buffer buffer,
+						   int options,
 						   bool blk_known_av,
 						   Buffer vmbuffer,
 						   GlobalVisState *vistest,
-						   int options,
 						   struct VacuumCutoffs *cutoffs,
-						   PruneFreezeResult *presult,
 						   PruneReason reason,
+						   PruneFreezeResult *presult,
 						   OffsetNumber *off_loc,
 						   TransactionId *new_relfrozen_xid,
 						   MultiXactId *new_relmin_mxid)
