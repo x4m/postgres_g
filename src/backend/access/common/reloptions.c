@@ -194,6 +194,16 @@ static relopt_int intRelOpts[] =
 	},
 	{
 		{
+			"mergefactor",
+			"Minimum percentage of free space to trigger btree page merge during vacuum",
+			RELOPT_KIND_BTREE,
+			ShareUpdateExclusiveLock	/* since it applies only to vacuum
+										 * operations */
+		},
+		BTREE_DEFAULT_MERGEFACTOR, 0, 50
+	},
+	{
+		{
 			"fillfactor",
 			"Packs hash index pages only to this percentage",
 			RELOPT_KIND_HASH,
