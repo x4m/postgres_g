@@ -325,10 +325,22 @@ typedef struct xl_btree_unlink_page
 	BlockNumber leafrightsib;
 	BlockNumber leaftopparent;	/* next child down in the subtree */
 
-	/* xl_btree_metadata FOLLOWS IF XLOG_BTREE_UNLINK_PAGE_META */
+	/*
+	 * Page merge information. When merge_ntuples > 0, tuples were moved from
+	 * the deleted page to its right sibling before deletion. The tuple data
+	 * follows this record in the WAL stream.
+	 */
+	uint16		merge_ntuples;	/* number of tuples moved during merge */
+
+	/*
+	 * MERGED TUPLE DATA FOLLOWS IF merge_ntuples > 0
+	 * Format: IndexTuple data for each moved tuple, in order
+	 *
+	 * xl_btree_metadata FOLLOWS IF XLOG_BTREE_UNLINK_PAGE_META
+	 */
 } xl_btree_unlink_page;
 
-#define SizeOfBtreeUnlinkPage	(offsetof(xl_btree_unlink_page, leaftopparent) + sizeof(BlockNumber))
+#define SizeOfBtreeUnlinkPage	(offsetof(xl_btree_unlink_page, merge_ntuples) + sizeof(uint16))
 
 /*
  * New root log record.  There are zero tuples if this is to establish an

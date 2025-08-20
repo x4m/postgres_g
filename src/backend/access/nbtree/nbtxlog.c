@@ -865,12 +865,38 @@ btree_xlog_unlink_page(uint8 info, XLogReaderState *record)
 	PageSetLSN(page, lsn);
 	MarkBufferDirty(target);
 
-	/* Fix left-link of right sibling */
+	/* Fix left-link of right sibling and replay merged tuples if any */
 	if (XLogReadBufferForRedo(record, 2, &rightbuf) == BLK_NEEDS_REDO)
 	{
 		page = (Page) BufferGetPage(rightbuf);
 		pageop = BTPageGetOpaque(page);
 		pageop->btpo_prev = leftsib;
+
+		/* Replay merged tuples if merge occurred */
+		if (xlrec->merge_ntuples > 0)
+		{
+			char	   *datapos;
+			BTPageOpaque rightopaque = BTPageGetOpaque(page);
+			OffsetNumber insert_at = P_FIRSTDATAKEY(rightopaque);
+			uint16		i;
+
+			/* Get pointer to merged tuple data in WAL record */
+			datapos = XLogRecGetData(record) + SizeOfBtreeUnlinkPage;
+
+			/* Insert each merged tuple at the beginning of the right page */
+			for (i = 0; i < xlrec->merge_ntuples; i++)
+			{
+				IndexTuple	tuple = (IndexTuple) datapos;
+				Size		tupsz = IndexTupleSize(tuple);
+
+				if (PageAddItem(page, (Item) tuple, tupsz, insert_at,
+								false, false) == InvalidOffsetNumber)
+					elog(PANIC, "failed to add merged tuple during WAL replay");
+
+				insert_at++;
+				datapos += MAXALIGN(tupsz);
+			}
+		}
 
 		PageSetLSN(page, lsn);
 		MarkBufferDirty(rightbuf);
