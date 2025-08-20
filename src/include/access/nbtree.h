@@ -201,6 +201,7 @@ typedef struct BTMetaPageData
 #define BTREE_DEFAULT_FILLFACTOR	90
 #define BTREE_NONLEAF_FILLFACTOR	70
 #define BTREE_SINGLEVAL_FILLFACTOR	96
+#define BTREE_DEFAULT_MERGEFACTOR	5
 
 /*
  *	In general, the btree code tries to localize its knowledge about
@@ -1153,6 +1154,7 @@ typedef struct BTOptions
 	int			fillfactor;		/* page fill factor in percent (0..100) */
 	float8		vacuum_cleanup_index_scale_factor;	/* deprecated */
 	bool		deduplicate_items;	/* Try to deduplicate items? */
+	int			mergefactor;	/* page merge factor in percent (0..100) */
 } BTOptions;
 
 #define BTGetFillFactor(relation) \
@@ -1168,6 +1170,12 @@ typedef struct BTOptions
 				 relation->rd_rel->relam == BTREE_AM_OID), \
 	((relation)->rd_options ? \
 	 ((BTOptions *) (relation)->rd_options)->deduplicate_items : true))
+#define BTGetMergeFactor(relation) \
+	(AssertMacro(relation->rd_rel->relkind == RELKIND_INDEX && \
+				 relation->rd_rel->relam == BTREE_AM_OID), \
+	 (relation)->rd_options ? \
+	 ((BTOptions *) (relation)->rd_options)->mergefactor : \
+	 BTREE_DEFAULT_MERGEFACTOR)
 
 /*
  * Constant definition for progress reporting.  Phase numbers must match
