@@ -1805,6 +1805,9 @@ _bt_pagedel(Relation rel, Buffer leafbuf, BTVacState *vstate)
 	bool		rightsib_empty;
 	Page		page;
 	BTPageOpaque opaque;
+	OffsetNumber maxoff;
+	OffsetNumber minoff;
+	bool		page_has_tuples;
 
 	/*
 	 * Save original leafbuf block number from caller.  Only deleted blocks
@@ -1876,8 +1879,12 @@ _bt_pagedel(Relation rel, Buffer leafbuf, BTVacState *vstate)
 
 		/*
 		 * We can never delete rightmost pages nor root pages.  While at it,
-		 * check that page is empty, since it's possible that the leafbuf page
-		 * was empty a moment ago, but has since had some inserts.
+		 * check that page is empty or nearly empty (95% empty), since it's 
+		 * possible that the leafbuf page was empty a moment ago, but has since 
+		 * had some inserts.
+		 *
+		 * For pages that have tuples, attempt to move them to the right sibling
+		 * if there's enough space. This enables merging of nearly-empty pages.
 		 *
 		 * To keep the algorithm simple, we also never delete an incompletely
 		 * split page (they should be rare enough that this doesn't make any
@@ -1893,13 +1900,135 @@ _bt_pagedel(Relation rel, Buffer leafbuf, BTVacState *vstate)
 		 * we know we stepped right from a page that passed these tests, so
 		 * it's OK.
 		 */
-		if (P_RIGHTMOST(opaque) || P_ISROOT(opaque) ||
-			P_FIRSTDATAKEY(opaque) <= PageGetMaxOffsetNumber(page) ||
-			P_INCOMPLETE_SPLIT(opaque))
+		maxoff = PageGetMaxOffsetNumber(page);
+		minoff = P_FIRSTDATAKEY(opaque);
+		page_has_tuples = (minoff <= maxoff);
+		
+		if (P_RIGHTMOST(opaque) || P_ISROOT(opaque) || P_INCOMPLETE_SPLIT(opaque))
 		{
 			/* Should never fail to delete a half-dead page */
 			Assert(!P_ISHALFDEAD(opaque));
 
+			_bt_relbuf(rel, leafbuf);
+			return;
+		}
+		
+		/*
+		 * If page has tuples, attempt to move them to the right sibling.
+		 * This enables merging of nearly-empty pages.
+		 */
+		if (page_has_tuples)
+		{
+			BlockNumber rightsib = opaque->btpo_next;
+			Buffer		rbuf;
+			Page		rpage;
+			BTPageOpaque ropaque;
+			Size		space_needed = 0;
+			OffsetNumber i;
+			
+			/* Calculate total space needed for all tuples */
+			for (i = minoff; i <= maxoff; i++)
+			{
+				ItemId		itemid = PageGetItemId(page, i);
+				space_needed += ItemIdGetLength(itemid) + sizeof(ItemIdData);
+			}
+			
+			/* Check if right sibling exists and has enough free space */
+			if (rightsib != P_NONE)
+			{
+				rbuf = _bt_getbuf(rel, rightsib, BT_WRITE);
+				rpage = BufferGetPage(rbuf);
+				ropaque = BTPageGetOpaque(rpage);
+				
+				/* Verify right sibling is a leaf page at same level */
+				if (P_ISLEAF(ropaque) && ropaque->btpo_level == opaque->btpo_level)
+				{
+					Size freespace = PageGetFreeSpace(rpage);
+					
+					if (freespace >= space_needed)
+					{
+						OffsetNumber *deletable;
+						int ndeletable = 0;
+						OffsetNumber j;
+						
+						elog(WARNING, "Starting page merge in index \"%s\": moving %d tuples from page %u to page %u (need %zu bytes, have %zu bytes free)",
+							 RelationGetRelationName(rel), (int)(maxoff - minoff + 1), 
+							 BufferGetBlockNumber(leafbuf), rightsib, space_needed, freespace);
+						
+						/* Move all tuples to right sibling - insert at beginning to maintain sort order */
+						OffsetNumber insert_at = P_FIRSTDATAKEY(ropaque);
+						
+						for (i = minoff; i <= maxoff; i++)
+						{
+							ItemId		itemid = PageGetItemId(page, i);
+							IndexTuple	tuple = (IndexTuple) PageGetItem(page, itemid);
+							Size		tupsz = ItemIdGetLength(itemid);
+							
+							if (PageAddItem(rpage, (Item) tuple, tupsz, insert_at,
+											false, false) == InvalidOffsetNumber)
+							{
+								elog(WARNING, "failed to move tuple during page merge in index \"%s\"",
+									 RelationGetRelationName(rel));
+								_bt_relbuf(rel, rbuf);
+								_bt_relbuf(rel, leafbuf);
+								return;
+							}
+							/* Next tuple should be inserted after the one we just added */
+							insert_at++;
+						}
+						
+						/* Mark the right page as dirty */
+						MarkBufferDirty(rbuf);
+						_bt_relbuf(rel, rbuf);
+						
+						/* Clear all tuples from the current page */
+						deletable = palloc(sizeof(OffsetNumber) * (maxoff - minoff + 1));
+						
+						for (j = minoff; j <= maxoff; j++)
+							deletable[ndeletable++] = j;
+						
+						PageIndexMultiDelete(page, deletable, ndeletable);
+						pfree(deletable);
+						MarkBufferDirty(leafbuf);
+						
+						elog(WARNING, "Page merge completed successfully in index \"%s\": moved %d tuples from page %u to page %u",
+							 RelationGetRelationName(rel), ndeletable, 
+							 BufferGetBlockNumber(leafbuf), rightsib);
+					}
+					else
+					{
+						/* Not enough space in right sibling, abort merge */
+						elog(WARNING, "Page merge aborted in index \"%s\": right sibling page %u has insufficient space (need %zu bytes, have %zu bytes free)",
+							 RelationGetRelationName(rel), rightsib, space_needed, freespace);
+						_bt_relbuf(rel, rbuf);
+						_bt_relbuf(rel, leafbuf);
+						return;
+					}
+				}
+				else
+				{
+					/* Right sibling is not suitable for merge */
+					elog(WARNING, "Page merge aborted in index \"%s\": right sibling page %u is not suitable (is_leaf=%d, level=%d vs %d)",
+						 RelationGetRelationName(rel), rightsib, P_ISLEAF(ropaque), ropaque->btpo_level, opaque->btpo_level);
+					_bt_relbuf(rel, rbuf);
+					_bt_relbuf(rel, leafbuf);
+					return;
+				}
+			}
+			else
+			{
+				/* No right sibling, cannot merge */
+				elog(WARNING, "Page merge aborted in index \"%s\": page %u has no right sibling",
+					 RelationGetRelationName(rel), BufferGetBlockNumber(leafbuf));
+				_bt_relbuf(rel, leafbuf);
+				return;
+			}
+		}
+		
+		/* Now page should be empty, proceed with normal deletion */
+		if (P_FIRSTDATAKEY(opaque) <= PageGetMaxOffsetNumber(page))
+		{
+			/* Page still has tuples after merge attempt, abort */
 			_bt_relbuf(rel, leafbuf);
 			return;
 		}

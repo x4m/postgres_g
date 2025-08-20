@@ -1620,6 +1620,9 @@ backtrack:
 		 * since that would require teaching _bt_pagedel() about backtracking
 		 * (doesn't seem worth adding more complexity to deal with that).
 		 *
+		 * We also attempt page deletion if the page is 95% empty (by bytes).
+		 * This enables merging of nearly-empty pages to reduce bloat.
+		 *
 		 * We don't count the number of live TIDs during cleanup-only calls to
 		 * btvacuumscan (i.e. when callback is not set).  We count the number
 		 * of index tuples directly instead.  This avoids the expense of
@@ -1630,12 +1633,28 @@ backtrack:
 		 */
 		if (minoff > maxoff)
 			attempt_pagedel = (blkno == scanblkno);
-		else if (callback)
+		else if (blkno == scanblkno)
+		{
+			/* Check if page is 95% empty by space usage */
+			Size		freespace = PageGetFreeSpace(page);
+			Size		pagesize = BLCKSZ - SizeOfPageHeaderData;
+			
+			if (freespace >= (pagesize * 95) / 100)
+				attempt_pagedel = true;
+		}
+		
+		if (callback)
 			stats->num_index_tuples += nhtidslive;
 		else
 			stats->num_index_tuples += maxoff - minoff + 1;
 
-		Assert(!attempt_pagedel || nhtidslive == 0);
+		/* 
+	 * Assert that either we're not attempting page deletion, or if we are,
+	 * it's either because the page is empty (nhtidslive == 0) or because
+	 * we're attempting a merge of a 95% empty page with tuples.
+	 */
+	Assert(!attempt_pagedel || nhtidslive == 0 || 
+		   (blkno == scanblkno && PageGetFreeSpace(page) >= ((BLCKSZ - SizeOfPageHeaderData) * 95) / 100));
 	}
 
 	if (attempt_pagedel)

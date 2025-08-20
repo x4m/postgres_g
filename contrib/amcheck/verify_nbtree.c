@@ -35,6 +35,7 @@
 #include "catalog/pg_am.h"
 #include "catalog/pg_opfamily_d.h"
 #include "common/pg_prng.h"
+#include "funcapi.h"
 #include "lib/bloomfilter.h"
 #include "miscadmin.h"
 #include "storage/smgr.h"
@@ -171,14 +172,66 @@ typedef struct BTCallbackState
 	bool		checkunique;
 } BTCallbackState;
 
+/*
+ * Structure to hold B-tree bloat statistics
+ */
+typedef struct BtreeBloatStats
+{
+	/* Page counts */
+	int64		total_pages;
+	int64		leaf_pages;
+	int64		internal_pages;
+	int64		free_pages;
+	int64		deleted_pages;
+
+	/* Space statistics (in bytes) */
+	int64		total_used_space;
+	int64		leaf_used_space;
+	int64		internal_used_space;
+	int64		total_free_space;
+	int64		leaf_free_space;
+	int64		internal_free_space;
+
+	/* Bloat percentages (calculated) */
+	double		total_bloat_ratio;
+	double		leaf_bloat_ratio;
+	double		internal_bloat_ratio;
+} BtreeBloatStats;
+
+/*
+ * State for bloat checking operations
+ */
+typedef struct BtreeBloatState
+{
+	/* Base state for page access */
+	Relation	rel;
+	BufferAccessStrategy checkstrategy;
+	MemoryContext targetcontext;
+
+	/* Statistics accumulator */
+	BtreeBloatStats stats;
+} BtreeBloatState;
+
 PG_FUNCTION_INFO_V1(bt_index_check);
 PG_FUNCTION_INFO_V1(bt_index_parent_check);
+PG_FUNCTION_INFO_V1(bt_index_bloat_check);
+PG_FUNCTION_INFO_V1(bt_index_merge_check);
 
 static void bt_index_check_callback(Relation indrel, Relation heaprel,
 									void *state, bool readonly);
 static void bt_check_every_level(Relation rel, Relation heaprel,
 								 bool heapkeyspace, bool readonly, bool heapallindexed,
 								 bool rootdescend, bool checkunique);
+static void bt_bloat_check_callback(Relation indrel, Relation heaprel,
+									void *state, bool readonly);
+static void bt_calculate_bloat_stats(Relation rel, BtreeBloatState *bloat_state);
+static void bt_analyze_page_bloat(Page page, BlockNumber blkno, BtreeBloatStats *stats);
+static void bt_merge_check_callback(Relation indrel, Relation heaprel,
+									void *state, bool readonly);
+static void bt_scan_for_merge_opportunities(Relation rel);
+static BlockNumber bt_find_leftmost_leaf(Relation rel, BlockNumber root_blkno, BufferAccessStrategy strategy);
+static bool bt_pages_can_merge(Page left_page, Page right_page, Relation rel);
+static int bt_calculate_page_used_space(Page page);
 static BtreeLevel bt_check_level_from_leftmost(BtreeCheckState *state,
 											   BtreeLevel level);
 static bool bt_leftmost_ignoring_half_dead(BtreeCheckState *state,
@@ -299,6 +352,84 @@ bt_index_parent_check(PG_FUNCTION_ARGS)
 	amcheck_lock_relation_and_check(indrelid, BTREE_AM_OID,
 									bt_index_check_callback,
 									ShareLock, &args);
+
+	PG_RETURN_VOID();
+}
+
+/*
+ * bt_index_bloat_check(index regclass)
+ *
+ * Analyze B-Tree index bloat by examining page space utilization.
+ *
+ * Returns a record with bloat statistics including page counts,
+ * space usage, and bloat ratios for leaf and internal pages.
+ */
+Datum
+bt_index_bloat_check(PG_FUNCTION_ARGS)
+{
+	Oid			indrelid = PG_GETARG_OID(0);
+	BtreeBloatState *bloat_state;
+	TupleDesc	tupdesc;
+	Datum		values[12];
+	bool		nulls[12];
+	HeapTuple	htup;
+
+	/* Build tuple descriptor if first time through */
+	if (get_call_result_type(fcinfo, NULL, &tupdesc) != TYPEFUNC_COMPOSITE)
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("function returning record called in context "
+						"that cannot accept a record")));
+
+	/* Initialize bloat state */
+	bloat_state = palloc0(sizeof(BtreeBloatState));
+
+	/* Perform bloat analysis */
+	amcheck_lock_relation_and_check(indrelid, BTREE_AM_OID,
+									bt_bloat_check_callback,
+									AccessShareLock, bloat_state);
+
+	/* Prepare result tuple */
+	memset(nulls, false, sizeof(nulls));
+
+	values[0] = Int64GetDatum(bloat_state->stats.total_pages);
+	values[1] = Int64GetDatum(bloat_state->stats.leaf_pages);
+	values[2] = Int64GetDatum(bloat_state->stats.internal_pages);
+	values[3] = Int64GetDatum(bloat_state->stats.free_pages);
+	values[4] = Int64GetDatum(bloat_state->stats.deleted_pages);
+	values[5] = Int64GetDatum(bloat_state->stats.total_used_space);
+	values[6] = Int64GetDatum(bloat_state->stats.leaf_used_space);
+	values[7] = Int64GetDatum(bloat_state->stats.internal_used_space);
+	values[8] = Int64GetDatum(bloat_state->stats.total_free_space);
+	values[9] = Int64GetDatum(bloat_state->stats.leaf_free_space);
+	values[10] = Int64GetDatum(bloat_state->stats.internal_free_space);
+	values[11] = Float8GetDatum(bloat_state->stats.total_bloat_ratio);
+
+	htup = heap_form_tuple(tupdesc, values, nulls);
+
+	pfree(bloat_state);
+
+	PG_RETURN_DATUM(HeapTupleGetDatum(htup));
+}
+
+/*
+ * bt_index_merge_check(index regclass)
+ *
+ * Perform logical scan of B-tree leaf pages to identify merge opportunities.
+ *
+ * This function traverses leaf pages and analyzes adjacent pages to determine
+ * if they can be merged to reduce index bloat. Potential merge opportunities
+ * are reported via elog(NOTICE) messages.
+ */
+Datum
+bt_index_merge_check(PG_FUNCTION_ARGS)
+{
+	Oid			indrelid = PG_GETARG_OID(0);
+
+	/* Perform merge analysis */
+	amcheck_lock_relation_and_check(indrelid, BTREE_AM_OID,
+									bt_merge_check_callback,
+									AccessShareLock, NULL);
 
 	PG_RETURN_VOID();
 }
@@ -3602,4 +3733,450 @@ BTreeTupleGetPointsToTID(IndexTuple itup)
 
 	/* Pivot tuple returns TID with downlink block (heapkeyspace variant) */
 	return &itup->t_tid;
+}
+
+/*
+ * bt_bloat_check_callback() -- Callback for bloat analysis
+ */
+static void
+bt_bloat_check_callback(Relation indrel, Relation heaprel, void *state, bool readonly)
+{
+	BtreeBloatState *bloat_state = (BtreeBloatState *) state;
+
+	if (!smgrexists(RelationGetSmgr(indrel), MAIN_FORKNUM))
+		ereport(ERROR,
+				(errcode(ERRCODE_INDEX_CORRUPTED),
+				 errmsg("index \"%s\" lacks a main relation fork",
+						RelationGetRelationName(indrel))));
+
+	/* Store relation for use in scanning */
+	bloat_state->rel = indrel;
+
+	/* Create context for page analysis */
+	bloat_state->targetcontext = AllocSetContextCreate(CurrentMemoryContext,
+													   "amcheck bloat context",
+													   ALLOCSET_DEFAULT_SIZES);
+	bloat_state->checkstrategy = GetAccessStrategy(BAS_BULKREAD);
+
+	/* Perform the actual bloat calculation */
+	bt_calculate_bloat_stats(indrel, bloat_state);
+
+	/* Clean up */
+	MemoryContextDelete(bloat_state->targetcontext);
+}
+
+/*
+ * bt_calculate_bloat_stats() -- Calculate bloat statistics for the entire index
+ */
+static void
+bt_calculate_bloat_stats(Relation rel, BtreeBloatState *bloat_state)
+{
+	BtreeBloatStats stats;
+	BlockNumber total_blocks;
+	BlockNumber blkno;
+	Buffer		buffer;
+	Page		page;
+	BTPageOpaque opaque;
+
+	/* Initialize statistics */
+	memset(&stats, 0, sizeof(BtreeBloatStats));
+
+	/* Get total number of blocks in the relation */
+	total_blocks = RelationGetNumberOfBlocks(rel);
+	stats.total_pages = total_blocks;
+
+	/* Skip if index is empty */
+	if (total_blocks == 0)
+	{
+		bloat_state->stats = stats;
+		return;
+	}
+
+	/* Scan all pages except the meta page */
+	for (blkno = BTREE_METAPAGE + 1; blkno < total_blocks; blkno++)
+	{
+		buffer = ReadBufferExtended(rel, MAIN_FORKNUM, blkno, RBM_NORMAL,
+									bloat_state->checkstrategy);
+		LockBuffer(buffer, BT_READ);
+
+		page = BufferGetPage(buffer);
+
+		/* Basic sanity check on the page */
+		if (!PageIsNew(page))
+		{
+			_bt_checkpage(rel, buffer);
+			opaque = BTPageGetOpaque(page);
+
+			/* Analyze this page for bloat */
+			bt_analyze_page_bloat(page, blkno, &stats);
+		}
+
+		UnlockReleaseBuffer(buffer);
+
+		/* Allow interruption */
+		CHECK_FOR_INTERRUPTS();
+	}
+
+	/* Calculate bloat ratios */
+	if (stats.total_pages > 0)
+	{
+		int64 total_available_space = (stats.total_pages - 1) * (BLCKSZ - MAXALIGN(SizeOfPageHeaderData));
+		if (total_available_space > 0)
+			stats.total_bloat_ratio = (double) stats.total_free_space / total_available_space * 100.0;
+	}
+
+	if (stats.leaf_pages > 0)
+	{
+		int64 leaf_available_space = stats.leaf_pages * (BLCKSZ - MAXALIGN(SizeOfPageHeaderData) - MAXALIGN(sizeof(BTPageOpaqueData)));
+		if (leaf_available_space > 0)
+			stats.leaf_bloat_ratio = (double) stats.leaf_free_space / leaf_available_space * 100.0;
+	}
+
+	if (stats.internal_pages > 0)
+	{
+		int64 internal_available_space = stats.internal_pages * (BLCKSZ - MAXALIGN(SizeOfPageHeaderData) - MAXALIGN(sizeof(BTPageOpaqueData)));
+		if (internal_available_space > 0)
+			stats.internal_bloat_ratio = (double) stats.internal_free_space / internal_available_space * 100.0;
+	}
+
+	bloat_state->stats = stats;
+}
+
+/*
+ * bt_analyze_page_bloat() -- Analyze a single page for bloat
+ */
+static void
+bt_analyze_page_bloat(Page page, BlockNumber blkno, BtreeBloatStats *stats)
+{
+	BTPageOpaque opaque;
+	PageHeader	phdr;
+	int			free_space;
+	int			used_space;
+	bool		is_leaf;
+	bool		is_deleted;
+
+	if (PageIsNew(page))
+	{
+		/* New/uninitialized pages contribute to free space */
+		stats->free_pages++;
+		stats->total_free_space += BLCKSZ;
+		return;
+	}
+
+	phdr = (PageHeader) page;
+	opaque = BTPageGetOpaque(page);
+
+	/* Check if page is deleted */
+	is_deleted = P_ISDELETED(opaque);
+	if (is_deleted)
+	{
+		stats->deleted_pages++;
+		stats->total_free_space += BLCKSZ;
+		return;
+	}
+
+	/* Determine page type */
+	is_leaf = P_ISLEAF(opaque);
+
+	/* Calculate free space on the page */
+	free_space = PageGetFreeSpace(page);
+	used_space = BLCKSZ - free_space;
+
+	/* Update statistics based on page type */
+	if (is_leaf)
+	{
+		stats->leaf_pages++;
+		stats->leaf_free_space += free_space;
+		stats->leaf_used_space += used_space;
+	}
+	else
+	{
+		stats->internal_pages++;
+		stats->internal_free_space += free_space;
+		stats->internal_used_space += used_space;
+	}
+
+	/* Update totals */
+	stats->total_free_space += free_space;
+	stats->total_used_space += used_space;
+}
+
+/*
+ * bt_merge_check_callback() -- Callback for merge opportunity analysis
+ */
+static void
+bt_merge_check_callback(Relation indrel, Relation heaprel, void *state, bool readonly)
+{
+	if (!smgrexists(RelationGetSmgr(indrel), MAIN_FORKNUM))
+		ereport(ERROR,
+				(errcode(ERRCODE_INDEX_CORRUPTED),
+				 errmsg("index \"%s\" lacks a main relation fork",
+						RelationGetRelationName(indrel))));
+
+	elog(NOTICE, "starting merge analysis for index \"%s\"",
+		 RelationGetRelationName(indrel));
+
+	/* Perform the actual merge opportunity scan */
+	bt_scan_for_merge_opportunities(indrel);
+
+	elog(NOTICE, "completed merge analysis for index \"%s\"",
+		 RelationGetRelationName(indrel));
+}
+
+/*
+ * bt_find_leftmost_leaf() -- Navigate from root to find leftmost leaf page
+ */
+static BlockNumber
+bt_find_leftmost_leaf(Relation rel, BlockNumber root_blkno, BufferAccessStrategy strategy)
+{
+	BlockNumber current_blkno = root_blkno;
+	Buffer		buffer;
+	Page		page;
+	BTPageOpaque opaque;
+
+	while (current_blkno != P_NONE)
+	{
+		buffer = ReadBufferExtended(rel, MAIN_FORKNUM, current_blkno, RBM_NORMAL, strategy);
+		LockBuffer(buffer, BT_READ);
+		page = BufferGetPage(buffer);
+		opaque = BTPageGetOpaque(page);
+
+		/* If this is a leaf page, we found our leftmost leaf */
+		if (P_ISLEAF(opaque))
+		{
+			UnlockReleaseBuffer(buffer);
+			return current_blkno;
+		}
+
+		/* This is an internal page, navigate to the leftmost child */
+		if (PageGetMaxOffsetNumber(page) >= P_FIRSTDATAKEY(opaque))
+		{
+			IndexTuple	itup;
+			ItemId		itemid;
+
+			/* Get the first data key (leftmost downlink) */
+			itemid = PageGetItemId(page, P_FIRSTDATAKEY(opaque));
+			if (!ItemIdIsValid(itemid))
+			{
+				elog(ERROR, "invalid item ID on internal page %u", current_blkno);
+			}
+
+			itup = (IndexTuple) PageGetItem(page, itemid);
+			current_blkno = BTreeTupleGetDownLink(itup);
+		}
+		else
+		{
+			/* No items on this internal page - shouldn't happen */
+			elog(ERROR, "internal page %u has no downlink items", current_blkno);
+		}
+
+		UnlockReleaseBuffer(buffer);
+	}
+
+	return P_NONE;
+}
+
+/*
+ * bt_scan_for_merge_opportunities() -- Scan leaf pages for merge opportunities
+ */
+static void
+bt_scan_for_merge_opportunities(Relation rel)
+{
+	Page		metapage;
+	BTMetaPageData *metad;
+	BlockNumber root_blkno;
+	BlockNumber leftmost_leaf;
+	BlockNumber current_blkno;
+	Buffer		metabuffer;
+	Buffer		left_buffer = InvalidBuffer;
+	Buffer		right_buffer;
+	Page		left_page = NULL;
+	Page		right_page;
+	BTPageOpaque left_opaque = NULL;
+	BTPageOpaque right_opaque;
+	BufferAccessStrategy strategy;
+	int			merge_candidates = 0;
+	int			pages_scanned = 0;
+
+	/* Get access strategy for bulk reading */
+	strategy = GetAccessStrategy(BAS_BULKREAD);
+
+	/* Read metapage to get the true root */
+	metabuffer = ReadBufferExtended(rel, MAIN_FORKNUM, BTREE_METAPAGE, RBM_NORMAL, strategy);
+	LockBuffer(metabuffer, BT_READ);
+	metapage = BufferGetPage(metabuffer);
+	metad = BTPageGetMeta(metapage);
+	root_blkno = metad->btm_root;
+	UnlockReleaseBuffer(metabuffer);
+
+	if (root_blkno == P_NONE)
+	{
+		elog(NOTICE, "index is empty, no pages to analyze");
+		FreeAccessStrategy(strategy);
+		return;
+	}
+
+	elog(NOTICE, "starting logical leaf page scan from root block %u", root_blkno);
+
+	/* Navigate down to the leftmost leaf page */
+	leftmost_leaf = bt_find_leftmost_leaf(rel, root_blkno, strategy);
+	
+	if (leftmost_leaf == P_NONE)
+	{
+		elog(NOTICE, "no leaf pages found in index");
+		FreeAccessStrategy(strategy);
+		return;
+	}
+
+	elog(NOTICE, "leftmost leaf page is block %u", leftmost_leaf);
+
+	/* Now traverse leaf pages from left to right using btpo_next links */
+	current_blkno = leftmost_leaf;
+
+	while (current_blkno != P_NONE)
+	{
+		CHECK_FOR_INTERRUPTS();
+
+		/* Read the current page */
+		right_buffer = ReadBufferExtended(rel, MAIN_FORKNUM, current_blkno, RBM_NORMAL, strategy);
+		LockBuffer(right_buffer, BT_READ);
+
+		right_page = BufferGetPage(right_buffer);
+
+		/* Basic page validation */
+		_bt_checkpage(rel, right_buffer);
+		right_opaque = BTPageGetOpaque(right_page);
+
+		/* Verify this is actually a leaf page */
+		if (!P_ISLEAF(right_opaque))
+		{
+			elog(WARNING, "expected leaf page but found non-leaf at block %u", current_blkno);
+			UnlockReleaseBuffer(right_buffer);
+			break;
+		}
+
+		/* Skip deleted or ignored pages */
+		if (P_ISDELETED(right_opaque) || P_IGNORE(right_opaque))
+		{
+			elog(DEBUG1, "skipping deleted/ignored page at block %u", current_blkno);
+			current_blkno = right_opaque->btpo_next;
+			UnlockReleaseBuffer(right_buffer);
+			continue;
+		}
+
+		pages_scanned++;
+
+		/* If we have a previous leaf page, check if they can be merged */
+		if (left_buffer != InvalidBuffer && left_page != NULL && left_opaque != NULL)
+		{
+			/* Since we're following logical links, adjacency is guaranteed */
+			/* Check if these logically adjacent pages can be merged */
+			if (bt_pages_can_merge(left_page, right_page, rel))
+			{
+				int left_used = bt_calculate_page_used_space(left_page);
+				int right_used = bt_calculate_page_used_space(right_page);
+				
+				merge_candidates++;
+				
+				elog(NOTICE, "merge opportunity: pages %u and %u can be merged "
+							 "(logical adjacency, left_used=%d bytes, right_used=%d bytes, total=%d bytes)",
+					 BufferGetBlockNumber(left_buffer), 
+					 BufferGetBlockNumber(right_buffer),
+					 left_used, right_used, left_used + right_used);
+			}
+		}
+
+		/* Release the previous left buffer if we have one */
+		if (left_buffer != InvalidBuffer)
+		{
+			UnlockReleaseBuffer(left_buffer);
+		}
+
+		/* Current right page becomes the left page for the next iteration */
+		left_buffer = right_buffer;
+		left_page = right_page;
+		left_opaque = right_opaque;
+
+		/* Move to next page using logical right link */
+		current_blkno = right_opaque->btpo_next;
+	}
+
+	/* Release the final buffer */
+	if (left_buffer != InvalidBuffer)
+	{
+		UnlockReleaseBuffer(left_buffer);
+	}
+
+	FreeAccessStrategy(strategy);
+
+	elog(NOTICE, "logical leaf scan complete: examined %d leaf pages, found %d merge opportunities",
+		 pages_scanned, merge_candidates);
+}
+
+/*
+ * bt_pages_can_merge() -- Check if two adjacent pages can be merged
+ */
+static bool
+bt_pages_can_merge(Page left_page, Page right_page, Relation rel)
+{
+	BTPageOpaque left_opaque;
+	BTPageOpaque right_opaque;
+	int			left_used;
+	int			right_used;
+	int			available_space;
+	OffsetNumber left_maxoff;
+	OffsetNumber right_maxoff;
+
+	left_opaque = BTPageGetOpaque(left_page);
+	right_opaque = BTPageGetOpaque(right_page);
+
+	/* Both pages must be leaf pages */
+	if (!P_ISLEAF(left_opaque) || !P_ISLEAF(right_opaque))
+		return false;
+
+	/* Neither page should be deleted */
+	if (P_ISDELETED(left_opaque) || P_ISDELETED(right_opaque))
+		return false;
+
+	/* Pages must be at the same level */
+	if (left_opaque->btpo_level != right_opaque->btpo_level)
+		return false;
+
+	/* Calculate used space on each page */
+	left_used = bt_calculate_page_used_space(left_page);
+	right_used = bt_calculate_page_used_space(right_page);
+
+	/* Calculate available space in a single page */
+	/* Account for page header, special space, and some safety margin */
+	available_space = BLCKSZ 
+					  - MAXALIGN(SizeOfPageHeaderData)
+					  - MAXALIGN(sizeof(BTPageOpaqueData))
+					  - 100; /* Safety margin for alignment and future insertions */
+
+	/* Check if combined content would fit in a single page */
+	if (left_used + right_used > available_space)
+		return false;
+
+	/* Get the number of items on each page */
+	left_maxoff = PageGetMaxOffsetNumber(left_page);
+	right_maxoff = PageGetMaxOffsetNumber(right_page);
+
+	/* Skip pages that are already very empty (little benefit from merging) */
+	if (left_maxoff == 0 || right_maxoff == 0)
+		return false;
+
+	/* Don't merge if either page is nearly full (little benefit) */
+	if (PageGetFreeSpace(left_page) < BLCKSZ / 4 && PageGetFreeSpace(right_page) < BLCKSZ / 4)
+		return false;
+
+	return true;
+}
+
+/*
+ * bt_calculate_page_used_space() -- Calculate the used space on a page
+ */
+static int
+bt_calculate_page_used_space(Page page)
+{
+	return BLCKSZ - PageGetFreeSpace(page);
 }
