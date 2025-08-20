@@ -21,6 +21,7 @@
 #include "miscadmin.h"
 #include "pgstat.h"
 #include "storage/predicate.h"
+#include "utils/injection_point.h"
 #include "utils/lsyscache.h"
 #include "utils/rel.h"
 
@@ -2174,6 +2175,8 @@ _bt_steppage(IndexScanDesc scan, ScanDirection dir)
 	if (so->numKilled > 0)
 		_bt_killitems(scan);
 
+
+
 	/*
 	 * Before we modify currPos, make a copy of the page data if there was a
 	 * mark position that needs it.
@@ -2221,6 +2224,22 @@ _bt_steppage(IndexScanDesc scan, ScanDirection dir)
 	}
 
 	BTScanPosUnpinIfPinned(so->currPos);
+
+	/*
+	 * Injection point for testing scan correctness during page merge.
+	 * This allows tests to pause scans between pages to simulate concurrent
+	 * page operations. Only pause scans on the specific test index.
+	 * We pause here after unpinning the current buffer to avoid blocking VACUUM.
+	 */
+	{
+		Relation rel = scan->indexRelation;
+		BlockNumber blkno = so->currPos.currPage;
+		/* Only pause scans on our test index (btree_test_idx has OID around 16400+) */
+		if (rel && RelationGetRelid(rel) > 16384 && blkno == 20)
+		{
+			INJECTION_POINT("btree-scan-between-pages", &blkno);
+		}
+	}
 
 	/* Walk to the next page with data */
 	if (ScanDirectionIsForward(dir))

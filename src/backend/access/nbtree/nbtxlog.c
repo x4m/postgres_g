@@ -813,6 +813,8 @@ btree_xlog_unlink_page(uint8 info, XLogReaderState *record)
 	Buffer		rightbuf;
 	Page		page;
 	BTPageOpaque pageop;
+	IndexTuple *merge_tuples;
+	uint16		merge_ntuples;
 
 	leftsib = xlrec->leftsib;
 	rightsib = xlrec->rightsib;
@@ -822,6 +824,10 @@ btree_xlog_unlink_page(uint8 info, XLogReaderState *record)
 
 	/* No leaftopparent for level 0 (leaf page) or level 1 target */
 	Assert(!BlockNumberIsValid(xlrec->leaftopparent) || level > 1);
+
+	/* Initialize merge variables */
+	merge_tuples = NULL;
+	merge_ntuples = 0;
 
 	/*
 	 * In normal operation, we would lock all the pages this WAL record
@@ -847,12 +853,57 @@ btree_xlog_unlink_page(uint8 info, XLogReaderState *record)
 	else
 		leftbuf = InvalidBuffer;
 
-	/* Rewrite target page as empty deleted page */
-	target = XLogInitBufferForRedo(record, 0);
-	page = (Page) BufferGetPage(target);
+	/*
+	 * Handle target page. For page merges, we first read existing content
+	 * to extract tuples, then reinitialize. For simple deletions, we can
+	 * initialize directly.
+	 */
+	if (XLogReadBufferForRedo(record, 0, &target) == BLK_NEEDS_REDO)
+	{
+		page = (Page) BufferGetPage(target);
+		pageop = BTPageGetOpaque(page);
 
-	_bt_pageinit(page, BufferGetPageSize(target));
-	pageop = BTPageGetOpaque(page);
+		/* Check if this is a leaf page merge case */
+		if (isleaf && rightsib != P_NONE && !P_RIGHTMOST(pageop))
+		{
+			OffsetNumber maxoff = PageGetMaxOffsetNumber(page);
+			OffsetNumber minoff = P_FIRSTDATAKEY(pageop);
+
+			/* If page has tuples, save them for merging */
+			if (minoff <= maxoff)
+			{
+				OffsetNumber offnum;
+				uint16		i = 0;
+
+				merge_ntuples = maxoff - minoff + 1;
+				merge_tuples = (IndexTuple *) palloc(merge_ntuples * sizeof(IndexTuple));
+
+				/* Copy all tuples from the page */
+				for (offnum = minoff; offnum <= maxoff; offnum++)
+				{
+					ItemId		itemid = PageGetItemId(page, offnum);
+					IndexTuple	tuple = (IndexTuple) PageGetItem(page, itemid);
+					Size		tupsz = IndexTupleSize(tuple);
+
+					merge_tuples[i] = (IndexTuple) palloc(tupsz);
+					memcpy(merge_tuples[i], tuple, tupsz);
+					i++;
+				}
+			}
+		}
+
+		/* Now reinitialize target page as empty deleted page */
+		_bt_pageinit(page, BufferGetPageSize(target));
+		pageop = BTPageGetOpaque(page);
+	}
+	else
+	{
+		/* Page doesn't need redo, but we still need to get the buffer */
+		target = XLogInitBufferForRedo(record, 0);
+		page = (Page) BufferGetPage(target);
+		_bt_pageinit(page, BufferGetPageSize(target));
+		pageop = BTPageGetOpaque(page);
+	}
 
 	pageop->btpo_prev = leftsib;
 	pageop->btpo_next = rightsib;
@@ -865,15 +916,34 @@ btree_xlog_unlink_page(uint8 info, XLogReaderState *record)
 	PageSetLSN(page, lsn);
 	MarkBufferDirty(target);
 
-	/* Fix left-link of right sibling */
+	/* Fix left-link of right sibling and replay merged tuples if any */
 	if (XLogReadBufferForRedo(record, 2, &rightbuf) == BLK_NEEDS_REDO)
 	{
 		page = (Page) BufferGetPage(rightbuf);
 		pageop = BTPageGetOpaque(page);
 		pageop->btpo_prev = leftsib;
 
+		/*
+		 * Note: If tuples were merged during the original operation, the right
+		 * sibling buffer was registered with REGBUF_FORCE_IMAGE, so the page
+		 * is automatically restored to its final post-merge state. No explicit
+		 * tuple insertion is needed during replay.
+		 *
+		 * For non-merge operations, we only need to update the left-link.
+		 */
+
 		PageSetLSN(page, lsn);
 		MarkBufferDirty(rightbuf);
+	}
+
+	/* Clean up merge tuples */
+	if (merge_tuples != NULL)
+	{
+		uint16		i;
+
+		for (i = 0; i < merge_ntuples; i++)
+			pfree(merge_tuples[i]);
+		pfree(merge_tuples);
 	}
 
 	/* Release siblings */
