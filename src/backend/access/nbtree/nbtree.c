@@ -1640,15 +1640,13 @@ backtrack:
 			Size		pagesize = BLCKSZ - SizeOfPageHeaderData;
 			int			mergefactor = BTGetMergeFactor(rel);
 
-					/*
-		 * Only attempt page merge if there were no vacuum deletions
-		 * on this page. If there were deletions, the vacuum WAL record
-		 * was already written with specific offset numbers that would
-		 * become invalid if we merge tuples to another page.
-		 */
-		if (freespace >= (pagesize * mergefactor) / 100 && ndeletable == 0 && nupdatable == 0)
-			attempt_pagedel = true;
+			/*
+			 * Attempt page merge if page meets merge threshold by space usage.
+			 */
+			if (freespace >= (pagesize * mergefactor) / 100)
+				attempt_pagedel = true;
 		}
+
 
 		if (callback)
 			stats->num_index_tuples += nhtidslive;
