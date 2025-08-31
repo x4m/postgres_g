@@ -76,7 +76,7 @@ $node->safe_psql('postgres', q{
 my $forward_scan = $node->background_psql('postgres');
 my $backward_scan = $node->background_psql('postgres');
 
-# Start queries without waiting for completion (they'll hang at injection point)
+# Start queries without waiting for completion (they should abort with serialization error)
 $forward_scan->query_until(qr/starting forward scan/, q{
 	SET enable_seqscan = off;
 	SET enable_bitmapscan = off;
@@ -100,8 +100,12 @@ sleep(1);
 
 # Run VACUUM while scans are paused - this may trigger page merge
 $node->safe_psql('postgres', q{
+	SET client_min_messages TO DEBUG1;
 	VACUUM btree_test;
 });
+
+# Get current log position to check for new errors
+my $log_offset = -s $node->logfile;
 
 # Release waiting scans
 $node->safe_psql('postgres', q{
@@ -110,28 +114,23 @@ $node->safe_psql('postgres', q{
 	SELECT injection_points_wakeup('btree-scan-between-pages');
 });
 
-$forward_scan->quit;
-$backward_scan->quit;
+# Wait for scans to abort with serialization errors
+$node->wait_for_log('scan aborted due to concurrent page merge with tuple movement',
+	$log_offset);
 
-# Analyze results for scan correctness issues
-my $expected_count = $node->safe_psql('postgres', 
-	'SELECT count(*) FROM btree_test');
-
-my $forward_count = $node->safe_psql('postgres',
-	'SELECT count(*) FROM forward_results');
-
-my $backward_count = $node->safe_psql('postgres', 
-	'SELECT count(*) FROM backward_results');
-
-# Report results
-note("Expected rows: $expected_count");
-note("Forward scan rows: $forward_count");
-note("Backward scan rows: $backward_count");
-
-# Test assertions - these should fail with page merge, showing the race condition
-is($forward_count, $expected_count, 'Forward scan returns correct count');
-is($backward_count, $expected_count, 'Backward scan returns correct count');
+# Clean up background processes - they should have failed
+$forward_scan->{run}->finish;
+$backward_scan->{run}->finish;
 
 $node->stop('fast');
+
+# Verify that scans were aborted by checking the log file
+my $log_contents = slurp_file($node->logfile);
+my $error_count = () = $log_contents =~ /scan aborted due to concurrent page merge with tuple movement/g;
+
+note("Found $error_count scan abort errors in log");
+
+# We should see at least two scan abort error (possibly two, one for each scan)
+ok($error_count >= 2, 'At least twp scan was aborted due to tuple movement');
 
 done_testing();

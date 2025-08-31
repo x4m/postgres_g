@@ -83,6 +83,7 @@ typedef BTPageOpaqueData *BTPageOpaque;
 #define BTP_HAS_GARBAGE (1 << 6)	/* page has LP_DEAD tuples (deprecated) */
 #define BTP_INCOMPLETE_SPLIT (1 << 7)	/* right sibling's downlink is missing */
 #define BTP_HAS_FULLXID	(1 << 8)	/* contains BTDeletedPageData */
+#define BTP_HAD_TUPLES_MOVED (1 << 9)	/* page was deleted after moving tuples */
 
 /*
  * The max allowed value of a cycle ID is a bit less than 64K.  This is
@@ -201,7 +202,7 @@ typedef struct BTMetaPageData
 #define BTREE_DEFAULT_FILLFACTOR	90
 #define BTREE_NONLEAF_FILLFACTOR	70
 #define BTREE_SINGLEVAL_FILLFACTOR	96
-#define BTREE_DEFAULT_MERGEFACTOR	5
+#define BTREE_DEFAULT_MERGEFACTOR	0	/* Disabled by default for safety */
 
 /*
  *	In general, the btree code tries to localize its knowledge about
@@ -228,6 +229,7 @@ typedef struct BTMetaPageData
 #define P_HAS_GARBAGE(opaque)	(((opaque)->btpo_flags & BTP_HAS_GARBAGE) != 0)
 #define P_INCOMPLETE_SPLIT(opaque)	(((opaque)->btpo_flags & BTP_INCOMPLETE_SPLIT) != 0)
 #define P_HAS_FULLXID(opaque)	(((opaque)->btpo_flags & BTP_HAS_FULLXID) != 0)
+#define P_HAD_TUPLES_MOVED(opaque) (((opaque)->btpo_flags & BTP_HAD_TUPLES_MOVED) != 0)
 
 /*
  * BTDeletedPageData is the page contents of a deleted page

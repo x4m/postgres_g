@@ -2818,6 +2818,7 @@ _bt_unlink_halfdead_page(Relation rel, Buffer leafbuf, BlockNumber scanblkno,
 		Page		leafpage = BufferGetPage(leafbuf);
 		Page		rightpage = BufferGetPage(rbuf);
 		BTPageOpaque rightopaque = BTPageGetOpaque(rightpage);
+		BTPageOpaque leafopaque = BTPageGetOpaque(leafpage);
 		OffsetNumber insert_at = P_FIRSTDATAKEY(rightopaque);
 		int			i;
 
@@ -2838,6 +2839,9 @@ _bt_unlink_halfdead_page(Relation rel, Buffer leafbuf, BlockNumber scanblkno,
 
 		elog(DEBUG1, "Page merge completed in index \"%s\": moved %d tuples from page %u to page %u",
 			 RelationGetRelationName(rel), merge_ntuples, leafblkno, rightsib);
+
+		/* Mark that this page had tuples moved for scan detection */
+		leafopaque->btpo_flags |= BTP_HAD_TUPLES_MOVED;
 	}
 
 	/*

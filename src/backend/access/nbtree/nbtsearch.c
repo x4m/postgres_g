@@ -2223,6 +2223,8 @@ _bt_steppage(IndexScanDesc scan, ScanDirection dir)
 		Assert(!scan->parallel_scan);
 	}
 
+
+
 	BTScanPosUnpinIfPinned(so->currPos);
 
 	/*
@@ -2233,11 +2235,11 @@ _bt_steppage(IndexScanDesc scan, ScanDirection dir)
 	 */
 	{
 		Relation rel = scan->indexRelation;
-		BlockNumber blkno = so->currPos.currPage;
+		BlockNumber ip_blkno = so->currPos.currPage;
 		/* Only pause scans on our test index (btree_test_idx has OID around 16400+) */
-		if (rel && RelationGetRelid(rel) > 16384 && blkno == 20)
+		if (rel && RelationGetRelid(rel) > 16384 && ip_blkno == 20)
 		{
-			INJECTION_POINT("btree-scan-between-pages", &blkno);
+			INJECTION_POINT("btree-scan-between-pages", &ip_blkno);
 		}
 	}
 
@@ -2446,6 +2448,19 @@ _bt_readnextpage(IndexScanDesc scan, BlockNumber blkno,
 		page = BufferGetPage(so->currPos.buf);
 		opaque = BTPageGetOpaque(page);
 		lastcurrblkno = blkno;
+
+		/*
+		 * Check if this is a deleted page that had tuples moved during merge.
+		 * If so, abort the scan to prevent incorrect results.
+		 */
+		if (P_ISDELETED(opaque) && P_HAD_TUPLES_MOVED(opaque))
+		{
+			ereport(ERROR,
+					(errcode(ERRCODE_T_R_SERIALIZATION_FAILURE),
+					 errmsg("scan aborted due to concurrent page merge with tuple movement"),
+					 errhint("Retry the operation.")));
+		}
+
 		if (likely(!P_IGNORE(opaque)))
 		{
 			/* see if there are any matches on this page */
@@ -2549,6 +2564,20 @@ _bt_lock_and_validate_left(Relation rel, BlockNumber *blkno,
 				/* Found desired page, return it */
 				return buf;
 			}
+
+			/*
+			 * Check if this is a deleted page that had tuples moved during merge.
+			 * If so, abort the scan to prevent incorrect results.
+			 */
+			if (P_ISDELETED(opaque) && P_HAD_TUPLES_MOVED(opaque))
+			{
+				_bt_relbuf(rel, buf);
+				ereport(ERROR,
+						(errcode(ERRCODE_T_R_SERIALIZATION_FAILURE),
+						 errmsg("scan aborted due to concurrent page merge with tuple movement"),
+						 errhint("Retry the operation.")));
+			}
+
 			if (P_RIGHTMOST(opaque) || ++tries > 4)
 				break;
 			/* step right */
@@ -2569,6 +2598,19 @@ _bt_lock_and_validate_left(Relation rel, BlockNumber *blkno,
 		if (P_ISDELETED(opaque))
 		{
 			/*
+			 * Check if this is a deleted page that had tuples moved during merge.
+			 * If so, abort the scan to prevent incorrect results.
+			 */
+			if (P_HAD_TUPLES_MOVED(opaque))
+			{
+				_bt_relbuf(rel, buf);
+				ereport(ERROR,
+						(errcode(ERRCODE_T_R_SERIALIZATION_FAILURE),
+						 errmsg("scan aborted due to concurrent page merge with tuple movement"),
+						 errhint("Retry the operation.")));
+			}
+
+			/*
 			 * It was deleted.  Move right to first nondeleted page (there
 			 * must be one); that is the page that has acquired the deleted
 			 * one's keyspace, so stepping left from it will take us where we
@@ -2585,6 +2627,19 @@ _bt_lock_and_validate_left(Relation rel, BlockNumber *blkno,
 				opaque = BTPageGetOpaque(page);
 				if (!P_ISDELETED(opaque))
 					break;
+
+				/*
+				 * Check if this is a deleted page that had tuples moved during merge.
+				 * If so, abort the scan to prevent incorrect results.
+				 */
+				if (P_HAD_TUPLES_MOVED(opaque))
+				{
+					_bt_relbuf(rel, buf);
+					ereport(ERROR,
+							(errcode(ERRCODE_T_R_SERIALIZATION_FAILURE),
+							 errmsg("scan aborted due to concurrent page merge with tuple movement"),
+							 errhint("Retry the operation.")));
+				}
 			}
 		}
 		else
