@@ -1240,8 +1240,8 @@ heap_page_prune_and_freeze(PruneFreezeParams *params,
 			 * so there is no point in optimizing it.
 			 */
 			PageSetAllVisible(page);
-			visibilitymap_set_vmbits(blockno, vmbuffer, new_vmbits,
-									 params->relation->rd_locator);
+			visibilitymap_set(blockno, vmbuffer, new_vmbits,
+							  params->relation->rd_locator);
 		}
 
 		MarkBufferDirty(buffer);
