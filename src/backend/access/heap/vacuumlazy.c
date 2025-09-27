@@ -1894,9 +1894,12 @@ lazy_scan_new_or_empty(LVRelState *vacrel, Buffer buf, BlockNumber blkno,
 		 */
 		if (!PageIsAllVisible(page))
 		{
+			/* Lock vmbuffer before entering critical section */
+			LockBuffer(vmbuffer, BUFFER_LOCK_EXCLUSIVE);
+
 			START_CRIT_SECTION();
 
-			/* mark buffer dirty before writing a WAL record */
+			/* Mark buffer dirty before writing any WAL records */
 			MarkBufferDirty(buf);
 
 			/*
@@ -1913,12 +1916,32 @@ lazy_scan_new_or_empty(LVRelState *vacrel, Buffer buf, BlockNumber blkno,
 				log_newpage_buffer(buf, true);
 
 			PageSetAllVisible(page);
-			visibilitymap_set(vacrel->rel, blkno, buf,
-							  InvalidXLogRecPtr,
-							  vmbuffer, InvalidTransactionId,
-							  VISIBILITYMAP_ALL_VISIBLE |
-							  VISIBILITYMAP_ALL_FROZEN);
+			visibilitymap_set_vmbits(blkno,
+									 vmbuffer,
+									 VISIBILITYMAP_ALL_VISIBLE |
+									 VISIBILITYMAP_ALL_FROZEN,
+									 vacrel->rel->rd_locator);
+
+			/*
+			 * Emit WAL for setting PD_ALL_VISIBLE on the heap page and
+			 * setting the VM.
+			 */
+			if (RelationNeedsWAL(vacrel->rel))
+				log_heap_prune_and_freeze(vacrel->rel, buf,
+										  vmbuffer,
+										  VISIBILITYMAP_ALL_VISIBLE |
+										  VISIBILITYMAP_ALL_FROZEN,
+										  InvalidTransactionId, /* conflict xid */
+										  false,	/* cleanup lock */
+										  PRUNE_VACUUM_SCAN,	/* reason */
+										  NULL, 0,
+										  NULL, 0,
+										  NULL, 0,
+										  NULL, 0);
+
 			END_CRIT_SECTION();
+
+			LockBuffer(vmbuffer, BUFFER_LOCK_UNLOCK);
 
 			/* Count the newly all-frozen pages for logging */
 			vacrel->vm_new_visible_pages++;
