@@ -475,12 +475,12 @@ ResolveRecoveryConflictWithSnapshot(TransactionId snapshotConflictHorizon,
 	 * If we get passed InvalidTransactionId then we do nothing (no conflict).
 	 *
 	 * This can happen when replaying already-applied WAL records after a
-	 * standby crash or restart, or when replaying an XLOG_HEAP2_VISIBLE
-	 * record that marks as frozen a page which was already all-visible.  It's
-	 * also quite common with records generated during index deletion
-	 * (original execution of the deletion can reason that a recovery conflict
-	 * which is sufficient for the deletion operation must take place before
-	 * replay of the deletion record itself).
+	 * standby crash or restart, or when replaying a record that marks as
+	 * frozen a page which was already marked all-visible in the visibility
+	 * map.  It's also quite common with records generated during index
+	 * deletion (original execution of the deletion can reason that a recovery
+	 * conflict which is sufficient for the deletion operation must take place
+	 * before replay of the deletion record itself).
 	 */
 	if (!TransactionIdIsValid(snapshotConflictHorizon))
 		return;
