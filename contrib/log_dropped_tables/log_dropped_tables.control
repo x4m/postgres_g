@@ -1,0 +1,6 @@
+# log_dropped_tables extension
+comment = 'Log dropped tables with commit LSN'
+default_version = '1.0'
+module_pathname = '$libdir/log_dropped_tables'
+relocatable = true
+

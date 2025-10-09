@@ -3856,7 +3856,7 @@ CallXactCallbacks(XactEvent event)
 	{
 		/* allow callbacks to unregister themselves when called */
 		next = item->next;
-		item->callback(event, item->arg);
+		item->callback(event, XactLastCommitEnd, item->arg);
 	}
 }
 

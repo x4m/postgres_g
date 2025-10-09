@@ -1046,7 +1046,7 @@ pgfdw_report_internal(int elevel, PGresult *res, PGconn *conn,
  * COMMIT TRANSACTION may run deferred triggers.)
  */
 static void
-pgfdw_xact_callback(XactEvent event, void *arg)
+pgfdw_xact_callback(XactEvent event, XLogRecPtr lsn, void *arg)
 {
 	HASH_SEQ_STATUS scan;
 	ConnCacheEntry *entry;

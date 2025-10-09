@@ -8721,7 +8721,7 @@ plpgsql_destroy_econtext(PLpgSQL_execstate *estate)
  * it has to be cleaned up.  The same for the simple-expression resowner.
  */
 void
-plpgsql_xact_cb(XactEvent event, void *arg)
+plpgsql_xact_cb(XactEvent event, XLogRecPtr lsn, void *arg)
 {
 	/*
 	 * If we are doing a clean transaction shutdown, free the EState and tell
