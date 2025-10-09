@@ -9549,6 +9549,12 @@
 { oid => '6343', descr => 'extract version from RFC 9562 UUID',
   proname => 'uuid_extract_version', proleakproof => 't', prorettype => 'int2',
   proargtypes => 'uuid', prosrc => 'uuid_extract_version' },
+{ oid => '8083', descr => 'convert UUID to base32hex encoding',
+  proname => 'uuid_to_base32hex', prorettype => 'text',
+  proargtypes => 'uuid', prosrc => 'uuid_to_base32hex' },
+{ oid => '8084', descr => 'convert base32hex string to UUID',
+  proname => 'base32hex_to_uuid', prorettype => 'uuid',
+  proargtypes => 'text', prosrc => 'base32hex_to_uuid' },
 
 # pg_lsn
 { oid => '3229', descr => 'I/O',

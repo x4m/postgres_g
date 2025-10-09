@@ -20,6 +20,7 @@
 #include "lib/hyperloglog.h"
 #include "libpq/pqformat.h"
 #include "port/pg_bswap.h"
+#include "utils/builtins.h"
 #include "utils/fmgrprotos.h"
 #include "utils/guc.h"
 #include "utils/skipsupport.h"
@@ -776,4 +777,130 @@ uuid_extract_version(PG_FUNCTION_ARGS)
 	version = uuid->data[6] >> 4;
 
 	PG_RETURN_UINT16(version);
+}
+
+/*
+ * Convert UUID to base32hex encoding.
+ *
+ * Base32hex uses the alphabet 0-9A-V as defined in RFC 4648.
+ * A UUID is 16 bytes (128 bits), which requires 26 base32hex characters
+ * (26 * 5 bits = 130 bits, with 2 bits of padding).
+ */
+Datum
+uuid_to_base32hex(PG_FUNCTION_ARGS)
+{
+	pg_uuid_t  *uuid = PG_GETARG_UUID_P(0);
+	static const char base32hex_chars[] = "0123456789ABCDEFGHIJKLMNOPQRSTUV";
+	text	   *result;
+	char	   *buf;
+	int			i;
+	uint64		bits_buffer = 0;
+	int			bits_in_buffer = 0;
+	int			output_pos = 0;
+
+	/* 26 characters for 128 bits */
+	result = (text *) palloc(VARHDRSZ + 26);
+	SET_VARSIZE(result, VARHDRSZ + 26);
+	buf = VARDATA(result);
+
+	for (i = 0; i < UUID_LEN; i++)
+	{
+		/* Add 8 bits to the buffer */
+		bits_buffer = (bits_buffer << 8) | uuid->data[i];
+		bits_in_buffer += 8;
+
+		/* Extract 5-bit chunks while we have enough bits */
+		while (bits_in_buffer >= 5)
+		{
+			bits_in_buffer -= 5;
+			/* Extract top 5 bits */
+			buf[output_pos++] = base32hex_chars[(bits_buffer >> bits_in_buffer) & 0x1F];
+			/* Clear the extracted bits by masking */
+			bits_buffer &= ((1ULL << bits_in_buffer) - 1);
+		}
+	}
+
+	/* Handle remaining bits (128 % 5 = 3, so we have 3 bits left) */
+	if (bits_in_buffer > 0)
+	{
+		buf[output_pos++] = base32hex_chars[(bits_buffer << (5 - bits_in_buffer)) & 0x1F];
+	}
+
+	PG_RETURN_TEXT_P(result);
+}
+
+/*
+ * Convert base32hex string to UUID.
+ *
+ * Accepts a 26-character base32hex string (case-insensitive).
+ */
+Datum
+base32hex_to_uuid(PG_FUNCTION_ARGS)
+{
+	char	   *str = text_to_cstring(PG_GETARG_TEXT_PP(0));
+	pg_uuid_t  *uuid;
+	int			str_len = strlen(str);
+	int			i;
+	uint64		bits_buffer = 0;
+	int			bits_in_buffer = 0;
+	int			output_pos = 0;
+
+	uuid = (pg_uuid_t *) palloc(sizeof(*uuid));
+
+	/* Expected length is 26 characters */
+	if (str_len != 26)
+		ereport(ERROR,
+				(errcode(ERRCODE_INVALID_TEXT_REPRESENTATION),
+				 errmsg("invalid base32hex UUID string length: \"%s\"", str),
+				 errdetail("Expected 26 characters, got %d.", str_len)));
+
+	for (i = 0; i < str_len; i++)
+	{
+		unsigned char c = str[i];
+		int			val;
+
+		/* Decode base32hex character (0-9, A-V, case-insensitive) */
+		if (c >= '0' && c <= '9')
+			val = c - '0';
+		else if (c >= 'A' && c <= 'V')
+			val = c - 'A' + 10;
+		else if (c >= 'a' && c <= 'v')
+			val = c - 'a' + 10;
+		else
+			ereport(ERROR,
+					(errcode(ERRCODE_INVALID_TEXT_REPRESENTATION),
+					 errmsg("invalid base32hex character: '%c'", c)));
+
+		/* Add 5 bits to buffer */
+		bits_buffer = (bits_buffer << 5) | val;
+		bits_in_buffer += 5;
+
+		/* Extract 8-bit bytes when we have enough bits */
+		while (bits_in_buffer >= 8)
+		{
+			bits_in_buffer -= 8;
+			if (output_pos < UUID_LEN)
+			{
+				uuid->data[output_pos++] = (unsigned char) (bits_buffer >> bits_in_buffer);
+				/* Clear the extracted bits */
+				bits_buffer &= ((1ULL << bits_in_buffer) - 1);
+			}
+		}
+	}
+
+	/* Verify we got exactly 16 bytes */
+	if (output_pos != UUID_LEN)
+		ereport(ERROR,
+				(errcode(ERRCODE_INVALID_TEXT_REPRESENTATION),
+				 errmsg("invalid base32hex UUID string: \"%s\"", str),
+				 errdetail("Decoded to %d bytes instead of %d.", output_pos, UUID_LEN)));
+
+	/* Verify no extra bits remain (should be exactly 2 padding bits, all zeros) */
+	if (bits_in_buffer != 2 || (bits_buffer & ((1ULL << bits_in_buffer) - 1)) != 0)
+		ereport(ERROR,
+				(errcode(ERRCODE_INVALID_TEXT_REPRESENTATION),
+				 errmsg("invalid base32hex UUID string: \"%s\"", str),
+				 errdetail("Invalid padding bits.")));
+
+	PG_RETURN_UUID_P(uuid);
 }
