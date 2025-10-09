@@ -146,6 +146,40 @@ SELECT uuid_extract_timestamp('017F22E2-79B0-7CC3-98C4-DC0C0C07398F') = 'Tuesday
 SELECT uuid_extract_timestamp(gen_random_uuid());  -- null
 SELECT uuid_extract_timestamp('11111111-1111-1111-1111-111111111111');  -- null
 
+-- UUID encoding/decoding functions
+
+-- test uuid_encode with base32hex
+SELECT uuid_encode('00000000-0000-0000-0000-000000000000'::uuid, 'base32hex');
+SELECT uuid_encode('11111111-1111-1111-1111-111111111111'::uuid, 'base32hex');
+SELECT uuid_encode('ffffffff-ffff-ffff-ffff-ffffffffffff'::uuid, 'base32hex');
+SELECT uuid_encode('123e4567-e89b-12d3-a456-426614174000'::uuid, 'base32hex');
+
+-- test uuid_decode with base32hex
+SELECT uuid_decode('00000000000000000000000000', 'base32hex');
+SELECT uuid_decode('28V4APV8JC9D792M89J185Q000', 'base32hex');
+
+-- test round-trip conversions
+SELECT uuid_decode(uuid_encode('00000000-0000-0000-0000-000000000000'::uuid, 'base32hex'), 'base32hex');
+SELECT uuid_encode(uuid_decode('28V4APV8JC9D792M89J185Q000', 'base32hex'), 'base32hex');
+SELECT uuid_decode(uuid_encode('123e4567-e89b-12d3-a456-426614174000'::uuid, 'base32hex'), 'base32hex');
+
+-- test case insensitivity
+SELECT uuid_decode('28v4apv8jc9d792m89j185q000', 'base32hex');
+SELECT uuid_decode('28V4APV8JC9D792M89J185Q000', 'base32hex');
+
+-- test RFC 4648 padding (32 chars with 6 '=' signs)
+SELECT uuid_decode('28V4APV8JC9D792M89J185Q000======', 'base32hex');
+SELECT uuid_decode('00000000000000000000000000======', 'base32hex');
+
+-- test error cases for base32hex
+SELECT uuid_decode('short', 'base32hex');  -- too short
+SELECT uuid_decode('28V4APV8JC9D792M89J185Q000X', 'base32hex');  -- too long
+SELECT uuid_decode('28V4APV8JC9D792M89J185Q00W', 'base32hex');  -- invalid character (W)
+
+-- test invalid encoding
+SELECT uuid_encode('123e4567-e89b-12d3-a456-426614174000'::uuid, 'invalid');
+SELECT uuid_decode('00000000000000000000000000', 'invalid');
+
 
 -- clean up
 DROP TABLE guid1, guid2, guid3 CASCADE;

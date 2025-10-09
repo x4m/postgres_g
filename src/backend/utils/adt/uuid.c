@@ -20,6 +20,7 @@
 #include "lib/hyperloglog.h"
 #include "libpq/pqformat.h"
 #include "port/pg_bswap.h"
+#include "utils/builtins.h"
 #include "utils/fmgrprotos.h"
 #include "utils/guc.h"
 #include "utils/skipsupport.h"
@@ -776,4 +777,268 @@ uuid_extract_version(PG_FUNCTION_ARGS)
 	version = uuid->data[6] >> 4;
 
 	PG_RETURN_UINT16(version);
+}
+
+/*
+ * UUID encoding conversion API.
+ */
+struct uuid_encoding
+{
+	uint64		(*encode_len) (void);
+	uint64		(*decode_len) (void);
+	uint64		(*encode) (const pg_uuid_t *uuid, char *res);
+	uint64		(*decode) (const char *data, size_t dlen, pg_uuid_t *res);
+};
+
+static const struct uuid_encoding *uuid_find_encoding(const char *name);
+
+/*
+ * BASE32HEX encoding for UUID
+ *
+ * Base32hex encoding uses 32 characters (0-9, A-V) and represents 5 bits per
+ * character. For a 128-bit UUID (16 bytes), we need 26 characters
+ * (128 bits / 5 bits per char = 25.6, rounded up to 26).
+ * As defined in RFC 4648.
+ */
+static const char base32hex_chars[] = "0123456789ABCDEFGHIJKLMNOPQRSTUV";
+
+static uint64
+base32hex_encode_len(void)
+{
+	/* 128 bits / 5 bits per character = 25.6, rounded up to 26 */
+	return 26;
+}
+
+static uint64
+base32hex_decode_len(void)
+{
+	/* Always 16 bytes for UUID */
+	return UUID_LEN;
+}
+
+static uint64
+base32hex_encode(const pg_uuid_t *uuid, char *res)
+{
+	int			i;
+	uint64		bits_buffer = 0;
+	int			bits_in_buffer = 0;
+	int			output_pos = 0;
+
+	for (i = 0; i < UUID_LEN; i++)
+	{
+		/* Add 8 bits to the buffer */
+		bits_buffer = (bits_buffer << 8) | uuid->data[i];
+		bits_in_buffer += 8;
+
+		/* Extract 5-bit chunks while we have enough bits */
+		while (bits_in_buffer >= 5)
+		{
+			bits_in_buffer -= 5;
+			/* Extract top 5 bits */
+			res[output_pos++] = base32hex_chars[(bits_buffer >> bits_in_buffer) & 0x1F];
+			/* Clear the extracted bits by masking */
+			bits_buffer &= ((1ULL << bits_in_buffer) - 1);
+		}
+	}
+
+	/* Handle remaining bits (128 % 5 = 3, so we have 3 bits left) */
+	if (bits_in_buffer > 0)
+	{
+		res[output_pos++] = base32hex_chars[(bits_buffer << (5 - bits_in_buffer)) & 0x1F];
+	}
+
+	return output_pos;
+}
+
+static uint64
+base32hex_decode(const char *src, size_t srclen, pg_uuid_t *uuid)
+{
+	int			i;
+	uint64		bits_buffer = 0;
+	int			bits_in_buffer = 0;
+	int			output_pos = 0;
+	size_t		decode_len = srclen;
+
+	/*
+	 * Accept both unpadded (26 chars) and padded (32 chars) input.
+	 * RFC 4648 specifies padding to make length a multiple of 8.
+	 */
+	if (srclen == 32)
+	{
+		/* Verify padding: should be exactly 6 '=' characters at the end */
+		for (i = 26; i < 32; i++)
+		{
+			if (src[i] != '=')
+				ereport(ERROR,
+						(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+						 errmsg("invalid base32hex padding for UUID"),
+						 errdetail("Expected '=' padding characters at position %d.", i)));
+		}
+		decode_len = 26;	/* Only decode the first 26 characters */
+	}
+	else if (srclen != 26)
+	{
+		ereport(ERROR,
+				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+				 errmsg("invalid base32hex length for UUID"),
+				 errdetail("Expected 26 or 32 characters, got %zu.", srclen)));
+	}
+
+	for (i = 0; i < (int) decode_len; i++)
+	{
+		unsigned char c = src[i];
+		int			val;
+
+		/* Decode base32hex character (0-9, A-V, case-insensitive) */
+		if (c >= '0' && c <= '9')
+			val = c - '0';
+		else if (c >= 'A' && c <= 'V')
+			val = c - 'A' + 10;
+		else if (c >= 'a' && c <= 'v')
+			val = c - 'a' + 10;
+		else
+			ereport(ERROR,
+					(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+					 errmsg("invalid base32hex digit: \"%c\"", c)));
+
+		/* Add 5 bits to buffer */
+		bits_buffer = (bits_buffer << 5) | val;
+		bits_in_buffer += 5;
+
+		/* Extract 8-bit bytes when we have enough bits */
+		while (bits_in_buffer >= 8)
+		{
+			bits_in_buffer -= 8;
+			if (output_pos < UUID_LEN)
+			{
+				uuid->data[output_pos++] = (unsigned char) (bits_buffer >> bits_in_buffer);
+				/* Clear the extracted bits */
+				bits_buffer &= ((1ULL << bits_in_buffer) - 1);
+			}
+		}
+	}
+
+	/* Verify we got exactly 16 bytes */
+	if (output_pos != UUID_LEN)
+		ereport(ERROR,
+				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+				 errmsg("invalid base32hex data for UUID"),
+				 errdetail("Decoded to %d bytes instead of %d.", output_pos, UUID_LEN)));
+
+	/* Verify no extra bits remain (should be exactly 2 padding bits, all zeros) */
+	if (bits_in_buffer != 2 || (bits_buffer & ((1ULL << bits_in_buffer) - 1)) != 0)
+		ereport(ERROR,
+				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+				 errmsg("invalid base32hex padding for UUID")));
+
+	return UUID_LEN;
+}
+
+/*
+ * Encoding lookup table
+ */
+static const struct
+{
+	const char *name;
+	struct uuid_encoding enc;
+}			uuid_enclist[] =
+{
+	{
+		"base32hex",
+		{
+			base32hex_encode_len, base32hex_decode_len, base32hex_encode, base32hex_decode
+		}
+	},
+	{
+		NULL,
+		{
+			NULL, NULL, NULL, NULL
+		}
+	}
+};
+
+static const struct uuid_encoding *
+uuid_find_encoding(const char *name)
+{
+	int			i;
+
+	for (i = 0; uuid_enclist[i].name; i++)
+		if (pg_strcasecmp(uuid_enclist[i].name, name) == 0)
+			return &uuid_enclist[i].enc;
+
+	return NULL;
+}
+
+/*
+ * uuid_encode - encode UUID to text using specified format
+ */
+Datum
+uuid_encode(PG_FUNCTION_ARGS)
+{
+	pg_uuid_t  *uuid = PG_GETARG_UUID_P(0);
+	Datum		name = PG_GETARG_DATUM(1);
+	text	   *result;
+	char	   *namebuf;
+	uint64		resultlen;
+	uint64		res;
+	const struct uuid_encoding *enc;
+
+	namebuf = TextDatumGetCString(name);
+
+	enc = uuid_find_encoding(namebuf);
+	if (enc == NULL)
+		ereport(ERROR,
+				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+				 errmsg("unrecognized encoding: \"%s\"", namebuf)));
+
+	resultlen = enc->encode_len();
+
+	result = (text *) palloc(VARHDRSZ + resultlen);
+
+	res = enc->encode(uuid, VARDATA(result));
+
+	/* Make this FATAL 'cause we've trodden on memory ... */
+	if (res > resultlen)
+		elog(FATAL, "overflow - encode estimate too small");
+
+	SET_VARSIZE(result, VARHDRSZ + res);
+
+	PG_RETURN_TEXT_P(result);
+}
+
+/*
+ * uuid_decode - decode text to UUID using specified format
+ */
+Datum
+uuid_decode(PG_FUNCTION_ARGS)
+{
+	text	   *data = PG_GETARG_TEXT_PP(0);
+	Datum		name = PG_GETARG_DATUM(1);
+	pg_uuid_t  *result;
+	char	   *namebuf;
+	char	   *dataptr;
+	size_t		datalen;
+	uint64		res;
+	const struct uuid_encoding *enc;
+
+	namebuf = TextDatumGetCString(name);
+
+	enc = uuid_find_encoding(namebuf);
+	if (enc == NULL)
+		ereport(ERROR,
+				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+				 errmsg("unrecognized encoding: \"%s\"", namebuf)));
+
+	dataptr = VARDATA_ANY(data);
+	datalen = VARSIZE_ANY_EXHDR(data);
+
+	result = (pg_uuid_t *) palloc(sizeof(pg_uuid_t));
+
+	res = enc->decode(dataptr, datalen, result);
+
+	/* Make this FATAL 'cause we've trodden on memory ... */
+	if (res > UUID_LEN)
+		elog(FATAL, "overflow - decode estimate too small");
+
+	PG_RETURN_UUID_P(result);
 }

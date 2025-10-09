@@ -26,6 +26,14 @@
    <primary>uuid_extract_version</primary>
   </indexterm>
 
+  <indexterm>
+   <primary>uuid_to_base32hex</primary>
+  </indexterm>
+
+  <indexterm>
+   <primary>base32hex_to_uuid</primary>
+  </indexterm>
+
   <para>
    <xref linkend="func_uuid_gen_table"/> shows the <productname>PostgreSQL</productname>
    functions that can be used to generate UUIDs.
@@ -161,6 +169,73 @@
        <para>
         <literal>uuid_extract_version('019535d9-3df7-79fb-b466-&zwsp;fa907fa17f9e'::uuid)</literal>
         <returnvalue>7</returnvalue>
+       </para></entry>
+     </row>
+    </tbody>
+   </tgroup>
+  </table>
+
+  <para>
+   <xref linkend="func_uuid_conversion_table"/> shows the <productname>PostgreSQL</productname>
+   functions that can be used to convert UUIDs to and from alternative text representations.
+  </para>
+
+  <table id="func_uuid_conversion_table">
+   <title><acronym>UUID</acronym> Conversion Functions</title>
+   <tgroup cols="1">
+    <thead>
+     <row>
+      <entry role="func_table_entry"><para role="func_signature">
+        Function
+       </para>
+       <para>
+        Description
+       </para>
+       <para>
+        Example(s)
+       </para></entry>
+     </row>
+    </thead>
+
+    <tbody>
+     <row>
+      <entry role="func_table_entry"><para role="func_signature">
+        <function>uuid_encode</function>
+        ( <parameter>value</parameter> <type>uuid</type>,
+        <parameter>format</parameter> <type>text</type> )
+        <returnvalue>text</returnvalue>
+       </para>
+       <para>
+        Converts a UUID to an encoded text string using the specified format.
+        Currently supported formats:
+        <literal>base32hex</literal> - Encodes the UUID as a 26-character
+        base32hex string (0-9, A-V) without padding, as defined in
+        <ulink url="https://datatracker.ietf.org/doc/html/rfc4648">RFC 4648</ulink>.
+        This produces a more compact representation than the standard UUID format
+        and is case-insensitive, making it suitable for URLs and identifiers.
+       </para>
+       <para>
+        <literal>uuid_encode('123e4567-e89b-12d3-a456-&zwsp;426614174000'::uuid, 'base32hex')</literal>
+        <returnvalue>28V4APV8JC9D792M89J185Q000</returnvalue>
+       </para></entry>
+     </row>
+     <row>
+      <entry role="func_table_entry"><para role="func_signature">
+        <function>uuid_decode</function>
+        ( <parameter>string</parameter> <type>text</type>,
+        <parameter>format</parameter> <type>text</type> )
+        <returnvalue>uuid</returnvalue>
+       </para>
+       <para>
+        Converts an encoded text string to a UUID using the specified format.
+        For <literal>base32hex</literal> format, the input can be either
+        26 characters (unpadded) or 32 characters (padded with <literal>=</literal>),
+        and must contain only valid base32hex characters
+        (0-9, A-V, case-insensitive).
+       </para>
+       <para>
+        <literal>uuid_decode('28V4APV8JC9D792M89J185Q000', 'base32hex')</literal>
+        <returnvalue>123e4567-e89b-12d3-a456-426614174000</returnvalue>
        </para></entry>
      </row>
     </tbody>

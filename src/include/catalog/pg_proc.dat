@@ -9549,6 +9549,12 @@
 { oid => '6343', descr => 'extract version from RFC 9562 UUID',
   proname => 'uuid_extract_version', proleakproof => 't', prorettype => 'int2',
   proargtypes => 'uuid', prosrc => 'uuid_extract_version' },
+{ oid => '8083', descr => 'encode UUID to text using specified format',
+  proname => 'uuid_encode', prorettype => 'text',
+  proargtypes => 'uuid text', prosrc => 'uuid_encode' },
+{ oid => '8084', descr => 'decode text to UUID using specified format',
+  proname => 'uuid_decode', prorettype => 'uuid',
+  proargtypes => 'text text', prosrc => 'uuid_decode' },
 
 # pg_lsn
 { oid => '3229', descr => 'I/O',
