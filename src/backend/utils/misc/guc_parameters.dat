@@ -834,6 +834,15 @@
   options => 'dynamic_shared_memory_options',
 },
 
+{ name => 'eager_clean_max_batch_size', type => 'int', context => 'PGC_USERSET', group => 'RESOURCES_IO',
+  short_desc => 'Maximum number of blocks to flush for eager cleaning.',
+  flags => 'GUC_UNIT_BLOCKS',
+  variable => 'eager_clean_max_batch_size',
+  boot_val => 'DEFAULT_EAGER_CLEAN_MAX_BATCH_SIZE',
+  min => '1',
+  max => 'MAX_IO_COMBINE_LIMIT',
+},
+
 { name => 'effective_cache_size', type => 'int', context => 'PGC_USERSET', group => 'QUERY_TUNING_COST',
   short_desc => 'Sets the planner\'s assumption about the total size of the data caches.',
   long_desc => 'That is, the total size of the caches (kernel cache and shared buffers) used for PostgreSQL data files. This is measured in disk pages, which are normally 8 kB each.',
