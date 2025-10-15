@@ -68,7 +68,7 @@ provider postgresql {
 	probe buffer__checkpoint__sync__start();
 	probe buffer__checkpoint__done();
 	probe buffer__sync__start(int, int);
-	probe buffer__sync__written(int);
+	probe buffer__batch__sync__written(BlockNumber);
 	probe buffer__sync__done(int, int, int);
 
 	probe deadlock__found();
