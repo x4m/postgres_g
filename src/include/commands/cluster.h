@@ -29,6 +29,8 @@
 typedef struct ClusterParams
 {
 	bits32		options;		/* bitmask of CLUOPT_* */
+	int			nworkers;		/* number of parallel workers for CLUSTER/VACUUM FULL,
+								 * 0 means choose based on table size, -1 disables */
 } ClusterParams;
 
 extern void cluster(ParseState *pstate, ClusterStmt *stmt, bool isTopLevel);

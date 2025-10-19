@@ -326,10 +326,7 @@ ExecVacuum(ParseState *pstate, VacuumStmt *vacstmt, bool isTopLevel)
 	Assert((params.options & VACOPT_VACUUM) ||
 		   !(params.options & (VACOPT_FULL | VACOPT_FREEZE)));
 
-	if ((params.options & VACOPT_FULL) && params.nworkers > 0)
-		ereport(ERROR,
-				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-				 errmsg("VACUUM FULL cannot be performed in parallel")));
+	/* VACUUM FULL now supports parallel operation for heap scanning */
 
 	/*
 	 * BUFFER_USAGE_LIMIT does nothing for VACUUM (FULL) so just raise an
@@ -2285,6 +2282,9 @@ vacuum_rel(Oid relid, RangeVar *relation, VacuumParams params,
 
 			if ((params.options & VACOPT_VERBOSE) != 0)
 				cluster_params.options |= CLUOPT_VERBOSE;
+
+			/* Pass parallel workers parameter to VACUUM FULL */
+			cluster_params.nworkers = params.nworkers;
 
 			/* VACUUM FULL is now a variant of CLUSTER; see cluster.c */
 			cluster_rel(rel, InvalidOid, &cluster_params);

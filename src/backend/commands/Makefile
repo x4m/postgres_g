@@ -19,6 +19,7 @@ OBJS = \
 	analyze.o \
 	async.o \
 	cluster.o \
+	clusterparallel.o \
 	collationcmds.o \
 	comment.o \
 	constraint.o \

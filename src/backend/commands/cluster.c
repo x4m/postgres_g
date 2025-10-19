@@ -35,6 +35,7 @@
 #include "catalog/pg_inherits.h"
 #include "catalog/toasting.h"
 #include "commands/cluster.h"
+#include "commands/clusterparallel.h"
 #include "commands/defrem.h"
 #include "commands/progress.h"
 #include "commands/tablecmds.h"
@@ -69,9 +70,9 @@ typedef struct
 
 
 static void cluster_multiple_rels(List *rtcs, ClusterParams *params);
-static void rebuild_relation(Relation OldHeap, Relation index, bool verbose);
+static void rebuild_relation(Relation OldHeap, Relation index, ClusterParams *params);
 static void copy_table_data(Relation NewHeap, Relation OldHeap, Relation OldIndex,
-							bool verbose, bool *pSwapToastByContent,
+							ClusterParams *params, bool *pSwapToastByContent,
 							TransactionId *pFreezeXid, MultiXactId *pCutoffMulti);
 static List *get_tables_to_cluster(MemoryContext cluster_context);
 static List *get_tables_to_cluster_partitioned(MemoryContext cluster_context,
@@ -113,6 +114,9 @@ cluster(ParseState *pstate, ClusterStmt *stmt, bool isTopLevel)
 	Oid			indexOid = InvalidOid;
 	MemoryContext cluster_context;
 	List	   *rtcs;
+
+	/* Initialize nworkers: 0 means choose based on table size, -1 disables */
+	params.nworkers = 0;
 
 	/* Parse option list */
 	foreach(lc, stmt->params)
@@ -314,7 +318,6 @@ cluster_rel(Relation OldHeap, Oid indexOid, ClusterParams *params)
 	Oid			save_userid;
 	int			save_sec_context;
 	int			save_nestlevel;
-	bool		verbose = ((params->options & CLUOPT_VERBOSE) != 0);
 	bool		recheck = ((params->options & CLUOPT_RECHECK) != 0);
 	Relation	index;
 
@@ -469,7 +472,7 @@ cluster_rel(Relation OldHeap, Oid indexOid, ClusterParams *params)
 	TransferPredicateLocksToHeapRelation(OldHeap);
 
 	/* rebuild_relation does all the dirty work */
-	rebuild_relation(OldHeap, index, verbose);
+	rebuild_relation(OldHeap, index, params);
 	/* rebuild_relation closes OldHeap, and index if valid */
 
 out:
@@ -620,13 +623,14 @@ mark_index_clustered(Relation rel, Oid indexOid, bool is_internal)
  *
  * OldHeap: table to rebuild.
  * index: index to cluster by, or NULL to rewrite in physical order.
+ * params: clustering parameters (includes parallelism settings).
  *
  * On entry, heap and index (if one is given) must be open, and
  * AccessExclusiveLock held on them.
  * On exit, they are closed, but locks on them are not released.
  */
 static void
-rebuild_relation(Relation OldHeap, Relation index, bool verbose)
+rebuild_relation(Relation OldHeap, Relation index, ClusterParams *params)
 {
 	Oid			tableOid = RelationGetRelid(OldHeap);
 	Oid			accessMethod = OldHeap->rd_rel->relam;
@@ -664,7 +668,7 @@ rebuild_relation(Relation OldHeap, Relation index, bool verbose)
 	NewHeap = table_open(OIDNewHeap, NoLock);
 
 	/* Copy the heap data into the new table in the desired order */
-	copy_table_data(NewHeap, OldHeap, index, verbose,
+	copy_table_data(NewHeap, OldHeap, index, params,
 					&swap_toast_by_content, &frozenXid, &cutoffMulti);
 
 
@@ -826,27 +830,31 @@ make_new_heap(Oid OIDOldHeap, Oid NewTableSpace, Oid NewAccessMethod,
  * *pSwapToastByContent is set true if toast tables must be swapped by content.
  * *pFreezeXid receives the TransactionId used as freeze cutoff point.
  * *pCutoffMulti receives the MultiXactId used as a cutoff point.
+ *
+ * params contains clustering options including parallel workers setting.
  */
 static void
-copy_table_data(Relation NewHeap, Relation OldHeap, Relation OldIndex, bool verbose,
-				bool *pSwapToastByContent, TransactionId *pFreezeXid,
-				MultiXactId *pCutoffMulti)
+copy_table_data(Relation NewHeap, Relation OldHeap, Relation OldIndex,
+				ClusterParams *params, bool *pSwapToastByContent,
+				TransactionId *pFreezeXid, MultiXactId *pCutoffMulti)
 {
 	Relation	relRelation;
 	HeapTuple	reltup;
 	Form_pg_class relform;
 	TupleDesc	oldTupDesc PG_USED_FOR_ASSERTS_ONLY;
 	TupleDesc	newTupDesc PG_USED_FOR_ASSERTS_ONLY;
-	VacuumParams params;
+	VacuumParams vac_params;
 	struct VacuumCutoffs cutoffs;
 	bool		use_sort;
 	double		num_tuples = 0,
 				tups_vacuumed = 0,
 				tups_recently_dead = 0;
 	BlockNumber num_pages;
+	bool		verbose = ((params->options & CLUOPT_VERBOSE) != 0);
 	int			elevel = verbose ? INFO : DEBUG2;
 	PGRUsage	ru0;
 	char	   *nspname;
+	ParallelClusterState *pcs = NULL;
 
 	pg_rusage_init(&ru0);
 
@@ -916,8 +924,8 @@ copy_table_data(Relation NewHeap, Relation OldHeap, Relation OldIndex, bool verb
 	 * Since we're going to rewrite the whole table anyway, there's no reason
 	 * not to be aggressive about this.
 	 */
-	memset(&params, 0, sizeof(VacuumParams));
-	vacuum_get_cutoffs(OldHeap, params, &cutoffs);
+	memset(&vac_params, 0, sizeof(VacuumParams));
+	vacuum_get_cutoffs(OldHeap, vac_params, &cutoffs);
 
 	/*
 	 * FreezeXid will become the table's new relfrozenxid, and that mustn't go
@@ -974,16 +982,53 @@ copy_table_data(Relation NewHeap, Relation OldHeap, Relation OldIndex, bool verb
 						RelationGetRelationName(OldHeap))));
 
 	/*
+	 * Consider using parallel workers for sequential scan.
+	 * Only use parallel mode when:
+	 * 1. We're doing a sequential scan (OldIndex == NULL)
+	 * 2. Not using sort (use_sort == false) - VACUUM FULL case
+	 * 3. Parallel workers are enabled (nworkers >= 0)
+	 */
+	if (OldIndex == NULL && !use_sort && params->nworkers >= 0)
+	{
+		pcs = parallel_cluster_init(OldHeap, NewHeap, params->nworkers,
+									cutoffs.OldestXmin, cutoffs.FreezeLimit,
+									cutoffs.MultiXactCutoff, elevel);
+	}
+
+	/*
 	 * Hand off the actual copying to AM specific function, the generic code
 	 * cannot know how to deal with visibility across AMs. Note that this
 	 * routine is allowed to set FreezeXid / MultiXactCutoff to different
 	 * values (e.g. because the AM doesn't use freezing).
+	 *
+	 * TODO: For now, we still use the sequential path even when parallel
+	 * context is initialized. Full parallel implementation would require
+	 * modifying the heap AM to support parallel scanning during cluster.
 	 */
 	table_relation_copy_for_cluster(OldHeap, NewHeap, OldIndex, use_sort,
 									cutoffs.OldestXmin, &cutoffs.FreezeLimit,
 									&cutoffs.MultiXactCutoff,
 									&num_tuples, &tups_vacuumed,
 									&tups_recently_dead);
+
+	/*
+	 * If we used parallel workers, clean up and gather statistics.
+	 */
+	if (pcs != NULL)
+	{
+		double		parallel_num_tuples = 0;
+		double		parallel_tups_vacuumed = 0;
+		double		parallel_tups_recently_dead = 0;
+
+		parallel_cluster_end(pcs, &parallel_num_tuples,
+							 &parallel_tups_vacuumed,
+							 &parallel_tups_recently_dead);
+
+		/* Add parallel worker stats to the totals */
+		num_tuples += parallel_num_tuples;
+		tups_vacuumed += parallel_tups_vacuumed;
+		tups_recently_dead += parallel_tups_recently_dead;
+	}
 
 	/* return selected values to caller, get set as relfrozenxid/minmxid */
 	*pFreezeXid = cutoffs.FreezeLimit;

@@ -7,6 +7,7 @@ backend_sources += files(
   'analyze.c',
   'async.c',
   'cluster.c',
+  'clusterparallel.c',
   'collationcmds.c',
   'comment.c',
   'constraint.c',
