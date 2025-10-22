@@ -26,3 +26,5 @@ extern void amcheck_lock_relation_and_check(Oid indrelid,
 											Oid am_id,
 											IndexDoCheckCallback check,
 											LOCKMODE lockmode, void *state);
+
+extern IndexTuple amcheck_normalize_tuple(Relation irel, IndexTuple itup);
