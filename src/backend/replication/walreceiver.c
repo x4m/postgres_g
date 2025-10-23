@@ -49,6 +49,7 @@
  */
 #include "postgres.h"
 
+#include <sys/stat.h>
 #include <unistd.h>
 
 #include "access/htup_details.h"
@@ -67,6 +68,7 @@
 #include "postmaster/interrupt.h"
 #include "replication/walreceiver.h"
 #include "replication/walsender.h"
+#include "storage/fd.h"
 #include "storage/ipc.h"
 #include "storage/proc.h"
 #include "storage/procarray.h"
@@ -121,7 +123,8 @@ typedef enum WalRcvWakeupReason
 	WALRCV_WAKEUP_PING,
 	WALRCV_WAKEUP_REPLY,
 	WALRCV_WAKEUP_HSFEEDBACK,
-#define NUM_WALRCV_WAKEUPS (WALRCV_WAKEUP_HSFEEDBACK + 1)
+	WALRCV_WAKEUP_ARCHIVE_QUERY,
+#define NUM_WALRCV_WAKEUPS (WALRCV_WAKEUP_ARCHIVE_QUERY + 1)
 } WalRcvWakeupReason;
 
 /*
@@ -143,6 +146,7 @@ static void XLogWalRcvFlush(bool dying, TimeLineID tli);
 static void XLogWalRcvClose(XLogRecPtr recptr, TimeLineID tli);
 static void XLogWalRcvSendReply(bool force, bool requestReply);
 static void XLogWalRcvSendHSFeedback(bool immed);
+static void XLogWalRcvSendArchiveQuery(bool immed);
 static void ProcessWalSndrMessage(XLogRecPtr walEnd, TimestampTz sendTime);
 static void WalRcvComputeNextWakeup(WalRcvWakeupReason reason, TimestampTz now);
 
@@ -406,6 +410,7 @@ WalReceiverMain(const void *startup_data, size_t startup_data_len)
 			/* Send initial reply/feedback messages. */
 			XLogWalRcvSendReply(true, false);
 			XLogWalRcvSendHSFeedback(true);
+			XLogWalRcvSendArchiveQuery(true);
 
 			/* Loop until end-of-streaming or error */
 			for (;;)
@@ -439,6 +444,7 @@ WalReceiverMain(const void *startup_data, size_t startup_data_len)
 					for (int i = 0; i < NUM_WALRCV_WAKEUPS; ++i)
 						WalRcvComputeNextWakeup(i, now);
 					XLogWalRcvSendHSFeedback(true);
+					XLogWalRcvSendArchiveQuery(true);
 				}
 
 				/* See if we can read data immediately */
@@ -584,6 +590,7 @@ WalReceiverMain(const void *startup_data, size_t startup_data_len)
 
 					XLogWalRcvSendReply(requestReply, requestReply);
 					XLogWalRcvSendHSFeedback(false);
+					XLogWalRcvSendArchiveQuery(false);
 				}
 			}
 
@@ -875,6 +882,37 @@ XLogWalRcvProcessMsg(unsigned char type, char *buf, Size len, TimeLineID tli)
 					XLogWalRcvSendReply(true, false);
 				break;
 			}
+		case PqReplMsg_ArchiveStatusResponse:
+			{
+				StringInfoData incoming_message;
+				int			num_segments;
+				char		xlogfname[MAXFNAMELEN];
+
+				/* initialize a StringInfo with the given buffer */
+				initReadOnlyStringInfo(&incoming_message, buf, len);
+
+				/* read the count */
+				num_segments = pq_getmsgint(&incoming_message, 4);
+
+				elog(DEBUG2, "received archive status response for %d segments",
+					 num_segments);
+
+				/* Mark each segment as .done */
+				for (int i = 0; i < num_segments; i++)
+				{
+					XLogSegNo	segno;
+					TimeLineID	seg_tli;
+
+					seg_tli = pq_getmsgint(&incoming_message, 4);
+					segno = pq_getmsgint64(&incoming_message);
+
+					/* Construct filename and mark as archived */
+					XLogFileName(xlogfname, seg_tli, segno, wal_segment_size);
+					XLogArchiveForceDone(xlogfname);
+					elog(DEBUG2, "marked WAL segment %s as archived", xlogfname);
+				}
+				break;
+			}
 		default:
 			ereport(ERROR,
 					(errcode(ERRCODE_PROTOCOL_VIOLATION),
@@ -1065,12 +1103,14 @@ XLogWalRcvClose(XLogRecPtr recptr, TimeLineID tli)
 
 	/*
 	 * Create .done file forcibly to prevent the streamed segment from being
-	 * archived later.
+	 * archived later, except in follow_primary mode where we create .ready
+	 * files so the standby can query the primary about archive status.
 	 */
-	if (XLogArchiveMode != ARCHIVE_MODE_ALWAYS)
-		XLogArchiveForceDone(xlogfname);
-	else
+	if (XLogArchiveMode == ARCHIVE_MODE_ALWAYS ||
+		XLogArchiveMode == ARCHIVE_MODE_FOLLOW_PRIMARY)
 		XLogArchiveNotify(xlogfname);
+	else
+		XLogArchiveForceDone(xlogfname);
 
 	recvFile = -1;
 }
@@ -1248,6 +1288,93 @@ XLogWalRcvSendHSFeedback(bool immed)
 }
 
 /*
+ * Send archive status query to primary.
+ *
+ * Scans archive_status directory for .ready files and sends their segment
+ * numbers to the primary, which will respond with which segments can be
+ * marked as .done.
+ */
+static void
+XLogWalRcvSendArchiveQuery(bool immed)
+{
+	TimestampTz now;
+	DIR		   *dir;
+	struct dirent *de;
+	char		archiveStatusPath[MAXPGPATH];
+	XLogSegNo	ready_segments[64];	/* Limit to avoid oversized messages */
+	TimeLineID	ready_timelines[64];
+	int			num_segments = 0;
+
+	/* Only send queries when in follow_primary mode and in recovery */
+	if (XLogArchiveMode != ARCHIVE_MODE_FOLLOW_PRIMARY || !RecoveryInProgress())
+		return;
+
+	/* Get current timestamp. */
+	now = GetCurrentTimestamp();
+
+	/* Send query at most once per wal_receiver_status_interval. */
+	if (!immed && now < wakeup[WALRCV_WAKEUP_ARCHIVE_QUERY])
+		return;
+
+	/* Make sure we wake up when it's time to send query again. */
+	WalRcvComputeNextWakeup(WALRCV_WAKEUP_ARCHIVE_QUERY, now);
+
+	/* Scan archive_status directory for .ready files */
+	snprintf(archiveStatusPath, MAXPGPATH, XLOGDIR "/archive_status");
+	dir = AllocateDir(archiveStatusPath);
+	if (dir == NULL)
+	{
+		ereport(LOG,
+				(errcode_for_file_access(),
+				 errmsg("could not open archive status directory \"%s\": %m",
+						archiveStatusPath)));
+		return;
+	}
+
+	while (num_segments < 64 && (de = ReadDir(dir, archiveStatusPath)) != NULL)
+	{
+		char	   *extension;
+		XLogSegNo	segno;
+		TimeLineID	tli;
+		unsigned int log,
+					seg;
+
+		/* Skip files without .ready extension */
+		extension = strstr(de->d_name, ".ready");
+		if (extension == NULL || strcmp(extension, ".ready") != 0)
+			continue;
+
+		/* Parse WAL filename to get timeline and segment number */
+		if (sscanf(de->d_name, "%08X%08X%08X", &tli, &log, &seg) == 3)
+		{
+			segno = (uint64) log * XLogSegmentsPerXLogId(wal_segment_size) + seg;
+			ready_timelines[num_segments] = tli;
+			ready_segments[num_segments] = segno;
+			num_segments++;
+		}
+	}
+
+	FreeDir(dir);
+
+	/* If no .ready files found, nothing to query */
+	if (num_segments == 0)
+		return;
+
+	elog(DEBUG2, "sending archive status query for %d segments", num_segments);
+
+	/* Construct the message and send it. */
+	resetStringInfo(&reply_message);
+	pq_sendbyte(&reply_message, PqReplMsg_ArchiveStatusQuery);
+	pq_sendint32(&reply_message, num_segments);
+	for (int i = 0; i < num_segments; i++)
+	{
+		pq_sendint32(&reply_message, ready_timelines[i]);
+		pq_sendint64(&reply_message, ready_segments[i]);
+	}
+	walrcv_send(wrconn, reply_message.data, reply_message.len);
+}
+
+/*
  * Update shared memory status upon receiving a message from primary.
  *
  * 'walEnd' and 'sendTime' are the end-of-WAL and timestamp of the latest
@@ -1330,6 +1457,13 @@ WalRcvComputeNextWakeup(WalRcvWakeupReason reason, TimestampTz now)
 			break;
 		case WALRCV_WAKEUP_REPLY:
 			if (wal_receiver_status_interval <= 0)
+				wakeup[reason] = TIMESTAMP_INFINITY;
+			else
+				wakeup[reason] = TimestampTzPlusSeconds(now, wal_receiver_status_interval);
+			break;
+		case WALRCV_WAKEUP_ARCHIVE_QUERY:
+			if (XLogArchiveMode != ARCHIVE_MODE_FOLLOW_PRIMARY ||
+				wal_receiver_status_interval <= 0)
 				wakeup[reason] = TIMESTAMP_INFINITY;
 			else
 				wakeup[reason] = TimestampTzPlusSeconds(now, wal_receiver_status_interval);

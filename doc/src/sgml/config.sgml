@@ -3783,13 +3783,29 @@ include_dir 'conf.d'
         are sent to archive storage by setting
         <xref linkend="guc-archive-command"/> or
         <xref linkend="guc-archive-library"/>. In addition to <literal>off</literal>,
-        to disable, there are two modes: <literal>on</literal>, and
-        <literal>always</literal>. During normal operation, there is no
-        difference between the two modes, but when set to <literal>always</literal>
+        to disable, there are three modes: <literal>on</literal>,
+        <literal>always</literal>, and <literal>follow_primary</literal>.
+        During normal operation, there is no difference between <literal>on</literal>
+        and <literal>always</literal> modes, but when set to <literal>always</literal>
         the WAL archiver is enabled also during archive recovery or standby
         mode. In <literal>always</literal> mode, all files restored from the archive
         or streamed with streaming replication will be archived (again). See
         <xref linkend="continuous-archiving-in-standby"/> for details.
+       </para>
+       <para>
+        The <literal>follow_primary</literal> mode is designed for standby servers
+        in high availability configurations. In this mode, a standby server does
+        not archive WAL segments itself during recovery. Instead, it queries the
+        primary server to determine which segments have already been archived by
+        the primary. The standby retains WAL segments until the primary confirms
+        they are archived, then marks them as done locally. This ensures that WAL
+        history is not lost if the standby is promoted to primary before the
+        primary has archived all segments. After promotion, the standby
+        automatically begins archiving any remaining WAL segments normally.
+        This mode has no effect on a primary server, which archives WAL segments
+        as if <varname>archive_mode</varname> were set to <literal>on</literal>.
+        The <literal>follow_primary</literal> mode works correctly with cascading
+        replication, where each standby queries its immediate upstream server.
        </para>
        <para>
         <varname>archive_mode</varname> is a separate setting from

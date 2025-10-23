@@ -382,6 +382,15 @@ pgarch_ArchiverCopyLoop(void)
 {
 	char		xlog[MAX_XFN_CHARS + 1];
 
+	/*
+	 * In follow_primary mode during recovery, the archiver doesn't actually
+	 * archive files. The walreceiver queries the primary about archive status
+	 * and marks files as .done when the primary confirms they're archived.
+	 * After promotion, the archiver starts working normally.
+	 */
+	if (XLogArchiveMode == ARCHIVE_MODE_FOLLOW_PRIMARY && RecoveryInProgress())
+		return;
+
 	/* force directory scan in the first call to pgarch_readyXlog() */
 	arch_files->arch_files_size = 0;
 

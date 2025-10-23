@@ -65,6 +65,7 @@ typedef enum ArchiveMode
 	ARCHIVE_MODE_OFF = 0,		/* disabled */
 	ARCHIVE_MODE_ON,			/* enabled while server is running normally */
 	ARCHIVE_MODE_ALWAYS,		/* enabled always (even during recovery) */
+	ARCHIVE_MODE_FOLLOW_PRIMARY,	/* enabled on standby, follow primary's archive status */
 } ArchiveMode;
 extern PGDLLIMPORT int XLogArchiveMode;
 

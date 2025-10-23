@@ -1415,6 +1415,22 @@ synchronous_standby_names = 'ANY 2 (s1, s2, s3)'
      When a server is not in recovery mode, there is no difference between
      <literal>on</literal> and <literal>always</literal> modes.
    </para>
+
+   <para>
+     The <literal>follow_primary</literal> mode addresses the gap in WAL
+     archiving for streaming replication configurations. In this mode, the
+     standby does not archive WAL segments during recovery, but it retains
+     them until the primary server confirms they have been archived. The
+     standby periodically queries the primary about the archival status of
+     its received WAL segments. This prevents WAL history loss if the standby
+     is promoted before the primary has archived all segments, which is a
+     common risk in high availability setups with streaming replication.
+     After promotion, the standby automatically begins archiving any segments
+     that were not yet archived by the primary, ensuring continuity of the
+     WAL archive. This mode is particularly useful in synchronous replication
+     configurations where a standby might be promoted while the primary still
+     has unarchived WAL segments.
+   </para>
   </sect2>
   </sect1>
 

@@ -193,6 +193,7 @@ const struct config_enum_entry archive_mode_options[] = {
 	{"always", ARCHIVE_MODE_ALWAYS, false},
 	{"on", ARCHIVE_MODE_ON, false},
 	{"off", ARCHIVE_MODE_OFF, false},
+	{"follow_primary", ARCHIVE_MODE_FOLLOW_PRIMARY, false},
 	{"true", ARCHIVE_MODE_ON, true},
 	{"false", ARCHIVE_MODE_OFF, true},
 	{"yes", ARCHIVE_MODE_ON, true},
