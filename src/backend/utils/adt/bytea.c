@@ -26,6 +26,7 @@
 #include "utils/fmgrprotos.h"
 #include "utils/memutils.h"
 #include "utils/sortsupport.h"
+#include "utils/uuid.h"
 #include "utils/varlena.h"
 #include "varatt.h"
 
@@ -1111,4 +1112,29 @@ Datum
 int8_bytea(PG_FUNCTION_ARGS)
 {
 	return int8send(fcinfo);
+}
+
+/* Cast bytea -> uuid */
+Datum
+bytea_uuid(PG_FUNCTION_ARGS)
+{
+	bytea	   *v = PG_GETARG_BYTEA_PP(0);
+	int			len = VARSIZE_ANY_EXHDR(v);
+	pg_uuid_t  *uuid;
+
+	if (len != UUID_LEN)
+		ereport(ERROR,
+				errcode(ERRCODE_INVALID_BINARY_REPRESENTATION),
+				errmsg("invalid uuid length"));
+
+	uuid = (pg_uuid_t *) palloc(UUID_LEN);
+	memcpy(uuid->data, VARDATA_ANY(v), UUID_LEN);
+	PG_RETURN_POINTER(uuid);
+}
+
+/* Cast uuid -> bytea; can just use uuid_send() */
+Datum
+uuid_bytea(PG_FUNCTION_ARGS)
+{
+	return uuid_send(fcinfo);
 }

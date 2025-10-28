@@ -146,6 +146,10 @@ SELECT uuid_extract_timestamp('017F22E2-79B0-7CC3-98C4-DC0C0C07398F') = 'Tuesday
 SELECT uuid_extract_timestamp(gen_random_uuid());  -- null
 SELECT uuid_extract_timestamp('11111111-1111-1111-1111-111111111111');  -- null
 
+-- casts
+SELECT '5b35380a-7143-4912-9b55-f322699c6770'::uuid::bytea;
+SELECT '\x019a2f859ced7225b99d9c55044a2563'::bytea::uuid;
+SELECT '\x1234567890abcdef'::bytea::uuid; -- error
 
 -- clean up
 DROP TABLE guid1, guid2, guid3 CASCADE;
