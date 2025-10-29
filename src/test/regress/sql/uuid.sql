@@ -151,5 +151,32 @@ SELECT '5b35380a-7143-4912-9b55-f322699c6770'::uuid::bytea;
 SELECT '\x019a2f859ced7225b99d9c55044a2563'::bytea::uuid;
 SELECT '\x1234567890abcdef'::bytea::uuid; -- error
 
+-- base32hex encoding via encode/decode
+SELECT encode('00000000-0000-0000-0000-000000000000'::uuid::bytea, 'base32hex');
+SELECT encode('11111111-1111-1111-1111-111111111111'::uuid::bytea, 'base32hex');
+SELECT encode('ffffffff-ffff-ffff-ffff-ffffffffffff'::uuid::bytea, 'base32hex');
+SELECT encode('123e4567-e89b-12d3-a456-426614174000'::uuid::bytea, 'base32hex');
+
+-- test decode with base32hex
+SELECT decode('00000000000000000000000000', 'base32hex')::uuid;
+SELECT decode('28V4APV8JC9D792M89J185Q000', 'base32hex')::uuid;
+
+-- test round-trip conversions
+SELECT decode(encode('00000000-0000-0000-0000-000000000000'::uuid::bytea, 'base32hex'), 'base32hex')::uuid;
+SELECT encode(decode('28V4APV8JC9D792M89J185Q000', 'base32hex')::uuid::bytea, 'base32hex');
+SELECT decode(encode('123e4567-e89b-12d3-a456-426614174000'::uuid::bytea, 'base32hex'), 'base32hex')::uuid;
+
+-- test case insensitivity
+SELECT decode('28v4apv8jc9d792m89j185q000', 'base32hex')::uuid;
+SELECT decode('28V4APV8JC9D792M89J185Q000', 'base32hex')::uuid;
+
+-- test RFC 4648 padding (32 chars with 6 '=' signs)
+SELECT decode('28V4APV8JC9D792M89J185Q000======', 'base32hex')::uuid;
+SELECT decode('00000000000000000000000000======', 'base32hex')::uuid;
+
+-- test error cases for base32hex
+SELECT decode('28V4APV8JC9D792M89J185Q00W', 'base32hex')::uuid;  -- invalid character W
+SELECT decode('28V4APV8JC9D792M89J185Q00!', 'base32hex')::uuid;  -- invalid character !
+
 -- clean up
 DROP TABLE guid1, guid2, guid3 CASCADE;
