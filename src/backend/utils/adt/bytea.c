@@ -1124,12 +1124,13 @@ bytea_uuid(PG_FUNCTION_ARGS)
 
 	if (len != UUID_LEN)
 		ereport(ERROR,
-				errcode(ERRCODE_INVALID_BINARY_REPRESENTATION),
-				errmsg("invalid uuid length"));
+				(errcode(ERRCODE_INVALID_BINARY_REPRESENTATION),
+				 errmsg("invalid length for UUID"),
+				 errdetail("Expected %d bytes, got %d.", UUID_LEN, len)));
 
-	uuid = (pg_uuid_t *) palloc(UUID_LEN);
+	uuid = (pg_uuid_t *) palloc(sizeof(pg_uuid_t));
 	memcpy(uuid->data, VARDATA_ANY(v), UUID_LEN);
-	PG_RETURN_POINTER(uuid);
+	PG_RETURN_UUID_P(uuid);
 }
 
 /* Cast uuid -> bytea; can just use uuid_send() */

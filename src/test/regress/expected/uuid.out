@@ -319,6 +319,7 @@ SELECT '\x019a2f859ced7225b99d9c55044a2563'::bytea::uuid;
 (1 row)
 
 SELECT '\x1234567890abcdef'::bytea::uuid; -- error
-ERROR:  invalid uuid length
+ERROR:  invalid length for UUID
+DETAIL:  Expected 16 bytes, got 8.
 -- clean up
 DROP TABLE guid1, guid2, guid3 CASCADE;
