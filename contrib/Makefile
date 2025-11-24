@@ -14,6 +14,7 @@ SUBDIRS = \
 		btree_gin	\
 		btree_gist	\
 		citext		\
+		pg_btree_compact	\
 		cube		\
 		dblink		\
 		dict_int	\

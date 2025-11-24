@@ -1,0 +1,94 @@
+pg_btree_compact
+================
+
+The pg_btree_compact module provides functions to reduce B-tree index bloat
+by merging sparsely populated leaf pages.
+
+Overview
+--------
+
+B-tree indexes can become bloated when many tuples are deleted or updated.
+While PostgreSQL's VACUUM can mark pages as deleted when they become completely
+empty, partially empty pages remain in the index structure, wasting space.
+
+pg_btree_compact addresses this by merging adjacent leaf pages that together
+don't exceed a configurable threshold, allowing the freed pages to be recycled.
+
+Functions
+---------
+
+btree_compact(index regclass, min_items int DEFAULT 10, max_items int DEFAULT NULL)
+  Compacts the specified B-tree index by merging sparse pages.
+  
+  Parameters:
+    - index_name: The index to compact
+    - min_items_per_page: Pages with fewer items are candidates for merge
+    - max_items_per_page: Target pages can't exceed this (default: based on fillfactor)
+  
+  Returns statistics about the operation including pages merged and time spent.
+
+btree_compact_estimate(index regclass, min_items int DEFAULT 10)
+  Estimates potential space savings without modifying the index.
+  
+  Returns statistics about sparse pages and estimated savings.
+
+Locking Strategy
+----------------
+
+The compaction process uses a two-phase locking approach:
+
+1. Planning Phase (ShareLock):
+   - Scans the index to identify merge candidates
+   - Builds a merge plan
+   - Duration: Seconds to minutes depending on index size
+
+2. Execution Phase (AccessExclusiveLock):
+   - Executes the pre-built merge plan
+   - Performs actual page modifications
+   - Duration: Milliseconds to seconds
+
+This minimizes the time spent holding an exclusive lock.
+
+Example Usage
+-------------
+
+-- Check current index size
+SELECT pg_size_pretty(pg_relation_size('my_index'));
+
+-- Estimate potential savings
+SELECT * FROM btree_compact_estimate('my_index');
+
+-- Perform compaction
+SELECT * FROM btree_compact('my_index');
+
+-- Check new size
+SELECT pg_size_pretty(pg_relation_size('my_index'));
+
+Limitations
+-----------
+
+- Only works on B-tree indexes
+- Requires brief exclusive lock on the index
+- Only merges leaf pages (not internal pages)
+- Processes page pairs independently
+
+When to Use
+-----------
+
+Use pg_btree_compact when:
+- You have bloated indexes (check with btree_compact_estimate)
+- You want partial space reduction without full REINDEX
+- You can tolerate a brief exclusive lock
+- You want a quicker alternative to REINDEX CONCURRENTLY
+
+Comparison with Alternatives:
+- REINDEX: Full rebuild, longer lock time, optimal space reduction
+- REINDEX CONCURRENTLY: No blocking, but very long duration and resource intensive
+- pg_repack: External tool, creates index copy, requires extra disk space
+- pg_btree_compact: Brief lock, partial reduction, no extra space needed
+
+Author
+------
+
+Andrey Borodin <x4mmm@yandex-team.ru>
+

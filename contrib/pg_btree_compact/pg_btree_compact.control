@@ -1,0 +1,7 @@
+# pg_btree_compact extension
+comment = 'Compact bloated B-tree indexes by merging underutilized pages'
+default_version = '1.0'
+module_pathname = '$libdir/pg_btree_compact'
+relocatable = true
+trusted = true
+
