@@ -158,12 +158,9 @@ go to zero, the LOCK object is no longer needed and can be freed.
 The lock manager's PROCLOCK objects contain:
 
 tag -
-    The key fields that are used for hashing entries in the shared memory
-    PROCLOCK hash table.  This is declared as a separate struct to ensure that
-    we always zero out the correct number of bytes.  It is critical that any
-    alignment-padding bytes the compiler might insert in the struct be zeroed
-    out, else the hash computation will be random.  (Currently, we are careful
-    to define struct PROCLOCKTAG so that there are no padding bytes.)
+    Identifies which LOCK object and PGPROC this PROCLOCK belongs to.
+    This is declared as a separate struct to ensure consistency and
+    to facilitate searching through a lock's procLocks list.
 
     tag.myLock
         Pointer to the shared LOCK object this PROCLOCK is for.
@@ -215,15 +212,13 @@ Here are the details:
 its LOCKTAG value.  The partition's LWLock is considered to protect all the
 LOCK objects of that partition as well as their subsidiary PROCLOCKs.
 
-* The shared-memory hash tables for LOCKs and PROCLOCKs are organized
-so that different partitions use different hash chains, and thus there
-is no conflict in working with objects in different partitions.  This
-is supported directly by dynahash.c's "partitioned table" mechanism
-for the LOCK table: we need only ensure that the partition number is
-taken from the low-order bits of the dynahash hash value for the LOCKTAG.
-To make it work for PROCLOCKs, we have to ensure that a PROCLOCK's hash
-value has the same low-order bits as its associated LOCK.  This requires
-a specialized hash function (see proclock_hash).
+* The shared-memory LOCK hash table is organized so that different partitions
+use different hash chains, and thus there is no conflict in working with
+LOCK objects in different partitions.  This is supported directly by
+dynahash.c's "partitioned table" mechanism.  PROCLOCKs are allocated from
+partitioned free lists (one free list per partition) rather than using a hash
+table, which is more efficient since PROCLOCKs are never looked up by hash
+key - they are only allocated, initialized, and freed.
 
 * Formerly, each PGPROC had a single list of PROCLOCKs belonging to it.
 This has now been split into per-partition lists, so that access to a

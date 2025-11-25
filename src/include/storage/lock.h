@@ -333,11 +333,10 @@ typedef struct LOCK
  * information for each such holder (or would-be holder).  This is kept in
  * a PROCLOCK struct.
  *
- * PROCLOCKTAG is the key information needed to look up a PROCLOCK item in the
- * proclock hashtable.  A PROCLOCKTAG value uniquely identifies the combination
- * of a lockable object and a holder/waiter for that object.  (We can use
- * pointers here because the PROCLOCKTAG need only be unique for the lifespan
- * of the PROCLOCK, and it will never outlive the lock or the proc.)
+ * PROCLOCKTAG uniquely identifies the combination of a lockable object
+ * and a holder/waiter for that object.  (We can use pointers here because
+ * the PROCLOCKTAG need only be unique for the lifespan of the PROCLOCK,
+ * and it will never outlive the lock or the proc.)
  *
  * Internally to a backend, it is possible for the same lock to be held
  * for different purposes: the backend tracks transaction locks separately
