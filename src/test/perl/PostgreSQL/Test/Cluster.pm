@@ -1191,6 +1191,46 @@ sub start
 
 =pod
 
+=item $node->poll_start() => success_or_failure
+
+Polls start after kill9
+
+We may need retries to start a new postmaster.  Causes:
+ - kernel is slow to deliver SIGKILL
+ - postmaster parent is slow to waitpid()
+ - postmaster child is slow to exit in response to SIGQUIT
+ - postmaster child is slow to exit after postmaster death
+
+=cut
+
+sub poll_start
+{
+	my ($self) = @_;
+
+	my $max_attempts = 10 * $PostgreSQL::Test::Utils::timeout_default;
+	my $attempts = 0;
+
+	while ($attempts < $max_attempts)
+	{
+		$self->start(fail_ok => 1) && return 1;
+
+		# Wait 0.1 second before retrying.
+		usleep(100_000);
+
+		# Clean up in case the start attempt just timed out or some such.
+		$self->stop('fast', fail_ok => 1);
+
+		$attempts++;
+	}
+
+	# Try one last time without fail_ok, which will BAIL_OUT unless it
+	# succeeds.
+	$self->start && return 1;
+	return 0;
+}
+
+=pod
+
 =item $node->kill9()
 
 Send SIGKILL (signal 9) to the postmaster.
