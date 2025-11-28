@@ -4276,7 +4276,7 @@ ri_FastPathTeardown(void)
 static bool ri_fastpath_xact_callback_registered = false;
 
 static void
-ri_FastPathXactCallback(XactEvent event, void *arg)
+ri_FastPathXactCallback(XactEvent event, void *arg, XLogRecPtr commit_lsn)
 {
 	/*
 	 * On abort, ResourceOwner already released relations; on commit,
