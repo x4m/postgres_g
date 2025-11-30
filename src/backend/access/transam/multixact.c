@@ -3401,7 +3401,7 @@ multixact_redo(XLogReaderState *record)
 		if (pre_initialized_offsets_page != pageno)
 			SimpleLruZeroAndWritePage(MultiXactOffsetCtl, pageno);
 		else
-			elog(DEBUG1, "skipping initialization of page %ld", pageno);
+			elog(DEBUG1, "skipping initialization of page " INT64_FORMAT, pageno);
 		pre_initialized_offsets_page = -1;
 	}
 	else if (info == XLOG_MULTIXACT_ZERO_MEM_PAGE)
