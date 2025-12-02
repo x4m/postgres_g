@@ -42,6 +42,7 @@
 /* "options" flag bits for heap_page_prune_and_freeze */
 #define HEAP_PAGE_PRUNE_MARK_UNUSED_NOW		(1 << 0)
 #define HEAP_PAGE_PRUNE_FREEZE				(1 << 1)
+#define HEAP_PAGE_PRUNE_UPDATE_VM			(1 << 2)
 
 typedef struct BulkInsertStateData *BulkInsertState;
 typedef struct GlobalVisState GlobalVisState;
@@ -239,6 +240,12 @@ typedef struct PruneFreezeParams
 	Buffer		buffer;			/* buffer to be pruned */
 
 	/*
+	 * If we will consider updating the visibility map, vmbuffer should
+	 * contain the correct block of the visibility map and be pinned.
+	 */
+	Buffer		vmbuffer;
+
+	/*
 	 * The reason pruning was performed.  It is used to set the WAL record
 	 * opcode which is used for debugging and analysis purposes.
 	 */
@@ -252,6 +259,9 @@ typedef struct PruneFreezeParams
 	 *
 	 * HEAP_PAGE_PRUNE_FREEZE indicates that we will also freeze tuples, and
 	 * will return 'all_visible', 'all_frozen' flags to the caller.
+	 *
+	 * HEAP_PAGE_PRUNE_UPDATE_VM indicates that we will set the page's status
+	 * in the VM.
 	 */
 	int			options;
 
@@ -298,6 +308,16 @@ typedef struct PruneFreezeResult
 	bool		all_visible;
 	bool		all_frozen;
 	TransactionId vm_conflict_horizon;
+
+	/*
+	 * old_vmbits are the state of the all-visible and all-frozen bits in the
+	 * visibility map before updating it during phase I of vacuuming.
+	 * new_vmbits are the state of those bits after phase I of vacuuming.
+	 *
+	 * These are only set if the HEAP_PAGE_PRUNE_UPDATE_VM option is set.
+	 */
+	uint8		new_vmbits;
+	uint8		old_vmbits;
 
 	/*
 	 * Whether or not the page makes rel truncation unsafe.  This is set to

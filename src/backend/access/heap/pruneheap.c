@@ -19,7 +19,7 @@
 #include "access/htup_details.h"
 #include "access/multixact.h"
 #include "access/transam.h"
-#include "access/visibilitymapdefs.h"
+#include "access/visibilitymap.h"
 #include "access/xlog.h"
 #include "access/xloginsert.h"
 #include "commands/vacuum.h"
@@ -44,6 +44,8 @@ typedef struct
 	bool		mark_unused_now;
 	/* whether to attempt freezing tuples */
 	bool		attempt_freeze;
+	/* whether or not to attempt updating the VM */
+	bool		attempt_update_vm;
 	struct VacuumCutoffs *cutoffs;
 
 	/*-------------------------------------------------------
@@ -140,16 +142,17 @@ typedef struct
 	 * all_visible and all_frozen indicate if the all-visible and all-frozen
 	 * bits in the visibility map can be set for this page after pruning.
 	 *
-	 * visibility_cutoff_xid is the newest xmin of live tuples on the page.
-	 * The caller can use it as the conflict horizon, when setting the VM
-	 * bits.  It is only valid if we froze some tuples, and all_frozen is
-	 * true.
+	 * visibility_cutoff_xid is the newest xmin of live tuples on the page. It
+	 * can be used as the conflict horizon when setting the VM or when
+	 * freezing all the tuples on the page. It is only valid when all the live
+	 * tuples on the page are all-visible.
 	 *
 	 * NOTE: all_visible and all_frozen initially don't include LP_DEAD items.
 	 * That's convenient for heap_page_prune_and_freeze() to use them to
-	 * decide whether to freeze the page or not.  The all_visible and
-	 * all_frozen values returned to the caller are adjusted to include
-	 * LP_DEAD items after we determine whether to opportunistically freeze.
+	 * decide whether to opportunistically freeze the page or not.  The
+	 * all_visible and all_frozen values ultimately used to set the VM are
+	 * adjusted to include LP_DEAD items after we determine whether or not to
+	 * opportunistically freeze.
 	 */
 	bool		all_visible;
 	bool		all_frozen;
@@ -191,6 +194,17 @@ static void page_verify_redirects(Page page);
 static bool heap_page_will_freeze(Relation relation, Buffer buffer,
 								  bool did_tuple_hint_fpi, bool do_prune, bool do_hint_prune,
 								  PruneState *prstate);
+static bool identify_and_fix_vm_corruption(Relation rel, Buffer heap_buffer,
+										   BlockNumber heap_blk, Page heap_page, int nlpdead_items,
+										   Buffer vmbuffer,
+										   uint8 vmbits);
+static bool heap_page_will_set_vm(PruneState *prstate,
+								  Relation relation,
+								  BlockNumber heap_blk, Buffer heap_buffer, Page heap_page,
+								  Buffer vmbuffer,
+								  int nlpdead_items,
+								  uint8 *old_vmbits,
+								  uint8 *new_vmbits);
 
 
 /*
@@ -280,6 +294,7 @@ heap_page_prune_opt(Relation relation, Buffer buffer)
 			PruneFreezeParams params = {
 				.relation = relation,
 				.buffer = buffer,
+				.vmbuffer = InvalidBuffer,
 				.reason = PRUNE_ON_ACCESS,
 				.options = 0,
 				.vistest = vistest,
@@ -341,6 +356,8 @@ prune_freeze_setup(PruneFreezeParams *params,
 	/* cutoffs must be provided if we will attempt freezing */
 	Assert(!(params->options & HEAP_PAGE_PRUNE_FREEZE) || params->cutoffs);
 	prstate->attempt_freeze = (params->options & HEAP_PAGE_PRUNE_FREEZE) != 0;
+	prstate->attempt_update_vm =
+		(params->options & HEAP_PAGE_PRUNE_UPDATE_VM) != 0;
 	prstate->cutoffs = params->cutoffs;
 
 	/*
@@ -396,51 +413,54 @@ prune_freeze_setup(PruneFreezeParams *params,
 	prstate->frz_conflict_horizon = InvalidTransactionId;
 
 	/*
-	 * Vacuum may update the VM after we're done.  We can keep track of
-	 * whether the page will be all-visible and all-frozen after pruning and
-	 * freezing to help the caller to do that.
+	 * Track whether the page could be marked all-visible and/or all-frozen.
+	 * This information is used for opportunistic freezing and for updating
+	 * the visibility map (VM) if requested by the caller.
 	 *
-	 * Currently, only VACUUM sets the VM bits.  To save the effort, only do
-	 * the bookkeeping if the caller needs it.  Currently, that's tied to
-	 * HEAP_PAGE_PRUNE_FREEZE, but it could be a separate flag if you wanted
-	 * to update the VM bits without also freezing or freeze without also
-	 * setting the VM bits.
+	 * Currently, only VACUUM performs freezing, but other callers may in the
+	 * future. Visibility bookkeeping is required not just for setting the VM
+	 * bits, but also for opportunistic freezing: we only consider freezing if
+	 * the page would become all-frozen, or if it would be all-frozen except
+	 * for dead tuples that VACUUM will remove. If attempt_update_vm is false,
+	 * we will not set the VM bit even if the page is found to be all-visible.
 	 *
-	 * In addition to telling the caller whether it can set the VM bit, we
-	 * also use 'all_visible' and 'all_frozen' for our own decision-making. If
-	 * the whole page would become frozen, we consider opportunistically
-	 * freezing tuples.  We will not be able to freeze the whole page if there
-	 * are tuples present that are not visible to everyone or if there are
-	 * dead tuples which are not yet removable.  However, dead tuples which
-	 * will be removed by the end of vacuuming should not preclude us from
-	 * opportunistically freezing.  Because of that, we do not immediately
-	 * clear all_visible and all_frozen when we see LP_DEAD items.  We fix
-	 * that after scanning the line pointers. We must correct all_visible and
-	 * all_frozen before we return them to the caller, so that the caller
-	 * doesn't set the VM bits incorrectly.
+	 * If HEAP_PAGE_PRUNE_UPDATE_VM is passed without HEAP_PAGE_PRUNE_FREEZE,
+	 * prstate.all_frozen must be initialized to false, since we will not call
+	 * heap_prepare_freeze_tuple() for each tuple.
+	 *
+	 * Dead tuples that will be removed by the end of vacuum should not
+	 * prevent opportunistic freezing. Therefore, we do not clear all_visible
+	 * and all_frozen when we encounter LP_DEAD items. Instead, we correct
+	 * them after deciding whether to freeze, but before updating the VM, to
+	 * avoid setting the VM bits incorrectly.
+	 *
+	 * If neither freezing nor VM updates are requested, we skip the extra
+	 * bookkeeping. In this case, initializing all_visible to false allows
+	 * heap_prune_record_unchanged_lp_normal() to bypass unnecessary work.
 	 */
 	if (prstate->attempt_freeze)
 	{
 		prstate->all_visible = true;
 		prstate->all_frozen = true;
 	}
+	else if (prstate->attempt_update_vm)
+	{
+		prstate->all_visible = true;
+		prstate->all_frozen = false;
+	}
 	else
 	{
-		/*
-		 * Initializing to false allows skipping the work to update them in
-		 * heap_prune_record_unchanged_lp_normal().
-		 */
 		prstate->all_visible = false;
 		prstate->all_frozen = false;
 	}
 
 	/*
-	 * The visibility cutoff xid is the newest xmin of live tuples on the
-	 * page.  In the common case, this will be set as the conflict horizon the
-	 * caller can use for updating the VM.  If, at the end of freezing and
-	 * pruning, the page is all-frozen, there is no possibility that any
-	 * running transaction on the standby does not see tuples on the page as
-	 * all-visible, so the conflict horizon remains InvalidTransactionId.
+	 * The visibility cutoff xid is the newest xmin of live, committed tuples
+	 * older than OldestXmin on the page. This field is only kept up-to-date
+	 * if the page is all-visible. As soon as a tuple is encountered that is
+	 * not visible to all, this field is unmaintained. As long as it is
+	 * maintained, it can be used to calculate the snapshot conflict horizon
+	 * when updating the VM and/or freezing all the tuples on the page.
 	 */
 	prstate->visibility_cutoff_xid = InvalidTransactionId;
 }
@@ -775,10 +795,148 @@ heap_page_will_freeze(Relation relation, Buffer buffer,
 	return do_freeze;
 }
 
+/*
+ * Helper to correct any corruption detected on a heap page and its
+ * corresponding visibility map page after pruning but before setting the
+ * visibility map. It examines the heap page, the associated VM page, and the
+ * number of dead items previously identified.
+ *
+ * This function must be called while holding an exclusive lock on the heap
+ * buffer, and the dead items must have been discovered under that same lock.
+ *
+ * The provided vmbits must reflect the current state of the VM block
+ * referenced by vmbuffer. Although we do not hold a lock on the VM buffer, it
+ * is pinned, and the heap buffer is exclusively locked, ensuring that no
+ * other backend can update the VM bits corresponding to this heap page.
+ *
+ * Returns true if it cleared corruption and false otherwise.
+ */
+static bool
+identify_and_fix_vm_corruption(Relation rel, Buffer heap_buffer,
+							   BlockNumber heap_blk, Page heap_page,
+							   int nlpdead_items,
+							   Buffer vmbuffer,
+							   uint8 vmbits)
+{
+	Assert(visibilitymap_get_status(rel, heap_blk, &vmbuffer) == vmbits);
+
+	Assert(BufferIsLockedByMeInMode(heap_buffer, BUFFER_LOCK_EXCLUSIVE));
+
+	/*
+	 * As of PostgreSQL 9.2, the visibility map bit should never be set if the
+	 * page-level bit is clear.  However, it's possible that the bit got
+	 * cleared after heap_vac_scan_next_block() was called, so we must recheck
+	 * with buffer lock before concluding that the VM is corrupt.
+	 */
+	if (!PageIsAllVisible(heap_page) &&
+		((vmbits & VISIBILITYMAP_VALID_BITS) != 0))
+	{
+		ereport(WARNING,
+				(errcode(ERRCODE_DATA_CORRUPTED),
+				 errmsg("page is not marked all-visible but visibility map bit is set in relation \"%s\" page %u",
+						RelationGetRelationName(rel), heap_blk)));
+
+		visibilitymap_clear(rel, heap_blk, vmbuffer,
+							VISIBILITYMAP_VALID_BITS);
+		return true;
+	}
+
+	/*
+	 * It's possible for the value returned by
+	 * GetOldestNonRemovableTransactionId() to move backwards, so it's not
+	 * wrong for us to see tuples that appear to not be visible to everyone
+	 * yet, while PD_ALL_VISIBLE is already set. The real safe xmin value
+	 * never moves backwards, but GetOldestNonRemovableTransactionId() is
+	 * conservative and sometimes returns a value that's unnecessarily small,
+	 * so if we see that contradiction it just means that the tuples that we
+	 * think are not visible to everyone yet actually are, and the
+	 * PD_ALL_VISIBLE flag is correct.
+	 *
+	 * There should never be LP_DEAD items on a page with PD_ALL_VISIBLE set,
+	 * however.
+	 */
+	else if (PageIsAllVisible(heap_page) && nlpdead_items > 0)
+	{
+		ereport(WARNING,
+				(errcode(ERRCODE_DATA_CORRUPTED),
+				 errmsg("page containing LP_DEAD items is marked as all-visible in relation \"%s\" page %u",
+						RelationGetRelationName(rel), heap_blk)));
+
+		PageClearAllVisible(heap_page);
+		MarkBufferDirty(heap_buffer);
+		visibilitymap_clear(rel, heap_blk, vmbuffer,
+							VISIBILITYMAP_VALID_BITS);
+		return true;
+	}
+
+	return false;
+}
+
+/*
+ * Decide whether to set the visibility map bits (all-visible and all-frozen)
+ * for heap_blk using information from the PruneState and VM.
+ *
+ * This function does not actually set the VM bits or page-level visibility
+ * hint, PD_ALL_VISIBLE.
+ *
+ * However, if it finds that the page-level visibility hint or VM is
+ * corrupted, it will fix them by clearing the VM bits and visibility hint.
+ * This does not need to be done in a critical section.
+ *
+ * Returns true if one or both VM bits should be set, along with returning the
+ * current value of the VM bits in *old_vmbits and the desired new value of
+ * the VM bits in *new_vmbits.
+ *
+ * If the VM should not be set, it returns false. If we won't consider
+ * updating the VM, *old_vmbits will be 0, regardless of the current value of
+ * the VM bits.
+ */
+static bool
+heap_page_will_set_vm(PruneState *prstate,
+					  Relation relation,
+					  BlockNumber heap_blk, Buffer heap_buffer, Page heap_page,
+					  Buffer vmbuffer,
+					  int nlpdead_items,
+					  uint8 *old_vmbits,
+					  uint8 *new_vmbits)
+{
+	*old_vmbits = 0;
+	*new_vmbits = 0;
+
+	if (!prstate->attempt_update_vm)
+		return false;
+
+	*old_vmbits = visibilitymap_get_status(relation, heap_blk,
+										   &vmbuffer);
+
+	/* We do this even if not all-visible */
+	if (identify_and_fix_vm_corruption(relation, heap_buffer, heap_blk, heap_page,
+									   nlpdead_items, vmbuffer,
+									   *old_vmbits))
+		*old_vmbits = 0;
+
+	if (!prstate->all_visible)
+		return false;
+
+	*new_vmbits = VISIBILITYMAP_ALL_VISIBLE;
+
+	if (prstate->all_frozen)
+		*new_vmbits |= VISIBILITYMAP_ALL_FROZEN;
+
+	if (*new_vmbits == *old_vmbits)
+	{
+		*new_vmbits = 0;
+		return false;
+	}
+
+	return true;
+}
+
 
 /*
  * Prune and repair fragmentation and potentially freeze tuples on the
- * specified page.
+ * specified page. If the page's visibility status has changed, update it in
+ * the VM.
  *
  * Caller must have pin and buffer cleanup lock on the page.  Note that we
  * don't update the FSM information for page on caller's behalf.  Caller might
@@ -793,12 +951,13 @@ heap_page_will_freeze(Relation relation, Buffer buffer,
  * tuples if it's required in order to advance relfrozenxid / relminmxid, or
  * if it's considered advantageous for overall system performance to do so
  * now.  The 'params.cutoffs', 'presult', 'new_relfrozen_xid' and
- * 'new_relmin_mxid' arguments are required when freezing.  When
- * HEAP_PAGE_PRUNE_FREEZE option is passed, we also set presult->all_visible
- * and presult->all_frozen after determining whether or not to
- * opportunistically freeze, to indicate if the VM bits can be set.  They are
- * always set to false when the HEAP_PAGE_PRUNE_FREEZE option is not passed,
- * because at the moment only callers that also freeze need that information.
+ * 'new_relmin_mxid' arguments are required when freezing.
+ *
+ * If HEAP_PAGE_PRUNE_UPDATE_VM is set in params and the visibility status of
+ * the page has changed, we will update the VM at the same time as pruning and
+ * freezing the heap page. We will also update presult->old_vmbits and
+ * presult->new_vmbits with the state of the VM before and after updating it
+ * for the caller to use in bookkeeping.
  *
  * presult contains output parameters needed by callers, such as the number of
  * tuples removed and the offsets of dead items on the page after pruning.
@@ -823,13 +982,18 @@ heap_page_prune_and_freeze(PruneFreezeParams *params,
 						   MultiXactId *new_relmin_mxid)
 {
 	Buffer		buffer = params->buffer;
+	Buffer		vmbuffer = params->vmbuffer;
 	Page		page = BufferGetPage(buffer);
+	BlockNumber blockno = BufferGetBlockNumber(buffer);
 	PruneState	prstate;
 	bool		do_freeze;
 	bool		do_prune;
 	bool		do_hint_prune;
+	bool		do_set_vm;
 	bool		did_tuple_hint_fpi;
 	int64		fpi_before = pgWalUsage.wal_fpi;
+	uint8		new_vmbits;
+	uint8		old_vmbits;
 
 	/* Initialize prstate */
 	prune_freeze_setup(params,
@@ -1011,6 +1175,65 @@ heap_page_prune_and_freeze(PruneFreezeParams *params,
 			*new_relmin_mxid = prstate.pagefrz.NoFreezePageRelminMxid;
 		}
 	}
+
+	/* Now update the visibility map and PD_ALL_VISIBLE hint */
+	Assert(!prstate.all_visible || (prstate.lpdead_items == 0));
+
+	do_set_vm = heap_page_will_set_vm(&prstate,
+									  params->relation,
+									  blockno,
+									  buffer,
+									  page,
+									  vmbuffer,
+									  prstate.lpdead_items,
+									  &old_vmbits,
+									  &new_vmbits);
+
+	/*
+	 * new_vmbits should be 0 regardless of whether or not the page is
+	 * all-visible if we do not intend to set the VM.
+	 */
+	Assert(do_set_vm || new_vmbits == 0);
+
+	/* Set the visibility map and page visibility hint, if relevant */
+	if (do_set_vm)
+	{
+		Assert(prstate.all_visible);
+
+		/*
+		 * It should never be the case that the visibility map page is set
+		 * while the page-level bit is clear, but the reverse is allowed (if
+		 * checksums are not enabled). Regardless, set both bits so that we
+		 * get back in sync.
+		 *
+		 * The heap buffer must be marked dirty before adding it to the WAL
+		 * chain when setting the VM. We don't worry about unnecessarily
+		 * dirtying the heap buffer if PD_ALL_VISIBLE is already set, though.
+		 * It is extremely rare to have a clean heap buffer with
+		 * PD_ALL_VISIBLE already set and the VM bits clear, so there is no
+		 * point in optimizing it.
+		 */
+		PageSetAllVisible(page);
+		MarkBufferDirty(buffer);
+
+		/*
+		 * If the page is being set all-frozen, we pass InvalidTransactionId
+		 * as the cutoff_xid, since a snapshot conflict horizon sufficient to
+		 * make everything safe for REDO was logged when the page's tuples
+		 * were frozen.
+		 */
+		Assert(!prstate.all_frozen ||
+			   !TransactionIdIsValid(presult->vm_conflict_horizon));
+
+		visibilitymap_set(params->relation, blockno, buffer,
+						  InvalidXLogRecPtr,
+						  vmbuffer, presult->vm_conflict_horizon,
+						  new_vmbits);
+	}
+
+	/* Save the vmbits for caller */
+	presult->old_vmbits = old_vmbits;
+	presult->new_vmbits = new_vmbits;
 }
 
 
@@ -1484,6 +1707,8 @@ heap_prune_record_unchanged_lp_normal(Page page, PruneState *prstate, OffsetNumb
 			if (prstate->all_visible)
 			{
 				TransactionId xmin;
+
+				Assert(prstate->attempt_update_vm);
 
 				if (!HeapTupleHeaderXminCommitted(htup))
 				{
