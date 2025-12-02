@@ -257,8 +257,7 @@ typedef struct PruneFreezeParams
 	 * HEAP_PAGE_PRUNE_MARK_UNUSED_NOW indicates that dead items can be set
 	 * LP_UNUSED during pruning.
 	 *
-	 * HEAP_PAGE_PRUNE_FREEZE indicates that we will also freeze tuples, and
-	 * will return 'all_visible', 'all_frozen' flags to the caller.
+	 * HEAP_PAGE_PRUNE_FREEZE indicates that we will also freeze tuples.
 	 *
 	 * HEAP_PAGE_PRUNE_UPDATE_VM indicates that we will set the page's status
 	 * in the VM.
@@ -293,21 +292,6 @@ typedef struct PruneFreezeResult
 	/* Number of live and recently dead tuples on the page, after pruning */
 	int			live_tuples;
 	int			recently_dead_tuples;
-
-	/*
-	 * all_visible and all_frozen indicate if the all-visible and all-frozen
-	 * bits in the visibility map can be set for this page, after pruning.
-	 *
-	 * vm_conflict_horizon is the newest xmin of live tuples on the page.  The
-	 * caller can use it as the conflict horizon when setting the VM bits.  It
-	 * is only valid if we froze some tuples (nfrozen > 0), and all_frozen is
-	 * true.
-	 *
-	 * These are only set if the HEAP_PAGE_PRUNE_FREEZE option is set.
-	 */
-	bool		all_visible;
-	bool		all_frozen;
-	TransactionId vm_conflict_horizon;
 
 	/*
 	 * old_vmbits are the state of the all-visible and all-frozen bits in the
@@ -453,6 +437,13 @@ extern void log_heap_prune_and_freeze(Relation relation, Buffer buffer,
 /* in heap/vacuumlazy.c */
 extern void heap_vacuum_rel(Relation rel,
 							const VacuumParams params, BufferAccessStrategy bstrategy);
+extern bool heap_page_would_be_all_visible(Relation rel, Buffer buf,
+										   TransactionId OldestXmin,
+										   OffsetNumber *deadoffsets,
+										   int ndeadoffsets,
+										   bool *all_frozen,
+										   TransactionId *visibility_cutoff_xid,
+										   OffsetNumber *logging_offnum);
 
 /* in heap/heapam_visibility.c */
 extern bool HeapTupleSatisfiesVisibility(HeapTuple htup, Snapshot snapshot,
