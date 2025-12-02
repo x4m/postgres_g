@@ -932,6 +932,31 @@ heap_page_will_set_vm(PruneState *prstate,
 	return true;
 }
 
+#ifdef USE_ASSERT_CHECKING
+
+/*
+ * Wrapper for heap_page_would_be_all_visible() which can be used for callers
+ * that expect no LP_DEAD on the page. Currently assert-only, but there is no
+ * reason not to use it outside of asserts.
+ */
+static bool
+heap_page_is_all_visible(Relation rel, Buffer buf,
+						 TransactionId OldestXmin,
+						 bool *all_frozen,
+						 TransactionId *visibility_cutoff_xid,
+						 OffsetNumber *logging_offnum)
+{
+
+	return heap_page_would_be_all_visible(rel, buf,
+										  OldestXmin,
+										  NULL, 0,
+										  all_frozen,
+										  visibility_cutoff_xid,
+										  logging_offnum);
+}
+#endif
+
+
 
 /*
  * Prune and repair fragmentation and potentially freeze tuples on the
@@ -985,6 +1010,7 @@ heap_page_prune_and_freeze(PruneFreezeParams *params,
 	Buffer		vmbuffer = params->vmbuffer;
 	Page		page = BufferGetPage(buffer);
 	BlockNumber blockno = BufferGetBlockNumber(buffer);
+	TransactionId vm_conflict_horizon = InvalidTransactionId;
 	PruneState	prstate;
 	bool		do_freeze;
 	bool		do_prune;
@@ -1142,22 +1168,7 @@ heap_page_prune_and_freeze(PruneFreezeParams *params,
 	presult->nfrozen = prstate.nfrozen;
 	presult->live_tuples = prstate.live_tuples;
 	presult->recently_dead_tuples = prstate.recently_dead_tuples;
-	presult->all_visible = prstate.all_visible;
-	presult->all_frozen = prstate.all_frozen;
 	presult->hastup = prstate.hastup;
-
-	/*
-	 * For callers planning to update the visibility map, the conflict horizon
-	 * for that record must be the newest xmin on the page.  However, if the
-	 * page is completely frozen, there can be no conflict and the
-	 * vm_conflict_horizon should remain InvalidTransactionId.  This includes
-	 * the case that we just froze all the tuples; the prune-freeze record
-	 * included the conflict XID already so the caller doesn't need it.
-	 */
-	if (presult->all_frozen)
-		presult->vm_conflict_horizon = InvalidTransactionId;
-	else
-		presult->vm_conflict_horizon = prstate.visibility_cutoff_xid;
 
 	presult->lpdead_items = prstate.lpdead_items;
 	/* the presult->deadoffsets array was already filled in */
@@ -1175,6 +1186,46 @@ heap_page_prune_and_freeze(PruneFreezeParams *params,
 			*new_relmin_mxid = prstate.pagefrz.NoFreezePageRelminMxid;
 		}
 	}
+
+	/*
+	 * If updating the visibility map, the conflict horizon for that record
+	 * must be the newest xmin on the page.  However, if the page is
+	 * completely frozen, there can be no conflict and the vm_conflict_horizon
+	 * should remain InvalidTransactionId.  This includes the case that we
+	 * just froze all the tuples; the prune-freeze record included the
+	 * conflict XID already so we don't need to again.
+	 */
+	if (prstate.all_frozen)
+		vm_conflict_horizon = InvalidTransactionId;
+	else
+		vm_conflict_horizon = prstate.visibility_cutoff_xid;
+
+	/*
+	 * During its second pass over the heap, VACUUM calls
+	 * heap_page_would_be_all_visible() to determine whether a page is
+	 * all-visible and all-frozen. The logic here is similar. After completing
+	 * pruning and freezing, use an assertion to verify that our results
+	 * remain consistent with heap_page_would_be_all_visible().
+	 */
+#ifdef USE_ASSERT_CHECKING
+	if (prstate.all_visible)
+	{
+		TransactionId debug_cutoff;
+		bool		debug_all_frozen;
+
+		Assert(presult->lpdead_items == 0);
+
+		Assert(heap_page_is_all_visible(params->relation, buffer,
+										prstate.cutoffs->OldestXmin,
+										&debug_all_frozen,
+										&debug_cutoff, off_loc));
+
+		Assert(prstate.all_frozen == debug_all_frozen);
+
+		Assert(!TransactionIdIsValid(debug_cutoff) ||
+			   debug_cutoff == vm_conflict_horizon);
+	}
+#endif
 
 	/* Now update the visibility map and PD_ALL_VISIBLE hint */
 	Assert(!prstate.all_visible || (prstate.lpdead_items == 0));
@@ -1222,12 +1273,11 @@ heap_page_prune_and_freeze(PruneFreezeParams *params,
 		 * make everything safe for REDO was logged when the page's tuples
 		 * were frozen.
 		 */
-		Assert(!prstate.all_frozen ||
-			   !TransactionIdIsValid(presult->vm_conflict_horizon));
+		Assert(!prstate.all_frozen || !TransactionIdIsValid(vm_conflict_horizon));
 
 		visibilitymap_set(params->relation, blockno, buffer,
 						  InvalidXLogRecPtr,
-						  vmbuffer, presult->vm_conflict_horizon,
+						  vmbuffer, vm_conflict_horizon,
 						  new_vmbits);
 	}
 

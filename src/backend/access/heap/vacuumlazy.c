@@ -457,20 +457,6 @@ static void dead_items_add(LVRelState *vacrel, BlockNumber blkno, OffsetNumber *
 static void dead_items_reset(LVRelState *vacrel);
 static void dead_items_cleanup(LVRelState *vacrel);
 
-#ifdef USE_ASSERT_CHECKING
-static bool heap_page_is_all_visible(Relation rel, Buffer buf,
-									 TransactionId OldestXmin,
-									 bool *all_frozen,
-									 TransactionId *visibility_cutoff_xid,
-									 OffsetNumber *logging_offnum);
-#endif
-static bool heap_page_would_be_all_visible(Relation rel, Buffer buf,
-										   TransactionId OldestXmin,
-										   OffsetNumber *deadoffsets,
-										   int ndeadoffsets,
-										   bool *all_frozen,
-										   TransactionId *visibility_cutoff_xid,
-										   OffsetNumber *logging_offnum);
 static void update_relstats_all_indexes(LVRelState *vacrel);
 static void vacuum_error_callback(void *arg);
 static void update_vacuum_error_info(LVRelState *vacrel,
@@ -2034,32 +2020,6 @@ lazy_scan_prune(LVRelState *vacrel,
 	}
 
 	/*
-	 * VACUUM will call heap_page_is_all_visible() during the second pass over
-	 * the heap to determine all_visible and all_frozen for the page -- this
-	 * is a specialized version of the logic from this function.  Now that
-	 * we've finished pruning and freezing, make sure that we're in total
-	 * agreement with heap_page_is_all_visible() using an assertion.
-	 */
-#ifdef USE_ASSERT_CHECKING
-	if (presult.all_visible)
-	{
-		TransactionId debug_cutoff;
-		bool		debug_all_frozen;
-
-		Assert(presult.lpdead_items == 0);
-
-		Assert(heap_page_is_all_visible(vacrel->rel, buf,
-										vacrel->cutoffs.OldestXmin, &debug_all_frozen,
-										&debug_cutoff, &vacrel->offnum));
-
-		Assert(presult.all_frozen == debug_all_frozen);
-
-		Assert(!TransactionIdIsValid(debug_cutoff) ||
-			   debug_cutoff == presult.vm_conflict_horizon);
-	}
-#endif
-
-	/*
 	 * Now save details of the LP_DEAD items from the page in vacrel
 	 */
 	if (presult.lpdead_items > 0)
@@ -3520,29 +3480,6 @@ dead_items_cleanup(LVRelState *vacrel)
 	vacrel->pvs = NULL;
 }
 
-#ifdef USE_ASSERT_CHECKING
-
-/*
- * Wrapper for heap_page_would_be_all_visible() which can be used for callers
- * that expect no LP_DEAD on the page. Currently assert-only, but there is no
- * reason not to use it outside of asserts.
- */
-static bool
-heap_page_is_all_visible(Relation rel, Buffer buf,
-						 TransactionId OldestXmin,
-						 bool *all_frozen,
-						 TransactionId *visibility_cutoff_xid,
-						 OffsetNumber *logging_offnum)
-{
-
-	return heap_page_would_be_all_visible(rel, buf,
-										  OldestXmin,
-										  NULL, 0,
-										  all_frozen,
-										  visibility_cutoff_xid,
-										  logging_offnum);
-}
-#endif
 
 /*
  * Check whether the heap page in buf is all-visible except for the dead
@@ -3566,15 +3503,12 @@ heap_page_is_all_visible(Relation rel, Buffer buf,
  *  - *logging_offnum: OffsetNumber of current tuple being processed;
  *     used by vacuum's error callback system.
  *
- * Callers looking to verify that the page is already all-visible can call
- * heap_page_is_all_visible().
- *
  * This logic is closely related to heap_prune_record_unchanged_lp_normal().
  * If you modify this function, ensure consistency with that code. An
  * assertion cross-checks that both remain in agreement. Do not introduce new
  * side-effects.
  */
-static bool
+bool
 heap_page_would_be_all_visible(Relation rel, Buffer buf,
 							   TransactionId OldestXmin,
 							   OffsetNumber *deadoffsets,
