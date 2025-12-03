@@ -204,7 +204,7 @@ RelationFindReplTupleByIndex(Relation rel, Oid idxoid,
 	skey_attoff = build_replindex_scan_key(skey, rel, idxrel, searchslot);
 
 	/* Start an index scan. */
-	scan = index_beginscan(rel, idxrel, &snap, NULL, skey_attoff, 0);
+	scan = index_beginscan(rel, idxrel, &snap, NULL, skey_attoff, 0, 0);
 
 retry:
 	found = false;
@@ -382,7 +382,7 @@ RelationFindReplTupleSeq(Relation rel, LockTupleMode lockmode,
 
 	/* Start a heap scan. */
 	InitDirtySnapshot(snap);
-	scan = table_beginscan(rel, &snap, 0, NULL);
+	scan = table_beginscan(rel, &snap, 0, NULL, 0);
 	scanslot = table_slot_create(rel, NULL);
 
 retry:
@@ -601,7 +601,7 @@ RelationFindDeletedTupleInfoSeq(Relation rel, TupleTableSlot *searchslot,
 	 * not yet committed or those just committed prior to the scan are
 	 * excluded in update_most_recent_deletion_info().
 	 */
-	scan = table_beginscan(rel, SnapshotAny, 0, NULL);
+	scan = table_beginscan(rel, SnapshotAny, 0, NULL, 0);
 	scanslot = table_slot_create(rel, NULL);
 
 	table_rescan(scan, NULL);
@@ -665,7 +665,7 @@ RelationFindDeletedTupleInfoByIndex(Relation rel, Oid idxoid,
 	 * not yet committed or those just committed prior to the scan are
 	 * excluded in update_most_recent_deletion_info().
 	 */
-	scan = index_beginscan(rel, idxrel, SnapshotAny, NULL, skey_attoff, 0);
+	scan = index_beginscan(rel, idxrel, SnapshotAny, NULL, skey_attoff, 0, 0);
 
 	index_rescan(scan, skey, skey_attoff, NULL, 0);
 

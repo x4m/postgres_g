@@ -105,11 +105,18 @@ BitmapTableScanSetup(BitmapHeapScanState *node)
 	 */
 	if (!node->ss.ss_currentScanDesc)
 	{
+		uint32		flags = 0;
+
+		if (!bms_is_member(((Scan *) node->ss.ps.plan)->scanrelid,
+						   node->ss.ps.state->es_modified_relids))
+			flags = SO_HINT_REL_READ_ONLY;
+
 		node->ss.ss_currentScanDesc =
 			table_beginscan_bm(node->ss.ss_currentRelation,
 							   node->ss.ps.state->es_snapshot,
 							   0,
-							   NULL);
+							   NULL,
+							   flags);
 	}
 
 	node->ss.ss_currentScanDesc->st.rs_tbmiterator = tbmiterator;

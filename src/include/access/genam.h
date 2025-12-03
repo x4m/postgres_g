@@ -177,7 +177,7 @@ extern IndexScanDesc index_beginscan(Relation heapRelation,
 									 Relation indexRelation,
 									 Snapshot snapshot,
 									 IndexScanInstrumentation *instrument,
-									 int nkeys, int norderbys);
+									 int nkeys, int norderbys, uint32 flags);
 extern IndexScanDesc index_beginscan_bitmap(Relation indexRelation,
 											Snapshot snapshot,
 											IndexScanInstrumentation *instrument,

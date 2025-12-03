@@ -94,7 +94,7 @@ IndexOnlyNext(IndexOnlyScanState *node)
 								   estate->es_snapshot,
 								   &node->ioss_Instrument,
 								   node->ioss_NumScanKeys,
-								   node->ioss_NumOrderByKeys);
+								   node->ioss_NumOrderByKeys, 0);
 
 		node->ioss_ScanDesc = scandesc;
 

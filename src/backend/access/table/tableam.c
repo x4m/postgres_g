@@ -163,10 +163,11 @@ table_parallelscan_initialize(Relation rel, ParallelTableScanDesc pscan,
 }
 
 TableScanDesc
-table_beginscan_parallel(Relation relation, ParallelTableScanDesc pscan)
+table_beginscan_parallel(Relation relation, ParallelTableScanDesc pscan, uint32 flags)
 {
 	Snapshot	snapshot;
-	uint32		flags = SO_TYPE_SEQSCAN |
+
+	flags |= SO_TYPE_SEQSCAN |
 		SO_ALLOW_STRAT | SO_ALLOW_SYNC | SO_ALLOW_PAGEMODE;
 
 	Assert(RelFileLocatorEquals(relation->rd_locator, pscan->phs_locator));
@@ -248,7 +249,7 @@ table_index_fetch_tuple_check(Relation rel,
 	bool		found;
 
 	slot = table_slot_create(rel, NULL);
-	scan = table_index_fetch_begin(rel);
+	scan = table_index_fetch_begin(rel, 0);
 	found = table_index_fetch_tuple(scan, tid, snapshot, slot, &call_again,
 									all_dead);
 	table_index_fetch_end(scan);

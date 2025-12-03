@@ -119,6 +119,12 @@ typedef struct IndexFetchHeapData
 
 	Buffer		xs_cbuf;		/* current heap buffer in scan, if any */
 	/* NB: if xs_cbuf is not InvalidBuffer, we hold a pin on that buffer */
+
+	/*
+	 * Some optimizations can only be performed if the query does not modify
+	 * the underlying relation. Track that here.
+	 */
+	bool		modifies_base_rel;
 } IndexFetchHeapData;
 
 /* Result codes for HeapTupleSatisfiesVacuum */
