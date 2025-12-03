@@ -678,6 +678,12 @@ typedef struct EState
 									 * ExecDoInitialPruning() */
 	const char *es_sourceText;	/* Source text from QueryDesc */
 
+	/*
+	 * RT indexes of relations modified by the query through a
+	 * UPDATE/DELETE/INSERT/MERGE or targeted by a SELECT FOR UPDATE.
+	 */
+	Bitmapset  *es_modified_relids;
+
 	JunkFilter *es_junkFilter;	/* top-level junk filter, if any */
 
 	/* If query can insert/delete tuples, the command ID to mark them with */
