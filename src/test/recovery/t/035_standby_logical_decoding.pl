@@ -296,6 +296,7 @@ wal_level = 'logical'
 max_replication_slots = 4
 max_wal_senders = 4
 autovacuum = off
+hot_standby_feedback = on
 });
 $node_primary->dump_info;
 $node_primary->start;
@@ -748,7 +749,7 @@ check_pg_recvlogical_stderr($handle,
 $logstart = -s $node_standby->logfile;
 
 reactive_slots_change_hfs_and_wait_for_xmins('shared_row_removal_',
-	'no_conflict_', 0, 1);
+	'no_conflict_', 1, 0);
 
 # This should not trigger a conflict
 wait_until_vacuum_can_remove(

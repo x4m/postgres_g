@@ -85,6 +85,7 @@ heapam_index_fetch_begin(Relation rel, uint32 flags)
 
 	hscan->xs_base.rel = rel;
 	hscan->xs_cbuf = InvalidBuffer;
+	hscan->xs_vmbuffer = InvalidBuffer;
 	hscan->modifies_base_rel = !(flags & SO_HINT_REL_READ_ONLY);
 
 	return &hscan->xs_base;
@@ -99,6 +100,12 @@ heapam_index_fetch_reset(IndexFetchTableData *scan)
 	{
 		ReleaseBuffer(hscan->xs_cbuf);
 		hscan->xs_cbuf = InvalidBuffer;
+	}
+
+	if (BufferIsValid(hscan->xs_vmbuffer))
+	{
+		ReleaseBuffer(hscan->xs_vmbuffer);
+		hscan->xs_vmbuffer = InvalidBuffer;
 	}
 }
 
@@ -139,7 +146,8 @@ heapam_index_fetch_tuple(struct IndexFetchTableData *scan,
 		 * Prune page, but only if we weren't already on this page
 		 */
 		if (prev_buf != hscan->xs_cbuf)
-			heap_page_prune_opt(hscan->xs_base.rel, hscan->xs_cbuf);
+			heap_page_prune_opt(hscan->xs_base.rel, hscan->xs_cbuf,
+								hscan->modifies_base_rel ? NULL : &hscan->xs_vmbuffer);
 	}
 
 	/* Obtain share-lock on the buffer so we can examine visibility */
@@ -2491,6 +2499,7 @@ BitmapHeapScanNextBlock(TableScanDesc scan,
 	TBMIterateResult *tbmres;
 	OffsetNumber offsets[TBM_MAX_TUPLES_PER_PAGE];
 	int			noffsets = -1;
+	Buffer	   *vmbuffer = NULL;
 
 	Assert(scan->rs_flags & SO_TYPE_BITMAPSCAN);
 	Assert(hscan->rs_read_stream);
@@ -2537,7 +2546,9 @@ BitmapHeapScanNextBlock(TableScanDesc scan,
 	/*
 	 * Prune and repair fragmentation for the whole page, if possible.
 	 */
-	heap_page_prune_opt(scan->rs_rd, buffer);
+	if (scan->rs_flags & SO_HINT_REL_READ_ONLY)
+		vmbuffer = &hscan->rs_vmbuffer;
+	heap_page_prune_opt(scan->rs_rd, buffer, vmbuffer);
 
 	/*
 	 * We must hold share lock on the buffer content while examining tuple
