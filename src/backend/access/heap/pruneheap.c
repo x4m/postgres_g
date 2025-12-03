@@ -202,6 +202,8 @@ static bool heap_page_will_set_vm(PruneState *prstate,
 								  Relation relation,
 								  BlockNumber heap_blk, Buffer heap_buffer, Page heap_page,
 								  Buffer vmbuffer,
+								  PruneReason reason,
+								  bool do_prune, bool do_freeze,
 								  int nlpdead_items,
 								  uint8 *old_vmbits,
 								  uint8 *new_vmbits);
@@ -223,9 +225,13 @@ static TransactionId get_conflict_xid(bool do_prune, bool do_freeze, bool do_set
  * if there's not any use in pruning.
  *
  * Caller must have pin on the buffer, and must *not* have a lock on it.
+ *
+ * If vmbuffer is not NULL, it is okay for pruning to set the visibility map if
+ * the page is all-visible. We will take care of pinning and, if needed,
+ * reading in the page of the visibility map.
  */
 void
-heap_page_prune_opt(Relation relation, Buffer buffer)
+heap_page_prune_opt(Relation relation, Buffer buffer, Buffer *vmbuffer)
 {
 	Page		page = BufferGetPage(buffer);
 	TransactionId prune_xid;
@@ -305,6 +311,13 @@ heap_page_prune_opt(Relation relation, Buffer buffer)
 				.vistest = vistest,
 				.cutoffs = NULL,
 			};
+
+			if (vmbuffer)
+			{
+				visibilitymap_pin(relation, BufferGetBlockNumber(buffer), vmbuffer);
+				params.options |= HEAP_PAGE_PRUNE_UPDATE_VM;
+				params.vmbuffer = *vmbuffer;
+			}
 
 			heap_page_prune_and_freeze(&params, &presult, &dummy_off_loc,
 									   NULL, NULL);
@@ -951,6 +964,9 @@ identify_and_fix_vm_corruption(Relation rel, Buffer heap_buffer,
  * corrupted, it will fix them by clearing the VM bits and visibility hint.
  * This does not need to be done in a critical section.
  *
+ * This should be called only after do_freeze has been decided (and do_prune
+ * has been set), as these factor into our heuristic-based decision.
+ *
  * Returns true if one or both VM bits should be set, along with returning the
  * current value of the VM bits in *old_vmbits and the desired new value of
  * the VM bits in *new_vmbits.
@@ -964,6 +980,8 @@ heap_page_will_set_vm(PruneState *prstate,
 					  Relation relation,
 					  BlockNumber heap_blk, Buffer heap_buffer, Page heap_page,
 					  Buffer vmbuffer,
+					  PruneReason reason,
+					  bool do_prune, bool do_freeze,
 					  int nlpdead_items,
 					  uint8 *old_vmbits,
 					  uint8 *new_vmbits)
@@ -973,6 +991,24 @@ heap_page_will_set_vm(PruneState *prstate,
 
 	if (!prstate->attempt_update_vm)
 		return false;
+
+	/*
+	 * If this is an on-access call and we're not actually pruning, avoid
+	 * setting the visibility map if it would newly dirty the heap page or, if
+	 * the page is already dirty, if doing so would require including a
+	 * full-page image (FPI) of the heap page in the WAL. This situation
+	 * should be rare, as on-access pruning is only attempted when
+	 * pd_prune_xid is valid.
+	 */
+	if (reason == PRUNE_ON_ACCESS &&
+		prstate->all_visible &&
+		!do_prune && !do_freeze &&
+		(!BufferIsDirty(heap_buffer) || XLogCheckBufferNeedsBackup(heap_buffer)))
+	{
+		prstate->all_visible = false;
+		prstate->all_frozen = false;
+		return false;
+	}
 
 	*old_vmbits = visibilitymap_get_status(relation, heap_blk,
 										   &vmbuffer);
@@ -1171,6 +1207,8 @@ heap_page_prune_and_freeze(PruneFreezeParams *params,
 									  buffer,
 									  page,
 									  vmbuffer,
+									  params->reason,
+									  do_prune, do_freeze,
 									  prstate.lpdead_items,
 									  &old_vmbits,
 									  &new_vmbits);

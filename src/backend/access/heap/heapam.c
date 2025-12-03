@@ -573,6 +573,7 @@ heap_prepare_pagescan(TableScanDesc sscan)
 	Buffer		buffer = scan->rs_cbuf;
 	BlockNumber block = scan->rs_cblock;
 	Snapshot	snapshot;
+	Buffer	   *vmbuffer = NULL;
 	Page		page;
 	int			lines;
 	bool		all_visible;
@@ -587,7 +588,9 @@ heap_prepare_pagescan(TableScanDesc sscan)
 	/*
 	 * Prune and repair fragmentation for the whole page, if possible.
 	 */
-	heap_page_prune_opt(scan->rs_base.rs_rd, buffer);
+	if (sscan->rs_flags & SO_HINT_REL_READ_ONLY)
+		vmbuffer = &scan->rs_vmbuffer;
+	heap_page_prune_opt(scan->rs_base.rs_rd, buffer, vmbuffer);
 
 	/*
 	 * We must hold share lock on the buffer content while examining tuple
@@ -1264,6 +1267,7 @@ heap_beginscan(Relation relation, Snapshot snapshot,
 														  sizeof(TBMIterateResult));
 	}
 
+	scan->rs_vmbuffer = InvalidBuffer;
 
 	return (TableScanDesc) scan;
 }
@@ -1302,6 +1306,12 @@ heap_rescan(TableScanDesc sscan, ScanKey key, bool set_params,
 		scan->rs_cbuf = InvalidBuffer;
 	}
 
+	if (BufferIsValid(scan->rs_vmbuffer))
+	{
+		ReleaseBuffer(scan->rs_vmbuffer);
+		scan->rs_vmbuffer = InvalidBuffer;
+	}
+
 	/*
 	 * SO_TYPE_BITMAPSCAN would be cleaned up here, but it does not hold any
 	 * additional data vs a normal HeapScan
@@ -1333,6 +1343,9 @@ heap_endscan(TableScanDesc sscan)
 	 */
 	if (BufferIsValid(scan->rs_cbuf))
 		ReleaseBuffer(scan->rs_cbuf);
+
+	if (BufferIsValid(scan->rs_vmbuffer))
+		ReleaseBuffer(scan->rs_vmbuffer);
 
 	/*
 	 * Must free the read stream before freeing the BufferAccessStrategy.
