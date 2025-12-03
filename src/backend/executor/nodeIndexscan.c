@@ -102,6 +102,12 @@ IndexNext(IndexScanState *node)
 
 	if (scandesc == NULL)
 	{
+		uint32		flags = 0;
+
+		if (!bms_is_member(((Scan *) node->ss.ps.plan)->scanrelid,
+						   estate->es_modified_relids))
+			flags = SO_HINT_REL_READ_ONLY;
+
 		/*
 		 * We reach here if the index scan is not parallel, or if we're
 		 * serially executing an index scan that was planned to be parallel.
@@ -111,7 +117,8 @@ IndexNext(IndexScanState *node)
 								   estate->es_snapshot,
 								   &node->iss_Instrument,
 								   node->iss_NumScanKeys,
-								   node->iss_NumOrderByKeys);
+								   node->iss_NumOrderByKeys,
+								   flags);
 
 		node->iss_ScanDesc = scandesc;
 
@@ -198,6 +205,12 @@ IndexNextWithReorder(IndexScanState *node)
 
 	if (scandesc == NULL)
 	{
+		uint32		flags = 0;
+
+		if (!bms_is_member(((Scan *) node->ss.ps.plan)->scanrelid,
+						   estate->es_modified_relids))
+			flags = SO_HINT_REL_READ_ONLY;
+
 		/*
 		 * We reach here if the index scan is not parallel, or if we're
 		 * serially executing an index scan that was planned to be parallel.
@@ -207,7 +220,8 @@ IndexNextWithReorder(IndexScanState *node)
 								   estate->es_snapshot,
 								   &node->iss_Instrument,
 								   node->iss_NumScanKeys,
-								   node->iss_NumOrderByKeys);
+								   node->iss_NumOrderByKeys,
+								   flags);
 
 		node->iss_ScanDesc = scandesc;
 

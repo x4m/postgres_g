@@ -84,6 +84,12 @@ IndexOnlyNext(IndexOnlyScanState *node)
 
 	if (scandesc == NULL)
 	{
+		uint32		flags = 0;
+
+		if (!bms_is_member(((Scan *) node->ss.ps.plan)->scanrelid,
+						   estate->es_modified_relids))
+			flags = SO_HINT_REL_READ_ONLY;
+
 		/*
 		 * We reach here if the index only scan is not parallel, or if we're
 		 * serially executing an index only scan that was planned to be
@@ -94,7 +100,8 @@ IndexOnlyNext(IndexOnlyScanState *node)
 								   estate->es_snapshot,
 								   &node->ioss_Instrument,
 								   node->ioss_NumScanKeys,
-								   node->ioss_NumOrderByKeys);
+								   node->ioss_NumOrderByKeys,
+								   flags);
 
 		node->ioss_ScanDesc = scandesc;
 

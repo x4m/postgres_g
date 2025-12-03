@@ -63,6 +63,8 @@ typedef enum ScanOptions
 
 	/* unregister snapshot at scan end? */
 	SO_TEMP_SNAPSHOT = 1 << 9,
+	/* set if the query doesn't modify the rel */
+	SO_HINT_REL_READ_ONLY = 1 << 10,
 }			ScanOptions;
 
 /*
@@ -420,7 +422,7 @@ typedef struct TableAmRoutine
 	 *
 	 * Tuples for an index scan can then be fetched via index_fetch_tuple.
 	 */
-	struct IndexFetchTableData *(*index_fetch_begin) (Relation rel);
+	struct IndexFetchTableData *(*index_fetch_begin) (Relation rel, uint32 flags);
 
 	/*
 	 * Reset index fetch. Typically this will release cross index fetch
@@ -873,9 +875,9 @@ extern TupleTableSlot *table_slot_create(Relation relation, List **reglist);
  */
 static inline TableScanDesc
 table_beginscan(Relation rel, Snapshot snapshot,
-				int nkeys, ScanKeyData *key)
+				int nkeys, ScanKeyData *key, uint32 flags)
 {
-	uint32		flags = SO_TYPE_SEQSCAN |
+	flags |= SO_TYPE_SEQSCAN |
 		SO_ALLOW_STRAT | SO_ALLOW_SYNC | SO_ALLOW_PAGEMODE;
 
 	return rel->rd_tableam->scan_begin(rel, snapshot, nkeys, key, NULL, flags);
@@ -918,9 +920,9 @@ table_beginscan_strat(Relation rel, Snapshot snapshot,
  */
 static inline TableScanDesc
 table_beginscan_bm(Relation rel, Snapshot snapshot,
-				   int nkeys, ScanKeyData *key)
+				   int nkeys, ScanKeyData *key, uint32 flags)
 {
-	uint32		flags = SO_TYPE_BITMAPSCAN | SO_ALLOW_PAGEMODE;
+	flags |= SO_TYPE_BITMAPSCAN | SO_ALLOW_PAGEMODE;
 
 	return rel->rd_tableam->scan_begin(rel, snapshot, nkeys, key,
 									   NULL, flags);
@@ -1127,7 +1129,8 @@ extern void table_parallelscan_initialize(Relation rel,
  * Caller must hold a suitable lock on the relation.
  */
 extern TableScanDesc table_beginscan_parallel(Relation relation,
-											  ParallelTableScanDesc pscan);
+											  ParallelTableScanDesc pscan,
+											  uint32 flags);
 
 /*
  * Begin a parallel tid range scan. `pscan` needs to have been initialized
@@ -1163,9 +1166,9 @@ table_parallelscan_reinitialize(Relation rel, ParallelTableScanDesc pscan)
  * Tuples for an index scan can then be fetched via table_index_fetch_tuple().
  */
 static inline IndexFetchTableData *
-table_index_fetch_begin(Relation rel)
+table_index_fetch_begin(Relation rel, uint32 flags)
 {
-	return rel->rd_tableam->index_fetch_begin(rel);
+	return rel->rd_tableam->index_fetch_begin(rel, flags);
 }
 
 /*
