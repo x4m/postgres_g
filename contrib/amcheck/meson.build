@@ -2,10 +2,10 @@
 
 amcheck_sources = files(
   'verify_common.c',
+  'verify_gist.c',
   'verify_gin.c',
   'verify_heapam.c',
   'verify_nbtree.c',
-  'verify_gist.c',
 )
 
 if host_system == 'windows'

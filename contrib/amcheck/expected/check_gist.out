@@ -143,3 +143,5 @@ SELECT gist_index_check('toasty', true);
  
 (1 row)
 
+-- cleanup
+DROP TABLE toast_bug;

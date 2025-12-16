@@ -60,3 +60,6 @@ WHERE attrelid = 'toast_bug'::regclass AND attname = 'buggy';
 INSERT INTO toast_bug SELECT point(0,0), repeat('a', 2200);
 -- Should not get false positive report of corruption:
 SELECT gist_index_check('toasty', true);
+
+-- cleanup
+DROP TABLE toast_bug;

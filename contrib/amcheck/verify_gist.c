@@ -87,10 +87,10 @@ typedef struct GistCheckState
 
 PG_FUNCTION_INFO_V1(gist_index_check);
 
-static void giststate_init_heapallindexed(Relation rel, GistCheckState * result);
+static void giststate_init_heapallindexed(Relation rel, GistCheckState *result);
 static void gist_check_parent_keys_consistency(Relation rel, Relation heaprel,
 											   void *callback_state, bool readonly);
-static void gist_check_page(GistCheckState * check_state, GistScanItem * stack,
+static void gist_check_page(GistCheckState *check_state, GistScanItem *stack,
 							Page page, bool heapallindexed,
 							BufferAccessStrategy strategy);
 static void check_index_page(Relation rel, Buffer buffer, BlockNumber blockNo);
@@ -366,7 +366,7 @@ gist_check_parent_keys_consistency(Relation rel, Relation heaprel,
 }
 
 static void
-gist_check_page(GistCheckState * check_state, GistScanItem * stack,
+gist_check_page(GistCheckState *check_state, GistScanItem *stack,
 				Page page, bool heapallindexed, BufferAccessStrategy strategy)
 {
 	OffsetNumber maxoff = PageGetMaxOffsetNumber(page);

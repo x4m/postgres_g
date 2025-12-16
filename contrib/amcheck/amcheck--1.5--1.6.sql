@@ -11,4 +11,4 @@ RETURNS VOID
 AS 'MODULE_PATHNAME', 'gist_index_check'
 LANGUAGE C STRICT;
 
-REVOKE ALL ON FUNCTION gist_index_check(regclass,boolean) FROM PUBLIC;
+REVOKE ALL ON FUNCTION gist_index_check(regclass, boolean) FROM PUBLIC;
