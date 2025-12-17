@@ -3570,6 +3570,7 @@ heap_page_would_be_all_visible(Relation rel, Buffer buf,
 	{
 		ItemId		itemid;
 		HeapTupleData tuple;
+		TransactionId dead_after;
 
 		/*
 		 * Set the offset number so that we can display it along with any
@@ -3609,11 +3610,13 @@ heap_page_would_be_all_visible(Relation rel, Buffer buf,
 
 		/* Visibility checks may do IO or allocate memory */
 		Assert(CritSectionCount == 0);
-		switch (HeapTupleSatisfiesVacuum(&tuple, OldestXmin, buf))
+		switch (HeapTupleSatisfiesVacuumHorizon(&tuple, buf, &dead_after))
 		{
 			case HEAPTUPLE_LIVE:
 				{
 					TransactionId xmin;
+
+					Assert(!TransactionIdIsValid(dead_after));
 
 					/* Check comments in lazy_scan_prune. */
 					if (!HeapTupleHeaderXminCommitted(tuple.t_data))
@@ -3647,8 +3650,10 @@ heap_page_would_be_all_visible(Relation rel, Buffer buf,
 				}
 				break;
 
-			case HEAPTUPLE_DEAD:
 			case HEAPTUPLE_RECENTLY_DEAD:
+				Assert(TransactionIdIsValid(dead_after));
+				/* FALLTHROUGH */
+			case HEAPTUPLE_DEAD:
 			case HEAPTUPLE_INSERT_IN_PROGRESS:
 			case HEAPTUPLE_DELETE_IN_PROGRESS:
 				{
