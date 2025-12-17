@@ -1061,6 +1061,28 @@ HeapTupleSatisfiesVacuum(HeapTuple htup, TransactionId OldestXmin,
 }
 
 /*
+ * Wrapper around GlobalVisTestIsRemovableXid() for use when examining live
+ * tuples. Returns true if the given XID may be considered running by at least
+ * one snapshot.
+ *
+ * This function alone is insufficient to determine tuple visibility; callers
+ * must also consider the XID's commit status. Its purpose is purely semantic:
+ * when applied to live tuples, GlobalVisTestIsRemovableXid() is checking
+ * whether the inserting transaction is still considered running, not whether
+ * the tuple is removable. Live tuples are, by definition, not removable, but
+ * the snapshot criteria for “transaction still running” are identical to
+ * those used for removal XIDs.
+ *
+ * See the comment above GlobalVisTestIsRemovable[Full]Xid() for details on the
+ * required preconditions for calling this function.
+ */
+bool
+GlobalVisTestXidMaybeRunning(GlobalVisState *state, TransactionId xid)
+{
+	return !GlobalVisTestIsRemovableXid(state, xid);
+}
+
+/*
  * Work horse for HeapTupleSatisfiesVacuum and similar routines.
  *
  * In contrast to HeapTupleSatisfiesVacuum this routine, when encountering a
