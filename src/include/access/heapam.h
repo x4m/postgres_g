@@ -438,7 +438,7 @@ extern void log_heap_prune_and_freeze(Relation relation, Buffer buffer,
 extern void heap_vacuum_rel(Relation rel,
 							const VacuumParams params, BufferAccessStrategy bstrategy);
 extern bool heap_page_would_be_all_visible(Relation rel, Buffer buf,
-										   TransactionId OldestXmin,
+										   GlobalVisState *vistest,
 										   OffsetNumber *deadoffsets,
 										   int ndeadoffsets,
 										   bool *all_frozen,
@@ -452,6 +452,8 @@ extern TM_Result HeapTupleSatisfiesUpdate(HeapTuple htup, CommandId curcid,
 										  Buffer buffer);
 extern HTSV_Result HeapTupleSatisfiesVacuum(HeapTuple htup, TransactionId OldestXmin,
 											Buffer buffer);
+
+extern bool GlobalVisTestXidMaybeRunning(GlobalVisState *state, TransactionId xid);
 extern HTSV_Result HeapTupleSatisfiesVacuumHorizon(HeapTuple htup, Buffer buffer,
 												   TransactionId *dead_after);
 extern void HeapTupleSetHintBits(HeapTupleHeader tuple, Buffer buffer,

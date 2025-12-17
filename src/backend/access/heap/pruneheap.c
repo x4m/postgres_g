@@ -461,11 +461,12 @@ prune_freeze_setup(PruneFreezeParams *params,
 
 	/*
 	 * The visibility cutoff xid is the newest xmin of live, committed tuples
-	 * older than OldestXmin on the page. This field is only kept up-to-date
-	 * if the page is all-visible. As soon as a tuple is encountered that is
-	 * not visible to all, this field is unmaintained. As long as it is
-	 * maintained, it can be used to calculate the snapshot conflict horizon
-	 * when updating the VM and/or freezing all the tuples on the page.
+	 * on the page older than the visibility horizon represented in the
+	 * GlobalVisState. This field is only kept up-to-date if the page is
+	 * all-visible. As soon as a tuple is encountered that is not visible to
+	 * all, this field is unmaintained. As long as it is maintained, it can be
+	 * used to calculate the snapshot conflict horizon when updating the VM
+	 * and/or freezing all the tuples on the page.
 	 */
 	prstate->visibility_cutoff_xid = InvalidTransactionId;
 }
@@ -1008,14 +1009,14 @@ heap_page_will_set_vm(PruneState *prstate,
  */
 static bool
 heap_page_is_all_visible(Relation rel, Buffer buf,
-						 TransactionId OldestXmin,
+						 GlobalVisState *vistest,
 						 bool *all_frozen,
 						 TransactionId *visibility_cutoff_xid,
 						 OffsetNumber *logging_offnum)
 {
 
 	return heap_page_would_be_all_visible(rel, buf,
-										  OldestXmin,
+										  vistest,
 										  NULL, 0,
 										  all_frozen,
 										  visibility_cutoff_xid,
@@ -1101,6 +1102,16 @@ heap_page_prune_and_freeze(PruneFreezeParams *params,
 	 */
 	prune_freeze_plan(RelationGetRelid(params->relation),
 					  buffer, &prstate, off_loc);
+
+	/*
+	 * After processing all the live tuples on the page, if the newest xmin
+	 * amongst them may be considered running by any snapshot, the page cannot
+	 * be all-visible.
+	 */
+	if (prstate.all_visible &&
+		TransactionIdIsNormal(prstate.visibility_cutoff_xid) &&
+		GlobalVisTestXidMaybeRunning(prstate.vistest, prstate.visibility_cutoff_xid))
+		prstate.all_visible = prstate.all_frozen = false;
 
 	/*
 	 * If checksums are enabled, calling heap_prune_satisfies_vacuum() while
@@ -1283,10 +1294,9 @@ heap_page_prune_and_freeze(PruneFreezeParams *params,
 		bool		debug_all_frozen;
 
 		Assert(prstate.lpdead_items == 0);
-		Assert(prstate.cutoffs);
 
 		Assert(heap_page_is_all_visible(params->relation, buffer,
-										prstate.cutoffs->OldestXmin,
+										prstate.vistest,
 										&debug_all_frozen,
 										&debug_cutoff, off_loc));
 
@@ -1807,27 +1817,14 @@ heap_prune_record_unchanged_lp_normal(Page page, PruneState *prstate, OffsetNumb
 				}
 
 				/*
-				 * The inserter definitely committed.  But is it old enough
-				 * that everyone sees it as committed?  A FrozenTransactionId
-				 * is seen as committed to everyone.  Otherwise, we check if
-				 * there is a snapshot that considers this xid to still be
-				 * running, and if so, we don't consider the page all-visible.
+				 * The inserter definitely committed. But we don't know if it
+				 * is old enough that everyone sees it as committed. Later,
+				 * after processing all the tuples on the page, we'll check if
+				 * there is any snapshot that still considers the newest xid
+				 * on the page to be running. If so, we don't consider the
+				 * page all-visible.
 				 */
 				xmin = HeapTupleHeaderGetXmin(htup);
-
-				/*
-				 * For now always use prstate->cutoffs for this test, because
-				 * we only update 'all_visible' and 'all_frozen' when freezing
-				 * is requested. We could use GlobalVisTestIsRemovableXid
-				 * instead, if a non-freezing caller wanted to set the VM bit.
-				 */
-				Assert(prstate->cutoffs);
-				if (!TransactionIdPrecedes(xmin, prstate->cutoffs->OldestXmin))
-				{
-					prstate->all_visible = false;
-					prstate->all_frozen = false;
-					break;
-				}
 
 				/* Track newest xmin on page. */
 				if (TransactionIdFollows(xmin, prstate->visibility_cutoff_xid) &&

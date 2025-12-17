@@ -2754,7 +2754,7 @@ lazy_vacuum_heap_page(LVRelState *vacrel, BlockNumber blkno, Buffer buffer,
 	 * done outside the critical section.
 	 */
 	if (heap_page_would_be_all_visible(vacrel->rel, buffer,
-									   vacrel->cutoffs.OldestXmin,
+									   vacrel->vistest,
 									   deadoffsets, num_offsets,
 									   &all_frozen, &visibility_cutoff_xid,
 									   &vacrel->offnum))
@@ -3519,7 +3519,7 @@ dead_items_cleanup(LVRelState *vacrel)
  * Returns true if the page is all-visible other than the provided
  * deadoffsets and false otherwise.
  *
- * OldestXmin is used to determine visibility.
+ * vistest is used to determine visibility.
  *
  * Output parameters:
  *
@@ -3535,7 +3535,7 @@ dead_items_cleanup(LVRelState *vacrel)
  */
 bool
 heap_page_would_be_all_visible(Relation rel, Buffer buf,
-							   TransactionId OldestXmin,
+							   GlobalVisState *vistest,
 							   OffsetNumber *deadoffsets,
 							   int ndeadoffsets,
 							   bool *all_frozen,
@@ -3618,7 +3618,7 @@ heap_page_would_be_all_visible(Relation rel, Buffer buf,
 
 					Assert(!TransactionIdIsValid(dead_after));
 
-					/* Check comments in lazy_scan_prune. */
+					/* Check heap_prune_record_unchanged_lp_normal comments */
 					if (!HeapTupleHeaderXminCommitted(tuple.t_data))
 					{
 						all_visible = false;
@@ -3627,16 +3627,17 @@ heap_page_would_be_all_visible(Relation rel, Buffer buf,
 					}
 
 					/*
-					 * The inserter definitely committed. But is it old enough
-					 * that everyone sees it as committed?
+					 * The inserter definitely committed. But we don't know if
+					 * it is old enough that everyone sees it as committed.
+					 * Don't check that now.
+					 *
+					 * If we scan all tuples without finding one that prevents
+					 * the page from being all-visible, we then check whether
+					 * any snapshot still considers the newest XID on the page
+					 * to be running. In that case, the page is not considered
+					 * all-visible.
 					 */
 					xmin = HeapTupleHeaderGetXmin(tuple.t_data);
-					if (!TransactionIdPrecedes(xmin, OldestXmin))
-					{
-						all_visible = false;
-						*all_frozen = false;
-						break;
-					}
 
 					/* Track newest xmin on page. */
 					if (TransactionIdFollows(xmin, *visibility_cutoff_xid) &&
@@ -3666,6 +3667,19 @@ heap_page_would_be_all_visible(Relation rel, Buffer buf,
 				break;
 		}
 	}							/* scan along page */
+
+	/*
+	 * After processing all the live tuples on the page, if the newest xmin
+	 * among them may still be considered running by any snapshot, the page
+	 * cannot be all-visible.
+	 */
+	if (all_visible &&
+		TransactionIdIsNormal(*visibility_cutoff_xid) &&
+		GlobalVisTestXidMaybeRunning(vistest, *visibility_cutoff_xid))
+	{
+		all_visible = false;
+		*all_frozen = false;
+	}
 
 	/* Clear the offset information once we have processed the given page. */
 	*logging_offnum = InvalidOffsetNumber;
