@@ -679,3 +679,219 @@ SELECT xmltext('  ');
 SELECT xmltext('foo `$_-+?=*^%!|/\()[]{}');
 SELECT xmltext('foo & <"bar">');
 SELECT xmltext('x'|| '<P>73</P>'::xml || .42 || true || 'j'::char);
+
+SELECT xmlvalidate(DOCUMENT '<person><name>John</name><age>30</age></person>'
+  ACCORDING TO XMLSCHEMA '<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="person">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element name="name" type="xs:string"/>
+        <xs:element name="age" type="xs:integer"/>
+      </xs:sequence>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>');
+
+SELECT xmlvalidate(DOCUMENT '<person><name>John</name></person>'
+  ACCORDING TO XMLSCHEMA '<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="person">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element name="name" type="xs:string"/>
+        <xs:element name="age" type="xs:integer"/>
+      </xs:sequence>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>');
+
+SELECT xmlvalidate(DOCUMENT '<person><name>John</name><age>not-a-number</age></person>'
+  ACCORDING TO XMLSCHEMA '<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="person">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element name="name" type="xs:string"/>
+        <xs:element name="age" type="xs:integer"/>
+      </xs:sequence>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>');
+
+SELECT xmlvalidate(CONTENT '<book><title>PostgreSQL Internals</title></book>'
+  ACCORDING TO XMLSCHEMA '<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="book">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element name="title" type="xs:string"/>
+      </xs:sequence>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>');
+
+SELECT xmlvalidate(DOCUMENT NULL
+  ACCORDING TO XMLSCHEMA '<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="test" type="xs:string"/>
+</xs:schema>');
+
+SELECT xmlvalidate(DOCUMENT '<test>value</test>'
+  ACCORDING TO XMLSCHEMA NULL);
+
+SELECT xmlvalidate(DOCUMENT NULL ACCORDING TO XMLSCHEMA NULL);
+
+SELECT xmlvalidate(DOCUMENT '<product id="123"><name>Widget</name><price>9.99</price></product>'
+  ACCORDING TO XMLSCHEMA '<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="product">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element name="name" type="xs:string"/>
+        <xs:element name="price" type="xs:decimal"/>
+      </xs:sequence>
+      <xs:attribute name="id" type="xs:string" use="required"/>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>');
+
+SELECT xmlvalidate(DOCUMENT '<product><name>Widget</name><price>9.99</price></product>'
+  ACCORDING TO XMLSCHEMA '<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="product">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element name="name" type="xs:string"/>
+        <xs:element name="price" type="xs:decimal"/>
+      </xs:sequence>
+      <xs:attribute name="id" type="xs:string" use="required"/>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>');
+
+SELECT xmlvalidate(DOCUMENT
+  '<company>
+    <employee>
+      <name>Alice</name>
+      <position>Developer</position>
+      <salary>75000</salary>
+    </employee>
+  </company>'
+  ACCORDING TO XMLSCHEMA '<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="company">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element name="employee" maxOccurs="unbounded">
+          <xs:complexType>
+            <xs:sequence>
+              <xs:element name="name" type="xs:string"/>
+              <xs:element name="position" type="xs:string"/>
+              <xs:element name="salary" type="xs:decimal"/>
+            </xs:sequence>
+          </xs:complexType>
+        </xs:element>
+      </xs:sequence>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>');
+
+CREATE TABLE xml_validation_test (
+  xml_data xml,
+  xsd_schema text
+);
+
+INSERT INTO xml_validation_test VALUES
+  ('<number>42</number>',
+   '<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="number" type="xs:integer"/>
+</xs:schema>'),
+  ('<number>not-a-number</number>',
+   '<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="number" type="xs:integer"/>
+</xs:schema>'),
+  ('<text>Hello World</text>',
+   '<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="text" type="xs:string"/>
+</xs:schema>');
+
+SELECT xmlvalidate(DOCUMENT xml_data ACCORDING TO XMLSCHEMA xsd_schema) AS is_valid
+FROM xml_validation_test;
+
+DROP TABLE xml_validation_test;
+
+SELECT xmlvalidate(DOCUMENT '<test>value</test>'
+  ACCORDING TO XMLSCHEMA '<this-is-not-valid-xsd>');
+
+SELECT xmlvalidate(DOCUMENT '<unclosed-tag>'
+  ACCORDING TO XMLSCHEMA '<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="test" type="xs:string"/>
+</xs:schema>');
+
+-- xs:import with external URL should be blocked
+SELECT xmlvalidate(
+    DOCUMENT '<test>value</test>'
+    ACCORDING TO XMLSCHEMA '<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:import namespace="http://example.com/external" schemaLocation="http://example.com/malicious.xsd"/>
+  <xs:element name="test" type="xs:string"/>
+</xs:schema>');
+
+-- xs:include with external URL should be blocked
+SELECT xmlvalidate(
+    DOCUMENT '<test>value</test>'
+    ACCORDING TO XMLSCHEMA '<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:include schemaLocation="http://example.com/external-schema.xsd"/>
+  <xs:element name="test" type="xs:string"/>
+</xs:schema>');
+
+-- file:// URL should be blocked
+SELECT xmlvalidate(
+    DOCUMENT '<test>value</test>'
+    ACCORDING TO XMLSCHEMA '<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:include schemaLocation="file:///etc/passwd"/>
+  <xs:element name="test" type="xs:string"/>
+</xs:schema>');
+
+-- Test a_expr with subqueries
+CREATE TEMP TABLE xml_docs (id smallint, doc xml);
+CREATE TEMP TABLE xsd_schemas (id smallint, schema text);
+
+INSERT INTO xml_docs VALUES
+  (1, '<product><name>Widget</name><price>19.99</price></product>'),
+  (2, '<product><name>Gadget</name><price>not-a-number</price></product>');
+
+INSERT INTO xsd_schemas VALUES
+  (1, '<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="product">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element name="name" type="xs:string"/>
+        <xs:element name="price" type="xs:decimal"/>
+      </xs:sequence>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>');
+
+-- subquery for document argument
+SELECT xmlvalidate(
+    DOCUMENT (SELECT doc FROM xml_docs WHERE id = 1)
+    ACCORDING TO XMLSCHEMA (SELECT schema FROM xsd_schemas WHERE id = 1)
+) AS subquery_test_valid;
+
+-- subquery for an invalid document
+SELECT xmlvalidate(
+    DOCUMENT (SELECT doc FROM xml_docs WHERE id = 2)
+    ACCORDING TO XMLSCHEMA (SELECT schema FROM xsd_schemas WHERE id = 1)
+) AS subquery_test_invalid;
+
+DROP TABLE xml_docs;
+DROP TABLE xsd_schemas;

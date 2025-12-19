@@ -1010,6 +1010,125 @@ SELECT xmltable.*
 ]]></screen>
     </para>
    </sect3>
+
+   <sect3 id="functions-xml-processing-xmlvalidate">
+    <title><literal>xmlvalidate</literal></title>
+
+    <indexterm>
+     <primary>xmlvalidate</primary>
+    </indexterm>
+
+<synopsis>
+<function>XMLVALIDATE</function> ( {<literal>DOCUMENT</literal>|<literal>CONTENT</literal>} <replaceable>xml_value</replaceable> <literal>ACCORDING TO XMLSCHEMA</literal> <replaceable>schema_text</replaceable> ) <returnvalue>boolean</returnvalue>
+</synopsis>
+
+    <para>
+     The <function>xmlvalidate</function> function validates an XML value
+     against an XML Schema (XSD). It returns <literal>true</literal> if the
+     XML is valid according to the schema, <literal>false</literal> if it is
+     invalid, or <literal>NULL</literal> if either argument is
+     <literal>NULL</literal>.
+    </para>
+
+    <para>
+     The first argument specifies whether to validate the XML as a
+     <literal>DOCUMENT</literal> (a complete XML document with a single root
+     element) or as <literal>CONTENT</literal> (an XML content fragment).
+    </para>
+
+    <para>
+     The <replaceable>schema_text</replaceable> argument should be a
+     <type>text</type> value containing a valid XML Schema Definition (XSD).
+     For security reasons, the schema is treated as plain text and parsed
+     in-memory only. This prevents malicious imports or external file access
+     through schema location references (such as <literal>xs:import</literal>,
+     <literal>xs:include</literal>, or <literal>schemaLocation</literal>
+     attributes). Any attempts to reference external resources will be
+     ignored, resulting in an empty schema reference.
+    </para>
+
+    <para>
+     Examples:
+<screen><![CDATA[
+SELECT xmlvalidate(DOCUMENT '<person><name>John</name><age>30</age></person>'
+  ACCORDING TO XMLSCHEMA '<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="person">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element name="name" type="xs:string"/>
+        <xs:element name="age" type="xs:integer"/>
+      </xs:sequence>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>');
+
+ xmlvalidate
+-------------
+ t
+(1 row)
+]]></screen>
+    </para>
+
+    <para>
+     This example shows a validation failure due to a missing required element:
+<screen><![CDATA[
+SELECT xmlvalidate(DOCUMENT '<person><name>John</name></person>'
+  ACCORDING TO XMLSCHEMA '<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="person">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element name="name" type="xs:string"/>
+        <xs:element name="age" type="xs:integer"/>
+      </xs:sequence>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>');
+
+ xmlvalidate
+-------------
+ f
+(1 row)
+]]></screen>
+    </para>
+
+    <para>
+     The schema can also validate attributes:
+<screen><![CDATA[
+SELECT xmlvalidate(DOCUMENT '<product id="123"><name>Widget</name><price>9.99</price></product>'
+  ACCORDING TO XMLSCHEMA '<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="product">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element name="name" type="xs:string"/>
+        <xs:element name="price" type="xs:decimal"/>
+      </xs:sequence>
+      <xs:attribute name="id" type="xs:string" use="required"/>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>');
+
+ xmlvalidate
+-------------
+ t
+(1 row)
+]]></screen>
+    </para>
+
+    <note>
+     <para>
+      For security, <function>xmlvalidate</function> processes the XML Schema
+      as an in-memory text value. External resource references such as
+      <literal>schemaLocation</literal> in <literal>xs:import</literal> or
+      <literal>xs:include</literal> directives are not followed and are
+      treated as empty schema references. This design prevents potential
+      security vulnerabilities where malicious schemas could attempt to
+      access external files or network resources.
+     </para>
+    </note>
+   </sect3>
   </sect2>
 
   <sect2 id="functions-xml-mapping">

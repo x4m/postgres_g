@@ -2471,6 +2471,14 @@ transformXmlExpr(ParseState *pstate, XmlExpr *x)
 				/* not handled here */
 				Assert(false);
 				break;
+			case IS_XMLVALIDATE:
+				if (i == 0)
+					newe = coerce_to_specific_type(pstate, newe, XMLOID,
+												   "XMLVALIDATE");
+				else
+					newe = coerce_to_specific_type(pstate, newe, TEXTOID,
+												   "XMLVALIDATE");
+				break;
 			case IS_DOCUMENT:
 				newe = coerce_to_specific_type(pstate, newe, XMLOID,
 											   "IS DOCUMENT");

@@ -1976,6 +1976,9 @@ FigureColnameInternal(Node *node, char **name)
 				case IS_XMLSERIALIZE:
 					*name = "xmlserialize";
 					return 2;
+				case IS_XMLVALIDATE:
+					*name = "xmlvalidate";
+					return 2;
 				case IS_DOCUMENT:
 					/* nothing */
 					break;

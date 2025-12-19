@@ -58,6 +58,7 @@
 #include <libxml/xmlwriter.h>
 #include <libxml/xpath.h>
 #include <libxml/xpathInternals.h>
+#include <libxml/xmlschemas.h>
 
 /*
  * We used to check for xmlStructuredErrorContext via a configure test; but
@@ -1158,10 +1159,116 @@ xmlvalidate(PG_FUNCTION_ARGS)
 {
 	ereport(ERROR,
 			(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-			 errmsg("xmlvalidate is not implemented")));
+			 errmsg("xmlvalidate is not implemented against generalized schema definitions")));
 	return 0;
 }
 
+/*
+ * xmlvalidate - validate XML against an XML provided Schema (XSD)
+ *
+ * Returns true if the XML is valid according to the xml schema,
+ * false if it doesn't and NULL if any (xml schema or xml) are NULL.
+ * This implements the SQL:2008 XMLVALIDATE function with the limitation of
+ * not looking at import references. This function relies on the protections
+ * enforced by pg_xml_init.
+ */
+bool
+xmlvalidate_text_schema(xmltype *data, text *schema)
+{
+#ifdef USE_LIBXML
+	xmlDocPtr	doc = NULL;
+	xmlSchemaParserCtxtPtr schema_parser_ctxt = NULL;
+	xmlSchemaPtr schema_ptr = NULL;
+	xmlSchemaValidCtxtPtr valid_ctxt = NULL;
+	char	   *datastr;
+	char	   *schemastr;
+	int			result;
+	PgXmlErrorContext *xmlerrcxt;
+
+	datastr = text_to_cstring((text *) data);
+	schemastr = text_to_cstring(schema);
+	xmlerrcxt = pg_xml_init(PG_XML_STRICTNESS_WELLFORMED);
+
+	PG_TRY();
+	{
+		doc = xmlReadMemory(datastr, strlen(datastr), NULL, NULL, 0);
+		if (doc == NULL)
+		{
+			xml_ereport(xmlerrcxt, ERROR, ERRCODE_INVALID_XML_DOCUMENT,
+						"invalid XML document");
+		}
+
+		schema_parser_ctxt = xmlSchemaNewMemParserCtxt(schemastr, strlen(schemastr));
+		if (schema_parser_ctxt == NULL)
+		{
+			xml_ereport(xmlerrcxt, ERROR, ERRCODE_INVALID_XML_DOCUMENT,
+						"failed to create schema parser context");
+		}
+
+		schema_ptr = xmlSchemaParse(schema_parser_ctxt);
+		if (schema_ptr == NULL)
+		{
+			xml_ereport(xmlerrcxt, ERROR, ERRCODE_INVALID_XML_DOCUMENT,
+						"failed to parse XML schema");
+		}
+
+		valid_ctxt = xmlSchemaNewValidCtxt(schema_ptr);
+		if (valid_ctxt == NULL)
+		{
+			xml_ereport(xmlerrcxt, ERROR, ERRCODE_OUT_OF_MEMORY,
+						"failed to create schema validation context");
+		}
+
+		/* Validate the document - returns 0 if valid,
+		   greater than 0 if invalid and < 0 if error */
+		result = xmlSchemaValidateDoc(valid_ctxt, doc);
+		if (result < 0)
+		{
+			xml_ereport(xmlerrcxt, ERROR, ERRCODE_INTERNAL_ERROR,
+						"internal error during schema validation");
+		} else if (result == 0) {
+			return true;
+		} else {
+			return false;
+		}
+	}
+	PG_CATCH();
+	{
+		if (valid_ctxt)
+			xmlSchemaFreeValidCtxt(valid_ctxt);
+		if (schema_ptr)
+			xmlSchemaFree(schema_ptr);
+		if (schema_parser_ctxt)
+			xmlSchemaFreeParserCtxt(schema_parser_ctxt);
+		if (doc)
+			xmlFreeDoc(doc);
+		pg_xml_done(xmlerrcxt, true);
+		pfree(datastr);
+		pfree(schemastr);
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+	if (valid_ctxt)
+		xmlSchemaFreeValidCtxt(valid_ctxt);
+	if (schema_ptr)
+		xmlSchemaFree(schema_ptr);
+	if (schema_parser_ctxt)
+		xmlSchemaFreeParserCtxt(schema_parser_ctxt);
+	if (doc)
+		xmlFreeDoc(doc);
+
+	pg_xml_done(xmlerrcxt, false);
+
+	pfree(datastr);
+	pfree(schemastr);
+	// Default case since nothing got returned
+	// out of the normal path for validation calls to libxml
+	return false;
+#else
+	NO_XML_SUPPORT();
+	return NULL;
+#endif
+}
 
 bool
 xml_is_document(xmltype *arg)

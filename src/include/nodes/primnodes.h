@@ -1610,6 +1610,7 @@ typedef enum XmlExprOp
 	IS_XMLROOT,					/* XMLROOT(xml, version, standalone) */
 	IS_XMLSERIALIZE,			/* XMLSERIALIZE(is_document, xmlval, indent) */
 	IS_DOCUMENT,				/* xmlval IS DOCUMENT */
+	IS_XMLVALIDATE,				/* XMLVALIDATE(xmlval, schema_text) */
 } XmlExprOp;
 
 typedef enum XmlOptionType

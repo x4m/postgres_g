@@ -218,6 +218,8 @@ exprType(const Node *expr)
 		case T_XmlExpr:
 			if (((const XmlExpr *) expr)->op == IS_DOCUMENT)
 				type = BOOLOID;
+			else if (((const XmlExpr *) expr)->op == IS_XMLVALIDATE)
+				type = BOOLOID;
 			else if (((const XmlExpr *) expr)->op == IS_XMLSERIALIZE)
 				type = TEXTOID;
 			else

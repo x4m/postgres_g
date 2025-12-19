@@ -76,6 +76,7 @@ extern xmltype *xmlelement(XmlExpr *xexpr,
 extern xmltype *xmlparse(text *data, XmlOptionType xmloption_arg, bool preserve_whitespace);
 extern xmltype *xmlpi(const char *target, text *arg, bool arg_is_null, bool *result_is_null);
 extern xmltype *xmlroot(xmltype *data, text *version, int standalone);
+extern bool xmlvalidate_text_schema(xmltype *data, text *schema);
 extern bool xml_is_document(xmltype *arg);
 extern text *xmltotext_with_options(xmltype *data, XmlOptionType xmloption_arg,
 									bool indent);

@@ -1881,3 +1881,283 @@ SELECT xmltext('x'|| '<P>73</P>'::xml || .42 || true || 'j'::char);
  x&lt;P&gt;73&lt;/P&gt;0.42truej
 (1 row)
 
+SELECT xmlvalidate(DOCUMENT '<person><name>John</name><age>30</age></person>'
+  ACCORDING TO XMLSCHEMA '<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="person">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element name="name" type="xs:string"/>
+        <xs:element name="age" type="xs:integer"/>
+      </xs:sequence>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>');
+ xmlvalidate 
+-------------
+ t
+(1 row)
+
+SELECT xmlvalidate(DOCUMENT '<person><name>John</name></person>'
+  ACCORDING TO XMLSCHEMA '<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="person">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element name="name" type="xs:string"/>
+        <xs:element name="age" type="xs:integer"/>
+      </xs:sequence>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>');
+ xmlvalidate 
+-------------
+ f
+(1 row)
+
+SELECT xmlvalidate(DOCUMENT '<person><name>John</name><age>not-a-number</age></person>'
+  ACCORDING TO XMLSCHEMA '<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="person">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element name="name" type="xs:string"/>
+        <xs:element name="age" type="xs:integer"/>
+      </xs:sequence>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>');
+ xmlvalidate 
+-------------
+ f
+(1 row)
+
+SELECT xmlvalidate(CONTENT '<book><title>PostgreSQL Internals</title></book>'
+  ACCORDING TO XMLSCHEMA '<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="book">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element name="title" type="xs:string"/>
+      </xs:sequence>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>');
+ xmlvalidate 
+-------------
+ t
+(1 row)
+
+SELECT xmlvalidate(DOCUMENT NULL
+  ACCORDING TO XMLSCHEMA '<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="test" type="xs:string"/>
+</xs:schema>');
+ xmlvalidate 
+-------------
+ 
+(1 row)
+
+SELECT xmlvalidate(DOCUMENT '<test>value</test>'
+  ACCORDING TO XMLSCHEMA NULL);
+ xmlvalidate 
+-------------
+ 
+(1 row)
+
+SELECT xmlvalidate(DOCUMENT NULL ACCORDING TO XMLSCHEMA NULL);
+ xmlvalidate 
+-------------
+ 
+(1 row)
+
+SELECT xmlvalidate(DOCUMENT '<product id="123"><name>Widget</name><price>9.99</price></product>'
+  ACCORDING TO XMLSCHEMA '<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="product">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element name="name" type="xs:string"/>
+        <xs:element name="price" type="xs:decimal"/>
+      </xs:sequence>
+      <xs:attribute name="id" type="xs:string" use="required"/>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>');
+ xmlvalidate 
+-------------
+ t
+(1 row)
+
+SELECT xmlvalidate(DOCUMENT '<product><name>Widget</name><price>9.99</price></product>'
+  ACCORDING TO XMLSCHEMA '<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="product">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element name="name" type="xs:string"/>
+        <xs:element name="price" type="xs:decimal"/>
+      </xs:sequence>
+      <xs:attribute name="id" type="xs:string" use="required"/>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>');
+ xmlvalidate 
+-------------
+ f
+(1 row)
+
+SELECT xmlvalidate(DOCUMENT
+  '<company>
+    <employee>
+      <name>Alice</name>
+      <position>Developer</position>
+      <salary>75000</salary>
+    </employee>
+  </company>'
+  ACCORDING TO XMLSCHEMA '<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="company">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element name="employee" maxOccurs="unbounded">
+          <xs:complexType>
+            <xs:sequence>
+              <xs:element name="name" type="xs:string"/>
+              <xs:element name="position" type="xs:string"/>
+              <xs:element name="salary" type="xs:decimal"/>
+            </xs:sequence>
+          </xs:complexType>
+        </xs:element>
+      </xs:sequence>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>');
+ xmlvalidate 
+-------------
+ t
+(1 row)
+
+CREATE TABLE xml_validation_test (
+  xml_data xml,
+  xsd_schema text
+);
+INSERT INTO xml_validation_test VALUES
+  ('<number>42</number>',
+   '<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="number" type="xs:integer"/>
+</xs:schema>'),
+  ('<number>not-a-number</number>',
+   '<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="number" type="xs:integer"/>
+</xs:schema>'),
+  ('<text>Hello World</text>',
+   '<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="text" type="xs:string"/>
+</xs:schema>');
+SELECT xmlvalidate(DOCUMENT xml_data ACCORDING TO XMLSCHEMA xsd_schema) AS is_valid
+FROM xml_validation_test;
+ is_valid 
+----------
+ t
+ f
+ t
+(3 rows)
+
+DROP TABLE xml_validation_test;
+SELECT xmlvalidate(DOCUMENT '<test>value</test>'
+  ACCORDING TO XMLSCHEMA '<this-is-not-valid-xsd>');
+ERROR:  failed to parse XML schema
+DETAIL:  line 1: Premature end of data in tag this-is-not-valid-xsd line 1
+<this-is-not-valid-xsd>
+                       ^
+SELECT xmlvalidate(DOCUMENT '<unclosed-tag>'
+  ACCORDING TO XMLSCHEMA '<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="test" type="xs:string"/>
+</xs:schema>');
+ERROR:  invalid XML content
+LINE 1: SELECT xmlvalidate(DOCUMENT '<unclosed-tag>'
+                                    ^
+DETAIL:  line 1: Premature end of data in tag unclosed-tag line 1
+<unclosed-tag>
+              ^
+-- xs:import with external URL should be blocked
+SELECT xmlvalidate(
+    DOCUMENT '<test>value</test>'
+    ACCORDING TO XMLSCHEMA '<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:import namespace="http://example.com/external" schemaLocation="http://example.com/malicious.xsd"/>
+  <xs:element name="test" type="xs:string"/>
+</xs:schema>');
+ERROR:  failed to parse XML schema
+DETAIL:  line 1: Document is empty
+
+^
+-- xs:include with external URL should be blocked
+SELECT xmlvalidate(
+    DOCUMENT '<test>value</test>'
+    ACCORDING TO XMLSCHEMA '<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:include schemaLocation="http://example.com/external-schema.xsd"/>
+  <xs:element name="test" type="xs:string"/>
+</xs:schema>');
+ERROR:  failed to parse XML schema
+DETAIL:  line 1: Document is empty
+
+^
+-- file:// URL should be blocked
+SELECT xmlvalidate(
+    DOCUMENT '<test>value</test>'
+    ACCORDING TO XMLSCHEMA '<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:include schemaLocation="file:///etc/passwd"/>
+  <xs:element name="test" type="xs:string"/>
+</xs:schema>');
+ERROR:  failed to parse XML schema
+DETAIL:  line 1: Document is empty
+
+^
+-- Test a_expr with subqueries
+CREATE TEMP TABLE xml_docs (id smallint, doc xml);
+CREATE TEMP TABLE xsd_schemas (id smallint, schema text);
+INSERT INTO xml_docs VALUES
+  (1, '<product><name>Widget</name><price>19.99</price></product>'),
+  (2, '<product><name>Gadget</name><price>not-a-number</price></product>');
+INSERT INTO xsd_schemas VALUES
+  (1, '<?xml version="1.0"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="product">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element name="name" type="xs:string"/>
+        <xs:element name="price" type="xs:decimal"/>
+      </xs:sequence>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>');
+-- subquery for document argument
+SELECT xmlvalidate(
+    DOCUMENT (SELECT doc FROM xml_docs WHERE id = 1)
+    ACCORDING TO XMLSCHEMA (SELECT schema FROM xsd_schemas WHERE id = 1)
+) AS subquery_test_valid;
+ subquery_test_valid 
+---------------------
+ t
+(1 row)
+
+-- subquery for an invalid document
+SELECT xmlvalidate(
+    DOCUMENT (SELECT doc FROM xml_docs WHERE id = 2)
+    ACCORDING TO XMLSCHEMA (SELECT schema FROM xsd_schemas WHERE id = 1)
+) AS subquery_test_invalid;
+ subquery_test_invalid 
+-----------------------
+ f
+(1 row)
+
+DROP TABLE xml_docs;
+DROP TABLE xsd_schemas;

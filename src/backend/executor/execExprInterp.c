@@ -4626,6 +4626,30 @@ ExecEvalXmlExpr(ExprState *state, ExprEvalStep *op)
 			}
 			break;
 
+		case IS_XMLVALIDATE:
+			{
+				Datum	   *argvalue = op->d.xmlexpr.argvalue;
+				bool	   *argnull = op->d.xmlexpr.argnull;
+				xmltype    *data;
+				text	   *schema;
+
+				/* arguments are known to be xml, text */
+				Assert(list_length(xexpr->args) == 2);
+
+				if (argnull[0] || argnull[1])
+				{
+					*op->resnull = true;
+					return;
+				}
+
+				data = DatumGetXmlP(argvalue[0]);
+				schema = DatumGetTextPP(argvalue[1]);
+
+				*op->resvalue = BoolGetDatum(xmlvalidate_text_schema(data, schema));
+				*op->resnull = false;
+			}
+			break;
+
 		case IS_DOCUMENT:
 			{
 				Datum	   *argvalue = op->d.xmlexpr.argvalue;

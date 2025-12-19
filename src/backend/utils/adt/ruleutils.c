@@ -10119,10 +10119,13 @@ get_rule_expr(Node *node, deparse_context *context,
 					case IS_XMLSERIALIZE:
 						appendStringInfoString(buf, "XMLSERIALIZE(");
 						break;
+					case IS_XMLVALIDATE:
+						appendStringInfoString(buf, "XMLVALIDATE(");
+						break;
 					case IS_DOCUMENT:
 						break;
 				}
-				if (xexpr->op == IS_XMLPARSE || xexpr->op == IS_XMLSERIALIZE)
+				if (xexpr->op == IS_XMLPARSE || xexpr->op == IS_XMLSERIALIZE || xexpr->op == IS_XMLVALIDATE)
 				{
 					if (xexpr->xmloption == XMLOPTION_DOCUMENT)
 						appendStringInfoString(buf, "DOCUMENT ");
@@ -10225,6 +10228,17 @@ get_rule_expr(Node *node, deparse_context *context,
 										break;
 								}
 							}
+							break;
+						case IS_XMLVALIDATE:
+							Assert(list_length(xexpr->args) == 2);
+
+							get_rule_expr((Node *) linitial(xexpr->args),
+										  context, true);
+
+							appendStringInfoString(buf, " ACCORDING TO XMLSCHEMA ");
+
+							get_rule_expr((Node *) lsecond(xexpr->args),
+										  context, true);
 							break;
 						case IS_DOCUMENT:
 							get_rule_expr_paren((Node *) xexpr->args, context, false, node);
