@@ -111,9 +111,6 @@ static HeapTuple check_modified_virtual_generated(TupleDesc tupdesc, HeapTuple t
  * queryString is the source text of the CREATE TRIGGER command.
  * This must be supplied if a whenClause is specified, else it can be NULL.
  *
- * relOid, if nonzero, is the relation on which the trigger should be
- * created.  If zero, the name provided in the statement will be looked up.
- *
  * refRelOid, if nonzero, is the relation to which the constraint trigger
  * refers.  If zero, the constraint relation name provided in the statement
  * will be looked up as needed.
@@ -158,12 +155,12 @@ static HeapTuple check_modified_virtual_generated(TupleDesc tupdesc, HeapTuple t
  */
 ObjectAddress
 CreateTrigger(CreateTrigStmt *stmt, const char *queryString,
-			  Oid relOid, Oid refRelOid, Oid constraintOid, Oid indexOid,
+			  Oid refRelOid, Oid constraintOid, Oid indexOid,
 			  Oid funcoid, Oid parentTriggerOid, Node *whenClause,
 			  bool isInternal, bool in_partition)
 {
 	return
-		CreateTriggerFiringOn(stmt, queryString, relOid, refRelOid,
+		CreateTriggerFiringOn(stmt, queryString, refRelOid,
 							  constraintOid, indexOid, funcoid,
 							  parentTriggerOid, whenClause, isInternal,
 							  in_partition, TRIGGER_FIRES_ON_ORIGIN);
@@ -175,7 +172,7 @@ CreateTrigger(CreateTrigStmt *stmt, const char *queryString,
  */
 ObjectAddress
 CreateTriggerFiringOn(CreateTrigStmt *stmt, const char *queryString,
-					  Oid relOid, Oid refRelOid, Oid constraintOid,
+					  Oid refRelOid, Oid constraintOid,
 					  Oid indexOid, Oid funcoid, Oid parentTriggerOid,
 					  Node *whenClause, bool isInternal, bool in_partition,
 					  char trigger_fires_when)
@@ -208,8 +205,8 @@ CreateTriggerFiringOn(CreateTrigStmt *stmt, const char *queryString,
 	bool		existing_isInternal = false;
 	bool		existing_isClone = false;
 
-	if (OidIsValid(relOid))
-		rel = table_open(relOid, ShareRowExclusiveLock);
+	if (OidIsValid(stmt->relOid))
+		rel = table_open(stmt->relOid, ShareRowExclusiveLock);
 	else
 		rel = table_openrv(stmt->relation, ShareRowExclusiveLock);
 
@@ -1186,8 +1183,9 @@ CreateTriggerFiringOn(CreateTrigStmt *stmt, const char *queryString,
 				map_partition_varattnos((List *) qual, PRS2_NEW_VARNO,
 										childTbl, rel);
 
+			childStmt->relOid = partdesc->oids[i];
 			CreateTriggerFiringOn(childStmt, queryString,
-								  partdesc->oids[i], refRelOid,
+								  refRelOid,
 								  InvalidOid, InvalidOid,
 								  funcoid, trigoid, qual,
 								  isInternal, true, trigger_fires_when);

@@ -2026,6 +2026,7 @@ index_constraint_create(Relation heapRelation,
 			"PK_ConstraintTrigger" :
 			"Unique_ConstraintTrigger";
 		trigger->relation = NULL;
+		trigger->relOid = RelationGetRelid(heapRelation);
 		trigger->funcname = SystemFuncName("unique_key_recheck");
 		trigger->args = NIL;
 		trigger->row = true;
@@ -2038,7 +2039,7 @@ index_constraint_create(Relation heapRelation,
 		trigger->initdeferred = initdeferred;
 		trigger->constrrel = NULL;
 
-		(void) CreateTrigger(trigger, NULL, RelationGetRelid(heapRelation),
+		(void) CreateTrigger(trigger, NULL,
 							 InvalidOid, conOid, indexRelationId, InvalidOid,
 							 InvalidOid, NULL, true, false);
 	}

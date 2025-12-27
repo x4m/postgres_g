@@ -6139,6 +6139,7 @@ CreateTrigStmt:
 					n->isconstraint = false;
 					n->trigname = $4;
 					n->relation = $8;
+					n->relOid = InvalidOid;
 					n->funcname = $14;
 					n->args = $16;
 					n->row = $10;
@@ -6188,6 +6189,7 @@ CreateTrigStmt:
 					n->isconstraint = true;
 					n->trigname = $5;
 					n->relation = $9;
+					n->relOid = InvalidOid;
 					n->funcname = $18;
 					n->args = $20;
 					n->row = true;

@@ -3138,6 +3138,17 @@ typedef struct CreateTrigStmt
 	bool		isconstraint;	/* This is a constraint trigger */
 	char	   *trigname;		/* TRIGGER's name */
 	RangeVar   *relation;		/* relation trigger is on */
+
+	/*
+	 * The OID of the relation on which the trigger is to be created. If this
+	 * is InvalidOid, CreateTrigStmt.relation is used to perform the lookup;
+	 * otherwise, use this directly. This is useful when CreateTrigger is
+	 * invoked indirectly rather than directly from the parser.
+	 *
+	 * Using the OID also avoids repeated relation name lookups.
+	 */
+	Oid			relOid;
+
 	List	   *funcname;		/* qual. name of function to call */
 	List	   *args;			/* list of String or NIL */
 	bool		row;			/* ROW/STATEMENT */

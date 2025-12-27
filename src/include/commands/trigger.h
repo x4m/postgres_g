@@ -152,11 +152,11 @@ extern PGDLLIMPORT int SessionReplicationRole;
 #define TRIGGER_DISABLED					'D'
 
 extern ObjectAddress CreateTrigger(CreateTrigStmt *stmt, const char *queryString,
-								   Oid relOid, Oid refRelOid, Oid constraintOid, Oid indexOid,
+								   Oid refRelOid, Oid constraintOid, Oid indexOid,
 								   Oid funcoid, Oid parentTriggerOid, Node *whenClause,
 								   bool isInternal, bool in_partition);
 extern ObjectAddress CreateTriggerFiringOn(CreateTrigStmt *stmt, const char *queryString,
-										   Oid relOid, Oid refRelOid, Oid constraintOid,
+										   Oid refRelOid, Oid constraintOid,
 										   Oid indexOid, Oid funcoid, Oid parentTriggerOid,
 										   Node *whenClause, bool isInternal, bool in_partition,
 										   char trigger_fires_when);

@@ -13840,6 +13840,7 @@ CreateFKCheckTrigger(Oid myRelOid, Oid refRelOid, Constraint *fkconstraint,
 	fk_trigger->isconstraint = true;
 	fk_trigger->trigname = "RI_ConstraintTrigger_c";
 	fk_trigger->relation = NULL;
+	fk_trigger->relOid = myRelOid;
 
 	/* Either ON INSERT or ON UPDATE */
 	if (on_insert)
@@ -13863,7 +13864,7 @@ CreateFKCheckTrigger(Oid myRelOid, Oid refRelOid, Constraint *fkconstraint,
 	fk_trigger->initdeferred = fkconstraint->initdeferred;
 	fk_trigger->constrrel = NULL;
 
-	trigAddress = CreateTrigger(fk_trigger, NULL, myRelOid, refRelOid,
+	trigAddress = CreateTrigger(fk_trigger, NULL, refRelOid,
 								constraintOid, indexOid, InvalidOid,
 								parentTrigOid, NULL, true, false);
 
@@ -13899,6 +13900,7 @@ createForeignKeyActionTriggers(Oid myRelOid, Oid refRelOid, Constraint *fkconstr
 	fk_trigger->isconstraint = true;
 	fk_trigger->trigname = "RI_ConstraintTrigger_a";
 	fk_trigger->relation = NULL;
+	fk_trigger->relOid = refRelOid;
 	fk_trigger->args = NIL;
 	fk_trigger->row = true;
 	fk_trigger->timing = TRIGGER_TYPE_AFTER;
@@ -13941,7 +13943,7 @@ createForeignKeyActionTriggers(Oid myRelOid, Oid refRelOid, Constraint *fkconstr
 			break;
 	}
 
-	trigAddress = CreateTrigger(fk_trigger, NULL, refRelOid, myRelOid,
+	trigAddress = CreateTrigger(fk_trigger, NULL, myRelOid,
 								constraintOid, indexOid, InvalidOid,
 								parentDelTrigger, NULL, true, false);
 	if (deleteTrigOid)
@@ -13959,6 +13961,7 @@ createForeignKeyActionTriggers(Oid myRelOid, Oid refRelOid, Constraint *fkconstr
 	fk_trigger->isconstraint = true;
 	fk_trigger->trigname = "RI_ConstraintTrigger_a";
 	fk_trigger->relation = NULL;
+	fk_trigger->relOid = refRelOid;
 	fk_trigger->args = NIL;
 	fk_trigger->row = true;
 	fk_trigger->timing = TRIGGER_TYPE_AFTER;
@@ -14001,7 +14004,7 @@ createForeignKeyActionTriggers(Oid myRelOid, Oid refRelOid, Constraint *fkconstr
 			break;
 	}
 
-	trigAddress = CreateTrigger(fk_trigger, NULL, refRelOid, myRelOid,
+	trigAddress = CreateTrigger(fk_trigger, NULL, myRelOid,
 								constraintOid, indexOid, InvalidOid,
 								parentUpdTrigger, NULL, true, false);
 	if (updateTrigOid)
@@ -20905,6 +20908,7 @@ CloneRowTriggersToPartition(Relation parent, Relation partition)
 		trigStmt->isconstraint = OidIsValid(trigForm->tgconstraint);
 		trigStmt->trigname = NameStr(trigForm->tgname);
 		trigStmt->relation = NULL;
+		trigStmt->relOid = RelationGetRelid(partition);
 		trigStmt->funcname = NULL;	/* passed separately */
 		trigStmt->args = trigargs;
 		trigStmt->row = true;
@@ -20917,7 +20921,7 @@ CloneRowTriggersToPartition(Relation parent, Relation partition)
 		trigStmt->initdeferred = trigForm->tginitdeferred;
 		trigStmt->constrrel = NULL; /* passed separately */
 
-		CreateTriggerFiringOn(trigStmt, NULL, RelationGetRelid(partition),
+		CreateTriggerFiringOn(trigStmt, NULL,
 							  trigForm->tgconstrrelid, InvalidOid, InvalidOid,
 							  trigForm->tgfoid, trigForm->oid, qual,
 							  false, true, trigForm->tgenabled);
