@@ -111,10 +111,6 @@ static HeapTuple check_modified_virtual_generated(TupleDesc tupdesc, HeapTuple t
  * queryString is the source text of the CREATE TRIGGER command.
  * This must be supplied if a whenClause is specified, else it can be NULL.
  *
- * refRelOid, if nonzero, is the relation to which the constraint trigger
- * refers.  If zero, the constraint relation name provided in the statement
- * will be looked up as needed.
- *
  * constraintOid, if nonzero, says that this trigger is being created
  * internally to implement that constraint.  A suitable pg_depend entry will
  * be made to link the trigger to that constraint.  constraintOid is zero when
@@ -155,12 +151,12 @@ static HeapTuple check_modified_virtual_generated(TupleDesc tupdesc, HeapTuple t
  */
 ObjectAddress
 CreateTrigger(CreateTrigStmt *stmt, const char *queryString,
-			  Oid refRelOid, Oid constraintOid, Oid indexOid,
+			  Oid constraintOid, Oid indexOid,
 			  Oid funcoid, Oid parentTriggerOid, Node *whenClause,
 			  bool isInternal, bool in_partition)
 {
 	return
-		CreateTriggerFiringOn(stmt, queryString, refRelOid,
+		CreateTriggerFiringOn(stmt, queryString,
 							  constraintOid, indexOid, funcoid,
 							  parentTriggerOid, whenClause, isInternal,
 							  in_partition, TRIGGER_FIRES_ON_ORIGIN);
@@ -172,7 +168,7 @@ CreateTrigger(CreateTrigStmt *stmt, const char *queryString,
  */
 ObjectAddress
 CreateTriggerFiringOn(CreateTrigStmt *stmt, const char *queryString,
-					  Oid refRelOid, Oid constraintOid,
+					  Oid constraintOid,
 					  Oid indexOid, Oid funcoid, Oid parentTriggerOid,
 					  Node *whenClause, bool isInternal, bool in_partition,
 					  char trigger_fires_when)
@@ -324,10 +320,10 @@ CreateTriggerFiringOn(CreateTrigStmt *stmt, const char *queryString,
 		 * might end up creating a pg_constraint entry referencing a
 		 * nonexistent table.
 		 */
-		if (OidIsValid(refRelOid))
+		if (OidIsValid(stmt->constrrelOid))
 		{
-			LockRelationOid(refRelOid, AccessShareLock);
-			constrrelid = refRelOid;
+			LockRelationOid(stmt->constrrelOid, AccessShareLock);
+			constrrelid = stmt->constrrelOid;
 		}
 		else if (stmt->constrrel != NULL)
 			constrrelid = RangeVarGetRelid(stmt->constrrel, AccessShareLock,
@@ -1184,8 +1180,8 @@ CreateTriggerFiringOn(CreateTrigStmt *stmt, const char *queryString,
 										childTbl, rel);
 
 			childStmt->relOid = partdesc->oids[i];
+			childStmt->constrrelOid = stmt->constrrelOid;
 			CreateTriggerFiringOn(childStmt, queryString,
-								  refRelOid,
 								  InvalidOid, InvalidOid,
 								  funcoid, trigoid, qual,
 								  isInternal, true, trigger_fires_when);

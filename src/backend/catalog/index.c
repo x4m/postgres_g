@@ -2038,9 +2038,10 @@ index_constraint_create(Relation heapRelation,
 		trigger->deferrable = true;
 		trigger->initdeferred = initdeferred;
 		trigger->constrrel = NULL;
+		trigger->constrrelOid = InvalidOid;
 
 		(void) CreateTrigger(trigger, NULL,
-							 InvalidOid, conOid, indexRelationId, InvalidOid,
+							 conOid, indexRelationId, InvalidOid,
 							 InvalidOid, NULL, true, false);
 	}
 

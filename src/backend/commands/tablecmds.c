@@ -13863,8 +13863,9 @@ CreateFKCheckTrigger(Oid myRelOid, Oid refRelOid, Constraint *fkconstraint,
 	fk_trigger->deferrable = fkconstraint->deferrable;
 	fk_trigger->initdeferred = fkconstraint->initdeferred;
 	fk_trigger->constrrel = NULL;
+	fk_trigger->constrrelOid = refRelOid;
 
-	trigAddress = CreateTrigger(fk_trigger, NULL, refRelOid,
+	trigAddress = CreateTrigger(fk_trigger, NULL,
 								constraintOid, indexOid, InvalidOid,
 								parentTrigOid, NULL, true, false);
 
@@ -13909,6 +13910,7 @@ createForeignKeyActionTriggers(Oid myRelOid, Oid refRelOid, Constraint *fkconstr
 	fk_trigger->whenClause = NULL;
 	fk_trigger->transitionRels = NIL;
 	fk_trigger->constrrel = NULL;
+	fk_trigger->constrrelOid = myRelOid;
 
 	switch (fkconstraint->fk_del_action)
 	{
@@ -13943,7 +13945,7 @@ createForeignKeyActionTriggers(Oid myRelOid, Oid refRelOid, Constraint *fkconstr
 			break;
 	}
 
-	trigAddress = CreateTrigger(fk_trigger, NULL, myRelOid,
+	trigAddress = CreateTrigger(fk_trigger, NULL,
 								constraintOid, indexOid, InvalidOid,
 								parentDelTrigger, NULL, true, false);
 	if (deleteTrigOid)
@@ -13970,6 +13972,7 @@ createForeignKeyActionTriggers(Oid myRelOid, Oid refRelOid, Constraint *fkconstr
 	fk_trigger->whenClause = NULL;
 	fk_trigger->transitionRels = NIL;
 	fk_trigger->constrrel = NULL;
+	fk_trigger->constrrelOid = myRelOid;
 
 	switch (fkconstraint->fk_upd_action)
 	{
@@ -14004,7 +14007,7 @@ createForeignKeyActionTriggers(Oid myRelOid, Oid refRelOid, Constraint *fkconstr
 			break;
 	}
 
-	trigAddress = CreateTrigger(fk_trigger, NULL, myRelOid,
+	trigAddress = CreateTrigger(fk_trigger, NULL,
 								constraintOid, indexOid, InvalidOid,
 								parentUpdTrigger, NULL, true, false);
 	if (updateTrigOid)
@@ -20920,9 +20923,9 @@ CloneRowTriggersToPartition(Relation parent, Relation partition)
 		trigStmt->deferrable = trigForm->tgdeferrable;
 		trigStmt->initdeferred = trigForm->tginitdeferred;
 		trigStmt->constrrel = NULL; /* passed separately */
+		trigStmt->constrrelOid = trigForm->tgconstrrelid;
 
-		CreateTriggerFiringOn(trigStmt, NULL,
-							  trigForm->tgconstrrelid, InvalidOid, InvalidOid,
+		CreateTriggerFiringOn(trigStmt, NULL, InvalidOid, InvalidOid,
 							  trigForm->tgfoid, trigForm->oid, qual,
 							  false, true, trigForm->tgenabled);
 

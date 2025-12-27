@@ -3164,6 +3164,7 @@ typedef struct CreateTrigStmt
 	bool		deferrable;		/* [NOT] DEFERRABLE */
 	bool		initdeferred;	/* INITIALLY {DEFERRED|IMMEDIATE} */
 	RangeVar   *constrrel;		/* opposite relation, if RI trigger */
+	Oid			constrrelOid;	/* opposite relation Oid, if RI trigger */
 } CreateTrigStmt;
 
 /* ----------------------
