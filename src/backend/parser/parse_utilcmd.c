@@ -39,12 +39,14 @@
 #include "catalog/pg_opclass.h"
 #include "catalog/pg_operator.h"
 #include "catalog/pg_statistic_ext.h"
+#include "catalog/pg_trigger.h"
 #include "catalog/pg_type.h"
 #include "commands/comment.h"
 #include "commands/defrem.h"
 #include "commands/sequence.h"
 #include "commands/tablecmds.h"
 #include "commands/tablespace.h"
+#include "commands/trigger.h"
 #include "miscadmin.h"
 #include "nodes/makefuncs.h"
 #include "nodes/nodeFuncs.h"
@@ -1321,7 +1323,8 @@ transformTableLikeClause(CreateStmtContext *cxt, TableLikeClause *table_like_cla
 		 CREATE_TABLE_LIKE_GENERATED |
 		 CREATE_TABLE_LIKE_CONSTRAINTS |
 		 CREATE_TABLE_LIKE_INDEXES |
-		 CREATE_TABLE_LIKE_STATISTICS))
+		 CREATE_TABLE_LIKE_STATISTICS |
+		 CREATE_TABLE_LIKE_TRIGGERS))
 	{
 		table_like_clause->relationOid = RelationGetRelid(relation);
 		cxt->likeclauses = lappend(cxt->likeclauses, table_like_clause);
@@ -1584,6 +1587,44 @@ expandTableLikeClause(RangeVar *heapRel, TableLikeClause *table_like_clause)
 			result = lappend(result, index_stmt);
 
 			index_close(parent_index, AccessShareLock);
+		}
+	}
+
+	/* Process triggers if required */
+	if ((table_like_clause->options & CREATE_TABLE_LIKE_TRIGGERS) &&
+		relation->trigdesc != NULL)
+	{
+		bool		include_comments;
+		CreateTrigStmt *trig_stmt = NULL;
+
+		include_comments = (table_like_clause->options & CREATE_TABLE_LIKE_COMMENTS);
+
+		for (int nt = 0; nt < relation->trigdesc->numtriggers; nt++)
+		{
+			Trigger    *trig = relation->trigdesc->triggers + nt;
+			Oid			trigoid = trig->tgoid;
+
+			/* internal trigger won't copied to new table */
+			if (trig->tgisinternal)
+				continue;
+
+			trig_stmt = makeNode(CreateTrigStmt);
+
+			trig_stmt->relOid = RelationGetRelid(childrel);
+
+			generateClonedTriggerStmt(trig_stmt, heapRel, trigoid, relation,
+									  attmap);
+
+			/* Copy comment on trigger, if requested */
+			if (include_comments)
+			{
+				comment = GetComment(trigoid, TriggerRelationId, 0);
+
+				/* We make use of CreateTrigStmt's trigcomment option */
+				trig_stmt->trigcomment = comment;
+			}
+
+			result = lappend(result, trig_stmt);
 		}
 	}
 

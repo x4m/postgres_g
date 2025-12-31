@@ -13864,6 +13864,8 @@ CreateFKCheckTrigger(Oid myRelOid, Oid refRelOid, Constraint *fkconstraint,
 	fk_trigger->initdeferred = fkconstraint->initdeferred;
 	fk_trigger->constrrel = NULL;
 	fk_trigger->constrrelOid = refRelOid;
+	fk_trigger->trigcomment = NULL;
+	fk_trigger->transformed = true;
 
 	trigAddress = CreateTrigger(fk_trigger, NULL,
 								constraintOid, indexOid, InvalidOid,
@@ -13911,6 +13913,8 @@ createForeignKeyActionTriggers(Oid myRelOid, Oid refRelOid, Constraint *fkconstr
 	fk_trigger->transitionRels = NIL;
 	fk_trigger->constrrel = NULL;
 	fk_trigger->constrrelOid = myRelOid;
+	fk_trigger->trigcomment = NULL;
+	fk_trigger->transformed = true;
 
 	switch (fkconstraint->fk_del_action)
 	{
@@ -13973,6 +13977,8 @@ createForeignKeyActionTriggers(Oid myRelOid, Oid refRelOid, Constraint *fkconstr
 	fk_trigger->transitionRels = NIL;
 	fk_trigger->constrrel = NULL;
 	fk_trigger->constrrelOid = myRelOid;
+	fk_trigger->trigcomment = NULL;
+	fk_trigger->transformed = true;
 
 	switch (fkconstraint->fk_upd_action)
 	{
@@ -20924,6 +20930,8 @@ CloneRowTriggersToPartition(Relation parent, Relation partition)
 		trigStmt->initdeferred = trigForm->tginitdeferred;
 		trigStmt->constrrel = NULL; /* passed separately */
 		trigStmt->constrrelOid = trigForm->tgconstrrelid;
+		trigStmt->trigcomment = NULL;
+		trigStmt->transformed = true;
 
 		CreateTriggerFiringOn(trigStmt, NULL, InvalidOid, InvalidOid,
 							  trigForm->tgfoid, trigForm->oid, qual,

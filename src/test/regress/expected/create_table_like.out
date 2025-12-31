@@ -631,6 +631,10 @@ Not-null constraints:
     "ctl_table_a_not_null" NOT NULL "a"
     "ctl_table_d_not_null" NOT NULL "d"
 
+-- trigger_func was created in triggers.sql
+CREATE TRIGGER trigtest_before_stmt BEFORE DELETE OR UPDATE ON ctl_table
+FOR EACH ROW WHEN (OLD.a > 0)
+EXECUTE PROCEDURE trigger_func('trigtest_before_stmt');
 -- Test EXCLUDING ALL
 CREATE FOREIGN TABLE ctl_foreign_table1(LIKE ctl_table EXCLUDING ALL) SERVER ctl_s0;
 \d+ ctl_foreign_table1
@@ -679,6 +683,8 @@ Statistics objects:
 Not-null constraints:
     "ctl_table_a_not_null" NOT NULL "a"
     "ctl_table_d_not_null" NOT NULL "d"
+Triggers:
+    trigtest_before_stmt BEFORE DELETE OR UPDATE ON ctl_foreign_table2 FOR EACH ROW WHEN (old.a > 0) EXECUTE FUNCTION trigger_func('trigtest_before_stmt')
 Server: ctl_s0
 
 -- \d+ does not report the value of attcompression for a foreign table, so
