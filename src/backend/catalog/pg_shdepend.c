@@ -1593,6 +1593,15 @@ shdepReassignOwned(List *roleids, Oid newrole)
 				continue;
 
 			/*
+			 * Subscriptions are linked to specific databases, even though
+			 * they are nominally shared objects.  Skip those that aren't
+			 * in this database.
+			 */
+			if (sdepForm->classid == SubscriptionRelationId &&
+				get_subscription_database(sdepForm->objid) != MyDatabaseId)
+				continue;
+
+			/*
 			 * The various DDL routines called here tend to leak memory in
 			 * CurrentMemoryContext.  That's not a problem when they're only
 			 * called once per command; but in this usage where we might be
