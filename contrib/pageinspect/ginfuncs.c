@@ -25,21 +25,20 @@ PG_FUNCTION_INFO_V1(gin_leafpage_items);
 
 
 Datum
-gin_metapage_info(PG_FUNCTION_ARGS)
-{
+gin_metapage_info(PG_FUNCTION_ARGS) {
 	bytea	   *raw_page = PG_GETARG_BYTEA_P(0);
-	TupleDesc	tupdesc;
-	Page		page;
+	TupleDesc   tupdesc;
+	Page	    page;
 	GinPageOpaque opaq;
 	GinMetaPageData *metadata;
-	HeapTuple	resultTuple;
-	Datum		values[10];
-	bool		nulls[10];
+	HeapTuple   resultTuple;
+	Datum	    values[10];
+	bool	    nulls[10];
 
 	if (!superuser())
 		ereport(ERROR,
-				(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
-				 errmsg("must be superuser to use raw page functions")));
+			errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
+			errmsg("must be superuser to use raw page functions"));
 
 	page = get_page_from_raw(raw_page);
 
@@ -48,20 +47,20 @@ gin_metapage_info(PG_FUNCTION_ARGS)
 
 	if (PageGetSpecialSize(page) != MAXALIGN(sizeof(GinPageOpaqueData)))
 		ereport(ERROR,
-				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-				 errmsg("input page is not a valid GIN metapage"),
-				 errdetail("Expected special size %d, got %d.",
-						   (int) MAXALIGN(sizeof(GinPageOpaqueData)),
-						   (int) PageGetSpecialSize(page))));
+			errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+			errmsg("input page is not a valid GIN metapage"),
+			errdetail("Expected special size %d, got %d.",
+				(int) MAXALIGN(sizeof(GinPageOpaqueData)),
+				(int) PageGetSpecialSize(page)));
 
 	opaq = GinPageGetOpaque(page);
 
 	if (opaq->flags != GIN_META)
 		ereport(ERROR,
-				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-				 errmsg("input page is not a GIN metapage"),
-				 errdetail("Flags %04X, expected %04X",
-						   opaq->flags, GIN_META)));
+			errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+			errmsg("input page is not a GIN metapage"),
+			errdetail("Flags %04X, expected %04X",
+				opaq->flags, GIN_META));
 
 	/* Build a tuple descriptor for our result type */
 	if (get_call_result_type(fcinfo, NULL, &tupdesc) != TYPEFUNC_COMPOSITE)
@@ -93,23 +92,22 @@ gin_metapage_info(PG_FUNCTION_ARGS)
 
 
 Datum
-gin_page_opaque_info(PG_FUNCTION_ARGS)
-{
+gin_page_opaque_info(PG_FUNCTION_ARGS) {
 	bytea	   *raw_page = PG_GETARG_BYTEA_P(0);
-	TupleDesc	tupdesc;
-	Page		page;
+	TupleDesc   tupdesc;
+	Page	    page;
 	GinPageOpaque opaq;
-	HeapTuple	resultTuple;
-	Datum		values[3];
-	bool		nulls[3];
-	Datum		flags[16];
-	int			nflags = 0;
-	uint16		flagbits;
+	HeapTuple   resultTuple;
+	Datum	    values[3];
+	bool	    nulls[3];
+	Datum	    flags[16];
+	int	    nflags = 0;
+	uint16	    flagbits;
 
 	if (!superuser())
 		ereport(ERROR,
-				(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
-				 errmsg("must be superuser to use raw page functions")));
+			(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
+				errmsg("must be superuser to use raw page functions")));
 
 	page = get_page_from_raw(raw_page);
 
@@ -118,11 +116,11 @@ gin_page_opaque_info(PG_FUNCTION_ARGS)
 
 	if (PageGetSpecialSize(page) != MAXALIGN(sizeof(GinPageOpaqueData)))
 		ereport(ERROR,
-				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-				 errmsg("input page is not a valid GIN data leaf page"),
-				 errdetail("Expected special size %d, got %d.",
-						   (int) MAXALIGN(sizeof(GinPageOpaqueData)),
-						   (int) PageGetSpecialSize(page))));
+			errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+			errmsg("input page is not a valid GIN data leaf page"),
+			errdetail("Expected special size %d, got %d.",
+				(int) MAXALIGN(sizeof(GinPageOpaqueData)),
+				(int) PageGetSpecialSize(page)));
 
 	opaq = GinPageGetOpaque(page);
 
@@ -149,9 +147,8 @@ gin_page_opaque_info(PG_FUNCTION_ARGS)
 	if (flagbits & GIN_COMPRESSED)
 		flags[nflags++] = CStringGetTextDatum("compressed");
 	flagbits &= ~(GIN_DATA | GIN_LEAF | GIN_DELETED | GIN_META | GIN_LIST |
-				  GIN_LIST_FULLROW | GIN_INCOMPLETE_SPLIT | GIN_COMPRESSED);
-	if (flagbits)
-	{
+		GIN_LIST_FULLROW | GIN_INCOMPLETE_SPLIT | GIN_COMPRESSED);
+	if (flagbits) {
 		/* any flags we don't recognize are printed in hex */
 		flags[nflags++] = DirectFunctionCall1(to_hex32, Int32GetDatum(flagbits));
 	}
@@ -168,30 +165,27 @@ gin_page_opaque_info(PG_FUNCTION_ARGS)
 	return HeapTupleGetDatum(resultTuple);
 }
 
-typedef struct gin_leafpage_items_state
-{
-	TupleDesc	tupd;
+typedef struct gin_leafpage_items_state {
+	TupleDesc   tupd;
 	GinPostingList *seg;
 	GinPostingList *lastseg;
-} gin_leafpage_items_state;
+}	    gin_leafpage_items_state;
 
 Datum
-gin_leafpage_items(PG_FUNCTION_ARGS)
-{
+gin_leafpage_items(PG_FUNCTION_ARGS) {
 	bytea	   *raw_page = PG_GETARG_BYTEA_P(0);
 	FuncCallContext *fctx;
 	gin_leafpage_items_state *inter_call_data;
 
 	if (!superuser())
 		ereport(ERROR,
-				(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
-				 errmsg("must be superuser to use raw page functions")));
+			errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
+			errmsg("must be superuser to use raw page functions"));
 
-	if (SRF_IS_FIRSTCALL())
-	{
-		TupleDesc	tupdesc;
+	if (SRF_IS_FIRSTCALL()) {
+		TupleDesc   tupdesc;
 		MemoryContext mctx;
-		Page		page;
+		Page	    page;
 		GinPageOpaque opaq;
 
 		fctx = SRF_FIRSTCALL_INIT();
@@ -199,28 +193,27 @@ gin_leafpage_items(PG_FUNCTION_ARGS)
 
 		page = get_page_from_raw(raw_page);
 
-		if (PageIsNew(page))
-		{
+		if (PageIsNew(page)) {
 			MemoryContextSwitchTo(mctx);
 			PG_RETURN_NULL();
 		}
 
 		if (PageGetSpecialSize(page) != MAXALIGN(sizeof(GinPageOpaqueData)))
 			ereport(ERROR,
-					(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-					 errmsg("input page is not a valid GIN data leaf page"),
-					 errdetail("Expected special size %d, got %d.",
-							   (int) MAXALIGN(sizeof(GinPageOpaqueData)),
-							   (int) PageGetSpecialSize(page))));
+				errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+				errmsg("input page is not a valid GIN data leaf page"),
+				errdetail("Expected special size %d, got %d.",
+					(int) MAXALIGN(sizeof(GinPageOpaqueData)),
+					(int) PageGetSpecialSize(page)));
 
 		opaq = GinPageGetOpaque(page);
 		if (opaq->flags != (GIN_DATA | GIN_LEAF | GIN_COMPRESSED))
 			ereport(ERROR,
-					(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-					 errmsg("input page is not a compressed GIN data leaf page"),
-					 errdetail("Flags %04X, expected %04X",
-							   opaq->flags,
-							   (GIN_DATA | GIN_LEAF | GIN_COMPRESSED))));
+				errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+				errmsg("input page is not a compressed GIN data leaf page"),
+				errdetail("Flags %04X, expected %04X",
+					opaq->flags,
+					(GIN_DATA | GIN_LEAF | GIN_COMPRESSED)));
 
 		inter_call_data = palloc_object(gin_leafpage_items_state);
 
@@ -233,7 +226,7 @@ gin_leafpage_items(PG_FUNCTION_ARGS)
 		inter_call_data->seg = GinDataLeafPageGetPostingList(page);
 		inter_call_data->lastseg = (GinPostingList *)
 			(((char *) inter_call_data->seg) +
-			 GinDataLeafPageGetPostingListSize(page));
+			GinDataLeafPageGetPostingListSize(page));
 
 		fctx->user_fctx = inter_call_data;
 
@@ -243,15 +236,13 @@ gin_leafpage_items(PG_FUNCTION_ARGS)
 	fctx = SRF_PERCALL_SETUP();
 	inter_call_data = fctx->user_fctx;
 
-	if (inter_call_data->seg != inter_call_data->lastseg)
-	{
+	if (inter_call_data->seg != inter_call_data->lastseg) {
 		GinPostingList *cur = inter_call_data->seg;
-		HeapTuple	resultTuple;
-		Datum		result;
-		Datum		values[3];
-		bool		nulls[3];
-		int			ndecoded,
-					i;
+		HeapTuple   resultTuple;
+		Datum	    result;
+		Datum	    values[3];
+		bool	    nulls[3];
+		int	    ndecoded, i;
 		ItemPointer tids;
 		Datum	   *tids_datum;
 
@@ -262,7 +253,7 @@ gin_leafpage_items(PG_FUNCTION_ARGS)
 
 		/* build an array of decoded item pointers */
 		tids = ginPostingListDecode(cur, &ndecoded);
-		tids_datum = (Datum *) palloc(ndecoded * sizeof(Datum));
+		tids_datum = palloc_array(Datum, ndecoded);
 		for (i = 0; i < ndecoded; i++)
 			tids_datum[i] = ItemPointerGetDatum(&tids[i]);
 		values[2] = PointerGetDatum(construct_array_builtin(tids_datum, ndecoded, TIDOID));
