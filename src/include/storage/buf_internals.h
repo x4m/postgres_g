@@ -595,10 +595,14 @@ extern Buffer GetBufferFromRing(BufferAccessStrategy strategy,
 								IOContext io_context);
 extern void AddBufferToRing(BufferAccessStrategy strategy, Buffer bufnum);
 extern Buffer GetBufferFromClocksweep(IOContext io_context);
+extern Buffer StrategyNextBuffer(BufferAccessStrategy strategy,
+								 int *cursor);
+extern int	StrategyGetCurrentIndex(BufferAccessStrategy strategy);
 
 extern int	StrategySyncStart(uint32 *complete_passes, uint32 *num_buf_alloc);
 extern void StrategyNotifyBgWriter(int bgwprocno);
 extern bool StrategyRejectBuffer(BufferAccessStrategy strategy, BufferDesc *buf, uint64 buf_state);
+extern bool StrategySupportsEagerFlush(BufferAccessStrategy strategy);
 
 /* buf_table.c */
 extern uint32 BufTableHashCode(BufferTag *tagPtr);

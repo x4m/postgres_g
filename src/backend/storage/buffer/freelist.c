@@ -317,6 +317,32 @@ GetBufferFromClocksweep(IOContext io_context)
 }
 
 /*
+ * Some BufferAccessStrategies support eager flushing -- which is flushing
+ * buffers in the ring before they are needed. This can lead to better I/O
+ * patterns than lazily flushing buffers immediately before reusing them.
+ */
+bool
+StrategySupportsEagerFlush(BufferAccessStrategy strategy)
+{
+	Assert(strategy);
+
+	switch (strategy->btype)
+	{
+		case BAS_BULKWRITE:
+			return true;
+		case BAS_VACUUM:
+		case BAS_NORMAL:
+		case BAS_BULKREAD:
+			return false;
+		default:
+			elog(ERROR, "unrecognized buffer access strategy: %d",
+				 (int) strategy->btype);
+			return false;
+	}
+}
+
+
+/*
  * StrategySyncStart -- tell BgBufferSync where to start syncing
  *
  * The result is the buffer index of the best buffer to sync first.
@@ -764,6 +790,29 @@ IOContextForStrategy(BufferAccessStrategy strategy)
 
 	elog(ERROR, "unrecognized BufferAccessStrategyType: %d", strategy->btype);
 	pg_unreachable();
+}
+
+/*
+ * Returns the next buffer in the ring after the one at cursor and increments
+ * cursor. Used when we do not want to advance the strategy->current to avoid
+ * changing the next buffer reused.
+ */
+Buffer
+StrategyNextBuffer(BufferAccessStrategy strategy, int *cursor)
+{
+	if (++(*cursor) >= strategy->nbuffers)
+		*cursor = 0;
+
+	return strategy->buffers[*cursor];
+}
+
+/*
+ * Return the current slot in the strategy ring.
+ */
+int
+StrategyGetCurrentIndex(BufferAccessStrategy strategy)
+{
+	return strategy->current;
 }
 
 /*
