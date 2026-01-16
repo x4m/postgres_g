@@ -266,6 +266,10 @@ extern void AfterTriggerBeginSubXact(void);
 extern void AfterTriggerEndSubXact(bool isCommit);
 extern void AfterTriggerSetState(ConstraintsSetStmt *stmt);
 extern bool AfterTriggerPendingOnRel(Oid relid);
+extern CreateTrigStmt *generateClonedTriggerStmt(RangeVar *heapRel,
+												 Oid source_trigid,
+												 Relation source_rel,
+												 const AttrMap *attmap);
 
 
 /*

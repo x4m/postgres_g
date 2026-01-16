@@ -258,6 +258,13 @@ ALTER TABLE ctl_table ADD CONSTRAINT foo CHECK (b = 'text');
 ALTER TABLE ctl_table ALTER COLUMN b SET STORAGE MAIN;
 
 \d+ ctl_table
+-- trigger_func was created in triggers.sql
+CREATE TRIGGER trigtest_before_stmt BEFORE DELETE OR UPDATE ON ctl_table
+FOR EACH ROW WHEN (OLD.a > 0)
+EXECUTE PROCEDURE trigger_func('trigtest_before_stmt');
+CREATE TRIGGER trigtest_after_stmt AFTER UPDATE OF a, b ON ctl_table
+FOR EACH STATEMENT
+EXECUTE PROCEDURE trigger_func('trigtest_before_stmt');
 
 -- Test EXCLUDING ALL
 CREATE FOREIGN TABLE ctl_foreign_table1(LIKE ctl_table EXCLUDING ALL) SERVER ctl_s0;

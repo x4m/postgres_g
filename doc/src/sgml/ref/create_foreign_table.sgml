@@ -60,7 +60,7 @@ CREATE FOREIGN TABLE [ IF NOT EXISTS ] <replaceable class="parameter">table_name
 
 <phrase>and <replaceable class="parameter">like_option</replaceable> is:</phrase>
 
-{ INCLUDING | EXCLUDING } { COMMENTS | CONSTRAINTS | DEFAULTS | GENERATED | STATISTICS | ALL }
+{ INCLUDING | EXCLUDING } { COMMENTS | CONSTRAINTS | DEFAULTS | GENERATED | STATISTICS | TRIGGERS | ALL }
 
 <phrase>and <replaceable class="parameter">partition_bound_spec</replaceable> is:</phrase>
 
@@ -280,6 +280,15 @@ WITH ( MODULUS <replaceable class="parameter">numeric_literal</replaceable>, REM
         <listitem>
          <para>
           Extended statistics are copied to the new table.
+         </para>
+        </listitem>
+       </varlistentry>
+
+       <varlistentry>
+        <term><literal>INCLUDING TRIGGERS</literal></term>
+        <listitem>
+         <para>
+          All non-internal triggers are copied to the new table.
          </para>
         </listitem>
        </varlistentry>
