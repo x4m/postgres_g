@@ -118,6 +118,7 @@ $node->append_conf(
 	q[wal_level = minimal
 					 autovacuum = off
 					 checkpoint_timeout = '30min'
+					 wal_compression_threshold = 1GB
 ]);
 $node->start;
 $node->safe_psql('postgres', "CREATE TABLE t AS SELECT 42");

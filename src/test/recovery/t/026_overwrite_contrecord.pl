@@ -22,6 +22,7 @@ $node->append_conf(
 	'postgresql.conf', qq(
 autovacuum = off
 wal_keep_size = 1GB
+wal_compression_threshold = 1GB
 ));
 $node->start;
 
@@ -56,7 +57,7 @@ $$;
 my $initfile = $node->safe_psql('postgres',
 	'SELECT pg_walfile_name(pg_current_wal_insert_lsn())');
 $node->safe_psql('postgres',
-	qq{SET wal_compression to off; SELECT pg_logical_emit_message(true, 'test 026', repeat('xyzxz', 123456))}
+	qq{SELECT pg_logical_emit_message(true, 'test 026', repeat('xyzxz', 123456))}
 );
 #$node->safe_psql('postgres', qq{create table foo ()});
 my $endfile = $node->safe_psql('postgres',

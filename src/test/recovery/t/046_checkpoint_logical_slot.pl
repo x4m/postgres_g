@@ -119,7 +119,7 @@ $node->safe_psql('postgres',
 # Generate a long WAL record, spawning at least two pages for the follow-up
 # post-recovery check.
 $node->safe_psql('postgres',
-	q{SET wal_compression to off; select pg_logical_emit_message(false, '', repeat('123456789', 1000));});
+	q{SET wal_compression_threshold to '1GB'; select pg_logical_emit_message(false, '', repeat('123456789', 1000));});
 
 # Continue the checkpoint and wait for its completion.
 my $log_offset = -s $node->logfile;

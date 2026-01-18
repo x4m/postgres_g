@@ -3325,7 +3325,7 @@
   options => 'wal_compression_options',
 },
 
-{ name => 'wal_compression_threshold', type => 'int', context => 'PGC_SIGHUP', group => 'WAL_SETTINGS',
+{ name => 'wal_compression_threshold', type => 'int', context => 'PGC_SUSET', group => 'WAL_SETTINGS',
   short_desc => 'Minimum WAL record length to engage compression.',
   flags => 'GUC_UNIT_BYTE',
   variable => 'wal_compression_threshold',
