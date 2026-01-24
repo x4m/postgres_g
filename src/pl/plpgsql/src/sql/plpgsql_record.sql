@@ -577,3 +577,61 @@ insert into two_int8s_tab values (compresult(42));
 -- reconnect so we lose any local knowledge of anonymous record types
 \c -
 table two_int8s_tab;
+
+-- Tests for bug #19382: server crash when ALTER TYPE is used mid-transaction
+-- in PL/pgSQL. Record variables populated before ALTER TYPE must not be
+-- returned, as the stored data no longer matches the current type definition.
+
+-- Case 1: Direct composite type change (INT -> TEXT)
+create type bug19382_foo as (a int, b int);
+create function bug19382_test_direct() returns record as $$
+declare r bug19382_foo := row(123, power(2, 30));
+begin
+    alter type bug19382_foo alter attribute b type text;
+    return r;
+end;
+$$ language plpgsql;
+select bug19382_test_direct();
+drop function bug19382_test_direct();
+drop type bug19382_foo cascade;
+
+-- Case 2: Nested composite type change
+create type bug19382_inner as (x int, y int);
+create type bug19382_outer as (a int, b bug19382_inner);
+create function bug19382_test_nested() returns record as $$
+declare r bug19382_outer;
+begin
+    r := row(1, row(10, power(2, 30)::int4)::bug19382_inner)::bug19382_outer;
+    alter type bug19382_inner alter attribute y type text;
+    return r;
+end;
+$$ language plpgsql;
+select bug19382_test_nested();
+drop function bug19382_test_nested();
+drop type bug19382_outer cascade;
+drop type bug19382_inner cascade;
+
+-- Case 3: OUT parameter
+create type bug19382_foo1 as (a int, b int);
+create function bug19382_test_out(out r1 bug19382_foo1) as $$
+begin
+    r1 := row(1, 2);
+    alter type bug19382_foo1 alter attribute b type text;
+    return;
+end;
+$$ language plpgsql;
+select bug19382_test_out();
+drop function bug19382_test_out();
+drop type bug19382_foo1 cascade;
+
+-- Case 4: No ALTER TYPE (baseline — must not error)
+create type bug19382_foo2 as (a int, b int);
+create function bug19382_test_baseline() returns bug19382_foo2 as $$
+declare r bug19382_foo2 := row(1, 2);
+begin
+    return r;
+end;
+$$ language plpgsql;
+select bug19382_test_baseline();
+drop function bug19382_test_baseline();
+drop type bug19382_foo2;
