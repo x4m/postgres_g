@@ -469,6 +469,8 @@ static char *format_preparedparamsdata(PLpgSQL_execstate *estate,
 static PLpgSQL_variable *make_callstmt_target(PLpgSQL_execstate *estate,
 											  PLpgSQL_expr *expr);
 
+static void convert_record_for_altered_type(PLpgSQL_execstate *estate,
+											PLpgSQL_rec *rec);
 
 /* ----------
  * plpgsql_exec_function	Called by the call handler for
@@ -3255,8 +3257,30 @@ exec_stmt_return(PLpgSQL_execstate *estate, PLpgSQL_stmt_return *stmt)
 				}
 				break;
 
-			case PLPGSQL_DTYPE_ROW:
 			case PLPGSQL_DTYPE_REC:
+				{
+					PLpgSQL_rec *rec = (PLpgSQL_rec *) retvar;
+					int32		rettypmod;
+
+					/*
+					 * Check if the record's composite type was altered since
+					 * the record was populated. If so, convert the data to
+					 * prevent crashes when outputting the record.
+					 */
+					if (rec->rectypeid != RECORDOID && rec->erh != NULL &&
+						!ExpandedRecordIsEmpty(rec->erh))
+						convert_record_for_altered_type(estate, rec);
+
+					exec_eval_datum(estate,
+									retvar,
+									&estate->rettype,
+									&rettypmod,
+									&estate->retval,
+									&estate->retisnull);
+				}
+				break;
+
+			case PLPGSQL_DTYPE_ROW:
 				{
 					/* exec_eval_datum can handle these cases */
 					int32		rettypmod;
@@ -3400,6 +3424,14 @@ exec_stmt_return_next(PLpgSQL_execstate *estate,
 					PLpgSQL_rec *rec = (PLpgSQL_rec *) retvar;
 					TupleDesc	rec_tupdesc;
 					TupleConversionMap *tupmap;
+
+					/*
+					 * Check if the record's composite type was altered since
+					 * the record was populated. If so, convert the data to
+					 * prevent crashes when storing to the tuplestore.
+					 */
+					if (rec->rectypeid != RECORDOID && rec->erh != NULL)
+						convert_record_for_altered_type(estate, rec);
 
 					/* If rec is null, try to convert it to a row of nulls */
 					if (rec->erh == NULL)
@@ -9113,4 +9145,143 @@ format_preparedparamsdata(PLpgSQL_execstate *estate,
 	MemoryContextSwitchTo(oldcontext);
 
 	return paramstr.data;
+}
+
+/*
+ * convert_record_for_altered_type
+ *
+ * Check if a record's composite type has been altered since the record
+ * was populated, and if so, convert the record data to match the new
+ * type definition. This prevents crashes that can occur when the stored
+ * data doesn't match the current type definition.
+ *
+ * If conversion is needed, assigns the new record to rec via
+ * assign_record_var(), which transfers it to datum_context and frees
+ * the old record.
+ */
+static void
+convert_record_for_altered_type(PLpgSQL_execstate *estate,
+								PLpgSQL_rec *rec)
+{
+	ExpandedRecordHeader *erh = rec->erh;
+	Oid				rectypeid = rec->rectypeid;
+	TupleDesc		old_tupdesc;
+	TupleDesc		new_tupdesc;
+	TypeCacheEntry *typentry;
+	uint64			current_tupdesc_id;
+	ExpandedRecordHeader *new_erh;
+	Datum		   *old_values;
+	bool		   *old_nulls;
+	Datum		   *new_values;
+	bool		   *new_nulls;
+	int				natts;
+	int				i;
+	MemoryContext	oldcxt;
+	bool			need_conversion = false;
+
+	/* Nothing to do for anonymous RECORD type */
+	if (rectypeid == RECORDOID)
+		return;
+
+	/* Get current type definition from typcache */
+	typentry = lookup_type_cache(rectypeid,
+								 TYPECACHE_TUPDESC |
+								 TYPECACHE_DOMAIN_BASE_INFO);
+	if (typentry->typtype == TYPTYPE_DOMAIN)
+		typentry = lookup_type_cache(typentry->domainBaseType,
+									 TYPECACHE_TUPDESC);
+
+	current_tupdesc_id = typentry->tupDesc_identifier;
+
+	/* If type hasn't changed, nothing to do (fast path) */
+	if (erh->er_tupdesc_id == current_tupdesc_id)
+		return;
+
+	/*
+	 * Type version has changed. Need to check if field types actually differ
+	 * and convert if necessary.
+	 */
+	old_tupdesc = erh->er_tupdesc;
+	new_tupdesc = typentry->tupDesc;
+
+	/* Sanity check: must have same number of attributes */
+	if (old_tupdesc->natts != new_tupdesc->natts)
+		ereport(ERROR,
+				(errcode(ERRCODE_DATATYPE_MISMATCH),
+				 errmsg("record type \"%s\" structure has changed",
+						format_type_be(rectypeid)),
+				 errdetail("Number of columns changed from %d to %d.",
+						   old_tupdesc->natts, new_tupdesc->natts)));
+
+	natts = old_tupdesc->natts;
+
+	/* Deconstruct the old record to access field values */
+	deconstruct_expanded_record(erh);
+	old_values = erh->dvalues;
+	old_nulls = erh->dnulls;
+
+	/* Allocate arrays for new values */
+	oldcxt = MemoryContextSwitchTo(get_eval_mcontext(estate));
+	new_values = (Datum *) palloc(natts * sizeof(Datum));
+	new_nulls = (bool *) palloc(natts * sizeof(bool));
+	MemoryContextSwitchTo(oldcxt);
+
+	/* Convert each field */
+	for (i = 0; i < natts; i++)
+	{
+		Form_pg_attribute old_att = TupleDescAttr(old_tupdesc, i);
+		Form_pg_attribute new_att = TupleDescAttr(new_tupdesc, i);
+
+		/* Skip dropped columns */
+		if (old_att->attisdropped || new_att->attisdropped)
+		{
+			new_values[i] = (Datum) 0;
+			new_nulls[i] = true;
+			continue;
+		}
+
+		/* If null, stays null */
+		if (old_nulls[i])
+		{
+			new_values[i] = (Datum) 0;
+			new_nulls[i] = true;
+			continue;
+		}
+
+		/* If same type, no conversion needed */
+		if (old_att->atttypid == new_att->atttypid &&
+			(old_att->atttypmod == new_att->atttypmod ||
+			 new_att->atttypmod == -1))
+		{
+			new_values[i] = old_values[i];
+			new_nulls[i] = false;
+			continue;
+		}
+
+		/* Different type: convert using exec_cast_value */
+		need_conversion = true;
+		new_nulls[i] = false;
+		new_values[i] = exec_cast_value(estate,
+										old_values[i],
+										&new_nulls[i],
+										old_att->atttypid,
+										old_att->atttypmod,
+										new_att->atttypid,
+										new_att->atttypmod);
+	}
+
+	/* If no actual conversion was needed, return without modifying rec */
+	if (!need_conversion)
+		return;
+
+	/* Build new expanded record with converted values */
+	new_erh = make_expanded_record_from_typeid(rectypeid, -1,
+											   get_eval_mcontext(estate));
+	expanded_record_set_fields(new_erh, new_values, new_nulls, true);
+
+	/*
+	 * Assign the new record to rec, transferring it to datum_context
+	 * and freeing the old record.
+	 */
+	assign_record_var(estate, rec, new_erh);
 }
