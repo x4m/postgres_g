@@ -22,6 +22,7 @@
 #include "commands/explain_format.h"
 #include "commands/explain_state.h"
 #include "executor/execAsync.h"
+#include "executor/executor.h"
 #include "foreign/fdwapi.h"
 #include "funcapi.h"
 #include "miscadmin.h"
@@ -174,6 +175,14 @@ typedef struct PgFdwScanState
 	MemoryContext temp_cxt;		/* context for per-tuple temporary data */
 
 	int			fetch_size;		/* number of tuples per fetch */
+	/* To be used only in non-cursor mode */
+	Tuplestorestate *tuplestore;	/* Tuplestore to save the tuples of the
+									 * query for later fetch. */
+	TupleTableSlot *slot;		/* Slot to be used when reading the tuple from
+								 * the tuplestore */
+	bool		tuples_ready;	/* To indicate when tuplestore is ready to be
+								 * read. */
+	int			total_tuples;	/* total tuples in the tuplestore. */
 } PgFdwScanState;
 
 /*
@@ -451,7 +460,7 @@ static bool ec_member_matches_foreign(PlannerInfo *root, RelOptInfo *rel,
 									  EquivalenceClass *ec, EquivalenceMember *em,
 									  void *arg);
 static void create_cursor(ForeignScanState *node);
-static void fetch_more_data(ForeignScanState *node);
+static void fetch_more_data(ForeignScanState *node, bool use_tuplestore);
 static void close_cursor(PGconn *conn, unsigned int cursor_number,
 						 PgFdwConnState *conn_state);
 static PgFdwModifyState *create_foreign_modify(EState *estate,
@@ -516,7 +525,8 @@ static HeapTuple make_tuple_from_result_row(PGresult *res,
 											AttInMetadata *attinmeta,
 											List *retrieved_attrs,
 											ForeignScanState *fsstate,
-											MemoryContext temp_context);
+											MemoryContext temp_context,
+											TupleDesc last_tupdesc);
 static void conversion_error_callback(void *arg);
 static bool foreign_join_ok(PlannerInfo *root, RelOptInfo *joinrel,
 							JoinType jointype, RelOptInfo *outerrel, RelOptInfo *innerrel,
@@ -546,6 +556,8 @@ static void merge_fdw_options(PgFdwRelationInfo *fpinfo,
 							  const PgFdwRelationInfo *fpinfo_i);
 static int	get_batch_size_option(Relation rel);
 
+/* Only required for non-cursor mode */
+static void fill_tuplestore(ForeignScanState *node);
 
 /*
  * Foreign-data wrapper handler function: return a struct with pointers
@@ -1593,6 +1605,57 @@ postgresBeginForeignScan(ForeignScanState *node, int eflags)
 
 	/* Set the async-capable flag */
 	fsstate->async_capable = node->ss.ps.async_capable;
+	/* Initially, there is no last_query */
+	fsstate->conn_state->last_query = NULL;
+}
+
+/*
+ * This routine fetches all the tuples of a query and saves them in a tuplestore.
+ * This is required when the result of a query is not completely fetched but the control
+ * switches to a different query.
+ * A call to fetch_data is made from here, hence we need complete ForeignScanState here.
+ */
+static void
+fill_tuplestore(ForeignScanState *node)
+{
+	PgFdwScanState *fsstate = (PgFdwScanState *) node->fdw_state;
+	PgFdwScanState *last_fsstate = (PgFdwScanState *) fsstate->conn_state->last_query;
+	MemoryContext oldcontext;
+	ExprContext *econtext = node->ss.ps.ps_ExprContext;
+	PGconn	   *conn = fsstate->conn;
+	const char **values = last_fsstate->param_values;
+	int			numParams = last_fsstate->numParams;
+
+	/*
+	 * Construct array of query parameter values in text format, as done in
+	 * create_cursor
+	 */
+	if (numParams > 0)
+	{
+		oldcontext = MemoryContextSwitchTo(econtext->ecxt_per_tuple_memory);
+		process_query_params(econtext,
+							 last_fsstate->param_flinfo,
+							 last_fsstate->param_exprs,
+							 values);
+		MemoryContextSwitchTo(oldcontext);
+	}
+	if (conn->asyncStatus == PGASYNC_IDLE)
+	{
+		/* If the connection is not active then set up */
+		if (!PQsendQueryParams(conn, last_fsstate->query, last_fsstate->numParams,
+							   NULL, values, NULL, NULL, 0))
+			pgfdw_report_error(NULL, conn, last_fsstate->query);
+
+		if (!PQsetChunkedRowsMode(conn, last_fsstate->fetch_size))
+			pgfdw_report_error(NULL, conn, last_fsstate->query);
+	}
+	fetch_more_data(node, true);
+
+	/*
+	 * Remove the last_query since it is completely fetched, so no need to
+	 * remember it now.
+	 */
+	fsstate->conn_state->last_query = NULL;
 }
 
 /*
@@ -1625,7 +1688,8 @@ postgresIterateForeignScan(ForeignScanState *node)
 			return ExecClearTuple(slot);
 		/* No point in another fetch if we already detected EOF, though. */
 		if (!fsstate->eof_reached)
-			fetch_more_data(node);
+			fetch_more_data(node, false);
+
 		/* If we didn't get any tuples, must be end of data. */
 		if (fsstate->next_tuple >= fsstate->num_tuples)
 			return ExecClearTuple(slot);
@@ -1651,6 +1715,7 @@ postgresReScanForeignScan(ForeignScanState *node)
 	PgFdwScanState *fsstate = (PgFdwScanState *) node->fdw_state;
 	char		sql[64];
 	PGresult   *res;
+	bool		close_cursor = false;
 
 	/* If we haven't created the cursor yet, nothing to do. */
 	if (!fsstate->cursor_exists)
@@ -1666,7 +1731,7 @@ postgresReScanForeignScan(ForeignScanState *node)
 	if (fsstate->async_capable &&
 		fsstate->conn_state->pendingAreq &&
 		fsstate->conn_state->pendingAreq->requestee == (PlanState *) node)
-		fetch_more_data(node);
+		fetch_more_data(node, false);
 
 	/*
 	 * If any internal parameters affecting this node have changed, we'd
@@ -1680,19 +1745,26 @@ postgresReScanForeignScan(ForeignScanState *node)
 	if (node->ss.ps.chgParam != NULL)
 	{
 		fsstate->cursor_exists = false;
-		snprintf(sql, sizeof(sql), "CLOSE c%u",
-				 fsstate->cursor_number);
+		if (pgfdw_use_cursor)
+			snprintf(sql, sizeof(sql), "CLOSE c%u",
+					 fsstate->cursor_number);
+		else
+			close_cursor = true;
 	}
 	else if (fsstate->fetch_ct_2 > 1)
 	{
 		if (PQserverVersion(fsstate->conn) < 150000)
+			/* TODO: Handle it in non-cursor mode as well */
 			snprintf(sql, sizeof(sql), "MOVE BACKWARD ALL IN c%u",
 					 fsstate->cursor_number);
 		else
 		{
 			fsstate->cursor_exists = false;
-			snprintf(sql, sizeof(sql), "CLOSE c%u",
-					 fsstate->cursor_number);
+			if (pgfdw_use_cursor)
+				snprintf(sql, sizeof(sql), "CLOSE c%u",
+						 fsstate->cursor_number);
+			else
+				close_cursor = true;
 		}
 	}
 	else
@@ -1701,18 +1773,32 @@ postgresReScanForeignScan(ForeignScanState *node)
 		fsstate->next_tuple = 0;
 		return;
 	}
-
-	res = pgfdw_exec_query(fsstate->conn, sql, fsstate->conn_state);
-	if (PQresultStatus(res) != PGRES_COMMAND_OK)
-		pgfdw_report_error(res, fsstate->conn, sql);
-	PQclear(res);
-
-	/* Now force a fresh FETCH. */
-	fsstate->tuples = NULL;
-	fsstate->num_tuples = 0;
-	fsstate->next_tuple = 0;
-	fsstate->fetch_ct_2 = 0;
-	fsstate->eof_reached = false;
+	if (pgfdw_use_cursor)
+	{
+		res = pgfdw_exec_query(fsstate->conn, sql, fsstate->conn_state);
+		if (PQresultStatus(res) != PGRES_COMMAND_OK)
+			pgfdw_report_error(res, fsstate->conn, sql);
+		PQclear(res);
+		/* Now force a fresh FETCH. */
+		fsstate->tuples = NULL;
+		fsstate->num_tuples = 0;
+		fsstate->next_tuple = 0;
+		fsstate->fetch_ct_2 = 0;
+		fsstate->eof_reached = false;
+	}
+	else if (!pgfdw_use_cursor && close_cursor)
+	{
+		res = pgfdw_get_result(fsstate->conn);
+		while (res != NULL)
+			res = pgfdw_get_result(fsstate->conn);
+		PQclear(res);
+		/* Now force a fresh FETCH. */
+		fsstate->tuples = NULL;
+		fsstate->num_tuples = 0;
+		fsstate->next_tuple = 0;
+		fsstate->fetch_ct_2 = 0;
+		fsstate->eof_reached = false;
+	}
 }
 
 /*
@@ -3755,29 +3841,67 @@ create_cursor(ForeignScanState *node)
 		MemoryContextSwitchTo(oldcontext);
 	}
 
-	/* Construct the DECLARE CURSOR command */
-	initStringInfo(&buf);
-	appendStringInfo(&buf, "DECLARE c%u CURSOR FOR\n%s",
-					 fsstate->cursor_number, fsstate->query);
+	if (pgfdw_use_cursor)
+	{
+		/* Construct the DECLARE CURSOR command */
+		initStringInfo(&buf);
+		appendStringInfo(&buf, "DECLARE c%u CURSOR FOR\n%s",
+						 fsstate->cursor_number, fsstate->query);
 
-	/*
-	 * Notice that we pass NULL for paramTypes, thus forcing the remote server
-	 * to infer types for all parameters.  Since we explicitly cast every
-	 * parameter (see deparse.c), the "inference" is trivial and will produce
-	 * the desired result.  This allows us to avoid assuming that the remote
-	 * server has the same OIDs we do for the parameters' types.
-	 */
-	if (!PQsendQueryParams(conn, buf.data, numParams,
-						   NULL, values, NULL, NULL, 0))
-		pgfdw_report_error(NULL, conn, buf.data);
+		/*
+		 * Notice that we pass NULL for paramTypes, thus forcing the remote
+		 * server to infer types for all parameters.  Since we explicitly cast
+		 * every parameter (see deparse.c), the "inference" is trivial and
+		 * will produce the desired result.  This allows us to avoid assuming
+		 * that the remote server has the same OIDs we do for the parameters'
+		 * types.
+		 */
+		if (!PQsendQueryParams(conn, buf.data, numParams,
+							   NULL, values, NULL, NULL, 0))
+			pgfdw_report_error(NULL, conn, buf.data);
 
-	/*
-	 * Get the result, and check for success.
-	 */
-	res = pgfdw_get_result(conn);
-	if (PQresultStatus(res) != PGRES_COMMAND_OK)
-		pgfdw_report_error(res, conn, fsstate->query);
-	PQclear(res);
+		/*
+		 * Get the result, and check for success.
+		 */
+		res = pgfdw_get_result(conn);
+		if (PQresultStatus(res) != PGRES_COMMAND_OK)
+			pgfdw_report_error(res, conn, fsstate->query);
+		PQclear(res);
+
+		/* Clean up */
+		pfree(buf.data);
+	}
+	else
+	{
+		/*
+		 * Finish fetching tuples of the last query. Do this only when there
+		 * is a different query than the current one. In the case of rescan,
+		 * create_cursor is called simultaneously for the same query so to
+		 * avoid calling fill_tuplestore in such cases, check if the queries
+		 * are different and tuplestore is not already filled for this query.
+		 */
+		if (fsstate->conn_state->last_query &&
+			fsstate != fsstate->conn_state->last_query &&
+			!fsstate->conn_state->last_query->tuples_ready)
+			fill_tuplestore(node);
+
+		/*
+		 * To remember the current query as the last one, when control
+		 * switches to another query
+		 */
+		fsstate->conn_state->last_query = fsstate;
+
+		if (!PQsendQueryParams(conn, fsstate->query, numParams,
+							   NULL, values, NULL, NULL, 0))
+			pgfdw_report_error(NULL, conn, fsstate->query);
+
+		/*
+		 * Call for Chunked rows mode with same size of chunk as the fetch
+		 * size
+		 */
+		if (!PQsetChunkedRowsMode(conn, fsstate->fetch_size))
+			pgfdw_report_error(NULL, conn, fsstate->query);
+	}
 
 	/* Mark the cursor as created, and show no tuples have been retrieved */
 	fsstate->cursor_exists = true;
@@ -3786,30 +3910,29 @@ create_cursor(ForeignScanState *node)
 	fsstate->next_tuple = 0;
 	fsstate->fetch_ct_2 = 0;
 	fsstate->eof_reached = false;
-
-	/* Clean up */
-	pfree(buf.data);
 }
 
 /*
  * Fetch some more rows from the node's cursor.
  */
 static void
-fetch_more_data(ForeignScanState *node)
+fetch_more_data(ForeignScanState *node, bool use_tuplestore)
 {
 	PgFdwScanState *fsstate = (PgFdwScanState *) node->fdw_state;
+	PgFdwScanState *last_fsstate = fsstate->conn_state->last_query;
 	PGconn	   *conn = fsstate->conn;
 	PGresult   *res;
-	int			numrows;
-	int			i;
 	MemoryContext oldcontext;
+	int			numrows,
+				i = 0,
+				total_tuples = 0;
+	bool		already_done = false;
 
 	/*
 	 * We'll store the tuples in the batch_cxt.  First, flush the previous
 	 * batch.
 	 */
 	fsstate->tuples = NULL;
-	MemoryContextReset(fsstate->batch_cxt);
 	oldcontext = MemoryContextSwitchTo(fsstate->batch_cxt);
 
 	if (fsstate->async_capable)
@@ -3828,7 +3951,7 @@ fetch_more_data(ForeignScanState *node)
 		/* Reset per-connection state */
 		fsstate->conn_state->pendingAreq = NULL;
 	}
-	else
+	else if (pgfdw_use_cursor)
 	{
 		char		sql[64];
 
@@ -3841,32 +3964,177 @@ fetch_more_data(ForeignScanState *node)
 		if (PQresultStatus(res) != PGRES_TUPLES_OK)
 			pgfdw_report_error(res, conn, fsstate->query);
 	}
-
-	/* Convert the data into HeapTuples */
-	numrows = PQntuples(res);
-	fsstate->tuples = (HeapTuple *) palloc0(numrows * sizeof(HeapTuple));
-	fsstate->num_tuples = numrows;
-	fsstate->next_tuple = 0;
-
-	for (i = 0; i < numrows; i++)
+	else
 	{
-		Assert(IsA(node->ss.ps.plan, ForeignScan));
+		/*
+		 * In non-cursor mode, there are three options for the further
+		 * processing: 1. If the tuplestore is already filled, retrieve the
+		 * tuples from there. 2. Fetch the tuples till the end of the query
+		 * and store them in tuplestore. 3. Perform a normal fetch and process
+		 * the tuples.
+		 */
+		if (fsstate->tuplestore && fsstate->tuples_ready)
+		{
+			/* Retrieve the tuples from the tuplestore instead of actual fetch */
+			numrows = fsstate->total_tuples;
+			fsstate->tuples = (HeapTuple *) palloc0(numrows * sizeof(HeapTuple));
+			fsstate->slot = MakeSingleTupleTableSlot(fsstate->tupdesc, &TTSOpsMinimalTuple);
 
-		fsstate->tuples[i] =
-			make_tuple_from_result_row(res, i,
-									   fsstate->rel,
-									   fsstate->attinmeta,
-									   fsstate->retrieved_attrs,
-									   node,
-									   fsstate->temp_cxt);
+			while (tuplestore_gettupleslot(fsstate->tuplestore, true, true, fsstate->slot))
+			{
+				fsstate->tuples[i++] = ExecFetchSlotHeapTuple(fsstate->slot, true, NULL);
+				ExecClearTuple(fsstate->slot);
+			}
+			fsstate->num_tuples = numrows;
+			fsstate->next_tuple = 0;
+			already_done = true;
+			fsstate->eof_reached = true;
+			fsstate->tuples_ready = false;
+
+			/* Clean up */
+			tuplestore_end(fsstate->tuplestore);
+			ExecDropSingleTupleTableSlot(fsstate->slot);
+			fsstate->slot = NULL;
+			fsstate->tuplestore = NULL;
+			return;
+		}
+		else
+		{
+			/*
+			 * Non-cursor mode uses PQSetChunkedRowsMode during create_cursor,
+			 * so just get the result here.
+			 */
+			res = pgfdw_get_next_result(conn);
+			if (PQresultStatus(res) == PGRES_FATAL_ERROR)
+				pgfdw_report_error(res, conn, fsstate->query);
+
+			else if (PQresultStatus(res) == PGRES_TUPLES_OK)
+			{
+				/*
+				 * This signifies query is completed and there are no more
+				 * tuples left.
+				 */
+				if (use_tuplestore)
+				{
+					/*
+					 * If we are here to store the tuples in tuplestore then
+					 * this signals we have already fetched all the tuples for
+					 * this query, so nothing to do. Just set the right flags
+					 */
+					already_done = true;
+					last_fsstate->tuples_ready = true;
+					last_fsstate->eof_reached = true;
+				}
+
+				/* There are no more tuples to fetch */
+				while (res != NULL)
+					res = pgfdw_get_result(conn);
+			}
+			else if (PQresultStatus(res) == PGRES_TUPLES_CHUNK)
+			{
+				if (use_tuplestore)
+				{
+					/*
+					 * This is to fetch all the tuples of the query in
+					 * last_fsstate and save them in Tuple Slot.
+					 */
+
+					/*
+					 * We should never be here without a valid last_fsstate in
+					 * the scan state.
+					 */
+					Assert(last_fsstate != NULL);
+					last_fsstate->tuplestore = tuplestore_begin_heap(true, false, work_mem);
+
+					for (;;)
+					{
+						/*
+						 * Since it is using PQSetChunkedRowsMode, we only get
+						 * the fsstate->fetch_size tuples in one run, so keep
+						 * on executing till we get NULL in PGresult i.e. all
+						 * the tuples are retrieved.
+						 */
+						CHECK_FOR_INTERRUPTS();
+						numrows = PQntuples(res);
+						total_tuples += numrows;
+
+						/* Convert the data into HeapTuples */
+						Assert(IsA(node->ss.ps.plan, ForeignScan));
+						for (i = 0; i < numrows; i++)
+						{
+							HeapTuple	temp_tuple;
+
+							temp_tuple = make_tuple_from_result_row(res, i,
+																	last_fsstate->rel,
+																	last_fsstate->attinmeta,
+																	last_fsstate->retrieved_attrs,
+																	node,
+																	last_fsstate->temp_cxt,
+																	last_fsstate->tupdesc);
+							tuplestore_puttuple(last_fsstate->tuplestore, temp_tuple);
+							heap_freetuple(temp_tuple);
+						}
+
+						res = pgfdw_get_next_result(conn);
+						if (res == NULL)
+							break;
+						else if (PQresultStatus(res) == PGRES_FATAL_ERROR)
+							pgfdw_report_error(res, conn, last_fsstate->query);
+						else if (PQresultStatus(res) == PGRES_TUPLES_OK)
+						{
+							/* This means all the tuples are retreived. */
+							numrows = PQntuples(res);
+							/* If there is nothing to fetch */
+							if (numrows == 0)
+								res = pgfdw_get_result(conn);
+						}
+					}
+
+					/*
+					 * EOF is reached because we are storing all tuples to the
+					 * tuplestore.
+					 */
+					already_done = true;
+					last_fsstate->tuples_ready = true;
+					last_fsstate->total_tuples = total_tuples;
+				}
+			}
+		}
+	}
+	if (!already_done)
+	{
+		/*
+		 * To fetch tuples for the query in fsstate used in both cursor and
+		 * non-cursor mode.
+		 */
+		/* Convert the data into HeapTuples */
+		numrows = PQntuples(res);
+		fsstate->tuples = (HeapTuple *) palloc0(numrows * sizeof(HeapTuple));
+		fsstate->num_tuples = numrows;
+		fsstate->next_tuple = 0;
+
+		for (i = 0; i < numrows; i++)
+		{
+			Assert(IsA(node->ss.ps.plan, ForeignScan));
+
+			fsstate->tuples[i] =
+				make_tuple_from_result_row(res, i,
+										   fsstate->rel,
+										   fsstate->attinmeta,
+										   fsstate->retrieved_attrs,
+										   node,
+										   fsstate->temp_cxt,
+										   NULL);
+		}
 	}
 
 	/* Update fetch_ct_2 */
-	if (fsstate->fetch_ct_2 < 2)
+	if (!use_tuplestore && fsstate->fetch_ct_2 < 2)
 		fsstate->fetch_ct_2++;
 
 	/* Must be EOF if we didn't get as many tuples as we asked for. */
-	fsstate->eof_reached = (numrows < fsstate->fetch_size);
+	if (!use_tuplestore)
+		fsstate->eof_reached = (numrows < fsstate->fetch_size);
 
 	PQclear(res);
 
@@ -3941,11 +4209,16 @@ close_cursor(PGconn *conn, unsigned int cursor_number,
 	char		sql[64];
 	PGresult   *res;
 
-	snprintf(sql, sizeof(sql), "CLOSE c%u", cursor_number);
-	res = pgfdw_exec_query(conn, sql, conn_state);
-	if (PQresultStatus(res) != PGRES_COMMAND_OK)
-		pgfdw_report_error(res, conn, sql);
-	PQclear(res);
+	if (pgfdw_use_cursor)
+	{
+		snprintf(sql, sizeof(sql), "CLOSE c%u", cursor_number);
+		res = pgfdw_exec_query(conn, sql, conn_state);
+		if (PQresultStatus(res) != PGRES_COMMAND_OK)
+			pgfdw_report_error(res, conn, sql);
+		PQclear(res);
+	}
+	else
+		while (pgfdw_get_result(conn) != NULL);
 }
 
 /*
@@ -4329,7 +4602,7 @@ store_returning_result(PgFdwModifyState *fmstate,
 										fmstate->attinmeta,
 										fmstate->retrieved_attrs,
 										NULL,
-										fmstate->temp_cxt);
+										fmstate->temp_cxt, NULL);
 
 	/*
 	 * The returning slot will not necessarily be suitable to store heaptuples
@@ -4608,7 +4881,7 @@ get_returning_data(ForeignScanState *node)
 											dmstate->attinmeta,
 											dmstate->retrieved_attrs,
 											node,
-											dmstate->temp_cxt);
+											dmstate->temp_cxt, NULL);
 		ExecStoreHeapTuple(newtup, slot, false);
 		/* Get the updated/deleted tuple. */
 		if (dmstate->rel)
@@ -5239,7 +5512,7 @@ postgresAcquireSampleRowsFunc(Relation relation, int elevel,
 	for (;;)
 	{
 		int			numrows;
-		int			i;
+		int			i = 0;
 
 		/* Allow users to cancel long query */
 		CHECK_FOR_INTERRUPTS();
@@ -5360,7 +5633,7 @@ analyze_row_processor(PGresult *res, int row, PgFdwAnalyzeState *astate)
 													   astate->attinmeta,
 													   astate->retrieved_attrs,
 													   NULL,
-													   astate->temp_cxt);
+													   astate->temp_cxt, NULL);
 
 		MemoryContextSwitchTo(oldcontext);
 	}
@@ -7314,7 +7587,7 @@ postgresForeignAsyncNotify(AsyncRequest *areq)
 	if (!PQconsumeInput(fsstate->conn))
 		pgfdw_report_error(NULL, fsstate->conn, fsstate->query);
 
-	fetch_more_data(node);
+	fetch_more_data(node, false);
 
 	produce_tuple_asynchronously(areq, true);
 }
@@ -7400,6 +7673,13 @@ fetch_more_data_begin(AsyncRequest *areq)
 	PgFdwScanState *fsstate = (PgFdwScanState *) node->fdw_state;
 	char		sql[64];
 
+	/*
+	 * Reset cursor mode when in asynchronous mode as it is not supported in
+	 * non-cursor mode
+	 */
+	if (!pgfdw_use_cursor)
+		pgfdw_use_cursor = true;
+
 	Assert(!fsstate->conn_state->pendingAreq);
 
 	/* Create the cursor synchronously. */
@@ -7432,7 +7712,7 @@ process_pending_request(AsyncRequest *areq)
 	/* The request should be currently in-process */
 	Assert(fsstate->conn_state->pendingAreq == areq);
 
-	fetch_more_data(node);
+	fetch_more_data(node, false);
 
 	/*
 	 * If we didn't get any tuples, must be end of data; complete the request
@@ -7494,7 +7774,8 @@ make_tuple_from_result_row(PGresult *res,
 						   AttInMetadata *attinmeta,
 						   List *retrieved_attrs,
 						   ForeignScanState *fsstate,
-						   MemoryContext temp_context)
+						   MemoryContext temp_context,
+						   TupleDesc last_tupdesc)
 {
 	HeapTuple	tuple;
 	TupleDesc	tupdesc;
@@ -7518,9 +7799,13 @@ make_tuple_from_result_row(PGresult *res,
 
 	/*
 	 * Get the tuple descriptor for the row.  Use the rel's tupdesc if rel is
-	 * provided, otherwise look to the scan node's ScanTupleSlot.
+	 * provided, otherwise look to the scan node's ScanTupleSlot. In case of
+	 * non-cursor mode, use the tupledesc that is already provided, because
+	 * getting from the current fsstate would be wrong in this case.
 	 */
-	if (rel)
+	if (last_tupdesc)
+		tupdesc = last_tupdesc;
+	else if (rel)
 		tupdesc = RelationGetDescr(rel);
 	else
 	{

@@ -3,11 +3,9 @@
 -- ===================================================================
 
 CREATE EXTENSION postgres_fdw;
-
 SELECT current_database() AS current_database,
   current_setting('port') AS current_port
 \gset
-
 CREATE SERVER testserver1 FOREIGN DATA WRAPPER postgres_fdw;
 CREATE SERVER loopback FOREIGN DATA WRAPPER postgres_fdw
 	OPTIONS (dbname :'current_database', port :'current_port');
@@ -277,6 +275,10 @@ SELECT COUNT(*) FROM ft1 t1;
 SELECT * FROM ft1 t1 WHERE t1.c3 IN (SELECT c3 FROM ft2 t2 WHERE c1 <= 10) ORDER BY c1;
 -- subquery+MAX
 SELECT * FROM ft1 t1 WHERE t1.c3 = (SELECT MAX(c3) FROM ft2 t2) ORDER BY c1;
+--Test in non-cursor mode to cover process_query_params path
+SET postgres_fdw.use_cursor TO off;
+SELECT * FROM ft1 t1 WHERE t1.c3 = (SELECT MAX(c3) FROM ft2 t2) ORDER BY c1;
+RESET postgres_fdw.use_cursor;
 -- used in CTE
 WITH t1 AS (SELECT * FROM ft1 WHERE c1 <= 10) SELECT t2.c1, t2.c2, t2.c3, t2.c4 FROM t1, ft2 t2 WHERE t1.c1 = t2.c1 ORDER BY t1.c1;
 -- fixed values
@@ -356,6 +358,15 @@ EXPLAIN (VERBOSE, COSTS OFF)
   WHERE a.c2 = 6 AND b.c1 = a.c1 AND a.c8 = 'foo' AND b.c7 = upper(a.c7);
 SELECT * FROM ft2 a, ft2 b
 WHERE a.c2 = 6 AND b.c1 = a.c1 AND a.c8 = 'foo' AND b.c7 = upper(a.c7);
+
+-- Test in non-cursor mode for rescan path
+SET postgres_fdw.use_cursor TO off;
+SELECT * FROM ft2 a, ft2 b
+WHERE a.c2 = 6 AND b.c1 = a.c1 AND a.c8 = 'foo' AND b.c7 = upper(a.c7);
+-- Test for non cursor mode covering rescans and three active cursors
+SELECT count(*) FROM ft2 a, ft2 b, ft2 c WHERE a.c2 = 6 AND b.c1 = a.c1 AND c.c1 = b.c1 AND a.c8 = 'foo' AND b.c7 = upper(a.c7);
+RESET postgres_fdw.use_cursor;
+
 -- bug before 9.3.5 due to sloppy handling of remote-estimate parameters
 SELECT * FROM ft1 WHERE c1 = ANY (ARRAY(SELECT c1 FROM ft2 WHERE c1 < 5));
 SELECT * FROM ft2 WHERE c1 = ANY (ARRAY(SELECT c1 FROM ft1 WHERE c1 < 5));
@@ -646,6 +657,11 @@ SELECT t1.c1 FROM ft1 t1 WHERE EXISTS (SELECT 1 FROM ft2 t2 WHERE t1.c1 = t2.c1)
 EXPLAIN (VERBOSE, COSTS OFF)
 SELECT t1.c1 FROM ft1 t1 WHERE NOT EXISTS (SELECT 1 FROM ft2 t2 WHERE t1.c1 = t2.c2) ORDER BY t1.c1 OFFSET 100 LIMIT 10;
 SELECT t1.c1 FROM ft1 t1 WHERE NOT EXISTS (SELECT 1 FROM ft2 t2 WHERE t1.c1 = t2.c2) ORDER BY t1.c1 OFFSET 100 LIMIT 10;
+
+--Test in non-cursor mode to cover the patch for two simultaneous active cursors
+SET postgres_fdw.use_cursor TO off;
+SELECT t1.c1 FROM ft1 t1 WHERE NOT EXISTS (SELECT 1 FROM ft2 t2 WHERE t1.c1 = t2.c2) ORDER BY t1.c1 OFFSET 100 LIMIT 10;
+RESET postgres_fdw.use_cursor;
 -- CROSS JOIN can be pushed down
 EXPLAIN (VERBOSE, COSTS OFF)
 SELECT t1.c1, t2.c1 FROM ft1 t1 CROSS JOIN ft2 t2 ORDER BY t1.c1, t2.c1 OFFSET 100 LIMIT 10;
@@ -654,6 +670,10 @@ SELECT t1.c1, t2.c1 FROM ft1 t1 CROSS JOIN ft2 t2 ORDER BY t1.c1, t2.c1 OFFSET 1
 EXPLAIN (VERBOSE, COSTS OFF)
 SELECT t1.c1, t2.c1 FROM ft5 t1 JOIN ft6 t2 ON (t1.c1 = t2.c1) ORDER BY t1.c1, t2.c1 OFFSET 100 LIMIT 10;
 SELECT t1.c1, t2.c1 FROM ft5 t1 JOIN ft6 t2 ON (t1.c1 = t2.c1) ORDER BY t1.c1, t2.c1 OFFSET 100 LIMIT 10;
+--Test in non-cursor mode to cover the case with multiple cursors but only one active cursor at a time
+SET postgres_fdw.use_cursor TO off;
+SELECT t1.c1, t2.c1 FROM ft5 t1 JOIN ft6 t2 ON (t1.c1 = t2.c1) ORDER BY t1.c1, t2.c1 OFFSET 100 LIMIT 10;
+RESET postgres_fdw.use_cursor;
 -- unsafe join conditions (c8 has a UDT), not pushed down. Practically a CROSS
 -- JOIN since c8 in both tables has same value.
 EXPLAIN (VERBOSE, COSTS OFF)
@@ -3921,6 +3941,13 @@ INSERT INTO result_tbl SELECT * FROM async_pt WHERE b % 100 = 0;
 
 SELECT * FROM result_tbl ORDER BY a;
 DELETE FROM result_tbl;
+
+-- Test in non-cursor mode, it doesn't support async execution
+SET postgres_fdw.use_cursor TO off;
+INSERT INTO result_tbl SELECT * FROM async_pt WHERE b % 100 = 0;
+SELECT * FROM result_tbl ORDER BY a;
+DELETE FROM result_tbl;
+RESET postgres_fdw.use_cursor;
 
 EXPLAIN (VERBOSE, COSTS OFF)
 INSERT INTO result_tbl SELECT * FROM async_pt WHERE b === 505;

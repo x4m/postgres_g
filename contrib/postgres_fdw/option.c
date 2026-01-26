@@ -44,6 +44,7 @@ static PgFdwOption *postgres_fdw_options;
  * GUC parameters
  */
 char	   *pgfdw_application_name = NULL;
+bool		pgfdw_use_cursor = true;
 
 /*
  * Helper functions
@@ -585,6 +586,24 @@ _PG_init(void)
 							   NULL,
 							   NULL,
 							   NULL);
+
+	/*
+	 * If use_cursor is set to false, then the new way of fetching is used. In
+	 * this mode, cursors are not used, rather the tuples are stored in a
+	 * tuplestore in case the switch of queries in between execution. So, for
+	 * the next call, tuples are fetched from this tuplestore instead of the
+	 * fetch from cursor.
+	 */
+	DefineCustomBoolVariable("postgres_fdw.use_cursor",
+							 "If set uses the cursor, otherwise fetches without cursor",
+							 NULL,
+							 &pgfdw_use_cursor,
+							 true,
+							 PGC_USERSET,
+							 0,
+							 NULL,
+							 NULL,
+							 NULL);
 
 	MarkGUCPrefixReserved("postgres_fdw");
 }

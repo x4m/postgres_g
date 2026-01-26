@@ -969,6 +969,17 @@ pgfdw_get_result(PGconn *conn)
 }
 
 /*
+ * Wrap libpqsrv_get_result(), adding wait event.
+ * Used in case of non-cursor mode.
+ * Caller is responsible for the error handling on the result.
+ */
+PGresult *
+pgfdw_get_next_result(PGconn *conn)
+{
+	return libpqsrv_get_result(conn, pgfdw_we_get_result);
+}
+
+/*
  * Report an error we got from the remote server.
  *
  * Callers should use pgfdw_report_error() to throw an error, or use

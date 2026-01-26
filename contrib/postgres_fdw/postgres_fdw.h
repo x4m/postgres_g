@@ -16,9 +16,11 @@
 #include "foreign/foreign.h"
 #include "lib/stringinfo.h"
 #include "libpq/libpq-be-fe.h"
+#include "libpq-int.h"
 #include "nodes/execnodes.h"
 #include "nodes/pathnodes.h"
 #include "utils/relcache.h"
+#include "funcapi.h"
 
 /*
  * FDW-specific planner information kept in RelOptInfo.fdw_private for a
@@ -131,12 +133,16 @@ typedef struct PgFdwRelationInfo
 	int			relation_index;
 } PgFdwRelationInfo;
 
+typedef struct PgFdwScanState PgFdwScanState;
+
 /*
  * Extra control information relating to a connection.
  */
 typedef struct PgFdwConnState
 {
 	AsyncRequest *pendingAreq;	/* pending async request */
+	PgFdwScanState *last_query; /* last query executed, required for
+								 * non-cursor mode */
 } PgFdwConnState;
 
 /*
@@ -164,6 +170,7 @@ extern unsigned int GetCursorNumber(PGconn *conn);
 extern unsigned int GetPrepStmtNumber(PGconn *conn);
 extern void do_sql_command(PGconn *conn, const char *sql);
 extern PGresult *pgfdw_get_result(PGconn *conn);
+extern PGresult *pgfdw_get_next_result(PGconn *conn);
 extern PGresult *pgfdw_exec_query(PGconn *conn, const char *query,
 								  PgFdwConnState *state);
 pg_noreturn extern void pgfdw_report_error(PGresult *res, PGconn *conn,
@@ -179,6 +186,7 @@ extern List *ExtractExtensionList(const char *extensionsString,
 								  bool warnOnMissing);
 extern char *process_pgfdw_appname(const char *appname);
 extern char *pgfdw_application_name;
+extern bool pgfdw_use_cursor;
 
 /* in deparse.c */
 extern void classifyConditions(PlannerInfo *root,
