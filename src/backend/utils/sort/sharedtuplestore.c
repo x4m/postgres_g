@@ -92,8 +92,7 @@ struct SharedTuplestoreAccessor
 	char	   *write_end;		/* One past the end of the current chunk. */
 };
 
-static void sts_filename(char *name, SharedTuplestoreAccessor *accessor,
-						 int participant);
+static void sts_filename(char *name, SharedTuplestore *sts, int participant);
 
 /*
  * Return the amount of shared memory required to hold SharedTuplestore for a
@@ -309,7 +308,7 @@ sts_puttuple(SharedTuplestoreAccessor *accessor, void *meta_data,
 		MemoryContext oldcxt;
 
 		/* Create one.  Only this backend will write into it. */
-		sts_filename(name, accessor, accessor->participant);
+		sts_filename(name, accessor->sts, accessor->participant);
 
 		oldcxt = MemoryContextSwitchTo(accessor->context);
 		accessor->write_file =
@@ -531,7 +530,7 @@ sts_parallel_scan_next(SharedTuplestoreAccessor *accessor, void *meta_data)
 				char		name[MAXPGPATH];
 				MemoryContext oldcxt;
 
-				sts_filename(name, accessor, accessor->read_participant);
+				sts_filename(name, accessor->sts, accessor->read_participant);
 
 				oldcxt = MemoryContextSwitchTo(accessor->context);
 				accessor->read_file =
@@ -601,17 +600,31 @@ sts_parallel_scan_next(SharedTuplestoreAccessor *accessor, void *meta_data)
 void
 sts_dispose(SharedTuplestoreAccessor *accessor)
 {
+	sts_delete_files(accessor->sts, accessor->participant, accessor->fileset);
+}
+
+/*
+ * Delete the files associated with a given participant in a SharedTuplestore.
+ *
+ * This is a lower-level interface that doesn't require an accessor, useful
+ * when you need to clean up files without going through sts_attach().  The
+ * same ownership rules apply: only delete files for your own participant
+ * number to respect temp_file_limit accounting.
+ */
+void
+sts_delete_files(SharedTuplestore *sts, int participant, SharedFileSet *fileset)
+{
 	char		name[MAXPGPATH];
 
-	sts_filename(name, accessor, accessor->participant);
-	BufFileDeleteFileSet(&accessor->fileset->fs, name, true);
+	sts_filename(name, sts, participant);
+	BufFileDeleteFileSet(&fileset->fs, name, true);
 }
 
 /*
  * Create the name used for the BufFile that a given participant will write.
  */
 static void
-sts_filename(char *name, SharedTuplestoreAccessor *accessor, int participant)
+sts_filename(char *name, SharedTuplestore *sts, int participant)
 {
-	snprintf(name, MAXPGPATH, "%s.p%d", accessor->sts->name, participant);
+	snprintf(name, MAXPGPATH, "%s.p%d", sts->name, participant);
 }

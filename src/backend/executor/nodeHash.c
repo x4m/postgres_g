@@ -1597,16 +1597,16 @@ ExecParallelHashDeleteOldPartitions(HashJoinTable hashtable)
 	for (int i = 1; i < old_nbatch; ++i)
 	{
 		ParallelHashJoinBatch *shared =
-		NthParallelHashJoinBatch(old_batches, i);
-		SharedTuplestoreAccessor *accessor;
+			NthParallelHashJoinBatch(old_batches, i);
 
-		accessor = sts_attach(ParallelHashJoinBatchInner(shared),
-							  ParallelWorkerNumber + 1,
-							  &pstate->fileset);
-		sts_dispose(accessor);
-		/* XXX free */
+		/*
+		 * Delete files for this participant directly without attaching.
+		 * This avoids allocating an accessor just to delete files.
+		 */
+		sts_delete_files(ParallelHashJoinBatchInner(shared),
+						 ParallelWorkerNumber + 1,
+						 &pstate->fileset);
 	}
-
 }
 
 /*

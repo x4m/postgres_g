@@ -59,5 +59,7 @@ extern MinimalTuple sts_parallel_scan_next(SharedTuplestoreAccessor *accessor,
 										   void *meta_data);
 
 extern void sts_dispose(SharedTuplestoreAccessor *accessor);
+extern void sts_delete_files(SharedTuplestore *sts, int participant,
+							 SharedFileSet *fileset);
 
 #endif							/* SHAREDTUPLESTORE_H */
