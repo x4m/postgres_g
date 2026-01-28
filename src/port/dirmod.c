@@ -88,7 +88,7 @@ pgrename(const char *from, const char *to)
 			return -1;
 #endif
 
-		if (++loops > 100)		/* time out after 10 sec */
+		if (++loops > 5000)		/* time out after 10 sec */
 			return -1;
 		pg_usleep(100000);		/* us */
 	}
