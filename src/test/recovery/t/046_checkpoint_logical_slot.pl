@@ -126,6 +126,8 @@ $node->safe_psql('postgres',
 	q{select injection_points_wakeup('checkpoint-before-old-wal-removal')});
 $node->wait_for_log(qr/checkpoint complete/, $log_offset);
 
+$checkpoint->quit;
+
 # Abruptly stop the server.
 $node->stop('immediate');
 
