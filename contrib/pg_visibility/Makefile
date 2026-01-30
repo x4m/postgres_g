@@ -10,7 +10,9 @@ DATA = pg_visibility--1.1.sql pg_visibility--1.1--1.2.sql \
 	pg_visibility--1.0--1.1.sql
 PGFILEDESC = "pg_visibility - page visibility information"
 
-EXTRA_INSTALL = contrib/pageinspect
+EXTRA_INSTALL=src/test/modules/injection_points contrib/pageinspect
+export enable_injection_points
+
 REGRESS = pg_visibility
 TAP_TESTS = 1
 

@@ -34,9 +34,13 @@ tests += {
     ],
   },
   'tap': {
+    'env': {
+       'enable_injection_points': get_option('injection_points') ? 'yes' : 'no',
+    },
     'tests': [
       't/001_concurrent_transaction.pl',
       't/002_corrupt_vm.pl',
+      't/003_vacuum_freeze.pl',
     ],
   },
 }
