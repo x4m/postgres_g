@@ -367,72 +367,77 @@ psql_like(
 	'\copy from with DEFAULT');
 
 # Check \watch
-# Note: the interval value is parsed with locale-aware strtod()
-psql_like(
-	$node, sprintf('SELECT 1 \watch c=3 i=%g', 0.01),
-	qr/1\n1\n1/, '\watch with 3 iterations, interval of 0.01');
+# Note: the interval value is parsed with locale-aware strtod(), so use C locale
+# to ensure decimal values like "0.01" are accepted (not "0,01").
+{
+	local $ENV{LC_NUMERIC} = 'C';
 
-# Sub-millisecond wait works, equivalent to 0.
-psql_like(
-	$node, sprintf('SELECT 1 \watch c=3 i=%g', 0.0001),
-	qr/1\n1\n1/, '\watch with 3 iterations, interval of 0.0001');
+	psql_like(
+		$node, sprintf('SELECT 1 \watch c=3 i=%g', 0.01),
+		qr/1\n1\n1/, '\watch with 3 iterations, interval of 0.01');
 
-# Test zero interval
-psql_like(
-	$node, '\set WATCH_INTERVAL 0
+	# Sub-millisecond wait works, equivalent to 0.
+	psql_like(
+		$node, sprintf('SELECT 1 \watch c=3 i=%g', 0.0001),
+		qr/1\n1\n1/, '\watch with 3 iterations, interval of 0.0001');
+
+	# Test zero interval
+	psql_like(
+		$node, '\set WATCH_INTERVAL 0
 SELECT 1 \watch c=3',
-	qr/1\n1\n1/, '\watch with 3 iterations, interval of 0');
+		qr/1\n1\n1/, '\watch with 3 iterations, interval of 0');
 
-# Check \watch minimum row count
-psql_fails_like(
-	$node,
-	'SELECT 3 \watch m=x',
-	qr/incorrect minimum row count/,
-	'\watch, invalid minimum row setting');
+	# Check \watch minimum row count
+	psql_fails_like(
+		$node,
+		'SELECT 3 \watch m=x',
+		qr/incorrect minimum row count/,
+		'\watch, invalid minimum row setting');
 
-psql_fails_like(
-	$node,
-	'SELECT 3 \watch m=1 min_rows=2',
-	qr/minimum row count specified more than once/,
-	'\watch, minimum rows is specified more than once');
+	psql_fails_like(
+		$node,
+		'SELECT 3 \watch m=1 min_rows=2',
+		qr/minimum row count specified more than once/,
+		'\watch, minimum rows is specified more than once');
 
-psql_like(
-	$node,
-	sprintf(
-		q{with x as (
+	psql_like(
+		$node,
+		sprintf(
+			q{with x as (
 		select now()-backend_start AS howlong
 		from pg_stat_activity
 		where pid = pg_backend_pid()
 	  ) select 123 from x where howlong < '2 seconds' \watch i=%g m=2}, 0.5),
-	qr/^123$/,
-	'\watch, 2 minimum rows');
+		qr/^123$/,
+		'\watch, 2 minimum rows');
 
-# Check \watch errors
-psql_fails_like(
-	$node,
-	'SELECT 1 \watch -10',
-	qr/incorrect interval value "-10"/,
-	'\watch, negative interval');
-psql_fails_like(
-	$node,
-	'SELECT 1 \watch 10ab',
-	qr/incorrect interval value "10ab"/,
-	'\watch, incorrect interval');
-psql_fails_like(
-	$node,
-	'SELECT 1 \watch 10e400',
-	qr/incorrect interval value "10e400"/,
-	'\watch, out-of-range interval');
-psql_fails_like(
-	$node,
-	'SELECT 1 \watch 1 1',
-	qr/interval value is specified more than once/,
-	'\watch, interval value is specified more than once');
-psql_fails_like(
-	$node,
-	'SELECT 1 \watch c=1 c=1',
-	qr/iteration count is specified more than once/,
-	'\watch, iteration count is specified more than once');
+	# Check \watch errors
+	psql_fails_like(
+		$node,
+		'SELECT 1 \watch -10',
+		qr/incorrect interval value "-10"/,
+		'\watch, negative interval');
+	psql_fails_like(
+		$node,
+		'SELECT 1 \watch 10ab',
+		qr/incorrect interval value "10ab"/,
+		'\watch, incorrect interval');
+	psql_fails_like(
+		$node,
+		'SELECT 1 \watch 10e400',
+		qr/incorrect interval value "10e400"/,
+		'\watch, out-of-range interval');
+	psql_fails_like(
+		$node,
+		'SELECT 1 \watch 1 1',
+		qr/interval value is specified more than once/,
+		'\watch, interval value is specified more than once');
+	psql_fails_like(
+		$node,
+		'SELECT 1 \watch c=1 c=1',
+		qr/iteration count is specified more than once/,
+		'\watch, iteration count is specified more than once');
+}
 
 # Check WATCH_INTERVAL
 psql_like(
