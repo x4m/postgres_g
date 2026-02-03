@@ -400,7 +400,12 @@ CREATE OR REPLACE FUNCTION
   PARALLEL SAFE;
 
 CREATE OR REPLACE FUNCTION
-  pg_terminate_backend(pid integer, timeout int8 DEFAULT 0)
+  pg_cancel_backend(pid integer, msg text DEFAULT '')
+  RETURNS boolean STRICT VOLATILE LANGUAGE INTERNAL AS 'pg_cancel_backend'
+  PARALLEL SAFE;
+
+CREATE OR REPLACE FUNCTION
+  pg_terminate_backend(pid integer, timeout int8 DEFAULT 0, msg text DEFAULT '')
   RETURNS boolean STRICT VOLATILE LANGUAGE INTERNAL AS 'pg_terminate_backend'
   PARALLEL SAFE;
 

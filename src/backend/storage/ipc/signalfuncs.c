@@ -25,6 +25,8 @@
 #include "storage/procarray.h"
 #include "utils/acl.h"
 #include "utils/fmgrprotos.h"
+#include "utils/builtins.h"
+#include "utils/backend_msg.h"
 
 
 /*
@@ -48,7 +50,7 @@
 #define SIGNAL_BACKEND_NOSUPERUSER 3
 #define SIGNAL_BACKEND_NOAUTOVAC 4
 static int
-pg_signal_backend(int pid, int sig)
+pg_signal_backend(int pid, int sig, const char *msg)
 {
 	PGPROC	   *proc = BackendPidGetProc(pid);
 
@@ -111,6 +113,15 @@ pg_signal_backend(int pid, int sig)
 	 * too unlikely to worry about.
 	 */
 
+	if (msg != NULL && msg[0] != '\0')
+	{
+		int		r = BackendMsgSet(pid, msg);
+
+		if (r != -1 && r != strlen(msg))
+			ereport(NOTICE,
+					(errmsg("message is too long, truncated to %d", r)));
+	}
+
 	/* If we have setsid(), signal the backend's whole process group */
 #ifdef HAVE_SETSID
 	if (kill(-pid, sig))
@@ -132,10 +143,10 @@ pg_signal_backend(int pid, int sig)
  *
  * Note that only superusers can signal superuser-owned processes.
  */
-Datum
-pg_cancel_backend(PG_FUNCTION_ARGS)
+static Datum
+pg_cancel_backend_internal(pid_t pid, const char *msg)
 {
-	int			r = pg_signal_backend(PG_GETARG_INT32(0), SIGINT);
+	int			r = pg_signal_backend(pid, SIGINT, msg);
 
 	if (r == SIGNAL_BACKEND_NOSUPERUSER)
 		ereport(ERROR,
@@ -159,6 +170,17 @@ pg_cancel_backend(PG_FUNCTION_ARGS)
 						   "pg_signal_backend")));
 
 	PG_RETURN_BOOL(r == SIGNAL_BACKEND_SUCCESS);
+}
+
+Datum pg_cancel_backend(PG_FUNCTION_ARGS)
+{
+	int			pid;
+	char	   *msg;
+
+	pid = PG_GETARG_INT32(0);
+	msg = text_to_cstring(PG_GETARG_TEXT_PP(1));
+
+	return pg_cancel_backend_internal(pid, msg);
 }
 
 /*
@@ -233,22 +255,17 @@ pg_wait_until_termination(int pid, int64 timeout)
  *
  * Note that only superusers can signal superuser-owned processes.
  */
-Datum
-pg_terminate_backend(PG_FUNCTION_ARGS)
+static Datum
+pg_terminate_backend_internal(int pid, int timeout, const char *msg)
 {
-	int			pid;
 	int			r;
-	int			timeout;		/* milliseconds */
-
-	pid = PG_GETARG_INT32(0);
-	timeout = PG_GETARG_INT64(1);
 
 	if (timeout < 0)
 		ereport(ERROR,
 				(errcode(ERRCODE_NUMERIC_VALUE_OUT_OF_RANGE),
 				 errmsg("\"timeout\" must not be negative")));
 
-	r = pg_signal_backend(pid, SIGTERM);
+	r = pg_signal_backend(pid, SIGTERM, msg);
 
 	if (r == SIGNAL_BACKEND_NOSUPERUSER)
 		ereport(ERROR,
@@ -276,6 +293,19 @@ pg_terminate_backend(PG_FUNCTION_ARGS)
 		PG_RETURN_BOOL(pg_wait_until_termination(pid, timeout));
 	else
 		PG_RETURN_BOOL(r == SIGNAL_BACKEND_SUCCESS);
+}
+
+Datum pg_terminate_backend(PG_FUNCTION_ARGS)
+{
+	int pid;
+	int timeout; /* milliseconds */
+	char *msg;
+
+	pid = PG_GETARG_INT32(0);
+	timeout = PG_GETARG_INT64(1);
+	msg = text_to_cstring(PG_GETARG_TEXT_PP(2));
+
+	return pg_terminate_backend_internal(pid, timeout, msg);
 }
 
 /*

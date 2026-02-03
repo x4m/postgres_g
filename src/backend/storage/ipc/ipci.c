@@ -52,6 +52,7 @@
 #include "storage/sinvaladt.h"
 #include "utils/guc.h"
 #include "utils/injection_point.h"
+#include "utils/backend_msg.h"
 
 /* GUCs */
 int			shared_memory_type = DEFAULT_SHARED_MEMORY_TYPE;
@@ -140,6 +141,7 @@ CalculateShmemSize(void)
 	size = add_size(size, SlotSyncShmemSize());
 	size = add_size(size, AioShmemSize());
 	size = add_size(size, WaitLSNShmemSize());
+	size = add_size(size, BackendStatusShmemSize());
 	size = add_size(size, LogicalDecodingCtlShmemSize());
 
 	/* include additional requested shmem from preload libraries */
@@ -327,6 +329,7 @@ CreateOrAttachShmemStructs(void)
 	InjectionPointShmemInit();
 	AioShmemInit();
 	WaitLSNShmemInit();
+	BackendMsgShmemInit();
 	LogicalDecodingCtlShmemInit();
 }
 

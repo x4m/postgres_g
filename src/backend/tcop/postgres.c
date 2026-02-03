@@ -81,6 +81,7 @@
 #include "utils/timeout.h"
 #include "utils/timestamp.h"
 #include "utils/varlena.h"
+#include "utils/backend_msg.h"
 
 /* ----------------
  *		global variables
@@ -3356,9 +3357,22 @@ ProcessInterrupts(void)
 			proc_exit(0);
 		}
 		else
+		{
+			if (BackendMsgIsSet())
+			{
+				char msg[BACKEND_MSG_MAX_LEN];
+
+				BackendMsgGet(msg, sizeof(msg));
+
+				ereport(FATAL,
+						(errcode(ERRCODE_ADMIN_SHUTDOWN),
+						errmsg("terminating connection due to administrator command: %s", msg)));
+			}
+
 			ereport(FATAL,
 					(errcode(ERRCODE_ADMIN_SHUTDOWN),
 					 errmsg("terminating connection due to administrator command")));
+		}
 	}
 
 	if (CheckClientConnectionPending)
@@ -3466,9 +3480,21 @@ ProcessInterrupts(void)
 		if (!DoingCommandRead)
 		{
 			LockErrorCleanup();
-			ereport(ERROR,
-					(errcode(ERRCODE_QUERY_CANCELED),
-					 errmsg("canceling statement due to user request")));
+
+			if (BackendMsgIsSet())
+			{
+				char msg[BACKEND_MSG_MAX_LEN];
+
+				BackendMsgGet(msg, sizeof(msg));
+
+				ereport(ERROR,
+						(errcode(ERRCODE_QUERY_CANCELED),
+						 errmsg("canceling statement due to user request: %s", msg)));
+			}
+			else
+				ereport(ERROR,
+						(errcode(ERRCODE_QUERY_CANCELED),
+						 errmsg("canceling statement due to user request")));
 		}
 	}
 

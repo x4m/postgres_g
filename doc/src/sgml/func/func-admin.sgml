@@ -147,7 +147,7 @@
         <indexterm>
          <primary>pg_cancel_backend</primary>
         </indexterm>
-        <function>pg_cancel_backend</function> ( <parameter>pid</parameter> <type>integer</type> )
+        <function>pg_cancel_backend</function> ( <parameter>pid</parameter> <type>integer</type>, <parameter>message</parameter> <type>test</type> <literal>DEFAULT</literal> <literal>''</literal> )
         <returnvalue>boolean</returnvalue>
        </para>
        <para>
@@ -160,6 +160,9 @@
         <literal>pg_signal_autovacuum_worker</literal> are permitted to
         cancel autovacuum worker processes, which are otherwise considered
         superuser backends.
+        If <parameter>message</parameter> is specified and non-empty, this
+        string will be passed as additional message in ERROR text for
+        canceled backend.
        </para></entry>
       </row>
 
@@ -225,7 +228,7 @@
         <indexterm>
          <primary>pg_terminate_backend</primary>
         </indexterm>
-        <function>pg_terminate_backend</function> ( <parameter>pid</parameter> <type>integer</type>, <parameter>timeout</parameter> <type>bigint</type> <literal>DEFAULT</literal> <literal>0</literal> )
+        <function>pg_terminate_backend</function> ( <parameter>pid</parameter> <type>integer</type>, <parameter>timeout</parameter> <type>bigint</type> <literal>DEFAULT</literal> <literal>0</literal>, <parameter>message</parameter> <type>test</type> <literal>DEFAULT</literal> <literal>''</literal>)
         <returnvalue>boolean</returnvalue>
        </para>
        <para>
@@ -249,6 +252,9 @@
         the process is terminated, the function
         returns <literal>true</literal>.  On timeout, a warning is emitted and
         <literal>false</literal> is returned.
+        If <parameter>message</parameter> is specified and non-empty, this
+        string will be passed as additional message in FATAL text for
+        terminated backend.
        </para></entry>
       </row>
      </tbody>

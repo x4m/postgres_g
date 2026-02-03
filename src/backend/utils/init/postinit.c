@@ -69,6 +69,7 @@
 #include "utils/snapmgr.h"
 #include "utils/syscache.h"
 #include "utils/timeout.h"
+#include "utils/backend_msg.h"
 
 static HeapTuple GetDatabaseTuple(const char *dbname);
 static HeapTuple GetDatabaseTupleByOid(Oid dboid);
@@ -902,6 +903,7 @@ InitPostgres(const char *in_dbname, Oid dboid,
 			InitializeSystemUser(MyClientConnectionInfo.authn_id,
 								 hba_authname(MyClientConnectionInfo.auth_method));
 		am_superuser = superuser();
+		BackendMsgInit(MyProcNumber);
 	}
 
 	/* Report any SSL/GSS details for the session. */
