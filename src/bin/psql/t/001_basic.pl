@@ -368,9 +368,10 @@ psql_like(
 
 # Check \watch
 # Note: the interval value is parsed with locale-aware strtod(), so use C locale
-# to ensure decimal values like "0.01" are accepted (not "0,01").
+# to ensure decimal values like "0.01" are accepted (not "0,01").  Use LC_ALL
+# (not just LC_NUMERIC) because LC_ALL overrides other locale vars on Windows.
 {
-	local $ENV{LC_NUMERIC} = 'C';
+	local $ENV{LC_ALL} = 'C';
 
 	psql_like(
 		$node, sprintf('SELECT 1 \watch c=3 i=%g', 0.01),
