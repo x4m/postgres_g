@@ -25,6 +25,20 @@ my $node = PostgreSQL::Test::Cluster->new('master');
 $node->init();
 $node->start;
 
+# Detect the locale's decimal separator by asking psql to format a number.
+# psql's \watch uses locale-aware strtod(), so we need to match its expectations.
+my $decimal_sep =
+  $node->safe_psql('postgres', "\\pset numericlocale on\n\\pset tuples_only on\nSELECT 0.5");
+$decimal_sep =~ s/^0(.)5$/$1/ or $decimal_sep = '.';
+
+# Format a number for psql's \watch interval argument.
+sub format_interval
+{
+	my ($num) = @_;
+	(my $str = sprintf("%g", $num)) =~ s/\./$decimal_sep/;
+	return $str;
+}
+
 # Check if the extension injection_points is available, as it may be
 # possible that this script is run with installcheck, where the module
 # would not be installed by default.
@@ -46,16 +60,15 @@ my $psql_session = $node->background_psql('postgres');
 
 # The following query will generate a stream of SELECT 1 queries. This is done
 # so to exercise transaction timeout in the presence of short queries.
-# Note: the interval value is parsed with locale-aware strtod()
 $psql_session->query_until(
 	qr/starting_bg_psql/,
 	sprintf(
 		q(\echo starting_bg_psql
 		SET transaction_timeout to '10ms';
 		BEGIN;
-		SELECT 1 \watch %g
+		SELECT 1 \watch %s
 		\q
-), 0.001));
+), format_interval(0.001)));
 
 # Wait until the backend enters the timeout injection point. Will get an error
 # here if anything goes wrong.

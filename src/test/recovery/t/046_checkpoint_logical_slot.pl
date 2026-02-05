@@ -23,6 +23,20 @@ $node = PostgreSQL::Test::Cluster->new('mike');
 $node->init(allows_streaming => 'logical');
 $node->start;
 
+# Detect the locale's decimal separator by asking psql to format a number.
+# psql's \watch uses locale-aware strtod(), so we need to match its expectations.
+my $decimal_sep =
+  $node->safe_psql('postgres', "\\pset numericlocale on\n\\pset tuples_only on\nSELECT 0.5");
+$decimal_sep =~ s/^0(.)5$/$1/ or $decimal_sep = '.';
+
+# Format a number for psql's \watch interval argument.
+sub format_interval
+{
+	my ($num) = @_;
+	(my $str = sprintf("%g", $num)) =~ s/\./$decimal_sep/;
+	return $str;
+}
+
 # Check if the extension injection_points is available, as it may be
 # possible that this script is run with installcheck, where the module
 # would not be installed by default.
@@ -55,10 +69,11 @@ $node->safe_psql('postgres', q{checkpoint});
 my $xacts = $node->background_psql('postgres');
 $xacts->query_until(
 	qr/run_xacts/,
-	q(\echo run_xacts
-SELECT 1 \watch 0.1
+	sprintf(
+		q(\echo run_xacts
+SELECT 1 \watch %s
 \q
-));
+), format_interval(0.1)));
 
 $node->advance_wal(20);
 
