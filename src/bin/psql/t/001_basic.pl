@@ -5,7 +5,6 @@ use strict;
 use warnings FATAL => 'all';
 use locale;
 
-use POSIX qw(localeconv);
 use PostgreSQL::Test::Cluster;
 use PostgreSQL::Test::Utils;
 use Test::More;
@@ -72,6 +71,20 @@ max_replication_slots = 4
 max_wal_senders = 4
 });
 $node->start;
+
+# Detect the locale's decimal separator by asking psql to format a number.
+# psql's \watch uses locale-aware strtod(), so we need to match its expectations.
+my $decimal_sep =
+  $node->safe_psql('postgres', "\\pset numericlocale on\n\\pset tuples_only on\nSELECT 0.5");
+$decimal_sep =~ s/^0(.)5$/$1/ or $decimal_sep = '.';
+
+# Format a number for psql's \watch interval argument.
+sub format_interval
+{
+	my ($num) = @_;
+	(my $str = sprintf("%g", $num)) =~ s/\./$decimal_sep/;
+	return $str;
+}
 
 psql_like($node, '\copyright', qr/Copyright/, '\copyright');
 psql_like($node, '\help', qr/ALTER/, '\help without arguments');
@@ -368,25 +381,15 @@ psql_like(
 	'\copy from with DEFAULT');
 
 # Check \watch
-# The interval value is parsed with locale-aware strtod(), so format numbers
-# using the locale's decimal_point (e.g. "0,01" not "0.01" in many locales).
-sub format_interval_for_locale
-{
-	my ($num) = @_;
-	my $lc   = localeconv();
-	my $dp   = $lc->{decimal_point} || '.';
-	my $str  = sprintf("%g", $num);
-	$str =~ s/\./\Q$dp\E/ if $dp ne '.';
-	return $str;
-}
-
 psql_like(
-	$node, sprintf('SELECT 1 \watch c=3 i=%s', format_interval_for_locale(0.01)),
+	$node,
+	sprintf('SELECT 1 \watch c=3 i=%s', format_interval(0.01)),
 	qr/1\n1\n1/, '\watch with 3 iterations, interval of 0.01');
 
 # Sub-millisecond wait works, equivalent to 0.
 psql_like(
-	$node, sprintf('SELECT 1 \watch c=3 i=%s', format_interval_for_locale(0.0001)),
+	$node,
+	sprintf('SELECT 1 \watch c=3 i=%s', format_interval(0.0001)),
 	qr/1\n1\n1/, '\watch with 3 iterations, interval of 0.0001');
 
 # Test zero interval
@@ -416,7 +419,7 @@ psql_like(
 		from pg_stat_activity
 		where pid = pg_backend_pid()
 	  ) select 123 from x where howlong < '2 seconds' \watch i=%s m=2},
-		format_interval_for_locale(0.5)),
+		format_interval(0.5)),
 	qr/^123$/,
 	'\watch, 2 minimum rows');
 
