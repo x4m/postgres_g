@@ -26,10 +26,11 @@ $primary->safe_psql('postgres', 'SELECT pg_switch_wal();');
 $primary->safe_psql('postgres', "INSERT INTO test_table SELECT i, 'data' || i FROM generate_series(501, 1000) i;");
 $primary->safe_psql('postgres', 'SELECT pg_switch_wal();');
 
-# Give archiver time to archive segments
-sleep(2);
+# Wait for archiver to archive segments
+$primary->poll_query_until('postgres',
+	"SELECT archived_count > 0 FROM pg_stat_archiver")
+	or die "Timed out waiting for archiver to start";
 
-# Verify primary has archived some WAL files
 my $archived_count = () = glob("$archive_dir/*");
 ok($archived_count > 0, "primary has archived WAL files to shared archive");
 note("Primary archived $archived_count files");
@@ -59,7 +60,6 @@ $primary->safe_psql('postgres', 'SELECT pg_switch_wal();');
 
 # Wait for standby to catch up again
 $primary->wait_for_catchup($standby);
-sleep(2);
 
 # Check that standby has .ready files (waiting for primary's archive confirmation)
 my $standby_archive_status = $standby->data_dir . '/pg_wal/archive_status';
@@ -73,12 +73,11 @@ note("Standby has $ready_count .ready files");
 
 # Generate more WAL and wait for archiving on primary
 $primary->safe_psql('postgres', 'SELECT pg_switch_wal();');
-sleep(3);
 
 # Wait for primary to send archival status updates and standby to process them
 # The standby should mark segments as .done after receiving archive status from primary
 my $done_count = 0;
-for (my $i = 0; $i < 30; $i++)
+for (my $i = 0; $i < $PostgreSQL::Test::Utils::timeout_default; $i++)
 {
 	$done_count = 0;
 	if (opendir(my $dh, $standby_archive_status))
@@ -111,7 +110,7 @@ $standby->safe_psql('postgres', 'SELECT pg_switch_wal();');
 
 # Wait for archiver to activate and archive the new WAL
 my $found_archiving = 0;
-for (my $i = 0; $i < 30; $i++)
+for (my $i = 0; $i < $PostgreSQL::Test::Utils::timeout_default; $i++)
 {
 	my $log = $standby->log_content();
 	if ($log =~ /archived transaction log file/)
@@ -151,12 +150,11 @@ $standby->safe_psql('postgres', 'SELECT pg_switch_wal();');
 
 # Wait for cascading standby to catch up
 $standby->wait_for_catchup($standby2);
-sleep(3);
 
 # Wait for cascading standby to receive archive status and mark segments as .done
 my $standby2_archive_status = $standby2->data_dir . '/pg_wal/archive_status';
 my $standby2_done_count = 0;
-for (my $i = 0; $i < 30; $i++)
+for (my $i = 0; $i < $PostgreSQL::Test::Utils::timeout_default; $i++)
 {
 	$standby2_done_count = 0;
 	if (opendir(my $dh, $standby2_archive_status))
@@ -197,13 +195,10 @@ $standby->safe_psql('postgres', 'SELECT pg_switch_wal();');
 $standby->wait_for_catchup($standby2);
 $standby->wait_for_catchup($standby3);
 
-# Wait for archiving on primary
-sleep(3);
-
 # Verify both standbys eventually mark segments as .done
 my $standby3_archive_status = $standby3->data_dir . '/pg_wal/archive_status';
 
-for (my $i = 0; $i < 30; $i++)
+for (my $i = 0; $i < $PostgreSQL::Test::Utils::timeout_default; $i++)
 {
 	$standby2_done_count = 0;
 	if (opendir(my $dh, $standby2_archive_status))
@@ -216,7 +211,7 @@ for (my $i = 0; $i < 30; $i++)
 }
 
 my $standby3_done_count = 0;
-for (my $i = 0; $i < 30; $i++)
+for (my $i = 0; $i < $PostgreSQL::Test::Utils::timeout_default; $i++)
 {
 	$standby3_done_count = 0;
 	if (opendir(my $dh, $standby3_archive_status))
