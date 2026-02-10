@@ -1313,55 +1313,77 @@ XLogWalRcvSendHSFeedback(bool immed)
 /*
  * Process archival report from primary.
  *
- * The primary sends us the last WAL segment it has archived. We mark all
- * segments up to that point as .done, so they can be recycled. This uses
- * alphanumeric comparison on the segment part (ignoring timeline), so it
- * works correctly even if the standby has segments from multiple timelines.
+ * The primary sends us the last WAL segment it has archived. We scan the
+ * archive_status directory for .ready files and mark segments on the same
+ * timeline as .done if they're <= the reported segment.
  */
 static void
 ProcessArchivalReport(void)
 {
-	DIR		   *xldir;
-	struct dirent *xlde;
+	TimeLineID	reported_tli;
+	XLogSegNo	reported_segno;
+	DIR		   *status_dir;
+	struct dirent *status_de;
+	char		status_path[MAXPGPATH];
 
 	elog(DEBUG2, "received archival report from primary: %s",
 		 primary_last_archived);
 
-	/* Sanity check: must be at least 24 characters for a valid WAL filename */
-	if (strlen(primary_last_archived) < 24 ||
-		strspn(primary_last_archived, "0123456789ABCDEF") != 24)
-		return;
-
-	/* Scan pg_wal directory for segments that can be marked as .done */
-	xldir = AllocateDir(XLOGDIR);
-	if (xldir == NULL)
-		ereport(ERROR,
-				(errcode_for_file_access(),
-				 errmsg("could not open write-ahead log directory \"%s\": %m",
-						XLOGDIR)));
-
-	while ((xlde = ReadDir(xldir, XLOGDIR)) != NULL)
+	/* Parse the reported WAL filename */
+	if (!IsXLogFileName(primary_last_archived))
 	{
+		elog(WARNING, "invalid WAL filename in archival report: %s",
+			 primary_last_archived);
+		return;
+	}
+
+	XLogFromFileName(primary_last_archived, &reported_tli, &reported_segno,
+					 wal_segment_size);
+
+	/* Scan archive_status directory for .ready files */
+	snprintf(status_path, MAXPGPATH, XLOGDIR "/archive_status");
+	status_dir = AllocateDir(status_path);
+	if (status_dir == NULL)
+	{
+		elog(DEBUG2, "could not open archive_status directory: %m");
+		return;
+	}
+
+	while ((status_de = ReadDir(status_dir, status_path)) != NULL)
+	{
+		char	   *ready_suffix;
+		char		walfile[MAXPGPATH];
+		TimeLineID	file_tli;
+		XLogSegNo	file_segno;
+
+		/* Look for .ready files only */
+		ready_suffix = strstr(status_de->d_name, ".ready");
+		if (ready_suffix == NULL || ready_suffix[6] != '\0')
+			continue;
+
+		/* Extract WAL filename (remove .ready suffix) */
+		strlcpy(walfile, status_de->d_name, ready_suffix - status_de->d_name + 1);
+
+		/* Parse the WAL filename */
+		if (!IsXLogFileName(walfile))
+			continue;
+
+		XLogFromFileName(walfile, &file_tli, &file_segno, wal_segment_size);
+
 		/*
-		 * We ignore the timeline part of the XLOG segment identifiers in
-		 * deciding whether a segment is still needed. This ensures that we
-		 * won't prematurely remove a segment from a parent timeline. We use
-		 * the alphanumeric sorting property of the filenames to decide which
-		 * ones are earlier than the last archived segment.
-		 *
-		 * Compare only the segment part (characters 8-23), ignoring timeline.
+		 * Mark as .done if it's on the same timeline and not after the
+		 * reported segment. We only process the reported timeline to avoid
+		 * marking segments from parent or future timelines prematurely.
 		 */
-		if (strlen(xlde->d_name) == 24 &&
-			strspn(xlde->d_name, "0123456789ABCDEF") == 24 &&
-			strcmp(xlde->d_name + 8, primary_last_archived + 8) <= 0)
+		if (file_tli == reported_tli && file_segno <= reported_segno)
 		{
-			XLogArchiveForceDone(xlde->d_name);
-			elog(DEBUG3, "marked WAL segment %s as archived based on primary report",
-				 xlde->d_name);
+			XLogArchiveForceDone(walfile);
+			elog(DEBUG3, "marked WAL segment %s as archived (primary archived up to %s)",
+				 walfile, primary_last_archived);
 		}
 	}
 
-	FreeDir(xldir);
+	FreeDir(status_dir);
 }
 
 /*
