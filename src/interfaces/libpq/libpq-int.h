@@ -391,6 +391,7 @@ struct pg_conn
 	char	   *fbappname;		/* fallback application name */
 	char	   *dbName;			/* database name */
 	char	   *replication;	/* connect as the replication standby? */
+	char	   *archive_status_reports;	/* do we send primary last archived WAL to the standby? */
 	char	   *pgservice;		/* Postgres service, if any */
 	char	   *pgservicefile;	/* path to a service file containing
 								 * service(s) */

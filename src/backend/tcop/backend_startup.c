@@ -803,6 +803,16 @@ retry:
 									valptr),
 							 errhint("Valid values are: \"false\", 0, \"true\", 1, \"database\".")));
 			}
+			else if (strcmp(nameptr, "archive_status_reports") == 0)
+			{
+				if (!parse_bool(valptr, &am_archive_status_walsender))
+					ereport(FATAL,
+							 errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+							 errmsg("invalid value for parameter \"%s\": \"%s\"",
+									"archive_status_reports",
+									valptr),
+							 errhint("Valid values are: \"false\", 0, \"true\", 1."));
+			}
 			else if (strncmp(nameptr, "_pq_.", 5) == 0)
 			{
 				/*

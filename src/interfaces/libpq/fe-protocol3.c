@@ -2513,6 +2513,8 @@ build_startup_packet(const PGconn *conn, char *packet,
 		ADD_STARTUP_OPTION("database", conn->dbName);
 	if (conn->replication && conn->replication[0])
 		ADD_STARTUP_OPTION("replication", conn->replication);
+	if (conn->archive_status_reports && conn->archive_status_reports[0])
+		ADD_STARTUP_OPTION("archive_status_reports", conn->archive_status_reports);
 	if (conn->pgoptions && conn->pgoptions[0])
 		ADD_STARTUP_OPTION("options", conn->pgoptions);
 	if (conn->send_appname)

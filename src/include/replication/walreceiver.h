@@ -244,6 +244,7 @@ typedef WalReceiverConn *(*walrcv_connect_fn) (const char *conninfo,
 											   bool replication,
 											   bool logical,
 											   bool must_use_password,
+											   bool expect_archive_reports,
 											   const char *appname,
 											   char **err);
 
@@ -433,8 +434,8 @@ typedef struct WalReceiverFunctionsType
 
 extern PGDLLIMPORT WalReceiverFunctionsType *WalReceiverFunctions;
 
-#define walrcv_connect(conninfo, replication, logical, must_use_password, appname, err) \
-	WalReceiverFunctions->walrcv_connect(conninfo, replication, logical, must_use_password, appname, err)
+#define walrcv_connect(conninfo, replication, logical, must_use_password, expect_archive_reports, appname, err) \
+	WalReceiverFunctions->walrcv_connect(conninfo, replication, logical, must_use_password, expect_archive_reports, appname, err)
 #define walrcv_check_conninfo(conninfo, must_use_password) \
 	WalReceiverFunctions->walrcv_check_conninfo(conninfo, must_use_password)
 #define walrcv_get_conninfo(conn) \

@@ -380,6 +380,10 @@ static const internalPQconninfoOption PQconninfoOptions[] = {
 		"Replication", "D", 5,
 	offsetof(struct pg_conn, replication)},
 
+	{"archive_status_reports", NULL, NULL, NULL,
+		"Replication", "D", 5,
+	offsetof(struct pg_conn, archive_status_reports)},
+
 	{"target_session_attrs", "PGTARGETSESSIONATTRS",
 		DefaultTargetSessionAttrs, NULL,
 		"Target-Session-Attrs", "", 15, /* sizeof("prefer-standby") = 15 */
@@ -5118,6 +5122,7 @@ freePGconn(PGconn *conn)
 	free(conn->fbappname);
 	free(conn->dbName);
 	free(conn->replication);
+	free(conn->archive_status_reports);
 	free(conn->pgservice);
 	free(conn->pgservicefile);
 	free(conn->pguser);

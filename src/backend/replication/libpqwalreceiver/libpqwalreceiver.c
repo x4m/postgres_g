@@ -56,6 +56,7 @@ struct WalReceiverConn
 static WalReceiverConn *libpqrcv_connect(const char *conninfo,
 										 bool replication, bool logical,
 										 bool must_use_password,
+										 bool expect_archive_reports,
 										 const char *appname, char **err);
 static void libpqrcv_check_conninfo(const char *conninfo,
 									bool must_use_password);
@@ -146,7 +147,7 @@ _PG_init(void)
  */
 static WalReceiverConn *
 libpqrcv_connect(const char *conninfo, bool replication, bool logical,
-				 bool must_use_password, const char *appname, char **err)
+				 bool must_use_password, bool expect_archive_reports, const char *appname, char **err)
 {
 	WalReceiverConn *conn;
 	const char *keys[6];
@@ -215,6 +216,12 @@ libpqrcv_connect(const char *conninfo, bool replication, bool logical,
 
 	keys[++i] = "fallback_application_name";
 	vals[i] = appname;
+
+	if (expect_archive_reports)
+	{
+		keys[++i] = "archive_status_reports";
+		vals[i] = "true";
+	}
 
 	keys[++i] = NULL;
 	vals[i] = NULL;

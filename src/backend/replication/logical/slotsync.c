@@ -1701,7 +1701,7 @@ ReplSlotSyncWorkerMain(const void *startup_data, size_t startup_data_len)
 	 * Establish the connection to the primary server for slot
 	 * synchronization.
 	 */
-	wrconn = walrcv_connect(PrimaryConnInfo, false, false, false,
+	wrconn = walrcv_connect(PrimaryConnInfo, false, false, false, false,
 							app_name.data, &err);
 
 	if (!wrconn)
