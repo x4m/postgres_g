@@ -1121,6 +1121,11 @@ XLogWalRcvClose(XLogRecPtr recptr, TimeLineID tli)
 		 * In shared mode, check if this segment is already archived on primary.
 		 * If we're on the same timeline and this segment is <= last archived,
 		 * mark it .done immediately. Otherwise create .ready.
+		 *
+		 * We don't check ancestor timeline cases here to avoid reading timeline
+		 * history files on every segment close. ProcessArchivalReport() will
+		 * handle marking ancestor timeline segments as .done when it scans
+		 * the archive_status directory.
 		 */
 		if (primary_last_archived_tli == recvFileTLI &&
 			recvSegNo <= primary_last_archived_segno)
@@ -1327,6 +1332,7 @@ ProcessArchivalReport(void)
 	DIR		   *status_dir;
 	struct dirent *status_de;
 	char		status_path[MAXPGPATH];
+	List	   *tli_history = NIL;
 
 	elog(DEBUG2, "received archival report from primary: %s",
 		 primary_last_archived);
@@ -1376,17 +1382,56 @@ ProcessArchivalReport(void)
 		XLogFromFileName(walfile, &file_tli, &file_segno, wal_segment_size);
 
 		/*
-		 * Mark as .done if it's on the same timeline and not after the
-		 * reported segment. We only process the reported timeline to avoid
-		 * marking segments from parent or future timelines prematurely.
-		 * XXX: Process possible TLI switches happened between status reports.
-		 * For now, leave segments on previous TLIs to archive_command.
+		 * Mark as .done if:
+		 * 1. Same timeline and segment <= reported segment, OR
+		 * 2. Ancestor timeline and segment is before the timeline switch point
+		 *
+		 * For ancestor timelines: if primary archived segment X on timeline T,
+		 * then all segments on ancestor timelines before the switch to T must
+		 * have been archived (they're required to reach timeline T).
 		 */
 		if (file_tli == reported_tli && file_segno <= reported_segno)
 		{
+			/* Same timeline, segment already archived */
 			XLogArchiveForceDone(walfile);
 			elog(DEBUG3, "marked WAL segment %s as archived (primary archived up to %s)",
 				 walfile, primary_last_archived);
+		}
+		else if (file_tli != reported_tli)
+		{
+			/*
+			 * Different timeline - check if it's an ancestor and if this
+			 * segment is before the timeline switch point. Only read timeline
+			 * history if we haven't already (lazy loading).
+			 *
+			 * Note: Timelines form a tree structure, not a linear sequence,
+			 * so we can't use < or > to compare them.
+			 */
+			if (tli_history == NIL)
+				tli_history = readTimeLineHistory(reported_tli);
+
+			if (tliInHistory(file_tli, tli_history))
+			{
+				XLogRecPtr	switchpoint;
+				XLogSegNo	switchpoint_segno;
+
+				/* Get the point where we switched away from this timeline */
+				switchpoint = tliSwitchPoint(file_tli, tli_history, NULL);
+
+				/*
+				 * If the segment is at or before the switch point, it must have
+				 * been archived (it's required to reach the reported timeline).
+				 * The segment containing the switch point belongs to the old
+				 * timeline up to the switch point and should be archived.
+				 */
+				XLByteToSeg(switchpoint, switchpoint_segno, wal_segment_size);
+				if (file_segno <= switchpoint_segno)
+				{
+					XLogArchiveForceDone(walfile);
+					elog(DEBUG3, "marked ancestor timeline segment %s as archived (before switch to timeline %u)",
+						 walfile, reported_tli);
+				}
+			}
 		}
 	}
 
