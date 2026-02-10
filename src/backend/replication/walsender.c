@@ -190,6 +190,17 @@ static TimestampTz last_reply_timestamp = 0;
 static bool waiting_for_ping_response = false;
 
 /*
+ * Last archived WAL file. This is fetched from pgstat periodically and sent
+ * to the standby. last_archival_report_timestamp tracks when we last sent
+ * the report to avoid excessive pgstat access.
+ */
+static char last_archived_wal[MAX_XFN_CHARS + 1];
+static TimestampTz last_archival_report_timestamp = 0;
+
+/* Interval for sending archival reports (10 seconds) */
+#define ARCHIVAL_REPORT_INTERVAL 10000
+
+/*
  * While streaming WAL in Copy mode, streamingDoneSending is set to true
  * after we have sent CopyDone. We should not send any more CopyData messages
  * after that. streamingDoneReceiving is set to true when we receive CopyDone
@@ -276,6 +287,7 @@ static void ProcessStandbyMessage(void);
 static void ProcessStandbyReplyMessage(void);
 static void ProcessStandbyHSFeedbackMessage(void);
 static void ProcessStandbyPSRequestMessage(void);
+static void WalSndArchivalReport(void);
 static void ProcessRepliesIfAny(void);
 static void ProcessPendingWrites(void);
 static void WalSndKeepalive(bool requestReply, XLogRecPtr writePtr);
@@ -2749,6 +2761,73 @@ ProcessStandbyHSFeedbackMessage(void)
 }
 
 /*
+ * Send archival status report to standby.
+ *
+ * This is called periodically during physical replication to inform the
+ * standby about the last WAL segment archived by the primary. The standby
+ * can then mark segments up to that point as .done, allowing them to be
+ * recycled. This prevents WAL loss during standby promotion.
+ */
+static void
+WalSndArchivalReport(void)
+{
+	PgStat_ArchiverStats *archiver_stats;
+	TimestampTz now;
+	char	   *last_archived;
+
+	/* Only send reports during physical replication */
+	if (MyWalSnd->kind != REPLICATION_KIND_PHYSICAL)
+		return;
+
+	now = GetCurrentTimestamp();
+
+	/*
+	 * Send report at most once per ARCHIVAL_REPORT_INTERVAL (10 seconds).
+	 * This avoids excessive pgstat access.
+	 */
+	if (now < TimestampTzPlusMilliseconds(last_archival_report_timestamp,
+										  ARCHIVAL_REPORT_INTERVAL))
+		return;
+
+	last_archival_report_timestamp = now;
+
+	/*
+	 * Get archiver statistics. We use non-blocking access to avoid delaying
+	 * replication if stats collector is slow. If stats are unavailable or
+	 * stale, we'll just try again at the next interval.
+	 */
+	archiver_stats = pgstat_fetch_stat_archiver();
+	if (archiver_stats == NULL)
+		return;
+
+	last_archived = archiver_stats->last_archived_wal;
+
+	/*
+	 * Only send a report if the last archived WAL has changed. This is both
+	 * an optimization and ensures we don't send empty reports on startup.
+	 */
+	if (strcmp(last_archived, last_archived_wal) == 0)
+		return;
+
+	/* Verify the filename looks valid before sending */
+	if (strlen(last_archived) < 24 ||
+		strspn(last_archived, "0123456789ABCDEF") != 24)
+		return;
+
+	elog(DEBUG2, "sending archival report: %s", last_archived);
+
+	/* Remember what we sent */
+	strlcpy(last_archived_wal, last_archived, sizeof(last_archived_wal));
+
+	/* Construct and send the message */
+	resetStringInfo(&output_message);
+	pq_sendbyte(&output_message, PqMsg_CopyData);
+	pq_sendbyte(&output_message, PqReplMsg_ArchiveStatusReport);
+	pq_sendbytes(&output_message, last_archived, strlen(last_archived));
+	pq_flush_if_writable();
+}
+
+/*
  * Process the request for a primary status update message.
  */
 static void
@@ -4227,6 +4306,9 @@ WalSndKeepaliveIfNecessary(void)
 		if (pq_flush_if_writable() != 0)
 			WalSndShutdown();
 	}
+
+	/* Send archival status report if needed */
+	WalSndArchivalReport();
 }
 
 /*

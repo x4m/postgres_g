@@ -385,6 +385,15 @@ pgarch_ArchiverCopyLoop(void)
 {
 	char		xlog[MAX_XFN_CHARS + 1];
 
+	/*
+	 * In shared archive mode during recovery, the archiver doesn't archive
+	 * files. The primary is responsible for archiving, and the walreceiver
+	 * marks files as .done when the primary confirms archival. After
+	 * promotion, the archiver starts working normally.
+	 */
+	if (XLogArchiveMode == ARCHIVE_MODE_SHARED && RecoveryInProgress())
+		return;
+
 	/* force directory scan in the first call to pgarch_readyXlog() */
 	arch_files->arch_files_size = 0;
 

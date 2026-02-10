@@ -132,6 +132,9 @@ static TimestampTz wakeup[NUM_WALRCV_WAKEUPS];
 
 static StringInfoData reply_message;
 
+/* Last archived WAL segment file reported by the primary */
+static char primary_last_archived[MAX_XFN_CHARS + 1];
+
 /* Prototypes for private functions */
 static void WalRcvFetchTimeLineHistoryFiles(TimeLineID first, TimeLineID last);
 static void WalRcvWaitForStartPosition(XLogRecPtr *startpoint, TimeLineID *startpointTLI);
@@ -145,6 +148,7 @@ static void XLogWalRcvClose(XLogRecPtr recptr, TimeLineID tli);
 static void XLogWalRcvSendReply(bool force, bool requestReply);
 static void XLogWalRcvSendHSFeedback(bool immed);
 static void ProcessWalSndrMessage(XLogRecPtr walEnd, TimestampTz sendTime);
+static void ProcessArchivalReport(void);
 static void WalRcvComputeNextWakeup(WalRcvWakeupReason reason, TimestampTz now);
 
 
@@ -888,6 +892,30 @@ XLogWalRcvProcessMsg(unsigned char type, char *buf, Size len, TimeLineID tli)
 					XLogWalRcvSendReply(true, false);
 				break;
 			}
+		case PqReplMsg_ArchiveStatusReport:
+			{
+				/* Check that the filename looks valid */
+				if (len >= sizeof(primary_last_archived))
+					ereport(ERROR,
+							(errcode(ERRCODE_PROTOCOL_VIOLATION),
+							 errmsg_internal("invalid archival report message with length %d",
+											 (int) len)));
+
+				memcpy(primary_last_archived, buf, len);
+				primary_last_archived[len] = '\0';
+
+				/* Verify it contains only valid characters */
+				if (strspn(buf, VALID_XFN_CHARS) != len)
+				{
+					primary_last_archived[0] = '\0';
+					ereport(ERROR,
+							(errcode(ERRCODE_PROTOCOL_VIOLATION),
+							 errmsg_internal("unexpected character in primary's last archived filename")));
+				}
+
+				ProcessArchivalReport();
+				break;
+			}
 		default:
 			ereport(ERROR,
 					(errcode(ERRCODE_PROTOCOL_VIOLATION),
@@ -1095,12 +1123,17 @@ XLogWalRcvClose(XLogRecPtr recptr, TimeLineID tli)
 
 	/*
 	 * Create .done file forcibly to prevent the streamed segment from being
-	 * archived later.
+	 * archived later, unless archive_mode is 'always' or 'shared'.
+	 *
+	 * In 'always' mode, the standby archives independently. In 'shared' mode,
+	 * create .ready files; they'll be marked .done when the primary confirms
+	 * archival via ProcessArchivalReport().
 	 */
-	if (XLogArchiveMode != ARCHIVE_MODE_ALWAYS)
-		XLogArchiveForceDone(xlogfname);
-	else
+	if (XLogArchiveMode == ARCHIVE_MODE_ALWAYS ||
+		XLogArchiveMode == ARCHIVE_MODE_SHARED)
 		XLogArchiveNotify(xlogfname);
+	else
+		XLogArchiveForceDone(xlogfname);
 
 	recvFile = -1;
 }
@@ -1275,6 +1308,60 @@ XLogWalRcvSendHSFeedback(bool immed)
 		primary_has_standby_xmin = true;
 	else
 		primary_has_standby_xmin = false;
+}
+
+/*
+ * Process archival report from primary.
+ *
+ * The primary sends us the last WAL segment it has archived. We mark all
+ * segments up to that point as .done, so they can be recycled. This uses
+ * alphanumeric comparison on the segment part (ignoring timeline), so it
+ * works correctly even if the standby has segments from multiple timelines.
+ */
+static void
+ProcessArchivalReport(void)
+{
+	DIR		   *xldir;
+	struct dirent *xlde;
+
+	elog(DEBUG2, "received archival report from primary: %s",
+		 primary_last_archived);
+
+	/* Sanity check: must be at least 24 characters for a valid WAL filename */
+	if (strlen(primary_last_archived) < 24 ||
+		strspn(primary_last_archived, "0123456789ABCDEF") != 24)
+		return;
+
+	/* Scan pg_wal directory for segments that can be marked as .done */
+	xldir = AllocateDir(XLOGDIR);
+	if (xldir == NULL)
+		ereport(ERROR,
+				(errcode_for_file_access(),
+				 errmsg("could not open write-ahead log directory \"%s\": %m",
+						XLOGDIR)));
+
+	while ((xlde = ReadDir(xldir, XLOGDIR)) != NULL)
+	{
+		/*
+		 * We ignore the timeline part of the XLOG segment identifiers in
+		 * deciding whether a segment is still needed. This ensures that we
+		 * won't prematurely remove a segment from a parent timeline. We use
+		 * the alphanumeric sorting property of the filenames to decide which
+		 * ones are earlier than the last archived segment.
+		 *
+		 * Compare only the segment part (characters 8-23), ignoring timeline.
+		 */
+		if (strlen(xlde->d_name) == 24 &&
+			strspn(xlde->d_name, "0123456789ABCDEF") == 24 &&
+			strcmp(xlde->d_name + 8, primary_last_archived + 8) <= 0)
+		{
+			XLogArchiveForceDone(xlde->d_name);
+			elog(DEBUG3, "marked WAL segment %s as archived based on primary report",
+				 xlde->d_name);
+		}
+	}
+
+	FreeDir(xldir);
 }
 
 /*
