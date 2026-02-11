@@ -53,7 +53,9 @@ struct Node;
 								 * known state */
 #define PGERROR		21			/* Must equal ERROR; see NOTE below. */
 #define FATAL		22			/* fatal error - abort process */
-#define PANIC		23			/* take down the other backends with me */
+#define FATAL_CLIENT_ONLY	23	/* Fatal error sent to the client, but never
+								 * to the server log. */
+#define PANIC		24			/* take down the other backends with me */
 
 /*
  * NOTE: the alternate names PGWARNING and PGERROR are useful for dealing
