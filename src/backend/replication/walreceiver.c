@@ -1143,6 +1143,11 @@ XLogWalRcvClose(XLogRecPtr recptr, TimeLineID tli)
 		 * In shared mode, check if this segment is already archived on primary.
 		 * If we're on the same timeline and this segment is <= last archived,
 		 * mark it .done immediately. Otherwise create .ready.
+		 *
+		 * We don't check ancestor timeline cases here to avoid reading timeline
+		 * history files on every segment close. ProcessArchivalReport() will
+		 * handle marking ancestor timeline segments as .done when it scans
+		 * the archive_status directory.
 		 */
 		if (primary_last_archived_tli == recvFileTLI &&
 			recvSegNo <= primary_last_archived_segno)
