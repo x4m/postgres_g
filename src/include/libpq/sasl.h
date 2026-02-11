@@ -25,6 +25,7 @@
 #define PG_SASL_EXCHANGE_CONTINUE		0
 #define PG_SASL_EXCHANGE_SUCCESS		1
 #define PG_SASL_EXCHANGE_FAILURE		2
+#define PG_SASL_EXCHANGE_ABANDONED		3
 
 /*
  * Maximum accepted size of SASL messages.

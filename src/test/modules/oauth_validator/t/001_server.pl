@@ -114,11 +114,13 @@ $node->connect_ok(
 	expected_stderr =>
 	  qr@Visit https://example\.com/ and enter the code: postgresuser@,
 	log_like => [
+		qr/OAuth issuer discovery requested/,
 		qr/oauth_validator: token="9243959234", role="$user"/,
 		qr/oauth_validator: issuer="\Q$issuer\E", scope="openid postgres"/,
 		qr/connection authenticated: identity="test" method=oauth/,
 		qr/connection authorized/,
-	]);
+	],
+	log_unlike => [qr/FATAL.*OAuth bearer authentication failed/]);
 
 # The /alternate issuer uses slightly different parameters, along with an
 # OAuth-style discovery document.
@@ -129,11 +131,13 @@ $node->connect_ok(
 	expected_stderr =>
 	  qr@Visit https://example\.org/ and enter the code: postgresuser@,
 	log_like => [
+		qr/OAuth issuer discovery requested/,
 		qr/oauth_validator: token="9243959234-alt", role="$user"/,
 		qr|oauth_validator: issuer="\Q$issuer/.well-known/oauth-authorization-server/alternate\E", scope="openid postgres alt"|,
 		qr/connection authenticated: identity="testalt" method=oauth/,
 		qr/connection authorized/,
-	]);
+	],
+	log_unlike => [qr/FATAL.*OAuth bearer authentication failed/]);
 
 # The issuer linked by the server must match the client's oauth_issuer setting.
 $node->connect_fails(

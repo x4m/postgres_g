@@ -167,7 +167,7 @@ CheckSASLAuth(const pg_be_sasl_mech *mech, Port *port, char *shadow_pass,
 			 * PG_SASL_EXCHANGE_FAILURE with some output is forbidden by SASL.
 			 * Make sure here that the mechanism used got that right.
 			 */
-			if (result == PG_SASL_EXCHANGE_FAILURE)
+			if (result == PG_SASL_EXCHANGE_FAILURE || result == PG_SASL_EXCHANGE_ABANDONED)
 				elog(ERROR, "output message found after SASL exchange failure");
 
 			/*
@@ -184,11 +184,13 @@ CheckSASLAuth(const pg_be_sasl_mech *mech, Port *port, char *shadow_pass,
 		}
 	} while (result == PG_SASL_EXCHANGE_CONTINUE);
 
-	/* Oops, Something bad happened */
-	if (result != PG_SASL_EXCHANGE_SUCCESS)
+	switch (result)
 	{
-		return STATUS_ERROR;
+		case PG_SASL_EXCHANGE_SUCCESS:
+			return STATUS_OK;
+		case PG_SASL_EXCHANGE_ABANDONED:
+			return STATUS_EOF;
+		default:
+			return STATUS_ERROR;
 	}
-
-	return STATUS_OK;
 }

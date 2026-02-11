@@ -58,6 +58,7 @@ enum oauth_state
 {
 	OAUTH_STATE_INIT = 0,
 	OAUTH_STATE_ERROR,
+	OAUTH_STATE_ERROR_DISCOVERY,
 	OAUTH_STATE_FINISHED,
 };
 
@@ -181,6 +182,7 @@ oauth_exchange(void *opaq, const char *input, int inputlen,
 			break;
 
 		case OAUTH_STATE_ERROR:
+		case OAUTH_STATE_ERROR_DISCOVERY:
 
 			/*
 			 * Only one response is valid for the client during authentication
@@ -193,7 +195,16 @@ oauth_exchange(void *opaq, const char *input, int inputlen,
 						errdetail("Client did not send a kvsep response."));
 
 			/* The (failed) handshake is now complete. */
+			if (ctx->state == OAUTH_STATE_ERROR_DISCOVERY)
+			{
+				ctx->state = OAUTH_STATE_FINISHED;
+				ereport(DEBUG1,
+						errmsg("OAuth issuer discovery requested"));
+				return PG_SASL_EXCHANGE_ABANDONED;
+			}
+
 			ctx->state = OAUTH_STATE_FINISHED;
+
 			return PG_SASL_EXCHANGE_FAILURE;
 
 		default:
@@ -279,7 +290,19 @@ oauth_exchange(void *opaq, const char *input, int inputlen,
 				errmsg("malformed OAUTHBEARER message"),
 				errdetail("Message contains additional data after the final terminator."));
 
-	if (!validate(ctx->port, auth))
+	if (auth[0] == '\0')
+	{
+		/*
+		 * An empty auth value represents a discovery request; the client
+		 * expects it to fail.  Skip validation entirely and move directly
+		 * to the error response.
+		 */
+		generate_error_response(ctx, output, outputlen);
+
+		ctx->state = OAUTH_STATE_ERROR_DISCOVERY;
+		status = PG_SASL_EXCHANGE_CONTINUE;
+	}
+	else if (!validate(ctx->port, auth))
 	{
 		generate_error_response(ctx, output, outputlen);
 
@@ -564,19 +587,8 @@ validate_token_format(const char *header)
 
 	/* Missing auth headers should be handled by the caller. */
 	Assert(header);
-
-	if (header[0] == '\0')
-	{
-		/*
-		 * A completely empty auth header represents a query for
-		 * authentication parameters. The client expects it to fail; there's
-		 * no need to make any extra noise in the logs.
-		 *
-		 * TODO: should we find a way to return STATUS_EOF at the top level,
-		 * to suppress the authentication error entirely?
-		 */
-		return NULL;
-	}
+	/* Empty auth (discovery) should be handled before calling validate(). */
+	Assert(header[0] != '\0');
 
 	if (pg_strncasecmp(header, BEARER_SCHEME, strlen(BEARER_SCHEME)))
 	{
