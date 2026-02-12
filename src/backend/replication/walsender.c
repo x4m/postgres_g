@@ -84,6 +84,7 @@
 #include "storage/ipc.h"
 #include "storage/pmsignal.h"
 #include "storage/proc.h"
+#include "storage/procarray.h"
 #include "tcop/dest.h"
 #include "tcop/tcopprot.h"
 #include "utils/acl.h"
@@ -2728,8 +2729,8 @@ WalSndArchivalReport(void)
 	TimestampTz now;
 	char	   *last_archived;
 
-	/* Only send reports when archive_mode=shared */
-	if (XLogArchiveMode != ARCHIVE_MODE_SHARED)
+	/* Only send reports when shared archive is active */
+	if (!EffectiveArchiveModeIsShared())
 		return;
 
 	/* Only send reports during physical streaming replication, not during backup */
