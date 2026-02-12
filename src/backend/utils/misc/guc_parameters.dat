@@ -3516,6 +3516,14 @@
   options => 'xmloption_options',
 },
 
+{ name => 'ycmdb.shared_archive', type => 'bool', context => 'PGC_POSTMASTER', group => 'WAL_ARCHIVING',
+  short_desc => 'Makes archive_mode=on behave as shared (for managed service compatibility).',
+  long_desc => 'When true, archive_mode=on is treated as archive_mode=shared. Does not affect archive_mode=off or archive_mode=always. Used when control plane cannot configure archive_mode=shared directly.',
+  flags => 'GUC_NOT_IN_SAMPLE',
+  variable => 'ycmdb_shared_archive',
+  boot_val => 'false',
+},
+
 { name => 'zero_damaged_pages', type => 'bool', context => 'PGC_SUSET', group => 'DEVELOPER_OPTIONS',
   short_desc => 'Continues processing past damaged page headers.',
   long_desc => 'Detection of a damaged page header normally causes PostgreSQL to report an error, aborting the current transaction. Setting "zero_damaged_pages" to true causes the system to instead report a warning, zero out the damaged page, and continue processing. This behavior will destroy data, namely all the rows on the damaged page.',
