@@ -1478,21 +1478,16 @@ ProcessArchivalReport(void)
 				XLogArchiveForceDone(walfile);
 				elog(DEBUG3, "marked WAL segment %s as archived (primary archived up to %s)",
 					 walfile, primary_last_archived);
-
-				/* Track the highest segment we processed on this timeline */
-				if (file_tli > last_processed_tli ||
-					(file_tli == last_processed_tli && file_segno > last_processed_segno))
-				{
-					last_processed_tli = file_tli;
-					last_processed_segno = file_segno;
-				}
 			}
-			else if (file_tli < reported_tli)
+			else if (file_tli != reported_tli)
 			{
 				/*
 				 * Different timeline - check if it's an ancestor and if this
 				 * segment is before the timeline switch point. Only read timeline
 				 * history if we haven't already (lazy loading).
+				 *
+				 * Note: Timelines form a tree structure, not a linear sequence,
+				 * so we can't use < or > to compare them.
 				 */
 				if (tli_history == NIL)
 					tli_history = readTimeLineHistory(reported_tli);
