@@ -31,6 +31,7 @@
 #include "access/slru.h"
 #include "access/toast_compression.h"
 #include "access/twophase.h"
+#include "access/xlog.h"
 #include "access/xlog_internal.h"
 #include "access/xlogprefetcher.h"
 #include "access/xlogrecovery.h"
@@ -1163,6 +1164,17 @@ struct config_bool ConfigureNamesBool[] =
 			NULL
 		},
 		&wal_log_hints,
+		false,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"ycmdb.shared_archive", PGC_POSTMASTER, WAL_ARCHIVING,
+			gettext_noop("Makes archive_mode=on behave as shared (for managed service compatibility)."),
+			gettext_noop("When true, archive_mode=on is treated as archive_mode=shared. Does not affect archive_mode=off or archive_mode=always. Used when control plane cannot configure archive_mode=shared directly."),
+			GUC_NOT_IN_SAMPLE
+		},
+		&ycmdb_shared_archive,
 		false,
 		NULL, NULL, NULL
 	},
