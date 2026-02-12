@@ -331,7 +331,7 @@ pgarch_ArchiverCopyLoop(void)
 	 * marks files as .done when the primary confirms archival. After
 	 * promotion, the archiver starts working normally.
 	 */
-	if (XLogArchiveMode == ARCHIVE_MODE_SHARED && RecoveryInProgress())
+	if (EffectiveArchiveModeIsShared() && RecoveryInProgress())
 		return;
 
 	/*

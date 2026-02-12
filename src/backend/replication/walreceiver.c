@@ -1089,7 +1089,7 @@ XLogWalRcvClose(XLogRecPtr recptr)
 	{
 		XLogArchiveNotify(xlogfname);
 	}
-	else if (XLogArchiveMode == ARCHIVE_MODE_SHARED)
+	else if (EffectiveArchiveModeIsShared())
 	{
 		/*
 		 * In shared mode, check if this segment is already archived on primary.

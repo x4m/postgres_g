@@ -158,7 +158,16 @@ typedef enum ArchiveMode
 	ARCHIVE_MODE_ALWAYS,		/* enabled always (even during recovery) */
 	ARCHIVE_MODE_SHARED,		/* shared archive between primary and standby */
 } ArchiveMode;
-extern int	XLogArchiveMode;
+extern PGDLLIMPORT int XLogArchiveMode;
+extern PGDLLIMPORT bool ycmdb_shared_archive;
+
+/*
+ * True when shared archive behavior is active: either archive_mode=shared
+ * or archive_mode=on with ycmdb.shared_archive=true (managed service).
+ */
+#define EffectiveArchiveModeIsShared() \
+	(XLogArchiveMode == ARCHIVE_MODE_SHARED || \
+	 (XLogArchiveMode == ARCHIVE_MODE_ON && ycmdb_shared_archive))
 
 /* WAL levels */
 typedef enum WalLevel
