@@ -2401,8 +2401,8 @@ WalSndArchivalReport(void)
 	TimestampTz now;
 	char	   *last_archived;
 
-	/* Only send reports when archive_mode=shared */
-	if (XLogArchiveMode != ARCHIVE_MODE_SHARED)
+	/* Only send reports when shared archive is active */
+	if (!EffectiveArchiveModeIsShared())
 		return;
 
 	/* Only send reports during physical streaming replication, not logical or backup */
