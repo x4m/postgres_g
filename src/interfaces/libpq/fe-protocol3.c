@@ -1485,7 +1485,10 @@ pqGetNegotiateProtocolVersion3(PGconn *conn)
 
 	/*
 	 * We don't currently request any protocol extensions, so we don't expect
-	 * the server to reply with any either.
+	 * the server to reply with any either. Exception: _pq_.archive_shared is
+	 * sent by standbys in shared archive mode; if the server doesn't support
+	 * it (old primary), we accept and continue - no archival reports, which
+	 * is fine.
 	 */
 	for (int i = 0; i < num; i++)
 	{
@@ -1498,6 +1501,8 @@ pqGetNegotiateProtocolVersion3(PGconn *conn)
 			libpq_append_conn_error(conn, "received invalid protocol negotiation message: server reported unsupported parameter name without a \"%s\" prefix (\"%s\")", "_pq_.", conn->workBuffer.data);
 			goto failure;
 		}
+		if (strcmp(conn->workBuffer.data, "_pq_.archive_shared") == 0)
+			continue;			/* we may have sent it; server doesn't support, OK */
 		libpq_append_conn_error(conn, "received invalid protocol negotiation message: server reported an unsupported parameter that was not requested (\"%s\")", conn->workBuffer.data);
 		goto failure;
 	}

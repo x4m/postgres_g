@@ -2733,6 +2733,10 @@ WalSndArchivalReport(void)
 	if (!EffectiveArchiveModeIsShared())
 		return;
 
+	/* Only send if standby requested reports via _pq_.archive_shared=1 in startup */
+	if (MyProcPort == NULL || !MyProcPort->archive_shared_requested)
+		return;
+
 	/* Only send reports during physical streaming replication, not during backup */
 	if (MyWalSnd->kind != REPLICATION_KIND_PHYSICAL)
 		return;

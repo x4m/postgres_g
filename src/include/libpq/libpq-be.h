@@ -160,6 +160,13 @@ typedef struct Port
 	char	   *application_name;
 
 	/*
+	 * Standby requested archival status reports (archive.shared=1 in startup).
+	 * Used by walsender to decide whether to send PqReplMsg_ArchiveStatusReport.
+	 * Not added to guc_options so old primaries silently ignore it.
+	 */
+	bool		archive_shared_requested;
+
+	/*
 	 * Information that needs to be held during the authentication cycle.
 	 */
 	HbaLine    *hba;

@@ -729,6 +729,7 @@ ProcessStartupPacket(Port *port, bool ssl_done, bool gss_done)
 		 * zeroing extra byte above.
 		 */
 		port->guc_options = NIL;
+		port->archive_shared_requested = false;
 
 		while (offset < len)
 		{
@@ -770,6 +771,12 @@ ProcessStartupPacket(Port *port, bool ssl_done, bool gss_done)
 									"replication",
 									valptr),
 							 errhint("Valid values are: \"false\", 0, \"true\", 1, \"database\".")));
+			}
+			else if (strcmp(nameptr, "_pq_.archive_shared") == 0)
+			{
+				bool		parsed;
+
+				port->archive_shared_requested = parse_bool(valptr, &parsed) && parsed;
 			}
 			else if (strncmp(nameptr, "_pq_.", 5) == 0)
 			{

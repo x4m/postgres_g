@@ -54,6 +54,7 @@
 #include "access/htup_details.h"
 #include "access/timeline.h"
 #include "access/transam.h"
+#include "access/xlog.h"
 #include "access/xlog_internal.h"
 #include "access/xlogarchive.h"
 #include "access/xlogrecovery.h"
@@ -280,6 +281,18 @@ WalReceiverMain(const void *startup_data, size_t startup_data_len)
 
 	/* Unblock signals (they were blocked when the postmaster forked us) */
 	sigprocmask(SIG_SETMASK, &UnBlockSig, NULL);
+
+	/*
+	 * When in shared archive mode, request archival status reports from
+	 * primary via _pq_.archive_shared=1. Old primaries add it to
+	 * unrecognized_protocol_options and send NegotiateProtocolVersion; our
+	 * libpq accepts that and continues (no reports, which is fine).
+	 */
+	if (EffectiveArchiveModeIsShared())
+	{
+		if (strlcat(conninfo, " _pq_.archive_shared=1", MAXCONNINFO) >= MAXCONNINFO)
+			elog(WARNING, "primary_conninfo too long, cannot add _pq_.archive_shared");
+	}
 
 	/* Establish the connection to the primary for XLOG streaming */
 	appname = cluster_name[0] ? cluster_name : "walreceiver";
