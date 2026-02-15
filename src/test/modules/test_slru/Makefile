@@ -3,7 +3,8 @@
 MODULE_big = test_slru
 OBJS = \
 	$(WIN32RES) \
-	test_slru.o
+	test_slru.o \
+	test_multixact.o
 PGFILEDESC = "test_slru - test module for SLRUs"
 
 EXTENSION = test_slru
@@ -11,6 +12,7 @@ DATA = test_slru--1.0.sql
 
 REGRESS_OPTS = --temp-config $(top_srcdir)/src/test/modules/test_slru/test_slru.conf
 REGRESS = test_slru
+TAP_TESTS = 1
 # Disabled because these tests require "shared_preload_libraries=test_slru",
 # which typical installcheck users do not have (e.g. buildfarm clients).
 NO_INSTALLCHECK = 1

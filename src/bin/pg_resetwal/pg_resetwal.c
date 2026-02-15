@@ -73,6 +73,7 @@ static bool mxid_given = false;
 static MultiXactId set_mxid = 0;
 static bool mxoff_given = false;
 static MultiXactOffset set_mxoff = 0;
+static bool wal_level_replica = false;
 static TimeLineID minXlogTli = 0;
 static XLogSegNo minXlogSegNo = 0;
 static int	WalSegSz;
@@ -108,6 +109,7 @@ main(int argc, char *argv[])
 		{"oldest-transaction-id", required_argument, NULL, 'u'},
 		{"next-transaction-id", required_argument, NULL, 'x'},
 		{"wal-segsize", required_argument, NULL, 1},
+		{"wal-level", required_argument, NULL, 3},
 		{NULL, 0, NULL, 0}
 	};
 
@@ -306,6 +308,19 @@ main(int argc, char *argv[])
 						pg_fatal("argument of %s must be a power of two between 1 and 1024", "--wal-segsize");
 					break;
 				}
+
+			case 3:
+				if (pg_strcasecmp(optarg, "replica") == 0)
+					wal_level_replica = true;
+				else if (pg_strcasecmp(optarg, "minimal") == 0)
+					wal_level_replica = false;
+				else
+				{
+					pg_log_error("invalid argument for option %s", "--wal-level");
+					pg_log_error_hint("Try \"%s --help\" for more information.", progname);
+					exit(1);
+				}
+				break;
 
 			default:
 				/* getopt_long already emitted a complaint */
@@ -683,7 +698,7 @@ GuessControlValues(void)
 
 	/* minRecoveryPoint, backupStartPoint and backupEndPoint can be left zero */
 
-	ControlFile.wal_level = WAL_LEVEL_MINIMAL;
+	ControlFile.wal_level = wal_level_replica ? WAL_LEVEL_REPLICA : WAL_LEVEL_MINIMAL;
 	ControlFile.wal_log_hints = false;
 	ControlFile.track_commit_timestamp = false;
 	ControlFile.MaxConnections = 100;
@@ -890,7 +905,7 @@ RewriteControlFile(void)
 	 * as long as wal_level='minimal'; the postmaster will reset these fields
 	 * anyway at startup.
 	 */
-	ControlFile.wal_level = WAL_LEVEL_MINIMAL;
+	ControlFile.wal_level = wal_level_replica ? WAL_LEVEL_REPLICA : WAL_LEVEL_MINIMAL;
 	ControlFile.wal_log_hints = false;
 	ControlFile.track_commit_timestamp = false;
 	ControlFile.MaxConnections = 100;
@@ -1202,6 +1217,7 @@ usage(void)
 	printf(_("  -O, --multixact-offset=OFFSET    set next multitransaction offset\n"));
 	printf(_("  -u, --oldest-transaction-id=XID  set oldest transaction ID\n"));
 	printf(_("  -x, --next-transaction-id=XID    set next transaction ID\n"));
+	printf(_("      --wal-level=LEVEL            set checkpoint wal_level to \"minimal\" or \"replica\"\n"));
 	printf(_("      --wal-segsize=SIZE           size of WAL segments, in megabytes\n"));
 
 	printf(_("\nReport bugs to <%s>.\n"), PACKAGE_BUGREPORT);
