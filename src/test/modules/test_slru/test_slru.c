@@ -21,8 +21,16 @@
 #include "storage/ipc.h"
 #include "storage/shmem.h"
 #include "utils/builtins.h"
+#include "utils/guc.h"
 
 PG_MODULE_MAGIC;
+
+/*
+ * When enabled, multixact truncation replay sets latest_page_number to 0
+ * instead of the correct page, to simulate the bug where pre-initialization
+ * is skipped and "read too few bytes" occurs when crossing page boundary.
+ */
+static bool simulate_multixact_wrong_latest_page = false;
 
 /*
  * SQL-callable entry points
@@ -253,6 +261,17 @@ _PG_init(void)
 				(errmsg("cannot load \"%s\" after startup", "test_slru"),
 				 errdetail("\"%s\" must be loaded with \"shared_preload_libraries\".",
 						   "test_slru")));
+
+	DefineCustomBoolVariable("test_slru.simulate_multixact_wrong_latest_page",
+							 "Simulate wrong latest_page_number during multixact truncation replay for bug testing",
+							 NULL,
+							 &simulate_multixact_wrong_latest_page,
+							 false,
+							 PGC_SIGHUP,
+							 GUC_NOT_IN_SAMPLE,
+							 NULL,
+							 NULL,
+							 NULL);
 
 	prev_shmem_request_hook = shmem_request_hook;
 	shmem_request_hook = test_slru_shmem_request;

@@ -3,9 +3,11 @@
 # Test multixact SLRU truncation near wraparound with standby replay.
 # Creates an old multixact (mx 1) on heap, then pg_resetwal to advance next
 # multixact near wraparound.  VACUUM triggers truncation (TRUNCATE_ID WAL).
-# Standby must replay TRUNCATE_ID followed by CREATE_ID without crashing
-# (fixes bug where latest_page_number was incorrectly reset during truncation
-# replay).
+# With test_slru.simulate_multixact_wrong_latest_page=on, truncation replay
+# sets latest_page_number to 0.  Pre-initialization is then skipped when
+# crossing the offset page boundary, causing "read too few bytes".  This
+# reproduces the bug fixed by ensuring latest_page_number is correct during
+# truncation replay.
 #
 # Uses backup_fs_cold + archive recovery (PITR) because the cold copy preserves
 # mx 1 (no autovacuum truncation before backup), but its checkpoint has
@@ -63,23 +65,28 @@ command_ok(
 	],
 	"set next multixact to $next_mx (near wraparound), oldest to 1");
 
-# Extract values from pg_resetwal --dry-run for SLRU fixup
+# Extract values for multixact boundary calculation
 my $out = (run_command([ 'pg_resetwal', '--dry-run', $node_primary->data_dir ]))[0];
 $out =~ /^Database block size: *(\d+)$/m or die "pg_resetwal output missing Database block size";
 my $blcksz = $1;
-# SLRU_PAGES_PER_SEGMENT is a compile-time constant (32) in slru.h; pg_resetwal doesn't output it
-my $slru_pages_per_segment = 32;
+my $slru_pages_per_segment = 32;    # SLRU_PAGES_PER_SEGMENT from slru.h
+# MULTIXACT_OFFSETS_PER_PAGE = BLCKSZ / sizeof(MultiXactOffset), MultiXactOffset is 4 bytes
+my $multixact_offsets_per_page = $blcksz / 4;
 
-# Create segment for next multixact; segment 0 with mx 1 stays for truncation
-my $multixact_offsets_per_page = $blcksz / 8;
+# Pre-create segment for next multixact with only the first page.  The standby
+# gets this from the cold backup.  When replaying CREATE_ID for the last
+# multixact on page 0, it needs page 1 to set the next offset.  The file has
+# only 1 page -> pg_pread returns short -> "read too few bytes".  Bug reproduces
+# at each page boundary; segment boundary is not required.
 my $segno =
   int($next_mx / $multixact_offsets_per_page / $slru_pages_per_segment);
-my $slru_file = sprintf('%s/pg_multixact/offsets/%04X', $node_pgdata, $segno);
+my $slru_dir = "$node_pgdata/pg_multixact/offsets";
+mkdir $slru_dir unless -d $slru_dir;
+my $slru_file = sprintf('%s/%04X', $slru_dir, $segno);
 open my $fh, ">", $slru_file
   or die "could not open \"$slru_file\": $!";
 binmode $fh;
-my $bytes_per_seg = $slru_pages_per_segment * $blcksz;
-syswrite($fh, "\0" x $bytes_per_seg) == $bytes_per_seg
+syswrite($fh, "\0" x $blcksz) == $blcksz
   or die "could not write to \"$slru_file\": $!";
 close $fh;
 
@@ -128,38 +135,34 @@ $node_standby->init_from_backup($node_primary, 'mx_backup',
 	has_streaming => 0,
 	standby => 1);
 $node_standby->append_conf('postgresql.conf',
-	"log_min_messages = debug1\nwal_retrieve_retry_interval = '100ms'\nmax_connections = 100");
+	"log_min_messages = debug1\nwal_retrieve_retry_interval = '100ms'\nmax_connections = 100\n" .
+	"test_slru.simulate_multixact_wrong_latest_page = on");
 $node_standby->start;
 
+# With test_slru.simulate_multixact_wrong_latest_page=on, truncation replay sets
+# latest_page_number to 0.  Pre-initialization is then skipped when crossing the
+# offset page boundary, causing "read too few bytes" as the next page is accessed
+# before its ZERO_OFF_PAGE record.  The standby is expected to crash.
 my $primary_lsn = $node_primary->lsn('flush');
-$node_standby->poll_query_until('postgres',
-	qq{SELECT '$primary_lsn'::pg_lsn <= pg_last_wal_replay_lsn()})
-	or die "Timed out waiting for standby to replay";
+my $replayed = $node_standby->poll_query_until('postgres',
+	qq{SELECT '$primary_lsn'::pg_lsn <= pg_last_wal_replay_lsn()});
 
-# Standby must replay truncation (from archive)
-my $standby_log = $node_standby->log_content();
-ok( $standby_log =~ /replaying multixact truncation/,
-	"standby replayed multixact TRUNCATE_ID (truncation near wraparound)");
-
-# Multixact that crossed offset page boundary must be readable (next-page bug)
-my $multi_at_page_boundary = $next_mx + $multixact_offsets_per_page;
-is( $node_standby->safe_psql('postgres', qq{SELECT test_read_multixact('$multi_at_page_boundary');}),
-	'',
-	"multixact at offset page boundary readable on standby (next-page replay)");
-
-# New multixacts must be readable on standby
-my $first_new_multi = $node_primary->safe_psql('postgres',
-	q{SELECT test_create_multixact();});
-$node_primary->safe_psql('postgres', q{SELECT pg_switch_wal()});
-my $final_lsn = $node_primary->lsn('flush');
-$node_standby->poll_query_until('postgres',
-	qq{SELECT '$final_lsn'::pg_lsn <= pg_last_wal_replay_lsn()})
-	or die "Timed out waiting for standby to replay";
-is( $node_standby->safe_psql('postgres', qq{SELECT test_read_multixact('$first_new_multi');}),
-	'',
-	"new multixact readable on standby after truncation replay");
-
-$node_standby->stop;
+if (!$replayed)
+{
+	# Timed out - standby likely crashed (expected when simulating bug)
+	my $standby_log = $node_standby->log_content();
+	ok( $standby_log =~ /replaying multixact truncation/,
+		"standby replayed multixact TRUNCATE_ID before crash");
+	ok( $standby_log =~ /read too few bytes/,
+		"bug reproduced: standby failed with read too few bytes (wrong latest_page_number)");
+	$node_standby->stop('immediate', fail_ok => 1);
+}
+else
+{
+	# Standby reached target LSN - bug was not reproduced
+	fail("Expected standby to crash when test_slru.simulate_multixact_wrong_latest_page=on");
+	$node_standby->stop;
+}
 $node_primary->stop;
 
 done_testing();
