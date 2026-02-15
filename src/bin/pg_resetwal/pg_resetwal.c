@@ -91,6 +91,8 @@ static MultiXactId oldest_mxid_val = 0;
 static bool next_mxoff_given = false;
 static MultiXactOffset next_mxoff_val;
 
+static bool wal_level_replica = false;
+
 static bool wal_segsize_given = false;
 static int	wal_segsize_val;
 
@@ -135,6 +137,7 @@ main(int argc, char *argv[])
 		{"next-transaction-id", required_argument, NULL, 'x'},
 		{"wal-segsize", required_argument, NULL, 1},
 		{"char-signedness", required_argument, NULL, 2},
+		{"wal-level", required_argument, NULL, 3},
 		{NULL, 0, NULL, 0}
 	};
 
@@ -351,6 +354,19 @@ main(int argc, char *argv[])
 					char_signedness_given = true;
 					break;
 				}
+
+			case 3:
+				if (pg_strcasecmp(optarg, "replica") == 0)
+					wal_level_replica = true;
+				else if (pg_strcasecmp(optarg, "minimal") == 0)
+					wal_level_replica = false;
+				else
+				{
+					pg_log_error("invalid argument for option %s", "--wal-level");
+					pg_log_error_hint("Try \"%s --help\" for more information.", progname);
+					exit(1);
+				}
+				break;
 
 			default:
 				/* getopt_long already emitted a complaint */
@@ -715,7 +731,7 @@ GuessControlValues(void)
 
 	/* minRecoveryPoint, backupStartPoint and backupEndPoint can be left zero */
 
-	ControlFile.wal_level = WAL_LEVEL_MINIMAL;
+	ControlFile.wal_level = wal_level_replica ? WAL_LEVEL_REPLICA : WAL_LEVEL_MINIMAL;
 	ControlFile.wal_log_hints = false;
 	ControlFile.track_commit_timestamp = false;
 	ControlFile.MaxConnections = 100;
@@ -924,7 +940,7 @@ RewriteControlFile(void)
 	 * as long as wal_level='minimal'; the postmaster will reset these fields
 	 * anyway at startup.
 	 */
-	ControlFile.wal_level = WAL_LEVEL_MINIMAL;
+	ControlFile.wal_level = wal_level_replica ? WAL_LEVEL_REPLICA : WAL_LEVEL_MINIMAL;
 	ControlFile.wal_log_hints = false;
 	ControlFile.track_commit_timestamp = false;
 	ControlFile.MaxConnections = 100;
@@ -1237,6 +1253,7 @@ usage(void)
 	printf(_("  -u, --oldest-transaction-id=XID  set oldest transaction ID\n"));
 	printf(_("  -x, --next-transaction-id=XID    set next transaction ID\n"));
 	printf(_("      --char-signedness=OPTION     set char signedness to \"signed\" or \"unsigned\"\n"));
+	printf(_("      --wal-level=LEVEL            set checkpoint wal_level to \"minimal\" or \"replica\"\n"));
 	printf(_("      --wal-segsize=SIZE           size of WAL segments, in megabytes\n"));
 
 	printf(_("\nReport bugs to <%s>.\n"), PACKAGE_BUGREPORT);
