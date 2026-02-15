@@ -2865,7 +2865,7 @@ multixact_redo(XLogReaderState *record)
 	else if (info == XLOG_MULTIXACT_TRUNCATE_ID)
 	{
 		xl_multixact_truncate xlrec;
-		int64		pageno;
+		//int64		pageno;
 
 		memcpy(&xlrec, XLogRecGetData(record),
 			   SizeOfMultiXactTruncate);
@@ -2889,14 +2889,14 @@ multixact_redo(XLogReaderState *record)
 
 		PerformMembersTruncation(xlrec.oldestOffset);
 
-		/*
-		 * During XLOG replay, latest_page_number isn't necessarily set up
-		 * yet; insert a suitable value to bypass the sanity test in
-		 * SimpleLruTruncate.
-		 */
-		pageno = MultiXactIdToOffsetPage(xlrec.oldestMulti);
-		pg_atomic_write_u64(&MultiXactOffsetCtl->shared->latest_page_number,
-							pageno);
+		// /*
+		//  * During XLOG replay, latest_page_number isn't necessarily set up
+		//  * yet; insert a suitable value to bypass the sanity test in
+		//  * SimpleLruTruncate.
+		//  */
+		// pageno = MultiXactIdToOffsetPage(xlrec.oldestMulti);
+		// pg_atomic_write_u64(&MultiXactOffsetCtl->shared->latest_page_number,
+		// 					pageno);
 		PerformOffsetsTruncation(xlrec.oldestMulti);
 
 		LWLockRelease(MultiXactTruncationLock);
