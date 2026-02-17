@@ -658,6 +658,8 @@ static void FlushUnlockedBuffer(BufferDesc *buf, SMgrRelation reln,
 								IOObject io_object, IOContext io_context);
 static void FlushBuffer(BufferDesc *buf, SMgrRelation reln,
 						IOObject io_object, IOContext io_context);
+static void ScheduleBufferTagForWriteback(WritebackContext *wb_context,
+										  IOContext io_context, BufferTag *tag);
 static void FindAndDropRelationBuffers(RelFileLocator rlocator,
 									   ForkNumber forkNum,
 									   BlockNumber nForkBlock,
@@ -7735,7 +7737,7 @@ WritebackContextInit(WritebackContext *context, int *max_pending)
 /*
  * Add buffer to list of pending writeback requests.
  */
-void
+static void
 ScheduleBufferTagForWriteback(WritebackContext *wb_context, IOContext io_context,
 							  BufferTag *tag)
 {
