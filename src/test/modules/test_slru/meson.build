@@ -2,6 +2,7 @@
 
 test_slru_sources = files(
   'test_slru.c',
+  'test_multixact.c',
 )
 
 if host_system == 'windows'
@@ -31,5 +32,10 @@ tests += {
     ],
     'regress_args': ['--temp-config', files('test_slru.conf')],
     'runningcheck': false,
+  },
+  'tap': {
+    'tests': [
+      't/002_multixact_truncation_replay.pl',
+    ],
   },
 }
