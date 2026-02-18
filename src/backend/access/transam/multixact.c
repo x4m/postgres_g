@@ -996,7 +996,15 @@ RecordNewMultiXact(MultiXactId multi, MultiXactOffset offset,
 
 	/*
 	 * Set the next multixid's offset to the end of this multixid's members.
+	 *
+	 * On the primary (!InRecovery), skip this to produce WAL without the next
+	 * offset already set — simulating pre-8ba61bc063 behavior.  During
+	 * recovery, keep this code so the standby tries to read the next page,
+	 * triggering the bug when the init-next-page check fails due to
+	 * truncation resetting latest_page_number.
 	 */
+	if (InRecovery)
+	{
 	if (next_pageno == pageno)
 	{
 		next_offptr = offptr + 1;
@@ -1026,6 +1034,7 @@ RecordNewMultiXact(MultiXactId multi, MultiXactOffset offset,
 		Assert(*next_offptr == 0);
 		*next_offptr = next_offset;
 		MultiXactOffsetCtl->shared->page_dirty[slotno] = true;
+	}
 	}
 
 	/* Release MultiXactOffset SLRU lock. */
@@ -1227,7 +1236,7 @@ GetNewMultiXactId(int nmembers, MultiXactOffset *offset)
 	 * Make sure there is room for the next MXID in the file.  Assigning this
 	 * MXID sets the next MXID's offset already.
 	 */
-	ExtendMultiXactOffset(result + 1);
+	ExtendMultiXactOffset(result);
 
 	/*
 	 * Reserve the members space, similarly to above.  Also, be careful not to
