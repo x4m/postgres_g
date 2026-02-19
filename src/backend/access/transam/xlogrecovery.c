@@ -4345,6 +4345,7 @@ XLogFileReadAnyTLI(XLogSegNo segno, XLogSource source)
 	ListCell   *cell;
 	int			fd;
 	List	   *tles;
+	XLogSegNo	targetBeginSeg = 0;
 
 	/*
 	 * Loop looking for a suitable timeline ID: we might need to read any of
@@ -4369,6 +4370,19 @@ XLogFileReadAnyTLI(XLogSegNo segno, XLogSource source)
 	else
 		tles = readTimeLineHistory(recoveryTargetTLI);
 
+	/*
+	 * For segments at or past the recovery target's switch point, we must not
+	 * use parent TLIs.  Parent segments there contain divergent WAL from the
+	 * old primary after promotion.  The first list entry is the recovery
+	 * target; its begin is the switch point.
+	 */
+	{
+		TimeLineHistoryEntry *targetTle = (TimeLineHistoryEntry *) linitial(tles);
+
+		if (XLogRecPtrIsValid(targetTle->begin))
+			XLByteToSeg(targetTle->begin, targetBeginSeg, wal_segment_size);
+	}
+
 	foreach(cell, tles)
 	{
 		TimeLineHistoryEntry *hent = (TimeLineHistoryEntry *) lfirst(cell);
@@ -4376,6 +4390,13 @@ XLogFileReadAnyTLI(XLogSegNo segno, XLogSource source)
 
 		if (tli < curFileTLI)
 			break;				/* don't bother looking at too-old TLIs */
+
+		/*
+		 * Don't use parent TLIs for segments at or past the recovery target's
+		 * switch point.  Those segments belong to the child timeline.
+		 */
+		if (cell != list_head(tles) && segno >= targetBeginSeg)
+			continue;
 
 		/*
 		 * Skip scanning the timeline ID that the logfile segment to read
