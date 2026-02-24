@@ -213,6 +213,7 @@ ShutdownWalRcv(void)
 
 		case WALRCV_CONNECTING:
 		case WALRCV_STREAMING:
+		case WALRCV_SWITCHING_TIMELINE:
 		case WALRCV_WAITING:
 		case WALRCV_RESTARTING:
 			walrcv->walRcvState = WALRCV_STOPPING;
