@@ -49,6 +49,7 @@
 #include "storage/predicate.h"
 #include "storage/proc.h"
 #include "storage/procarray.h"
+#include "storage/sharedrelsize.h"
 #include "utils/datum.h"
 #include "utils/injection_point.h"
 #include "utils/inval.h"
@@ -332,15 +333,31 @@ bitmapheap_stream_read_next(ReadStream *pgsr, void *private_data,
 
 		/*
 		 * Ignore any claimed entries past what we think is the end of the
-		 * relation. It may have been extended after the start of our scan (we
-		 * only hold an AccessShareLock, and it could be inserts from this
-		 * backend).  We don't take this optimization in SERIALIZABLE
-		 * isolation though, as we need to examine all invisible tuples
-		 * reachable by the index.
+		 * relation. Also check the shared relation size cache, in case
+		 * a concurrent VACUUM truncation has reduced the relation size
+		 * since our scan started.
 		 */
-		if (!IsolationIsSerializable() &&
-			tbmres->blockno >= hscan->rs_nblocks)
-			continue;
+		if (!IsolationIsSerializable())
+		{
+			if (tbmres->blockno >= hscan->rs_nblocks)
+				continue;
+
+			/* Re-check against shared cache for concurrent truncation */
+			{
+				BlockNumber shared_nblocks;
+
+				shared_nblocks = SharedRelSizeCacheGet(
+					&sscan->rs_rd->rd_locator,
+					MAIN_FORKNUM, NULL);
+
+				if (BlockNumberIsValid(shared_nblocks) &&
+					tbmres->blockno >= shared_nblocks)
+				{
+					hscan->rs_nblocks = shared_nblocks;
+					continue;
+				}
+			}
+		}
 
 		return tbmres->blockno;
 	}
@@ -881,6 +898,24 @@ heapgettup_advance_block(HeapScanDesc scan, BlockNumber block, ScanDirection dir
 	{
 		block++;
 
+		/*
+		 * Check if the relation has been truncated since we started the
+		 * scan.  If so, adjust rs_nblocks downward to avoid reading
+		 * beyond the new end of the relation.
+		 */
+		if (block >= scan->rs_nblocks)
+		{
+			BlockNumber shared_nblocks;
+
+			shared_nblocks = SharedRelSizeCacheGet(
+				&scan->rs_base.rs_rd->rd_locator,
+				MAIN_FORKNUM, NULL);
+
+			if (BlockNumberIsValid(shared_nblocks) &&
+				shared_nblocks < scan->rs_nblocks)
+				scan->rs_nblocks = shared_nblocks;
+		}
+
 		/* wrap back to the start of the heap */
 		if (block >= scan->rs_nblocks)
 			block = 0;
@@ -924,6 +959,22 @@ heapgettup_advance_block(HeapScanDesc scan, BlockNumber block, ScanDirection dir
 		{
 			if (--scan->rs_numblocks == 0)
 				return InvalidBlockNumber;
+		}
+
+		/*
+		 * Re-check relation size from shared cache before wrapping to
+		 * the end, in case a concurrent truncation reduced it.
+		 */
+		{
+			BlockNumber shared_nblocks;
+
+			shared_nblocks = SharedRelSizeCacheGet(
+				&scan->rs_base.rs_rd->rd_locator,
+				MAIN_FORKNUM, NULL);
+
+			if (BlockNumberIsValid(shared_nblocks) &&
+				shared_nblocks < scan->rs_nblocks)
+				scan->rs_nblocks = shared_nblocks;
 		}
 
 		/* wrap to the end of the heap when the last page was page 0 */
@@ -1668,11 +1719,37 @@ heap_fetch(Relation relation,
 	Page		page;
 	OffsetNumber offnum;
 	bool		valid;
+	BlockNumber blkno = ItemPointerGetBlockNumber(tid);
+
+	/*
+	 * Check the shared relation size cache to see if this block has been
+	 * truncated away.  This can happen on a standby when a concurrent
+	 * VACUUM truncation is replayed while an index scan is in progress.
+	 * We treat this the same as "tuple not found".
+	 */
+	{
+		BlockNumber shared_nblocks;
+		BlockNumber shared_max;
+
+		shared_nblocks = SharedRelSizeCacheGet(&relation->rd_locator,
+											   MAIN_FORKNUM,
+											   &shared_max);
+		if (BlockNumberIsValid(shared_nblocks) && blkno >= shared_nblocks)
+		{
+			/*
+			 * The page was truncated.  If blocknum < max_nblocks, this
+			 * is a known truncation, not corruption.
+			 */
+			tuple->t_data = NULL;
+			*userbuf = InvalidBuffer;
+			return false;
+		}
+	}
 
 	/*
 	 * Fetch and pin the appropriate page of the relation.
 	 */
-	buffer = ReadBuffer(relation, ItemPointerGetBlockNumber(tid));
+	buffer = ReadBuffer(relation, blkno);
 
 	/*
 	 * Need share lock on buffer to examine tuple commit status.
