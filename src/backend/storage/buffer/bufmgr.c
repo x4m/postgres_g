@@ -61,6 +61,7 @@
 #include "storage/proclist.h"
 #include "storage/procsignal.h"
 #include "storage/read_stream.h"
+#include "storage/sharedrelsize.h"
 #include "storage/smgr.h"
 #include "storage/standby.h"
 #include "utils/memdebug.h"
@@ -2920,6 +2921,13 @@ ExtendBufferedRelShared(BufferManagerRelation bmr,
 	smgrzeroextend(BMR_GET_SMGR(bmr), fork, first_block, extend_by, false);
 
 	/*
+	 * Update shared relation size cache so that concurrent truncation
+	 * checks see the correct relation size.
+	 */
+	SharedRelSizeCacheExtend(&BMR_GET_SMGR(bmr)->smgr_rlocator.locator,
+							 fork, first_block + extend_by);
+
+	/*
 	 * Release the file-extension lock; it's now OK for someone else to extend
 	 * the relation some more.
 	 *
@@ -4752,17 +4760,17 @@ DropRelationBuffers(SMgrRelation smgr_reln, ForkNumber *forkNum,
 	for (i = 0; i < NBuffers; i++)
 	{
 		BufferDesc *bufHdr = GetBufferDescriptor(i);
+		uint64		buf_state;
 
 		/*
 		 * We can make this a tad faster by prechecking the buffer tag before
 		 * we attempt to lock the buffer; this saves a lot of lock
-		 * acquisitions in typical cases.  It should be safe because the
-		 * caller must have AccessExclusiveLock on the relation, or some other
-		 * reason to be certain that no one is loading new pages of the rel
-		 * into the buffer pool.  (Otherwise we might well miss such pages
-		 * entirely.)  Therefore, while the tag might be changing while we
-		 * look at it, it can't be changing *to* a value we care about, only
-		 * *away* from such a value.  So false negatives are impossible, and
+		 * acquisitions in typical cases.  It is safe because the caller has
+		 * either AccessExclusiveLock, or has updated the shared relation
+		 * size cache to prevent new page loads beyond firstDelBlock.
+		 * In either case, new buffers can't be loaded for truncated pages,
+		 * so the tag can't be changing *to* a value we care about, only
+		 * *away* from such a value.  False negatives are impossible, and
 		 * false positives are safe because we'll recheck after getting the
 		 * buffer lock.
 		 *
@@ -4772,7 +4780,7 @@ DropRelationBuffers(SMgrRelation smgr_reln, ForkNumber *forkNum,
 		if (!BufTagMatchesRelFileLocator(&bufHdr->tag, &rlocator.locator))
 			continue;
 
-		LockBufHdr(bufHdr);
+		buf_state = LockBufHdr(bufHdr);
 
 		for (j = 0; j < nforks; j++)
 		{
@@ -4780,6 +4788,19 @@ DropRelationBuffers(SMgrRelation smgr_reln, ForkNumber *forkNum,
 				BufTagGetForkNum(&bufHdr->tag) == forkNum[j] &&
 				bufHdr->tag.blockNum >= firstDelBlock[j])
 			{
+				/*
+				 * If the buffer is pinned, skip it rather than waiting.
+				 * The shared relation size cache prevents new pins on
+				 * truncated pages, so the existing pin will be released
+				 * naturally when the reader finishes.  The buffer will
+				 * then be harmlessly evicted via normal replacement.
+				 */
+				if (BUF_STATE_GET_REFCOUNT(buf_state) != 0)
+				{
+					UnlockBufHdr(bufHdr);
+					break;
+				}
+
 				InvalidateBuffer(bufHdr);	/* releases spinlock */
 				break;
 			}
@@ -4981,6 +5002,7 @@ FindAndDropRelationBuffers(RelFileLocator rlocator, ForkNumber forkNum,
 		LWLock	   *bufPartitionLock;	/* buffer partition lock for it */
 		int			buf_id;
 		BufferDesc *bufHdr;
+		uint64		buf_state;
 
 		/* create a tag so we can lookup the buffer */
 		InitBufferTag(&bufTag, &rlocator, forkNum, curBlock);
@@ -5005,12 +5027,18 @@ FindAndDropRelationBuffers(RelFileLocator rlocator, ForkNumber forkNum,
 		 * evicted by some other backend loading blocks for a different
 		 * relation after we release lock on the BufMapping table.
 		 */
-		LockBufHdr(bufHdr);
+		buf_state = LockBufHdr(bufHdr);
 
 		if (BufTagMatchesRelFileLocator(&bufHdr->tag, &rlocator) &&
 			BufTagGetForkNum(&bufHdr->tag) == forkNum &&
 			bufHdr->tag.blockNum >= firstDelBlock)
-			InvalidateBuffer(bufHdr);	/* releases spinlock */
+		{
+			/* Skip pinned buffers; see DropRelationBuffers. */
+			if (BUF_STATE_GET_REFCOUNT(buf_state) != 0)
+				UnlockBufHdr(bufHdr);
+			else
+				InvalidateBuffer(bufHdr);	/* releases spinlock */
+		}
 		else
 			UnlockBufHdr(bufHdr);
 	}

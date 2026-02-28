@@ -31,6 +31,7 @@
 #include "storage/bulk_write.h"
 #include "storage/freespace.h"
 #include "storage/proc.h"
+#include "storage/sharedrelsize.h"
 #include "storage/smgr.h"
 #include "utils/hsearch.h"
 #include "utils/memutils.h"
@@ -340,6 +341,15 @@ RelationTruncate(Relation rel, BlockNumber nblocks)
 	}
 
 	RelationPreTruncate(rel);
+
+	/*
+	 * Update the shared relation size cache BEFORE dropping buffers.
+	 * This prevents concurrent readers from pinning buffers for blocks
+	 * that are about to be truncated, making it safe to use ExclusiveLock
+	 * instead of AccessExclusiveLock for truncation.
+	 */
+	SharedRelSizeCacheTruncate(&rel->rd_locator, MAIN_FORKNUM,
+							   old_blocks[0], nblocks);
 
 	/*
 	 * The code which follows can interact with concurrent checkpoints in two
@@ -1070,6 +1080,15 @@ smgr_redo(XLogReaderState *record)
 				nforks++;
 			}
 		}
+
+		/*
+		 * Update shared relation size cache before truncation, so that
+		 * concurrent queries on the standby see the new relation size
+		 * and don't try to access truncated pages.
+		 */
+		if ((xlrec->flags & SMGR_TRUNCATE_HEAP) != 0)
+			SharedRelSizeCacheTruncate(&xlrec->rlocator, MAIN_FORKNUM,
+									   old_blocks[0], xlrec->blkno);
 
 		/* Do the real work to truncate relation forks */
 		if (nforks > 0)

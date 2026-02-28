@@ -49,6 +49,7 @@
 #include "storage/proc.h"
 #include "storage/procarray.h"
 #include "storage/procsignal.h"
+#include "storage/sharedrelsize.h"
 #include "storage/sinvaladt.h"
 #include "utils/guc.h"
 #include "utils/injection_point.h"
@@ -103,6 +104,7 @@ CalculateShmemSize(void)
 	size = add_size(size, dsm_estimate_size());
 	size = add_size(size, DSMRegistryShmemSize());
 	size = add_size(size, BufferManagerShmemSize());
+	size = add_size(size, SharedRelSizeCacheShmemSize());
 	size = add_size(size, LockManagerShmemSize());
 	size = add_size(size, PredicateLockShmemSize());
 	size = add_size(size, ProcGlobalShmemSize());
@@ -274,6 +276,7 @@ CreateOrAttachShmemStructs(void)
 	SUBTRANSShmemInit();
 	MultiXactShmemInit();
 	BufferManagerShmemInit();
+	SharedRelSizeCacheShmemInit();
 
 	/*
 	 * Set up lock manager

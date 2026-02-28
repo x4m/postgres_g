@@ -3270,17 +3270,23 @@ lazy_truncate_heap(LVRelState *vacrel)
 	do
 	{
 		/*
-		 * We need full exclusive lock on the relation in order to do
-		 * truncation. If we can't get it, give up rather than waiting --- we
-		 * don't want to block other backends, and we don't want to deadlock
-		 * (which is quite possible considering we already hold a lower-grade
-		 * lock).
+		 * We need ExclusiveLock on the relation in order to do truncation.
+		 * ExclusiveLock blocks DML (INSERT/UPDATE/DELETE hold
+		 * RowExclusiveLock) but allows concurrent SELECTs (which hold
+		 * AccessShareLock). Concurrent readers are protected from accessing
+		 * truncated pages by the shared relation size cache, which is
+		 * updated before the physical truncation in RelationTruncate().
+		 *
+		 * Using ExclusiveLock instead of AccessExclusiveLock also avoids
+		 * WAL-logging of the lock (only AccessExclusiveLock is logged),
+		 * which means standby servers won't acquire a heavyweight lock
+		 * that blocks read-only queries during truncation replay.
 		 */
 		lock_waiter_detected = false;
 		lock_retry = 0;
 		while (true)
 		{
-			if (ConditionalLockRelation(vacrel->rel, AccessExclusiveLock))
+			if (ConditionalLockRelation(vacrel->rel, ExclusiveLock))
 				break;
 
 			/*
@@ -3324,7 +3330,7 @@ lazy_truncate_heap(LVRelState *vacrel)
 			 * alone amounts to assuming that the new pages have the same
 			 * tuple density as existing ones, which is less unlikely.
 			 */
-			UnlockRelation(vacrel->rel, AccessExclusiveLock);
+			UnlockRelation(vacrel->rel, ExclusiveLock);
 			return;
 		}
 
@@ -3340,7 +3346,7 @@ lazy_truncate_heap(LVRelState *vacrel)
 		if (new_rel_pages >= orig_rel_pages)
 		{
 			/* can't do anything after all */
-			UnlockRelation(vacrel->rel, AccessExclusiveLock);
+			UnlockRelation(vacrel->rel, ExclusiveLock);
 			return;
 		}
 
@@ -3350,13 +3356,11 @@ lazy_truncate_heap(LVRelState *vacrel)
 		RelationTruncate(vacrel->rel, new_rel_pages);
 
 		/*
-		 * We can release the exclusive lock as soon as we have truncated.
-		 * Other backends can't safely access the relation until they have
-		 * processed the smgr invalidation that smgrtruncate sent out ... but
-		 * that should happen as part of standard invalidation processing once
-		 * they acquire lock on the relation.
+		 * We can release the lock as soon as we have truncated.
+		 * Concurrent readers are protected by the shared relation size
+		 * cache, which was updated before the physical truncation.
 		 */
-		UnlockRelation(vacrel->rel, AccessExclusiveLock);
+		UnlockRelation(vacrel->rel, ExclusiveLock);
 
 		/*
 		 * Update statistics.  Here, it *is* correct to adjust rel_pages
