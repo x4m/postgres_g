@@ -2842,7 +2842,7 @@ set_baserel_partition_key_exprs(Relation relation,
 		Expr	   *partexpr;
 		AttrNumber	attno = partkey->partattrs[cnt];
 
-		if (attno != InvalidAttrNumber)
+		if (attno != InvalidAttrNumber && !attrIsVirtualGenerated(relation, attno))
 		{
 			/* Single column partition key is stored as a Var node. */
 			Assert(attno > 0);
