@@ -418,6 +418,11 @@ SET client_min_messages = DEBUG1;
   single absent or malformed tuple has a new opportunity to be
   detected with each new verification attempt.
  </para>
+ <para>
+  When both <parameter>heapallindexed</parameter> and
+  <parameter>indexallkeysmatch</parameter> are enabled, two Bloom
+  filters are allocated, each up to <varname>maintenance_work_mem</varname>.
+ </para>
 
  </sect2>
 
@@ -451,7 +456,12 @@ SET client_min_messages = DEBUG1;
  <para>
   The summarizing structure is bound in size by
   <varname>maintenance_work_mem</varname>, using the same sizing
-  approach as <parameter>heapallindexed</parameter>.
+  approach as <parameter>heapallindexed</parameter>.  In order to ensure
+  that there is no more than a 2% probability of failure to detect an
+  inconsistency for each index tuple that should match a heap tuple,
+  approximately 2 bytes of memory are needed per tuple.  As less memory
+  is made available per tuple, the probability of missing an
+  inconsistency slowly increases.
  </para>
 
  </sect2>
