@@ -387,9 +387,12 @@ PageGetLSN(const PageData *page)
 {
 	return PageXLogRecPtrGet(((const PageHeaderData *) page)->pd_lsn);
 }
+XLogRecPtr
+GetXLogInsertRecPtr(void);
 static inline void
 PageSetLSN(Page page, XLogRecPtr lsn)
 {
+	Assert(lsn <= GetXLogInsertRecPtr());
 	PageXLogRecPtrSet(((PageHeader) page)->pd_lsn, lsn);
 }
 
