@@ -1192,7 +1192,26 @@ pg_newlocale_from_collation(Oid collid)
 	bool		found;
 
 	if (collid == DEFAULT_COLLATION_OID)
+	{
+		/*
+		 * default_locale is set by init_database_collation(), which is called
+		 * from CheckMyDatabase().  Physical walsenders and other early-init
+		 * code paths skip CheckMyDatabase, so default_locale can still be NULL
+		 * when catalog hash lookups (e.g. pg_parameter_acl) reach here.
+		 * Return a minimal deterministic C-locale struct so callers like
+		 * hashtext() don't crash; GUC names are ASCII, so locale is irrelevant.
+		 */
+		if (unlikely(default_locale == NULL))
+		{
+			static const struct pg_locale_struct nodb_locale = {
+				.deterministic = true,
+				.collate_is_c = true,
+				.ctype_is_c = true,
+			};
+			return (pg_locale_t) &nodb_locale;
+		}
 		return default_locale;
+	}
 
 	/*
 	 * Some callers expect C_COLLATION_OID to succeed even without catalog
