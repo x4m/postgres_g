@@ -5,8 +5,9 @@ PGAPPICON=win32
 
 subdir = src/bin/pg_waldump
 top_builddir = ../../..
-include $(top_builddir)/src/Makefile.global
+dfor_dir := $(top_builddir)/src/backend/lib
 
+include $(top_builddir)/src/Makefile.global
 OBJS = \
 	$(RMGRDESCOBJS) \
 	$(WIN32RES) \
@@ -16,9 +17,12 @@ OBJS = \
 	xlogreader.o \
 	xlogstats.o
 
+include $(dfor_dir)/Makefile.dfor
+OBJS += $(OBJS_DFOR)
+
 override CPPFLAGS := -DFRONTEND $(CPPFLAGS)
 
-RMGRDESCSOURCES = $(sort $(notdir $(wildcard $(top_srcdir)/src/backend/access/rmgrdesc/*desc*.c)))
+RMGRDESCSOURCES = $(sort $(notdir $(wildcard $(top_srcdir)/src/backend/access/rmgrdesc/*desc*.c))) heapam_xlog_dfor.c
 RMGRDESCOBJS = $(patsubst %.c,%.o,$(RMGRDESCSOURCES))
 
 
@@ -26,6 +30,24 @@ all: pg_waldump
 
 pg_waldump: $(OBJS) | submake-libpgport
 	$(CC) $(CFLAGS) $^ $(LDFLAGS) $(LDFLAGS_EX) $(LIBS) -o $@$(X)
+
+bitpack_templ.c: % : $(top_srcdir)/src/backend/lib/%
+	rm -f $@ && $(LN_S) $< .
+
+bitpack_u16.c: % : $(top_srcdir)/src/backend/lib/% bitpack_templ.c
+	rm -f $@ && $(LN_S) $< .
+
+dfor_templ.c: % : $(top_srcdir)/src/backend/lib/%
+	rm -f $@ && $(LN_S) $< .
+
+dfor_u16.c: % : $(top_srcdir)/src/backend/lib/% dfor_templ.c
+	rm -f $@ && $(LN_S) $< .
+
+vect_templ.c: % : $(top_srcdir)/src/backend/lib/%
+	rm -f $@ && $(LN_S) $< .
+
+vect_u16.c: % : $(top_srcdir)/src/backend/lib/% vect_templ.c
+	rm -f $@ && $(LN_S) $< .
 
 xlogreader.c: % : $(top_srcdir)/src/backend/access/transam/%
 	rm -f $@ && $(LN_S) $< .

@@ -16,6 +16,7 @@
 
 #include "access/bufmask.h"
 #include "access/heapam.h"
+#include "access/heapam_xlog_dfor.h"
 #include "access/visibilitymap.h"
 #include "access/xlog.h"
 #include "access/xlogutils.h"
@@ -105,11 +106,20 @@ heap_xlog_prune_freeze(XLogReaderState *record)
 		char	   *dataptr = XLogRecGetBlockData(record, 0, &datalen);
 		bool		do_prune;
 
+		/*
+		 * DFoR unpacking needs outer buffers for saving results and for
+		 * allocating containers used during decompression. 2 buffer parts are
+		 * intended for saving sequences of offsets of dead and unused tuples.
+		 * Additional three chunks are needed for internal needs of the
+		 * dfor_unpack function.
+		 */
+		uint8 dfor_buf[5 * DFOR_BUF_PART_SIZE];
+
 		heap_xlog_deserialize_prune_and_freeze(dataptr, xlrec.flags,
 											   &nplans, &plans, &frz_offsets,
 											   &nredirected, &redirected,
 											   &ndead, &nowdead,
-											   &nunused, &nowunused);
+											   &nunused, &nowunused, dfor_buf);
 
 		do_prune = nredirected > 0 || ndead > 0 || nunused > 0;
 
