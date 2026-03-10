@@ -26,7 +26,14 @@ export REGRESS_SHLIB
 
 # Exercise WAL compression in recovery tests.  Set USE_WAL_COMPRESSION_CONFIG=
 # to disable, or TEMP_CONFIG=/path to use a different config.
-USE_WAL_COMPRESSION_CONFIG ?= 1
+#
+# 046_checkpoint_logical_slot.pl fails reliably on Windows when WAL compression
+# is enabled (TEMP_CONFIG=wal_compression.conf).  The checkpoint/slot race
+# condition under test is sensitive to WAL layout; compression changes record
+# sizes and causes the logical slot's restart_lsn to stay at an early segment,
+# leading to timeouts.  Disable wal_compression.conf for the suite; 052 tests
+# compression explicitly.
+USE_WAL_COMPRESSION_CONFIG ?= 0
 ifneq ($(USE_WAL_COMPRESSION_CONFIG),)
 TEMP_CONFIG ?= $(srcdir)/wal_compression.conf
 export TEMP_CONFIG

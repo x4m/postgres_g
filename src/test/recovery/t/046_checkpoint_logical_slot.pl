@@ -19,13 +19,14 @@ if ($ENV{enable_injection_points} ne 'yes')
 
 my ($node, $result);
 
+# Don't use TEMP_CONFIG (e.g. wal_compression.conf) for this test.  The
+# checkpoint/slot race condition under test is sensitive to WAL layout;
+# compression changes record sizes and causes the logical slot's restart_lsn
+# to stay at an early segment, leading to timeouts on Windows.
+local $ENV{TEMP_CONFIG} = undef;
 $node = PostgreSQL::Test::Cluster->new('mike');
 $node->init;
 $node->append_conf('postgresql.conf', "wal_level = 'logical'");
-# Disable WAL compression for this test.  The checkpoint/slot race condition
-# under test is sensitive to WAL layout; compression changes record sizes and
-# can cause timeouts or flakiness, especially on Windows.
-$node->append_conf('postgresql.conf', "wal_compression = off");
 $node->start;
 
 # Check if the extension injection_points is available, as it may be
