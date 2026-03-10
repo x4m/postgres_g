@@ -22,6 +22,10 @@ my ($node, $result);
 $node = PostgreSQL::Test::Cluster->new('mike');
 $node->init;
 $node->append_conf('postgresql.conf', "wal_level = 'logical'");
+# Disable WAL compression for this test.  The checkpoint/slot race condition
+# under test is sensitive to WAL layout; compression changes record sizes and
+# can cause timeouts or flakiness, especially on Windows.
+$node->append_conf('postgresql.conf', "wal_compression = off");
 $node->start;
 
 # Check if the extension injection_points is available, as it may be
