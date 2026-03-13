@@ -729,6 +729,8 @@ CREATE VIEW pg_stat_all_tables AS
             pg_stat_get_dead_tuples(C.oid) AS n_dead_tup,
             pg_stat_get_mod_since_analyze(C.oid) AS n_mod_since_analyze,
             pg_stat_get_ins_since_vacuum(C.oid) AS n_ins_since_vacuum,
+            pg_stat_get_rev_all_visible_pages(C.oid) AS rev_all_visible_pages,
+            pg_stat_get_rev_all_frozen_pages(C.oid) AS rev_all_frozen_pages,
             pg_stat_get_last_vacuum_time(C.oid) as last_vacuum,
             pg_stat_get_last_autovacuum_time(C.oid) as last_autovacuum,
             pg_stat_get_last_analyze_time(C.oid) as last_analyze,

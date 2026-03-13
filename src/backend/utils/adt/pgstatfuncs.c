@@ -107,6 +107,12 @@ PG_STAT_GET_RELENTRY_INT64(tuples_updated)
 /* pg_stat_get_vacuum_count */
 PG_STAT_GET_RELENTRY_INT64(vacuum_count)
 
+/* pg_stat_get_rev_all_frozen_pages */
+PG_STAT_GET_RELENTRY_INT64(rev_all_frozen_pages)
+
+/* pg_stat_get_rev_all_visible_pages */
+PG_STAT_GET_RELENTRY_INT64(rev_all_visible_pages)
+
 #define PG_STAT_GET_RELENTRY_FLOAT8(stat)						\
 Datum															\
 CppConcat(pg_stat_get_,stat)(PG_FUNCTION_ARGS)					\

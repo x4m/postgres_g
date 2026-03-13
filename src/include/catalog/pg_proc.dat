@@ -12831,6 +12831,16 @@
   prosrc => 'hashoid8' },
 { oid => '8281', descr => 'hash',
   proname => 'hashoid8extended', prorettype => 'int8',
-  proargtypes => 'oid8 int8', prosrc => 'hashoid8extended' },
+  proargtypes => 'oid8 int8',   prosrc => 'hashoid8extended' },
 
+{ oid => '8002',
+  descr => 'statistics: number of times the all-visible pages in the visibility map was removed for pages of table',
+  proname => 'pg_stat_get_rev_all_visible_pages', provolatile => 's',
+  proparallel => 'r', prorettype => 'int8', proargtypes => 'oid',
+  prosrc => 'pg_stat_get_rev_all_visible_pages' },
+{ oid => '8003',
+  descr => 'statistics: number of times the all-frozen pages in the visibility map was removed for pages of table',
+  proname => 'pg_stat_get_rev_all_frozen_pages', provolatile => 's',
+  proparallel => 'r', prorettype => 'int8', proargtypes => 'oid',
+  prosrc => 'pg_stat_get_rev_all_frozen_pages' },
 ]

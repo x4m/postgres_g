@@ -92,6 +92,7 @@
 #include "access/xloginsert.h"
 #include "access/xlogutils.h"
 #include "miscadmin.h"
+#include "pgstat.h"
 #include "port/pg_bitutils.h"
 #include "storage/bufmgr.h"
 #include "storage/smgr.h"
@@ -163,6 +164,15 @@ visibilitymap_clear(Relation rel, BlockNumber heapBlk, Buffer vmbuf, uint8 flags
 
 	if (map[mapByte] & mask)
 	{
+		/*
+		 * Track how often all-visible or all-frozen bits are cleared in the
+		 * visibility map.
+		 */
+		if (map[mapByte] >> mapOffset & flags & VISIBILITYMAP_ALL_VISIBLE)
+			pgstat_count_vm_rev_all_visible(rel);
+		if (map[mapByte] >> mapOffset & flags & VISIBILITYMAP_ALL_FROZEN)
+			pgstat_count_vm_rev_all_frozen(rel);
+
 		map[mapByte] &= ~mask;
 
 		MarkBufferDirty(vmbuf);

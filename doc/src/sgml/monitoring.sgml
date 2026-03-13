@@ -4260,6 +4260,38 @@ description | Waiting for a newly initialized WAL file to reach durable storage
 
      <row>
       <entry role="catalog_table_entry"><para role="column_definition">
+       <structfield>rev_all_visible_pages</structfield> <type>bigint</type>
+      </para>
+      <para>
+       Number of times the all-visible bit in the
+       <link linkend="storage-vm">visibility map</link> was cleared for a
+       page of this table.  The all-visible bit is cleared by backend
+       processes when they modify a heap page that was previously marked
+       all-visible, for example during an <command>INSERT</command>,
+       <command>UPDATE</command>, or <command>DELETE</command>.
+       A high rate of change in this counter means that index-only scans
+       on this table may frequently need to fall back to heap fetches,
+       and that vacuum must re-do visibility map work on those pages.
+      </para></entry>
+     </row>
+
+     <row>
+      <entry role="catalog_table_entry"><para role="column_definition">
+       <structfield>rev_all_frozen_pages</structfield> <type>bigint</type>
+      </para>
+      <para>
+       Number of times the all-frozen bit in the
+       <link linkend="storage-vm">visibility map</link> was cleared for a
+       page of this table.  The all-frozen bit is cleared by backend
+       processes when they modify a heap page that was previously marked
+       all-frozen.  A high value compared to the number of vacuum cycles
+       indicates that DML activity is frequently undoing the freezing work
+       performed by vacuum.
+      </para></entry>
+     </row>
+
+     <row>
+      <entry role="catalog_table_entry"><para role="column_definition">
        <structfield>last_vacuum</structfield> <type>timestamp with time zone</type>
       </para>
       <para>
