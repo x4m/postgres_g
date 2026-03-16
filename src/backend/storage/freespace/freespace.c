@@ -232,7 +232,7 @@ XLogRecordPageWithFreeSpace(RelFileLocator rlocator, BlockNumber heapBlk,
 		PageInit(page, BLCKSZ, 0);
 
 	if (fsm_set_avail(page, slot, new_cat))
-		MarkBufferDirtyHint(buf, false);
+		MarkBufferDirty(buf);
 	UnlockReleaseBuffer(buf);
 }
 
