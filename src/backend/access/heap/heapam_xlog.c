@@ -326,7 +326,7 @@ heap_xlog_visible(XLogReaderState *record)
 
 	if (BufferIsValid(buffer))
 	{
-		Size		space = PageGetFreeSpace(BufferGetPage(buffer));
+		Size		space = PageGetHeapFreeSpace(BufferGetPage(buffer));
 
 		UnlockReleaseBuffer(buffer);
 
