@@ -147,6 +147,8 @@ typedef struct BtreeCheckState
 
 	/* Bloom filter fingerprints heap (key,tid) pairs */
 	bloom_filter *heapfilter;
+	/* Index fetch context for heap tuple lookups by TID */
+	IndexFetchTableData *index_fetch;
 	/* Debug counter for index tuples verified */
 	int64		indextuplesverified;
 } BtreeCheckState;
@@ -514,6 +516,7 @@ bt_check_every_level(Relation rel, Relation heaprel, bool heapkeyspace,
 		seed = pg_prng_uint64(&pg_global_prng_state);
 		state->heapfilter = bloom_create(total_elems, maintenance_work_mem, seed);
 		state->indextuplesverified = 0;
+		state->index_fetch = table_index_fetch_begin(heaprel);
 	}
 
 	/*
@@ -686,6 +689,7 @@ bt_check_every_level(Relation rel, Relation heaprel, bool heapkeyspace,
 				(errmsg_internal("finished verifying " INT64_FORMAT " index tuples point to matching heap tuples",
 								 state->indextuplesverified)));
 		bloom_free(state->heapfilter);
+		table_index_fetch_end(state->index_fetch);
 	}
 
 	/* Be tidy: */
@@ -2953,8 +2957,26 @@ bt_heap_fingerprint_callback(Relation index, ItemPointer tid, Datum *values,
 
 /*
  * Verify that the index tuple points to a heap tuple with the same key.
- * When the Bloom filter lacks the (key, tid), perform a heap lookup to confirm.
- * Skip index tuples that point to dead heap tuples (not visible to snapshot).
+ * When the Bloom filter lacks the (key, tid), fetch the heap tuple and compare
+ * keys.  Skip index tuples that point to dead or invisible heap tuples.
+ *
+ * This mirrors what a regular index scan does: table_index_fetch_tuple with
+ * the MVCC snapshot follows LP_REDIRECT and HOT chains, returning the visible
+ * version.  A "not found" result means the tuple is dead or was pruned; we
+ * skip it exactly as an index scan would.
+ *
+ * We intentionally do not distinguish LP_DEAD (VACUUM Phase 1 complete,
+ * index cleanup pending) from LP_UNUSED (slot free for reuse).  An LP_UNUSED
+ * slot with a still-existing index entry indicates that VACUUM incorrectly
+ * freed the heap slot without first removing the index entry -- exactly the
+ * kind of corruption we would want to catch.  However, if a new tuple is
+ * subsequently inserted into that slot with a different key, our MVCC fetch
+ * will find it and the key comparison will detect the mismatch.  If the slot
+ * remains empty, we miss the orphaned index entry, but that class of
+ * corruption (index entry without any matching heap tuple) is the domain of
+ * heapallindexed, not indexallkeysmatch.  Distinguishing LP_DEAD from
+ * LP_UNUSED would require direct heap page inspection, breaking the table AM
+ * abstraction, which is not warranted here.
  */
 static void
 bt_verify_index_tuple_points_to_heap(BtreeCheckState *state, IndexTuple itup,
@@ -2984,12 +3006,7 @@ bt_verify_index_tuple_points_to_heap(BtreeCheckState *state, IndexTuple itup,
 	 * amortizes random heap lookups by only fetching when the probe indicates
 	 * absence (Bloom filters have false positives, never false negatives, so
 	 * "not in" means we must verify), or reports corruption when the index
-	 * points to wrong heap tuple.
-	 *
-	 * Use SnapshotAny first to distinguish "tuple doesn't exist" (corruption)
-	 * from "tuple exists but is dead" (skip).  SnapshotAny returns any tuple
-	 * at the TID; if that fails, the slot was reclaimed or the page was
-	 * reorganized (e.g. by VACUUM), so the index has an orphaned entry.
+	 * points to a heap tuple with a different key.
 	 */
 	{
 		TupleTableSlot *slot;
@@ -3000,26 +3017,22 @@ bt_verify_index_tuple_points_to_heap(BtreeCheckState *state, IndexTuple itup,
 		IndexInfo  *indexinfo;
 		EState	   *estate;
 		bool		found;
+		bool		call_again = false;
 
 		slot = table_slot_create(state->heaprel, NULL);
-		found = table_tuple_fetch_row_version(state->heaprel, tid,
-											  SnapshotAny, slot);
-		if (!found)
-		{
-			ExecDropSingleTupleTableSlot(slot);
-			ereport(ERROR,
-					(errcode(ERRCODE_INDEX_CORRUPTED),
-					 errmsg("index tuple in index \"%s\" points to non-existent heap tuple in table \"%s\"",
-							RelationGetRelationName(state->rel),
-							RelationGetRelationName(state->heaprel)),
-					 errdetail_internal("Index tid=(%u,%u) points to heap tid=(%u,%u) that no longer exists.",
-									   targetblock, offset,
-									   ItemPointerGetBlockNumber(tid),
-									   ItemPointerGetOffsetNumber(tid))));
-		}
+		table_index_fetch_reset(state->index_fetch);
 
-		/* Skip dead tuples (not visible to our snapshot) */
-		if (!table_tuple_satisfies_snapshot(state->heaprel, slot, state->snapshot))
+		/*
+		 * Use the same MVCC snapshot as fingerprinting, mirroring what a
+		 * regular index scan does.  table_index_fetch_tuple follows
+		 * LP_REDIRECT and HOT chains to find the visible version.  A "not
+		 * found" result means the tuple is dead or no longer at this TID;
+		 * skip it exactly as an index scan would.
+		 */
+		found = table_index_fetch_tuple(state->index_fetch, tid,
+										state->snapshot, slot,
+										&call_again, NULL);
+		if (!found)
 		{
 			ExecDropSingleTupleTableSlot(slot);
 			return;
