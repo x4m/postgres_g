@@ -2350,6 +2350,18 @@ postgresql://%2Fvar%2Flib%2Fpostgresql/dbname
       </listitem>
      </varlistentry>
 
+     <varlistentry id="libpq-connect-ldapservice" xreflabel="ldapservice">
+      <term><literal>ldapservice</literal></term>
+      <listitem>
+       <para>
+        This option specifies an LDAP query that can be used to reference connection parameters
+        stored on an LDAP server. Any connection parameter that is looked up in this way is
+        overridden by explicitly named connection parameters. This parameter is ignored when used
+        in a pg_service.conf file. This functionality is described in more detail in <xref linkend="libpq-ldap"/>.
+        </para>
+      </listitem>
+     </varlistentry>
+
      <varlistentry id="libpq-connect-target-session-attrs" xreflabel="target_session_attrs">
       <term><literal>target_session_attrs</literal></term>
       <listitem>
@@ -9167,6 +9179,16 @@ myEventProc(PGEventId evtId, void *evtInfo, void *passThrough)
       </indexterm>
       <envar>PGSERVICEFILE</envar> behaves the same as the
       <xref linkend="libpq-connect-servicefile"/> connection parameter.
+     </para>
+    </listitem>
+
+    <listitem>
+     <para>
+      <indexterm>
+       <primary><envar>PGLDAPSERVICE</envar></primary>
+      </indexterm>
+      <envar>PGLDAPSERVICE</envar> behaves the same as the
+      <xref linkend="libpq-connect-ldapservice"/> connection parameter.
      </para>
     </listitem>
 

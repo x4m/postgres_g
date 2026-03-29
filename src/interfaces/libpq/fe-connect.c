@@ -207,6 +207,10 @@ static const internalPQconninfoOption PQconninfoOptions[] = {
 		"Database-Service-File", "", 64,
 	offsetof(struct pg_conn, pgservicefile)},
 
+	{"ldapservice", "PGLDAPSERVICE", NULL, NULL,
+		"Database-LDAP-Service", "", 20,
+	offsetof(struct pg_conn, pgldapservice)},
+
 	{"user", "PGUSER", NULL, NULL,
 		"Database-User", "", 20,
 	offsetof(struct pg_conn, pguser)},
@@ -6726,6 +6730,16 @@ conninfo_add_defaults(PQconninfoOption *options, PQExpBuffer errorMessage)
 	PQconninfoOption *sslmode_default = NULL,
 			   *sslrootcert = NULL;
 	char	   *tmp;
+#ifdef USE_LDAP
+	const char *ldapservice = conninfo_getval(options, "ldapservice");
+
+	if (ldapservice == NULL)
+		ldapservice = getenv("PGLDAPSERVICE");
+
+	if (ldapservice != NULL)
+		if (ldapServiceLookup(ldapservice, options, errorMessage) != 0)
+			return false;
+#endif
 
 	/*
 	 * If there's a service spec, use it to obtain any not-explicitly-given

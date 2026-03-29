@@ -80,6 +80,9 @@ append_to_file(
 	$srvfile_valid, qq{
 [my_srv]
 ldap://localhost:$ldap_port/dc=example,dc=net?description?one?(cn=mydatabase)
+
+[my_srv_2]
+ldapservice=ldap://localhost:$ldap_port/dc=example,dc=net?description?one?(cn=mydatabase)
 });
 
 # File defined with no contents, used as default value for
@@ -195,6 +198,32 @@ local $ENV{PGSERVICEFILE} = "$srvfile_empty";
 		'connection with incorrect PGSERVICE and default pg_service.conf',
 		expected_stdout =>
 		  qr/definition of service "undefined-service" not found/);
+
+	delete $ENV{PGSERVICE};
+
+	$dummy_node->connect_ok(
+		"ldapservice=ldap://localhost:$ldap_port/dc=example,dc=net?description?one?(cn=mydatabase)",
+		'connection with correct "ldapservice" string',
+		sql => "SELECT 'connect2_4'",
+		expected_stdout => qr/connect2_4/);
+
+	$dummy_node->connect_ok(
+		"postgres://?ldapservice=ldap%3A%2F%2Flocalhost%3A$ldap_port%2Fdc%3Dexample%2Cdc%3Dnet%3Fdescription%3Fone%3F%28cn%3Dmydatabase%29",
+		'connection with correct "ldapservice"',
+		sql => "SELECT 'connect2_5'",
+		expected_stdout => qr/connect2_5/);
+
+	local $ENV{PGLDAPSERVICE} = "ldap://localhost:$ldap_port/dc=example,dc=net?description?one?(cn=mydatabase)";
+	$dummy_node->connect_ok(
+		"",
+		'connection with correct "ldapservice" provided by env var',
+		sql => "SELECT 'connect2_6'",
+		expected_stdout => qr/connect2_6/);
+	delete $ENV{PGLDAPSERVICE};
+
+	$dummy_node->connect_fails(
+		'',
+		'connection fails with ldapservice specified in pg_service.conf file');
 
 	# Remove default pg_service.conf.
 	unlink($srvfile_default);
