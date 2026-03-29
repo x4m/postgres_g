@@ -2333,6 +2333,10 @@ postgresql://%2Fvar%2Flib%2Fpostgresql/dbname
         name in <filename>pg_service.conf</filename> that holds additional connection parameters.
         This allows applications to specify only a service name so connection parameters
         can be centrally maintained. See <xref linkend="libpq-pgservice"/>.
+
+        You can also specify and LDAP address here which will look up parameters from an LDAP
+        server. See <xref linkend="libpq-ldap"/>. Please note that if an LDAP address is specified
+        no attempt will be made to look up parameters in <filename>pg_service.conf</filename>.
        </para>
       </listitem>
      </varlistentry>

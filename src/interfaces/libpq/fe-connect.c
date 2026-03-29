@@ -6006,6 +6006,11 @@ parseServiceInfo(PQconninfoOption *options, PQExpBuffer errorMessage)
 	if (service == NULL)
 		return 0;
 
+#ifdef USE_LDAP
+	if (pg_strncasecmp(service, LDAP_URL, strlen(LDAP_URL)) == 0)
+		return ldapServiceLookup(service, options, errorMessage);
+#endif
+
 	/*
 	 * First, try the "servicefile" option in connection string.  Then, try
 	 * the PGSERVICEFILE environment variable.  Finally, check
