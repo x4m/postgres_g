@@ -87,6 +87,7 @@ uint64		fetch_done;
 
 static PGconn *conn;
 static rewind_source *source;
+static XLogRecPtr source_wal_flush_lsn = InvalidXLogRecPtr;
 
 static void
 usage(const char *progname)
@@ -477,6 +478,16 @@ main(int argc, char **argv)
 	filehash_init();
 
 	/*
+	 * When the source is a live server, capture the current WAL flush
+	 * position before collecting the file list.  This will be used as
+	 * minRecoveryPoint.  By capturing it first, the subsequent file
+	 * traversal is guaranteed to see all WAL segments up to this point,
+	 * so the normal file copy will include them.
+	 */
+	if (connstr_source && source->get_current_wal_flush_lsn)
+		source_wal_flush_lsn = source->get_current_wal_flush_lsn(source);
+
+	/*
 	 * Collect information about all files in the both data directories.
 	 */
 	if (showprogress)
@@ -711,13 +722,16 @@ perform_rewind(filemap_t *filemap, rewind_source *source,
 		else
 		{
 			/*
-			 * Source is a production, non-standby, server. We must replay to
-			 * the last WAL insert location.
+			 * Source is a production, non-standby, server. Use the WAL
+			 * flush LSN captured before the file traversal.  Because we
+			 * captured it first, the traversal saw all WAL segments up to
+			 * this point, and the normal file copy already transferred
+			 * them.
 			 */
 			if (ControlFile_source_after.state != DB_IN_PRODUCTION)
 				pg_fatal("source system was in unexpected state at end of rewind");
 
-			endrec = source->get_current_wal_insert_lsn(source);
+			endrec = source_wal_flush_lsn;
 			endtli = Max(ControlFile_source_after.checkPointCopy.ThisTimeLineID,
 						 ControlFile_source_after.minRecoveryPointTLI);
 		}

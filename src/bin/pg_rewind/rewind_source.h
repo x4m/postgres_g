@@ -66,9 +66,9 @@ typedef struct rewind_source
 	void		(*finish_fetch) (struct rewind_source *);
 
 	/*
-	 * Get the current WAL insert position in the source system.
+	 * Get the current WAL flush position in the source system.
 	 */
-	XLogRecPtr	(*get_current_wal_insert_lsn) (struct rewind_source *);
+	XLogRecPtr	(*get_current_wal_flush_lsn) (struct rewind_source *);
 
 	/*
 	 * Free this rewind_source object.
