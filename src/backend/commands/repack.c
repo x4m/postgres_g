@@ -3381,7 +3381,8 @@ start_repack_decoding_worker(Oid relid)
 		ereport(ERROR,
 				errcode(ERRCODE_CONFIGURATION_LIMIT_EXCEEDED),
 				errmsg("out of background worker slots"),
-				errhint("You might need to increase \"%s\".", "max_worker_processes"));
+		/* FIXME rename to max_repack_processes? */
+				errhint("You might need to increase \"%s\".", "max_repack_replication_slots"));
 
 	decoding_worker->seg = seg;
 	decoding_worker->error_mqh = mqh;
