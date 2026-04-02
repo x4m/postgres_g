@@ -1008,6 +1008,74 @@ gistproperty(Oid index_oid, int attno,
 }
 
 /*
+ * gistExtractEntries -- extract multiple index entries from one heap tuple.
+ *
+ * Calls the opclass's extractValue function to decompose the indexed datum
+ * into multiple sub-entries.  Returns an array of IndexTuples, one per
+ * sub-entry.
+ *
+ * Currently only single-key-column indexes are supported (enforced by
+ * initGISTstate).  INCLUDE columns are preserved on every entry.
+ * If the datum is NULL or extractValue returns no entries, a single NULL
+ * index entry is produced.
+ */
+IndexTuple *
+gistExtractEntries(GISTSTATE *giststate, Relation index,
+				   Datum *values, bool *isnull, int32 *nentries)
+{
+	Datum	   *entries;
+	bool	   *nullFlags;
+	IndexTuple *result;
+	int			i;
+
+	Assert(IndexRelationGetNumberOfKeyAttributes(index) == 1);
+
+	/* NULL datum produces a single NULL index entry */
+	if (isnull[0])
+	{
+		*nentries = 1;
+		result = palloc(sizeof(IndexTuple));
+		result[0] = gistFormTuple(giststate, index, values, isnull, true);
+		return result;
+	}
+
+	/* Call the opclass's extractValue function */
+	nullFlags = NULL;
+	entries = (Datum *)
+		DatumGetPointer(FunctionCall3Coll(&giststate->extractValueFn[0],
+										  giststate->supportCollation[0],
+										  values[0],
+										  PointerGetDatum(nentries),
+										  PointerGetDatum(&nullFlags)));
+
+	/* Handle empty or NULL result: produce a single NULL entry */
+	if (entries == NULL || *nentries <= 0)
+	{
+		*nentries = 1;
+		values[0] = (Datum) 0;
+		isnull[0] = true;
+		result = palloc(sizeof(IndexTuple));
+		result[0] = gistFormTuple(giststate, index, values, isnull, true);
+		return result;
+	}
+
+	/* Create nullFlags array if the function didn't */
+	if (nullFlags == NULL)
+		nullFlags = palloc0_array(bool, *nentries);
+
+	/* Form one index tuple per extracted entry */
+	result = palloc_array(IndexTuple, *nentries);
+	for (i = 0; i < *nentries; i++)
+	{
+		values[0] = entries[i];
+		isnull[0] = nullFlags[i];
+		result[i] = gistFormTuple(giststate, index, values, isnull, true);
+	}
+
+	return result;
+}
+
+/*
  * This is a stratnum translation support function for GiST opclasses that use
  * the RT*StrategyNumber constants.
  */

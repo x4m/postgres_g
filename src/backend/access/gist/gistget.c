@@ -17,6 +17,7 @@
 #include "access/genam.h"
 #include "access/gist_private.h"
 #include "access/relscan.h"
+#include "common/hashfn.h"
 #include "executor/instrument_node.h"
 #include "lib/pairingheap.h"
 #include "miscadmin.h"
@@ -25,6 +26,49 @@
 #include "utils/float.h"
 #include "utils/memutils.h"
 #include "utils/rel.h"
+
+/*
+ * Simplehash implementation for TID deduplication in multi-entry scans.
+ *
+ * When an opclass provides an extractValue function, each heap tuple produces
+ * multiple index entries.  During scans, we must deduplicate results so that
+ * each heap TID is returned only once.
+ */
+
+/* Hash table entry for basic TID dedup */
+typedef struct GISTTIDHashEntry
+{
+	ItemPointerData tid;		/* TID (hashtable key) */
+	uint32		hash;			/* hash value (cached) */
+	char		status;			/* hash status */
+} GISTTIDHashEntry;
+
+static inline uint32
+gist_tid_hash_fn(ItemPointerData tid)
+{
+	uint32		h = murmurhash32(ItemPointerGetBlockNumber(&tid));
+
+	return murmurhash32(h + ItemPointerGetOffsetNumber(&tid));
+}
+
+static inline bool
+gist_tid_match_fn(ItemPointerData a, ItemPointerData b)
+{
+	return ItemPointerEquals(&a, &b);
+}
+
+/* --- gisttid hash table (declare + define) --- */
+#define SH_PREFIX gisttid
+#define SH_ELEMENT_TYPE GISTTIDHashEntry
+#define SH_KEY_TYPE ItemPointerData
+#define SH_KEY tid
+#define SH_HASH_KEY(tb, key) gist_tid_hash_fn(key)
+#define SH_EQUAL(tb, a, b) gist_tid_match_fn(a, b)
+#define SH_SCOPE static inline
+#define SH_DECLARE
+#define SH_DEFINE
+#include "lib/simplehash.h"
+
 
 /*
  * gistkillitems() -- set LP_DEAD state for items an indexscan caller has
@@ -456,7 +500,8 @@ gistScanPage(IndexScanDesc scan, GISTSearchItem *pageItem,
 		{
 			/*
 			 * getbitmap scan, so just push heap tuple TIDs into the bitmap
-			 * without worrying about ordering
+			 * without worrying about ordering.  The bitmap itself handles
+			 * deduplication, so no extra work needed for multi-entry.
 			 */
 			tbm_add_tuples(tbm, &it->t_tid, 1, recheck);
 			(*ntids)++;
@@ -464,8 +509,20 @@ gistScanPage(IndexScanDesc scan, GISTSearchItem *pageItem,
 		else if (scan->numberOfOrderBys == 0 && GistPageIsLeaf(page))
 		{
 			/*
-			 * Non-ordered scan, so report tuples in so->pageData[]
+			 * Non-ordered scan, so report tuples in so->pageData[].
+			 *
+			 * For multi-entry indexes, check the TID hash table to avoid
+			 * returning duplicate heap TIDs.
 			 */
+			if (so->tidHash)
+			{
+				bool		found;
+
+				gisttid_insert(so->tidHash, it->t_tid, &found);
+				if (found)
+					continue;	/* already seen this TID */
+			}
+
 			so->pageData[so->nPageData].heapPtr = it->t_tid;
 			so->pageData[so->nPageData].recheck = recheck;
 			so->pageData[so->nPageData].offnum = i;
@@ -494,6 +551,20 @@ gistScanPage(IndexScanDesc scan, GISTSearchItem *pageItem,
 			int			nOrderBys = scan->numberOfOrderBys;
 
 			oldcxt = MemoryContextSwitchTo(so->queueCxt);
+
+			/*
+			 * For multi-entry ordered scans, skip heap tuples whose TIDs
+			 * were already returned by getNextNearest.  We use lookup
+			 * (not insert) here: a TID must remain enqueueable until it
+			 * is actually dequeued, so that the pairing heap can pick the
+			 * copy with the smallest distance.
+			 */
+			if (GistPageIsLeaf(page) &&
+				so->tidHash && gisttid_lookup(so->tidHash, it->t_tid))
+			{
+				MemoryContextSwitchTo(oldcxt);
+				continue;
+			}
 
 			/* Create new GISTSearchItem for this item */
 			item = palloc(SizeOfGISTSearchItem(scan->numberOfOrderBys));
@@ -587,7 +658,27 @@ getNextNearest(IndexScanDesc scan)
 
 		if (GISTSearchItemIsHeap(*item))
 		{
-			/* found a heap item at currently minimal distance */
+			/*
+			 * Found a heap item at currently minimal distance.
+			 *
+			 * For multi-entry ordered scans, deduplicate using tidHash to
+			 * ensure each TID is returned only once.  Duplicate entries
+			 * for the same TID may exist in the queue with different
+			 * distances; the pairing heap ensures we see the smallest
+			 * distance first, and tidHash skips subsequent duplicates.
+			 */
+			if (so->tidHash)
+			{
+				bool		found;
+
+				gisttid_insert(so->tidHash, item->data.heap.heapPtr, &found);
+				if (found)
+				{
+					pfree(item);
+					continue;	/* already returned this TID */
+				}
+			}
+
 			scan->xs_heaptid = item->data.heap.heapPtr;
 			scan->xs_recheck = item->data.heap.recheck;
 
@@ -642,6 +733,30 @@ gistgettuple(IndexScanDesc scan, ScanDirection dir)
 		scan->xs_hitup = NULL;
 		if (so->pageDataCxt)
 			MemoryContextReset(so->pageDataCxt);
+
+		/*
+		 * For multi-entry indexes, set up TID deduplication hash tables.
+		 * We check column 0 for extractValueFn as a proxy for multi-entry.
+		 */
+		if (OidIsValid(so->giststate->extractValueFn[0].fn_oid))
+		{
+			MemoryContext oldHashCxt;
+
+			/*
+			 * Create a dedicated context for the hash tables so they can
+			 * be reset independently.
+			 */
+			if (so->tidHashCxt == so->giststate->scanCxt)
+				so->tidHashCxt = AllocSetContextCreate(so->giststate->scanCxt,
+													   "GiST TID hash context",
+													   ALLOCSET_DEFAULT_SIZES);
+			else
+				MemoryContextReset(so->tidHashCxt);
+
+			oldHashCxt = MemoryContextSwitchTo(so->tidHashCxt);
+			so->tidHash = gisttid_create(so->tidHashCxt, 256, NULL);
+			MemoryContextSwitchTo(oldHashCxt);
+		}
 
 		fakeItem.blkno = GIST_ROOT_BLKNO;
 		memset(&fakeItem.data.parentlsn, 0, sizeof(GistNSN));
@@ -805,6 +920,15 @@ gistgetbitmap(IndexScanDesc scan, TIDBitmap *tbm)
 bool
 gistcanreturn(Relation index, int attno)
 {
+	/*
+	 * Multi-entry indexes store decomposed sub-entries in key columns, not the
+	 * original datum, so key columns cannot be returned in an index-only scan.
+	 * INCLUDE columns are still returnable.
+	 */
+	if (attno <= IndexRelationGetNumberOfKeyAttributes(index) &&
+		OidIsValid(index_getprocid(index, attno, GIST_EXTRACTVALUE_PROC)))
+		return false;
+
 	if (attno > IndexRelationGetNumberOfKeyAttributes(index) ||
 		OidIsValid(index_getprocid(index, attno, GIST_FETCH_PROC)) ||
 		!OidIsValid(index_getprocid(index, attno, GIST_COMPRESS_PROC)))

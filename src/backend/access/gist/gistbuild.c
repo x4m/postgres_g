@@ -827,20 +827,7 @@ gistBuildCallback(Relation index,
 				  void *state)
 {
 	GISTBuildState *buildstate = (GISTBuildState *) state;
-	IndexTuple	itup;
 	MemoryContext oldCtx;
-
-	oldCtx = MemoryContextSwitchTo(buildstate->giststate->tempCxt);
-
-	/* form an index tuple and point it at the heap tuple */
-	itup = gistFormTuple(buildstate->giststate, index,
-						 values, isnull,
-						 true);
-	itup->t_tid = *tid;
-
-	/* Update tuple count and total size. */
-	buildstate->indtuples += 1;
-	buildstate->indtuplesSize += IndexTupleSize(itup);
 
 	/*
 	 * XXX In buffering builds, the tempCxt is also reset down inside
@@ -850,20 +837,61 @@ gistBuildCallback(Relation index,
 	 * better that a memory context be "owned" by only one function.  However,
 	 * currently this isn't causing issues so it doesn't seem worth the amount
 	 * of refactoring that would be needed to avoid it.
+	 *
+	 * If the opclass provides an extractValue function, extract multiple
+	 * entries and insert each one.  Otherwise, form a single index tuple.
+	 *
+	 * We extract entries in the caller's memory context so that the itups
+	 * array survives MemoryContextReset(tempCxt) inside
+	 * gistProcessEmptyingQueue during buffering builds.
 	 */
-	if (buildstate->buildMode == GIST_BUFFERING_ACTIVE)
+	if (OidIsValid(buildstate->giststate->extractValueFn[0].fn_oid))
 	{
-		/* We have buffers, so use them. */
-		gistBufferingBuildInsert(buildstate, itup);
+		IndexTuple *itups;
+		int32		nitups;
+		int			i;
+
+		itups = gistExtractEntries(buildstate->giststate, index,
+								  values, isnull, &nitups);
+
+		oldCtx = MemoryContextSwitchTo(buildstate->giststate->tempCxt);
+
+		for (i = 0; i < nitups; i++)
+		{
+			itups[i]->t_tid = *tid;
+
+			/* Update tuple count and total size */
+			buildstate->indtuples += 1;
+			buildstate->indtuplesSize += IndexTupleSize(itups[i]);
+
+			if (buildstate->buildMode == GIST_BUFFERING_ACTIVE)
+				gistBufferingBuildInsert(buildstate, itups[i]);
+			else
+				gistdoinsert(index, itups[i], buildstate->freespace,
+							 buildstate->giststate, buildstate->heaprel, true);
+		}
 	}
 	else
 	{
-		/*
-		 * There's no buffers (yet). Since we already have the index relation
-		 * locked, we call gistdoinsert directly.
-		 */
-		gistdoinsert(index, itup, buildstate->freespace,
-					 buildstate->giststate, buildstate->heaprel, true);
+		IndexTuple	itup;
+
+		oldCtx = MemoryContextSwitchTo(buildstate->giststate->tempCxt);
+
+		/* form an index tuple and point it at the heap tuple */
+		itup = gistFormTuple(buildstate->giststate, index,
+							 values, isnull,
+							 true);
+		itup->t_tid = *tid;
+
+		/* Update tuple count and total size. */
+		buildstate->indtuples += 1;
+		buildstate->indtuplesSize += IndexTupleSize(itup);
+
+		if (buildstate->buildMode == GIST_BUFFERING_ACTIVE)
+			gistBufferingBuildInsert(buildstate, itup);
+		else
+			gistdoinsert(index, itup, buildstate->freespace,
+						 buildstate->giststate, buildstate->heaprel, true);
 	}
 
 	MemoryContextSwitchTo(oldCtx);

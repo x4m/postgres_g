@@ -92,6 +92,7 @@ typedef struct GISTSTATE
 	FmgrInfo	equalFn[INDEX_MAX_KEYS];
 	FmgrInfo	distanceFn[INDEX_MAX_KEYS];
 	FmgrInfo	fetchFn[INDEX_MAX_KEYS];
+	FmgrInfo	extractValueFn[INDEX_MAX_KEYS];
 
 	/* Collations to pass to the support functions */
 	Oid			supportCollation[INDEX_MAX_KEYS];
@@ -155,6 +156,14 @@ typedef struct GISTScanOpaqueData
 {
 	GISTSTATE  *giststate;		/* index information, see above */
 	Oid		   *orderByTypes;	/* datatypes of ORDER BY expressions */
+
+	/*
+	 * For multi-entry indexes: hash table for TID deduplication.  Each heap
+	 * tuple produces multiple index entries, so we track which TIDs have been
+	 * returned.  NULL for standard (non-multi-entry) indexes.
+	 */
+	struct gisttid_hash *tidHash;
+	MemoryContext tidHashCxt;	/* context holding the hash table */
 
 	pairingheap *queue;			/* queue of unvisited items */
 	MemoryContext queueCxt;		/* context holding the queue */
@@ -546,6 +555,11 @@ extern void gistSplitByKey(Relation r, Page page, IndexTuple *itup,
 /* gistbuild.c */
 extern IndexBuildResult *gistbuild(Relation heap, Relation index,
 								   struct IndexInfo *indexInfo);
+
+/* gistutil.c */
+extern IndexTuple *gistExtractEntries(GISTSTATE *giststate, Relation index,
+									  Datum *values, bool *isnull,
+									  int32 *nentries);
 
 /* gistbuildbuffers.c */
 extern GISTBuildBuffers *gistInitBuildBuffers(int pagesPerBuffer, int levelStep,

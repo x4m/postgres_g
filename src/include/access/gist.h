@@ -41,7 +41,8 @@
 #define GIST_OPTIONS_PROC				10
 #define GIST_SORTSUPPORT_PROC			11
 #define GIST_TRANSLATE_CMPTYPE_PROC		12
-#define GISTNProcs					12
+#define GIST_EXTRACTVALUE_PROC			13
+#define GISTNProcs					13
 
 /*
  * Page opaque data in a GiST index page.

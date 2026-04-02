@@ -96,6 +96,10 @@ gistbeginscan(Relation r, int nkeys, int norderbys)
 	so->queue = NULL;
 	so->queueCxt = giststate->scanCxt;	/* see gistrescan */
 
+	/* Initialize multi-entry TID dedup fields (NULL if not multi-entry) */
+	so->tidHash = NULL;
+	so->tidHashCxt = giststate->scanCxt;
+
 	/* workspaces with size dependent on numberOfOrderBys: */
 	so->distances = palloc(sizeof(so->distances[0]) * scan->numberOfOrderBys);
 	so->qual_ok = true;			/* in case there are zero keys */
