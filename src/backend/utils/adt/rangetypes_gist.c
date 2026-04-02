@@ -160,6 +160,30 @@ static bool range_gist_consistent_leaf_element(TypeCacheEntry *typcache,
 											   StrategyNumber strategy,
 											   const RangeType *key,
 											   Datum query);
+static bool range_me_consistent_int_range(TypeCacheEntry *typcache,
+										  StrategyNumber strategy,
+										  const RangeType *key,
+										  const RangeType *query);
+static bool range_me_consistent_int_multirange(TypeCacheEntry *typcache,
+											   StrategyNumber strategy,
+											   const RangeType *key,
+											   const MultirangeType *query);
+static bool range_me_consistent_int_element(TypeCacheEntry *typcache,
+											StrategyNumber strategy,
+											const RangeType *key,
+											Datum query);
+static bool range_me_consistent_leaf_range(TypeCacheEntry *typcache,
+										   StrategyNumber strategy,
+										   const RangeType *key,
+										   const RangeType *query);
+static bool range_me_consistent_leaf_multirange(TypeCacheEntry *typcache,
+												StrategyNumber strategy,
+												const RangeType *key,
+												const MultirangeType *query);
+static bool range_me_consistent_leaf_element(TypeCacheEntry *typcache,
+											 StrategyNumber strategy,
+											 const RangeType *key,
+											 Datum query);
 static void range_gist_fallback_split(TypeCacheEntry *typcache,
 									  GistEntryVector *entryvec,
 									  GIST_SPLITVEC *v);
@@ -1795,4 +1819,446 @@ call_subtype_diff(TypeCacheEntry *typcache, Datum val1, Datum val2)
 	if (value >= 0.0)
 		return value;
 	return 0.0;
+}
+
+
+/*
+ *----------------------------------------------------------
+ * MULTI-ENTRY GiST SUPPORT FOR MULTIRANGES
+ *
+ * When an extractValue support function is registered, GiST decomposes
+ * each multirange into its component ranges and stores each as a separate
+ * index entry.  This requires a different consistent function because
+ * leaf entries are individual component ranges, not the union range.
+ *----------------------------------------------------------
+ */
+
+/*
+ * Multi-entry GiST extractValue function for multirange types.
+ *
+ * Decomposes a multirange into its component ranges.  Returns an array
+ * of Datum values (one per range) via the return value, and sets *nkeys
+ * to the number of entries.
+ */
+Datum
+multirange_gist_extractvalue(PG_FUNCTION_ARGS)
+{
+	MultirangeType *mr = PG_GETARG_MULTIRANGE_P(0);
+	int32	   *nkeys = (int32 *) PG_GETARG_POINTER(1);
+	TypeCacheEntry *typcache;
+	int32		range_count;
+	RangeType **ranges;
+	Datum	   *entries;
+	int			i;
+
+	typcache = multirange_get_typcache(fcinfo, MultirangeTypeGetOid(mr));
+
+	if (MultirangeIsEmpty(mr))
+	{
+		/*
+		 * Store an empty range as a sentinel for empty multiranges so they
+		 * remain visible to operator queries (NULL entries only match IS NULL).
+		 */
+		RangeBound	lower = {0};
+		RangeBound	upper = {0};
+
+		lower.lower = true;
+		entries = palloc(sizeof(Datum));
+		entries[0] = RangeTypePGetDatum(
+			make_range(typcache->rngtype, &lower, &upper, true, NULL));
+		*nkeys = 1;
+		PG_RETURN_POINTER(entries);
+	}
+
+	multirange_deserialize(typcache->rngtype, mr, &range_count, &ranges);
+
+	entries = palloc(sizeof(Datum) * range_count);
+	for (i = 0; i < range_count; i++)
+		entries[i] = RangeTypePGetDatum(ranges[i]);
+
+	*nkeys = range_count;
+	PG_RETURN_POINTER(entries);
+}
+
+/*
+ * Multi-entry GiST consistent function for multirange types.
+ *
+ * This is used when the multirange opclass has an extractValue function.
+ * Leaf entries are individual component ranges (not the union range), so
+ * most leaf checks set recheck=true since a single component cannot fully
+ * determine the relationship with the query.  OVERLAPS and CONTAINS_ELEM
+ * are exact per-component and skip recheck (see comments in the leaf
+ * consistent functions below).  Internal nodes still store union ranges,
+ * so the internal consistent checks are unchanged.
+ */
+Datum
+multirange_gist_me_consistent(PG_FUNCTION_ARGS)
+{
+	GISTENTRY  *entry = (GISTENTRY *) PG_GETARG_POINTER(0);
+	Datum		query = PG_GETARG_DATUM(1);
+	StrategyNumber strategy = (StrategyNumber) PG_GETARG_UINT16(2);
+	bool		result;
+	Oid			subtype = PG_GETARG_OID(3);
+	bool	   *recheck = (bool *) PG_GETARG_POINTER(4);
+	RangeType  *key = DatumGetRangeTypeP(entry->key);
+	TypeCacheEntry *typcache;
+
+	typcache = range_get_typcache(fcinfo, RangeTypeGetOid(key));
+
+	if (GIST_LEAF(entry))
+	{
+		/*
+		 * Leaf entries are individual component ranges from the multirange.
+		 * Use multi-entry leaf consistent functions which account for the
+		 * fact that we're seeing only one component, not the full value.
+		 *
+		 * Most strategies need recheck because a single component cannot
+		 * determine the full multirange's relationship with the query.
+		 * However, some strategies are exact per-component:
+		 *
+		 * - OVERLAPS: if component Ri overlaps Q, then M overlaps Q, because
+		 *   the shared points between Ri and Q are also in M.
+		 * - CONTAINS_ELEM: if Ri contains elem, M contains elem, because
+		 *   Ri is a subset of M.
+		 */
+		if (strategy == RANGESTRAT_OVERLAPS ||
+			strategy == RANGESTRAT_CONTAINS_ELEM)
+			*recheck = false;
+		else
+			*recheck = true;
+
+		if (!OidIsValid(subtype) || subtype == ANYMULTIRANGEOID)
+			result = range_me_consistent_leaf_multirange(typcache, strategy,
+														 key,
+														 DatumGetMultirangeTypeP(query));
+		else if (subtype == ANYRANGEOID)
+			result = range_me_consistent_leaf_range(typcache, strategy, key,
+													DatumGetRangeTypeP(query));
+		else
+			result = range_me_consistent_leaf_element(typcache, strategy,
+													  key, query);
+	}
+	else
+	{
+		/*
+		 * Internal nodes store union ranges of components from potentially
+		 * many different multiranges.  We use multi-entry-aware internal
+		 * consistent functions that relax CONTAINS and EQ checks: the
+		 * standard functions require the union key to fully contain the
+		 * query, but in multi-entry a matching multirange's components may
+		 * be spread across multiple subtrees.
+		 */
+		if (!OidIsValid(subtype) || subtype == ANYMULTIRANGEOID)
+			result = range_me_consistent_int_multirange(typcache, strategy,
+														key,
+														DatumGetMultirangeTypeP(query));
+		else if (subtype == ANYRANGEOID)
+			result = range_me_consistent_int_range(typcache, strategy, key,
+												   DatumGetRangeTypeP(query));
+		else
+			result = range_me_consistent_int_element(typcache, strategy,
+													 key, query);
+	}
+	PG_RETURN_BOOL(result);
+}
+
+/*
+ * Multi-entry leaf consistent test with a range query.
+ *
+ * The key is one component range from the indexed multirange M.  We must
+ * avoid false negatives: if the operator holds for M and query Q, at least
+ * one component must return true here.  False positives are filtered by
+ * recheck.  See multirange_gist_me_consistent for which strategies are
+ * recheck-free.
+ */
+static bool
+range_me_consistent_leaf_range(TypeCacheEntry *typcache,
+							   StrategyNumber strategy,
+							   const RangeType *key,
+							   const RangeType *query)
+{
+	/* Empty key is the sentinel for an empty multirange */
+	if (RangeIsEmpty(key))
+	{
+		if (strategy == RANGESTRAT_CONTAINED_BY)
+			return true;
+		if (strategy == RANGESTRAT_CONTAINS)
+			return RangeIsEmpty(query);
+		return false;
+	}
+
+	/* Empty range is contained by everything, has no other relationships */
+	if (RangeIsEmpty(query))
+	{
+		if (strategy == RANGESTRAT_CONTAINS)
+			return true;
+		return false;
+	}
+
+	switch (strategy)
+	{
+			/*
+			 * Bound operators: if M satisfies the bound, every component
+			 * does too, so the exact per-component check has no false
+			 * negatives.  Still needs recheck since other components may
+			 * violate the bound.
+			 */
+		case RANGESTRAT_BEFORE:
+			return range_before_internal(typcache, key, query);
+		case RANGESTRAT_OVERLEFT:
+			return range_overleft_internal(typcache, key, query);
+		case RANGESTRAT_OVERRIGHT:
+			return range_overright_internal(typcache, key, query);
+		case RANGESTRAT_AFTER:
+			return range_after_internal(typcache, key, query);
+
+			/* Exact and recheck-free: if component overlaps Q, so does M */
+		case RANGESTRAT_OVERLAPS:
+			return range_overlaps_internal(typcache, key, query);
+
+			/* Exact check, but another component might overlap Q */
+		case RANGESTRAT_ADJACENT:
+			return range_adjacent_internal(typcache, key, query);
+
+			/*
+			 * Use overlaps as a necessary condition.  For @>: Q is
+			 * contiguous and must lie within some component, so that
+			 * component overlaps Q.  For <@: every component is a subset
+			 * of Q, so every component overlaps Q.
+			 */
+		case RANGESTRAT_CONTAINS:
+		case RANGESTRAT_CONTAINED_BY:
+		case RANGESTRAT_EQ:
+			return range_overlaps_internal(typcache, key, query);
+
+		default:
+			elog(ERROR, "unrecognized range strategy: %d", strategy);
+			return false;		/* keep compiler quiet */
+	}
+}
+
+/*
+ * Multi-entry leaf consistent test with a multirange query.
+ *
+ * Same framework as range_me_consistent_leaf_range: no false negatives
+ * allowed, false positives filtered by recheck.
+ */
+static bool
+range_me_consistent_leaf_multirange(TypeCacheEntry *typcache,
+									StrategyNumber strategy,
+									const RangeType *key,
+									const MultirangeType *query)
+{
+	/* Empty key is the sentinel for an empty multirange */
+	if (RangeIsEmpty(key))
+	{
+		if (strategy == RANGESTRAT_CONTAINED_BY)
+			return true;
+		if (strategy == RANGESTRAT_CONTAINS || strategy == RANGESTRAT_EQ)
+			return MultirangeIsEmpty(query);
+		return false;
+	}
+
+	/* Empty multirange is contained by everything, has no other relationships */
+	if (MultirangeIsEmpty(query))
+	{
+		if (strategy == RANGESTRAT_CONTAINS)
+			return true;
+		return false;
+	}
+
+	switch (strategy)
+	{
+			/* Bound operators: same reasoning as the range query case */
+		case RANGESTRAT_BEFORE:
+			return range_before_multirange_internal(typcache, key, query);
+		case RANGESTRAT_OVERLEFT:
+			return range_overleft_multirange_internal(typcache, key, query);
+		case RANGESTRAT_OVERRIGHT:
+			return range_overright_multirange_internal(typcache, key, query);
+		case RANGESTRAT_AFTER:
+			return range_after_multirange_internal(typcache, key, query);
+
+			/* Exact check, but another component might overlap Q */
+		case RANGESTRAT_ADJACENT:
+			return range_adjacent_multirange_internal(typcache, key, query);
+
+			/* Overlaps is recheck-free; the rest use it as necessary condition */
+		case RANGESTRAT_OVERLAPS:
+		case RANGESTRAT_CONTAINS:
+		case RANGESTRAT_CONTAINED_BY:
+		case RANGESTRAT_EQ:
+			return range_overlaps_multirange_internal(typcache, key, query);
+
+		default:
+			elog(ERROR, "unrecognized range strategy: %d", strategy);
+			return false;		/* keep compiler quiet */
+	}
+}
+
+/*
+ * Multi-entry leaf consistent test with an element query.
+ *
+ * Recheck-free: if component Ri contains elem, so does M.
+ */
+static bool
+range_me_consistent_leaf_element(TypeCacheEntry *typcache,
+								 StrategyNumber strategy,
+								 const RangeType *key,
+								 Datum query)
+{
+	switch (strategy)
+	{
+		case RANGESTRAT_CONTAINS_ELEM:
+			return range_contains_elem_internal(typcache, key, query);
+		default:
+			elog(ERROR, "unrecognized range strategy: %d", strategy);
+			return false;		/* keep compiler quiet */
+	}
+}
+
+/*
+ * Multi-entry internal consistent test with a range query.
+ *
+ * Like range_gist_consistent_int_range but relaxes CONTAINS and EQ to use
+ * overlaps: a matching multirange's components may be spread across multiple
+ * subtrees, so the union key need not fully contain the query.
+ */
+static bool
+range_me_consistent_int_range(TypeCacheEntry *typcache,
+							  StrategyNumber strategy,
+							  const RangeType *key,
+							  const RangeType *query)
+{
+	switch (strategy)
+	{
+		case RANGESTRAT_BEFORE:
+			if (RangeIsEmpty(key) || RangeIsEmpty(query))
+				return false;
+			return (!range_overright_internal(typcache, key, query));
+		case RANGESTRAT_OVERLEFT:
+			if (RangeIsEmpty(key) || RangeIsEmpty(query))
+				return false;
+			return (!range_after_internal(typcache, key, query));
+		case RANGESTRAT_OVERLAPS:
+			return range_overlaps_internal(typcache, key, query);
+		case RANGESTRAT_OVERRIGHT:
+			if (RangeIsEmpty(key) || RangeIsEmpty(query))
+				return false;
+			return (!range_before_internal(typcache, key, query));
+		case RANGESTRAT_AFTER:
+			if (RangeIsEmpty(key) || RangeIsEmpty(query))
+				return false;
+			return (!range_overleft_internal(typcache, key, query));
+		case RANGESTRAT_ADJACENT:
+			if (RangeIsEmpty(key) || RangeIsEmpty(query))
+				return false;
+			if (range_adjacent_internal(typcache, key, query))
+				return true;
+			return range_overlaps_internal(typcache, key, query);
+
+			/*
+			 * Relaxed: overlaps instead of contains, because a matching
+			 * multirange's components may be spread across subtrees.
+			 * Empty query is contained by everything, so always descend.
+			 */
+		case RANGESTRAT_CONTAINS:
+			if (RangeIsEmpty(query))
+				return true;
+			return range_overlaps_internal(typcache, key, query);
+		case RANGESTRAT_CONTAINED_BY:
+			if (RangeIsOrContainsEmpty(key))
+				return true;
+			return range_overlaps_internal(typcache, key, query);
+		case RANGESTRAT_EQ:
+			if (RangeIsEmpty(query))
+				return RangeIsOrContainsEmpty(key);
+			return range_overlaps_internal(typcache, key, query);
+		default:
+			elog(ERROR, "unrecognized range strategy: %d", strategy);
+			return false;		/* keep compiler quiet */
+	}
+}
+
+/*
+ * Multi-entry internal consistent test with a multirange query.
+ *
+ * Like range_gist_consistent_int_multirange but relaxes CONTAINS and EQ.
+ */
+static bool
+range_me_consistent_int_multirange(TypeCacheEntry *typcache,
+								   StrategyNumber strategy,
+								   const RangeType *key,
+								   const MultirangeType *query)
+{
+	switch (strategy)
+	{
+		case RANGESTRAT_BEFORE:
+			if (RangeIsEmpty(key) || MultirangeIsEmpty(query))
+				return false;
+			return (!range_overright_multirange_internal(typcache, key, query));
+		case RANGESTRAT_OVERLEFT:
+			if (RangeIsEmpty(key) || MultirangeIsEmpty(query))
+				return false;
+			return (!range_after_multirange_internal(typcache, key, query));
+		case RANGESTRAT_OVERLAPS:
+			return range_overlaps_multirange_internal(typcache, key, query);
+		case RANGESTRAT_OVERRIGHT:
+			if (RangeIsEmpty(key) || MultirangeIsEmpty(query))
+				return false;
+			return (!range_before_multirange_internal(typcache, key, query));
+		case RANGESTRAT_AFTER:
+			if (RangeIsEmpty(key) || MultirangeIsEmpty(query))
+				return false;
+			return (!range_overleft_multirange_internal(typcache, key, query));
+		case RANGESTRAT_ADJACENT:
+			if (RangeIsEmpty(key) || MultirangeIsEmpty(query))
+				return false;
+			if (range_adjacent_multirange_internal(typcache, key, query))
+				return true;
+			return range_overlaps_multirange_internal(typcache, key, query);
+
+			/*
+			 * Relaxed: overlaps instead of contains, because a matching
+			 * multirange's components may be spread across subtrees.
+			 * Empty query is contained by everything, so always descend.
+			 */
+		case RANGESTRAT_CONTAINS:
+			if (MultirangeIsEmpty(query))
+				return true;
+			return range_overlaps_multirange_internal(typcache, key, query);
+		case RANGESTRAT_CONTAINED_BY:
+			if (RangeIsOrContainsEmpty(key))
+				return true;
+			return range_overlaps_multirange_internal(typcache, key, query);
+		case RANGESTRAT_EQ:
+			if (MultirangeIsEmpty(query))
+				return RangeIsOrContainsEmpty(key);
+			return range_overlaps_multirange_internal(typcache, key, query);
+		default:
+			elog(ERROR, "unrecognized range strategy: %d", strategy);
+			return false;		/* keep compiler quiet */
+	}
+}
+
+/*
+ * Multi-entry internal consistent test with an element query.
+ *
+ * Same as range_gist_consistent_int_element -- only CONTAINS_ELEM is used
+ * and doesn't need relaxation.
+ */
+static bool
+range_me_consistent_int_element(TypeCacheEntry *typcache,
+								StrategyNumber strategy,
+								const RangeType *key,
+								Datum query)
+{
+	switch (strategy)
+	{
+		case RANGESTRAT_CONTAINS_ELEM:
+			return range_contains_elem_internal(typcache, key, query);
+		default:
+			elog(ERROR, "unrecognized range strategy: %d", strategy);
+			return false;		/* keep compiler quiet */
+	}
 }
