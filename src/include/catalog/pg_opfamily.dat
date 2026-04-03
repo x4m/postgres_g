@@ -310,5 +310,7 @@
   opfmethod => 'gist', opfname => 'multirange_ops' },
 { oid => '9319',
   opfmethod => 'gist', opfname => 'multirange_me_ops' },
+{ oid => '9323',
+  opfmethod => 'spgist', opfname => 'multirange_me_ops' },
 
 ]

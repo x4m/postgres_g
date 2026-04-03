@@ -5262,17 +5262,18 @@ List of access methods
 (3 rows)
 
 \dAf spgist
-          List of operator families
-   AM   | Operator family | Applicable types 
---------+-----------------+------------------
- spgist | box_ops         | box
- spgist | kd_point_ops    | point
- spgist | network_ops     | inet
- spgist | poly_ops        | polygon
- spgist | quad_point_ops  | point
- spgist | range_ops       | anyrange
- spgist | text_ops        | text
-(7 rows)
+           List of operator families
+   AM   |  Operator family  | Applicable types 
+--------+-------------------+------------------
+ spgist | box_ops           | box
+ spgist | kd_point_ops      | point
+ spgist | multirange_me_ops | anymultirange
+ spgist | network_ops       | inet
+ spgist | poly_ops          | polygon
+ spgist | quad_point_ops    | point
+ spgist | range_ops         | anyrange
+ spgist | text_ops          | text
+(8 rows)
 
 \dAf btree int4
               List of operator families

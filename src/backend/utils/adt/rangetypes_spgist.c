@@ -41,6 +41,8 @@
 #include "catalog/pg_type.h"
 #include "utils/datum.h"
 #include "utils/fmgrprotos.h"
+#include "utils/lsyscache.h"
+#include "utils/multirangetypes.h"
 #include "utils/rangetypes.h"
 
 static int16 getQuadrant(TypeCacheEntry *typcache, const RangeType *centroid,
@@ -992,6 +994,612 @@ spg_range_quad_leaf_consistent(PG_FUNCTION_ARGS)
 		 * If leaf datum doesn't match to a query key, no need to check
 		 * subsequent keys.
 		 */
+		if (!res)
+			break;
+	}
+
+	PG_RETURN_BOOL(res);
+}
+
+
+/*----------------------------------------------------------
+ * Multi-entry SP-GiST support for multirange types.
+ *
+ * When an extractValue support function is registered, SP-GiST decomposes
+ * each multirange into its component ranges and stores each as a separate
+ * index entry.  The quad tree structure is the same as the standard range
+ * opclass, but the consistent functions must handle multirange, range, and
+ * element query types.
+ *----------------------------------------------------------
+ */
+
+/*
+ * SP-GiST config function for multirange_me_ops.
+ *
+ * Same quad tree structure as range_ops, but leafType is the corresponding
+ * range type (not the multirange input type), and canReturnData is false
+ * because multi-entry decomposition prevents reconstructing the original.
+ */
+Datum
+spg_multirange_me_config(PG_FUNCTION_ARGS)
+{
+	spgConfigIn *cfgin = (spgConfigIn *) PG_GETARG_POINTER(0);
+	spgConfigOut *cfg = (spgConfigOut *) PG_GETARG_POINTER(1);
+
+	cfg->prefixType = ANYRANGEOID;
+	cfg->labelType = VOIDOID;	/* we don't need node labels */
+	cfg->leafType = get_multirange_range(cfgin->attType);
+	cfg->canReturnData = false;
+	cfg->longValuesOK = false;
+	PG_RETURN_VOID();
+}
+
+/*
+ * SP-GiST inner consistent function for multirange_me_ops.
+ *
+ * Handles range, multirange, and element query types.  The tree structure
+ * is the standard range quad tree, so the quadrant pruning logic is the
+ * same as spg_range_quad_inner_consistent.  For multirange queries, the
+ * query is converted to its bounding range for pruning purposes.  For
+ * CONTAINS and EQ with non-empty multirange queries, the pruning is
+ * relaxed to OVERLAPS because a matching multirange's components may be
+ * spread across multiple subtrees.
+ */
+Datum
+spg_multirange_me_inner_consistent(PG_FUNCTION_ARGS)
+{
+	spgInnerConsistentIn *in = (spgInnerConsistentIn *) PG_GETARG_POINTER(0);
+	spgInnerConsistentOut *out = (spgInnerConsistentOut *) PG_GETARG_POINTER(1);
+	int			which;
+	int			i;
+	MemoryContext oldCtx;
+
+	/*
+	 * For adjacent search we need also previous centroid (if any) to improve
+	 * the precision of the consistent check.
+	 */
+	bool		needPrevious = false;
+
+	if (in->allTheSame)
+	{
+		/* Report that all nodes should be visited */
+		out->nNodes = in->nNodes;
+		out->nodeNumbers = palloc_array(int, in->nNodes);
+		for (i = 0; i < in->nNodes; i++)
+			out->nodeNumbers[i] = i;
+		PG_RETURN_VOID();
+	}
+
+	if (!in->hasPrefix)
+	{
+		/*
+		 * No centroid on this inner node.  Node 0 = empty ranges, node 1 =
+		 * non-empty ranges.
+		 */
+		Assert(in->nNodes == 2);
+
+		which = (1 << 1) | (1 << 2);
+		for (i = 0; i < in->nkeys; i++)
+		{
+			StrategyNumber strategy = in->scankeys[i].sk_strategy;
+			Oid			subtype = in->scankeys[i].sk_subtype;
+			bool		empty;
+
+			/* Determine if the query is empty based on its type */
+			if (strategy == RANGESTRAT_CONTAINS_ELEM)
+				empty = false;
+			else if (subtype == ANYMULTIRANGEOID)
+				empty = MultirangeIsEmpty(
+					DatumGetMultirangeTypeP(in->scankeys[i].sk_argument));
+			else
+				empty = RangeIsEmpty(
+					DatumGetRangeTypeP(in->scankeys[i].sk_argument));
+
+			switch (strategy)
+			{
+				case RANGESTRAT_BEFORE:
+				case RANGESTRAT_OVERLEFT:
+				case RANGESTRAT_OVERLAPS:
+				case RANGESTRAT_OVERRIGHT:
+				case RANGESTRAT_AFTER:
+				case RANGESTRAT_ADJACENT:
+					if (empty)
+						which = 0;
+					else
+						which &= (1 << 2);
+					break;
+
+				case RANGESTRAT_CONTAINS:
+					if (!empty)
+						which &= (1 << 2);
+					break;
+
+				case RANGESTRAT_CONTAINED_BY:
+					if (empty)
+						which &= (1 << 1);
+					break;
+
+				case RANGESTRAT_CONTAINS_ELEM:
+					which &= (1 << 2);
+					break;
+
+				case RANGESTRAT_EQ:
+					if (empty)
+						which &= (1 << 1);
+					else
+						which &= (1 << 2);
+					break;
+
+				default:
+					elog(ERROR, "unrecognized range strategy: %d", strategy);
+					break;
+			}
+			if (which == 0)
+				break;
+		}
+	}
+	else
+	{
+		RangeBound	centroidLower,
+					centroidUpper;
+		bool		centroidEmpty;
+		TypeCacheEntry *typcache;
+		RangeType  *centroid;
+
+		centroid = DatumGetRangeTypeP(in->prefixDatum);
+		typcache = range_get_typcache(fcinfo, RangeTypeGetOid(centroid));
+		range_deserialize(typcache, centroid, &centroidLower, &centroidUpper,
+						  &centroidEmpty);
+
+		Assert(in->nNodes == 4 || in->nNodes == 5);
+
+		which = (1 << 1) | (1 << 2) | (1 << 3) | (1 << 4) | (1 << 5);
+
+		for (i = 0; i < in->nkeys; i++)
+		{
+			StrategyNumber strategy;
+			RangeBound	lower,
+						upper;
+			bool		empty;
+			RangeType  *range = NULL;
+			Oid			subtype;
+			bool		is_multirange;
+
+			RangeType  *prevCentroid = NULL;
+			RangeBound	prevLower,
+						prevUpper;
+			bool		prevEmpty;
+
+			RangeBound *minLower = NULL,
+					   *maxLower = NULL,
+					   *minUpper = NULL,
+					   *maxUpper = NULL;
+
+			bool		inclusive = true;
+			bool		strictEmpty = true;
+			int			cmp,
+						which1,
+						which2;
+
+			strategy = in->scankeys[i].sk_strategy;
+			subtype = in->scankeys[i].sk_subtype;
+			is_multirange = subtype == ANYMULTIRANGEOID;
+
+			/*
+			 * Extract query bounds depending on the query type.
+			 */
+			if (strategy == RANGESTRAT_CONTAINS_ELEM)
+			{
+				/* Element query: expand to point range bounds */
+				lower.inclusive = true;
+				lower.infinite = false;
+				lower.lower = true;
+				lower.val = in->scankeys[i].sk_argument;
+
+				upper.inclusive = true;
+				upper.infinite = false;
+				upper.lower = false;
+				upper.val = in->scankeys[i].sk_argument;
+
+				empty = false;
+
+				strategy = RANGESTRAT_CONTAINS;
+			}
+			else if (is_multirange)
+			{
+				/* Multirange query: extract bounding range bounds */
+				MultirangeType *mr =
+					DatumGetMultirangeTypeP(in->scankeys[i].sk_argument);
+
+				if (MultirangeIsEmpty(mr))
+				{
+					empty = true;
+				}
+				else
+				{
+					int32		range_count = mr->rangeCount;
+					RangeBound	tmp;
+
+					/*
+					 * Use the range typcache (from the centroid) to
+					 * extract multirange bounds.  We can't use
+					 * multirange_get_typcache here because it caches in
+					 * fn_extra, conflicting with range_get_typcache.
+					 */
+					multirange_get_bounds(typcache, mr,
+										  0, &lower, &upper);
+					if (range_count > 1)
+						multirange_get_bounds(typcache, mr,
+											  range_count - 1,
+											  &tmp, &upper);
+					empty = false;
+				}
+
+				/*
+				 * For CONTAINS/EQ with non-empty multirange, relax to
+				 * OVERLAPS: components of a matching multirange may be
+				 * spread across multiple subtrees.
+				 */
+				if (!empty &&
+					(strategy == RANGESTRAT_CONTAINS ||
+					 strategy == RANGESTRAT_EQ))
+					strategy = RANGESTRAT_OVERLAPS;
+			}
+			else
+			{
+				/* Range query */
+				range = DatumGetRangeTypeP(in->scankeys[i].sk_argument);
+				range_deserialize(typcache, range, &lower, &upper, &empty);
+			}
+
+			/*
+			 * Apply the same quadrant pruning logic as the standard range
+			 * opclass.  See spg_range_quad_inner_consistent for details.
+			 */
+			switch (strategy)
+			{
+				case RANGESTRAT_BEFORE:
+					maxUpper = &lower;
+					inclusive = false;
+					break;
+
+				case RANGESTRAT_OVERLEFT:
+					maxUpper = &upper;
+					break;
+
+				case RANGESTRAT_OVERLAPS:
+					maxLower = &upper;
+					minUpper = &lower;
+					break;
+
+				case RANGESTRAT_OVERRIGHT:
+					minLower = &lower;
+					break;
+
+				case RANGESTRAT_AFTER:
+					minLower = &upper;
+					inclusive = false;
+					break;
+
+				case RANGESTRAT_ADJACENT:
+					if (empty)
+						break;	/* Skip to strictEmpty check. */
+
+					if (in->traversalValue)
+					{
+						prevCentroid = in->traversalValue;
+						range_deserialize(typcache, prevCentroid,
+										  &prevLower, &prevUpper, &prevEmpty);
+					}
+
+					cmp = adjacent_inner_consistent(typcache, &lower,
+													&centroidUpper,
+													prevCentroid ? &prevUpper : NULL);
+					if (cmp > 0)
+						which1 = (1 << 1) | (1 << 4);
+					else if (cmp < 0)
+						which1 = (1 << 2) | (1 << 3);
+					else
+						which1 = 0;
+
+					cmp = adjacent_inner_consistent(typcache, &upper,
+													&centroidLower,
+													prevCentroid ? &prevLower : NULL);
+					if (cmp > 0)
+						which2 = (1 << 1) | (1 << 2);
+					else if (cmp < 0)
+						which2 = (1 << 3) | (1 << 4);
+					else
+						which2 = 0;
+
+					which &= which1 | which2;
+					needPrevious = true;
+					break;
+
+				case RANGESTRAT_CONTAINS:
+					strictEmpty = false;
+					if (!empty)
+					{
+						which &= (1 << 1) | (1 << 2) | (1 << 3) | (1 << 4);
+						maxLower = &lower;
+						minUpper = &upper;
+					}
+					break;
+
+				case RANGESTRAT_CONTAINED_BY:
+					strictEmpty = false;
+					if (empty)
+					{
+						which &= (1 << 5);
+					}
+					else
+					{
+						minLower = &lower;
+						maxUpper = &upper;
+					}
+					break;
+
+				case RANGESTRAT_EQ:
+					strictEmpty = false;
+					if (empty)
+					{
+						which &= (1 << 5);
+					}
+					else
+					{
+						/*
+						 * For range queries, restrict to the exact quadrant.
+						 * For multirange queries (already converted to
+						 * OVERLAPS above), we won't reach here.
+						 */
+						which &= (1 << getQuadrant(typcache, centroid, range));
+					}
+					break;
+
+				default:
+					elog(ERROR, "unrecognized range strategy: %d", strategy);
+					break;
+			}
+
+			if (strictEmpty)
+			{
+				if (empty)
+				{
+					which = 0;
+					break;
+				}
+				else
+				{
+					which &= (1 << 1) | (1 << 2) | (1 << 3) | (1 << 4);
+				}
+			}
+
+			if (minLower)
+			{
+				if (range_cmp_bounds(typcache, &centroidLower, minLower) <= 0)
+					which &= (1 << 1) | (1 << 2) | (1 << 5);
+			}
+			if (maxLower)
+			{
+				cmp = range_cmp_bounds(typcache, &centroidLower, maxLower);
+				if (cmp > 0 || (!inclusive && cmp == 0))
+					which &= (1 << 3) | (1 << 4) | (1 << 5);
+			}
+			if (minUpper)
+			{
+				if (range_cmp_bounds(typcache, &centroidUpper, minUpper) <= 0)
+					which &= (1 << 1) | (1 << 4) | (1 << 5);
+			}
+			if (maxUpper)
+			{
+				cmp = range_cmp_bounds(typcache, &centroidUpper, maxUpper);
+				if (cmp > 0 || (!inclusive && cmp == 0))
+					which &= (1 << 2) | (1 << 3) | (1 << 5);
+			}
+
+			if (which == 0)
+				break;
+		}
+	}
+
+	/* Build the output node list */
+	out->nodeNumbers = palloc_array(int, in->nNodes);
+	if (needPrevious)
+		out->traversalValues = palloc_array(void *, in->nNodes);
+	out->nNodes = 0;
+
+	oldCtx = MemoryContextSwitchTo(in->traversalMemoryContext);
+
+	for (i = 1; i <= in->nNodes; i++)
+	{
+		if (which & (1 << i))
+		{
+			if (needPrevious)
+			{
+				Datum		previousCentroid;
+
+				previousCentroid = datumCopy(in->prefixDatum, false, -1);
+				out->traversalValues[out->nNodes] = DatumGetPointer(previousCentroid);
+			}
+			out->nodeNumbers[out->nNodes] = i - 1;
+			out->nNodes++;
+		}
+	}
+
+	MemoryContextSwitchTo(oldCtx);
+
+	PG_RETURN_VOID();
+}
+
+/*
+ * SP-GiST leaf consistent function for multirange_me_ops.
+ *
+ * The leaf datum is a single component range from the indexed multirange.
+ * Most strategies need recheck because a single component cannot fully
+ * determine the multirange's relationship with the query.  OVERLAPS and
+ * CONTAINS_ELEM are exact per-component and skip recheck.
+ */
+Datum
+spg_multirange_me_leaf_consistent(PG_FUNCTION_ARGS)
+{
+	spgLeafConsistentIn *in = (spgLeafConsistentIn *) PG_GETARG_POINTER(0);
+	spgLeafConsistentOut *out = (spgLeafConsistentOut *) PG_GETARG_POINTER(1);
+	RangeType  *leafRange = DatumGetRangeTypeP(in->leafDatum);
+	TypeCacheEntry *typcache;
+	bool		res;
+	int			i;
+
+	out->recheck = false;
+	out->leafValue = in->leafDatum;
+
+	typcache = range_get_typcache(fcinfo, RangeTypeGetOid(leafRange));
+	res = true;
+	for (i = 0; i < in->nkeys; i++)
+	{
+		StrategyNumber strategy = in->scankeys[i].sk_strategy;
+		Datum		keyDatum = in->scankeys[i].sk_argument;
+		Oid			subtype = in->scankeys[i].sk_subtype;
+
+		/*
+		 * Set recheck for all strategies except OVERLAPS and CONTAINS_ELEM,
+		 * which are exact per-component.
+		 */
+		if (strategy != RANGESTRAT_OVERLAPS &&
+			strategy != RANGESTRAT_CONTAINS_ELEM)
+			out->recheck = true;
+
+		if (strategy == RANGESTRAT_CONTAINS_ELEM)
+		{
+			/* Element query */
+			res = range_contains_elem_internal(typcache, leafRange, keyDatum);
+		}
+		else if (subtype == ANYMULTIRANGEOID)
+		{
+			/* Multirange query */
+			MultirangeType *query = DatumGetMultirangeTypeP(keyDatum);
+
+			/* Empty key is sentinel for empty multirange */
+			if (RangeIsEmpty(leafRange))
+			{
+				if (strategy == RANGESTRAT_CONTAINED_BY)
+					res = true;
+				else if (strategy == RANGESTRAT_CONTAINS ||
+						 strategy == RANGESTRAT_EQ)
+					res = MultirangeIsEmpty(query);
+				else
+					res = false;
+			}
+			else if (MultirangeIsEmpty(query))
+			{
+				if (strategy == RANGESTRAT_CONTAINS)
+					res = true;
+				else
+					res = false;
+			}
+			else
+			{
+				switch (strategy)
+				{
+					case RANGESTRAT_BEFORE:
+						res = range_before_multirange_internal(typcache,
+															  leafRange, query);
+						break;
+					case RANGESTRAT_OVERLEFT:
+						res = range_overleft_multirange_internal(typcache,
+																leafRange, query);
+						break;
+					case RANGESTRAT_OVERRIGHT:
+						res = range_overright_multirange_internal(typcache,
+																 leafRange, query);
+						break;
+					case RANGESTRAT_AFTER:
+						res = range_after_multirange_internal(typcache,
+															 leafRange, query);
+						break;
+					case RANGESTRAT_ADJACENT:
+						res = range_adjacent_multirange_internal(typcache,
+																leafRange, query);
+						break;
+					case RANGESTRAT_OVERLAPS:
+					case RANGESTRAT_CONTAINS:
+					case RANGESTRAT_CONTAINED_BY:
+					case RANGESTRAT_EQ:
+						/* Use overlaps as necessary condition */
+						res = range_overlaps_multirange_internal(typcache,
+																leafRange, query);
+						break;
+					default:
+						elog(ERROR, "unrecognized range strategy: %d",
+							 strategy);
+						res = false;
+						break;
+				}
+			}
+		}
+		else
+		{
+			/* Range query */
+			RangeType  *query = DatumGetRangeTypeP(keyDatum);
+
+			/* Empty key is sentinel for empty multirange */
+			if (RangeIsEmpty(leafRange))
+			{
+				if (strategy == RANGESTRAT_CONTAINED_BY)
+					res = true;
+				else if (strategy == RANGESTRAT_CONTAINS)
+					res = RangeIsEmpty(query);
+				else
+					res = false;
+			}
+			else if (RangeIsEmpty(query))
+			{
+				if (strategy == RANGESTRAT_CONTAINS)
+					res = true;
+				else
+					res = false;
+			}
+			else
+			{
+				switch (strategy)
+				{
+					case RANGESTRAT_BEFORE:
+						res = range_before_internal(typcache, leafRange, query);
+						break;
+					case RANGESTRAT_OVERLEFT:
+						res = range_overleft_internal(typcache, leafRange,
+													  query);
+						break;
+					case RANGESTRAT_OVERRIGHT:
+						res = range_overright_internal(typcache, leafRange,
+													   query);
+						break;
+					case RANGESTRAT_AFTER:
+						res = range_after_internal(typcache, leafRange, query);
+						break;
+					case RANGESTRAT_ADJACENT:
+						res = range_adjacent_internal(typcache, leafRange,
+													  query);
+						break;
+					case RANGESTRAT_OVERLAPS:
+						res = range_overlaps_internal(typcache, leafRange,
+													  query);
+						break;
+					case RANGESTRAT_CONTAINS:
+					case RANGESTRAT_CONTAINED_BY:
+					case RANGESTRAT_EQ:
+						/* Use overlaps as necessary condition */
+						res = range_overlaps_internal(typcache, leafRange,
+													  query);
+						break;
+					default:
+						elog(ERROR, "unrecognized range strategy: %d",
+							 strategy);
+						res = false;
+						break;
+				}
+			}
+		}
+
 		if (!res)
 			break;
 	}

@@ -713,6 +713,155 @@ drop table test_me_multicol;
 drop table test_multirange_me_gist;
 
 --
+-- Multi-entry SP-GiST index (multirange_me_ops)
+-- Decomposes multiranges into component ranges for quad-tree indexing.
+--
+create table test_multirange_me_spgist(mr int4multirange);
+insert into test_multirange_me_spgist select int4multirange(int4range(g, g+10),int4range(g+20, g+30),int4range(g+40, g+50)) from generate_series(1,2000) g;
+insert into test_multirange_me_spgist select '{}'::int4multirange from generate_series(1,500) g;
+insert into test_multirange_me_spgist select int4multirange(int4range(g, g+10000)) from generate_series(1,1000) g;
+insert into test_multirange_me_spgist select int4multirange(int4range(NULL, g*10, '(]'), int4range(g*10, g*20, '(]')) from generate_series(1,100) g;
+insert into test_multirange_me_spgist select int4multirange(int4range(g*10, g*20, '(]'), int4range(g*20, NULL, '(]')) from generate_series(1,100) g;
+create index test_multirange_me_spgist_idx on test_multirange_me_spgist using spgist (mr multirange_me_ops);
+
+-- first, verify non-indexed results
+SET enable_seqscan    = t;
+SET enable_indexscan  = f;
+SET enable_bitmapscan = f;
+
+select count(*) from test_multirange_me_spgist where mr = '{}'::int4multirange;
+select count(*) from test_multirange_me_spgist where mr @> 'empty'::int4range;
+select count(*) from test_multirange_me_spgist where mr && 'empty'::int4range;
+select count(*) from test_multirange_me_spgist where mr <@ 'empty'::int4range;
+select count(*) from test_multirange_me_spgist where mr << 'empty'::int4range;
+select count(*) from test_multirange_me_spgist where mr >> 'empty'::int4range;
+select count(*) from test_multirange_me_spgist where mr &< 'empty'::int4range;
+select count(*) from test_multirange_me_spgist where mr &> 'empty'::int4range;
+select count(*) from test_multirange_me_spgist where mr -|- 'empty'::int4range;
+select count(*) from test_multirange_me_spgist where mr @> '{}'::int4multirange;
+select count(*) from test_multirange_me_spgist where mr && '{}'::int4multirange;
+select count(*) from test_multirange_me_spgist where mr <@ '{}'::int4multirange;
+select count(*) from test_multirange_me_spgist where mr << '{}'::int4multirange;
+select count(*) from test_multirange_me_spgist where mr >> '{}'::int4multirange;
+select count(*) from test_multirange_me_spgist where mr &< '{}'::int4multirange;
+select count(*) from test_multirange_me_spgist where mr &> '{}'::int4multirange;
+select count(*) from test_multirange_me_spgist where mr -|- '{}'::int4multirange;
+
+select count(*) from test_multirange_me_spgist where mr = int4multirange(int4range(10,20), int4range(30,40), int4range(50,60));
+select count(*) from test_multirange_me_spgist where mr @> 10;
+select count(*) from test_multirange_me_spgist where mr @> int4range(10,20);
+select count(*) from test_multirange_me_spgist where mr && int4range(10,20);
+select count(*) from test_multirange_me_spgist where mr <@ int4range(10,50);
+select count(*) from test_multirange_me_spgist where mr << int4range(100,500);
+select count(*) from test_multirange_me_spgist where mr >> int4range(100,500);
+select count(*) from test_multirange_me_spgist where mr &< int4range(100,500);
+select count(*) from test_multirange_me_spgist where mr &> int4range(100,500);
+select count(*) from test_multirange_me_spgist where mr -|- int4range(100,500);
+select count(*) from test_multirange_me_spgist where mr @> int4multirange(int4range(10,20), int4range(30,40));
+select count(*) from test_multirange_me_spgist where mr && '{(10,20),(30,40),(50,60)}'::int4multirange;
+select count(*) from test_multirange_me_spgist where mr <@ '{(10,30),(40,60),(70,90)}'::int4multirange;
+select count(*) from test_multirange_me_spgist where mr << int4multirange(int4range(100,200), int4range(400,500));
+select count(*) from test_multirange_me_spgist where mr >> int4multirange(int4range(100,200), int4range(400,500));
+select count(*) from test_multirange_me_spgist where mr &< int4multirange(int4range(100,200), int4range(400,500));
+select count(*) from test_multirange_me_spgist where mr &> int4multirange(int4range(100,200), int4range(400,500));
+select count(*) from test_multirange_me_spgist where mr -|- int4multirange(int4range(100,200), int4range(400,500));
+
+-- now check same queries using index
+SET enable_seqscan    = f;
+SET enable_indexscan  = t;
+SET enable_bitmapscan = f;
+
+select count(*) from test_multirange_me_spgist where mr = '{}'::int4multirange;
+select count(*) from test_multirange_me_spgist where mr @> 'empty'::int4range;
+select count(*) from test_multirange_me_spgist where mr && 'empty'::int4range;
+select count(*) from test_multirange_me_spgist where mr <@ 'empty'::int4range;
+select count(*) from test_multirange_me_spgist where mr << 'empty'::int4range;
+select count(*) from test_multirange_me_spgist where mr >> 'empty'::int4range;
+select count(*) from test_multirange_me_spgist where mr &< 'empty'::int4range;
+select count(*) from test_multirange_me_spgist where mr &> 'empty'::int4range;
+select count(*) from test_multirange_me_spgist where mr -|- 'empty'::int4range;
+select count(*) from test_multirange_me_spgist where mr @> '{}'::int4multirange;
+select count(*) from test_multirange_me_spgist where mr && '{}'::int4multirange;
+select count(*) from test_multirange_me_spgist where mr <@ '{}'::int4multirange;
+select count(*) from test_multirange_me_spgist where mr << '{}'::int4multirange;
+select count(*) from test_multirange_me_spgist where mr >> '{}'::int4multirange;
+select count(*) from test_multirange_me_spgist where mr &< '{}'::int4multirange;
+select count(*) from test_multirange_me_spgist where mr &> '{}'::int4multirange;
+select count(*) from test_multirange_me_spgist where mr -|- '{}'::int4multirange;
+
+select count(*) from test_multirange_me_spgist where mr = int4multirange(int4range(10,20), int4range(30,40), int4range(50,60));
+select count(*) from test_multirange_me_spgist where mr @> 10;
+select count(*) from test_multirange_me_spgist where mr @> int4range(10,20);
+select count(*) from test_multirange_me_spgist where mr && int4range(10,20);
+select count(*) from test_multirange_me_spgist where mr <@ int4range(10,50);
+select count(*) from test_multirange_me_spgist where mr << int4range(100,500);
+select count(*) from test_multirange_me_spgist where mr >> int4range(100,500);
+select count(*) from test_multirange_me_spgist where mr &< int4range(100,500);
+select count(*) from test_multirange_me_spgist where mr &> int4range(100,500);
+select count(*) from test_multirange_me_spgist where mr -|- int4range(100,500);
+select count(*) from test_multirange_me_spgist where mr @> int4multirange(int4range(10,20), int4range(30,40));
+select count(*) from test_multirange_me_spgist where mr && '{(10,20),(30,40),(50,60)}'::int4multirange;
+select count(*) from test_multirange_me_spgist where mr <@ '{(10,30),(40,60),(70,90)}'::int4multirange;
+select count(*) from test_multirange_me_spgist where mr << int4multirange(int4range(100,200), int4range(400,500));
+select count(*) from test_multirange_me_spgist where mr >> int4multirange(int4range(100,200), int4range(400,500));
+select count(*) from test_multirange_me_spgist where mr &< int4multirange(int4range(100,200), int4range(400,500));
+select count(*) from test_multirange_me_spgist where mr &> int4multirange(int4range(100,200), int4range(400,500));
+select count(*) from test_multirange_me_spgist where mr -|- int4multirange(int4range(100,200), int4range(400,500));
+
+-- also check bitmap scan
+SET enable_seqscan    = f;
+SET enable_indexscan  = f;
+SET enable_bitmapscan = t;
+
+select count(*) from test_multirange_me_spgist where mr = '{}'::int4multirange;
+select count(*) from test_multirange_me_spgist where mr @> 'empty'::int4range;
+select count(*) from test_multirange_me_spgist where mr && 'empty'::int4range;
+select count(*) from test_multirange_me_spgist where mr <@ 'empty'::int4range;
+select count(*) from test_multirange_me_spgist where mr << 'empty'::int4range;
+select count(*) from test_multirange_me_spgist where mr >> 'empty'::int4range;
+select count(*) from test_multirange_me_spgist where mr &< 'empty'::int4range;
+select count(*) from test_multirange_me_spgist where mr &> 'empty'::int4range;
+select count(*) from test_multirange_me_spgist where mr -|- 'empty'::int4range;
+select count(*) from test_multirange_me_spgist where mr @> '{}'::int4multirange;
+select count(*) from test_multirange_me_spgist where mr && '{}'::int4multirange;
+select count(*) from test_multirange_me_spgist where mr <@ '{}'::int4multirange;
+select count(*) from test_multirange_me_spgist where mr << '{}'::int4multirange;
+select count(*) from test_multirange_me_spgist where mr >> '{}'::int4multirange;
+select count(*) from test_multirange_me_spgist where mr &< '{}'::int4multirange;
+select count(*) from test_multirange_me_spgist where mr &> '{}'::int4multirange;
+select count(*) from test_multirange_me_spgist where mr -|- '{}'::int4multirange;
+
+select count(*) from test_multirange_me_spgist where mr = int4multirange(int4range(10,20), int4range(30,40), int4range(50,60));
+select count(*) from test_multirange_me_spgist where mr @> 10;
+select count(*) from test_multirange_me_spgist where mr @> int4range(10,20);
+select count(*) from test_multirange_me_spgist where mr && int4range(10,20);
+select count(*) from test_multirange_me_spgist where mr <@ int4range(10,50);
+select count(*) from test_multirange_me_spgist where mr << int4range(100,500);
+select count(*) from test_multirange_me_spgist where mr >> int4range(100,500);
+select count(*) from test_multirange_me_spgist where mr &< int4range(100,500);
+select count(*) from test_multirange_me_spgist where mr &> int4range(100,500);
+select count(*) from test_multirange_me_spgist where mr -|- int4range(100,500);
+select count(*) from test_multirange_me_spgist where mr @> int4multirange(int4range(10,20), int4range(30,40));
+select count(*) from test_multirange_me_spgist where mr && '{(10,20),(30,40),(50,60)}'::int4multirange;
+select count(*) from test_multirange_me_spgist where mr <@ '{(10,30),(40,60),(70,90)}'::int4multirange;
+select count(*) from test_multirange_me_spgist where mr << int4multirange(int4range(100,200), int4range(400,500));
+select count(*) from test_multirange_me_spgist where mr >> int4multirange(int4range(100,200), int4range(400,500));
+select count(*) from test_multirange_me_spgist where mr &< int4multirange(int4range(100,200), int4range(400,500));
+select count(*) from test_multirange_me_spgist where mr &> int4multirange(int4range(100,200), int4range(400,500));
+select count(*) from test_multirange_me_spgist where mr -|- int4multirange(int4range(100,200), int4range(400,500));
+
+-- test NULL handling
+create table test_me_spgist_nulls(mr int4multirange);
+insert into test_me_spgist_nulls values (NULL), ('{}'::int4multirange), ('{[1,3]}');
+create index on test_me_spgist_nulls using spgist (mr multirange_me_ops);
+SET enable_seqscan    = f;
+SET enable_indexscan  = t;
+select * from test_me_spgist_nulls where mr @> 1;
+
+drop table test_me_spgist_nulls;
+drop table test_multirange_me_spgist;
+
+--
 -- range_agg function
 --
 create table reservations ( room_id integer not null, booked_during daterange );
