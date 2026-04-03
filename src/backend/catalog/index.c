@@ -715,9 +715,9 @@ UpdateIndexRelation(Oid indexoid,
  *			already exists.
  *		INDEX_CREATE_PARTITIONED:
  *			create a partitioned index (table must be partitioned)
- *		INDEX_CREATE_REPORT_PROGRESS:
- *			update the backend's progress information during index build.
-
+ *		INDEX_CREATE_SUPPRESS_PROGRESS:
+ *			don't report progress during the index build.
+ *
  * constr_flags: flags passed to index_constraint_create
  *		(only if INDEX_CREATE_ADD_CONSTRAINT is set)
  * allow_system_table_mods: allow table to be a system catalog
@@ -763,7 +763,7 @@ index_create(Relation heapRelation,
 	bool		invalid = (flags & INDEX_CREATE_INVALID) != 0;
 	bool		concurrent = (flags & INDEX_CREATE_CONCURRENT) != 0;
 	bool		partitioned = (flags & INDEX_CREATE_PARTITIONED) != 0;
-	bool		progress = (flags & INDEX_CREATE_REPORT_PROGRESS) != 0;
+	bool		progress = (flags & INDEX_CREATE_SUPPRESS_PROGRESS) == 0;
 	char		relkind;
 	TransactionId relfrozenxid;
 	MultiXactId relminmxid;
@@ -1454,13 +1454,15 @@ index_create_copy(Relation heapRelation, bool concurrently,
 	}
 
 	/*
-	 * Note: The current callers do not need INDEX_CREATE_REPORT_PROGRESS. If
-	 * 'concurrently' is true, there is no build at all. Otherwise the index
-	 * build is a sub-command of REPACK. The current infrastructure does not
-	 * allow two commands to report their progress at the same time.
+	 * The current callers do not need to report progress: if 'concurrently' is
+	 * true, there is no build at all to report about; and otherwise the index
+	 * build is a sub-command of REPACK, and the current progress reporting
+	 * infrastructure does not allow two commands to report their progress at
+	 * the same time.
 	 */
 	if (concurrently)
-		flags = INDEX_CREATE_SKIP_BUILD | INDEX_CREATE_CONCURRENT;
+		flags = INDEX_CREATE_SKIP_BUILD | INDEX_CREATE_CONCURRENT |
+			INDEX_CREATE_SUPPRESS_PROGRESS;
 
 	/*
 	 * Now create the new index.
