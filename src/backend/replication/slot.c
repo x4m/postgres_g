@@ -39,6 +39,7 @@
 #include <unistd.h>
 #include <sys/stat.h>
 
+#include "access/genam.h"
 #include "access/transam.h"
 #include "access/xlog_internal.h"
 #include "access/xlogrecovery.h"
@@ -1760,9 +1761,16 @@ ReplicationSlotReserveWal(void)
 	if (!RecoveryInProgress() && SlotIsLogical(slot))
 	{
 		XLogRecPtr	flushptr;
+		Oid			dbid;
 
-		/* make sure we have enough information to start */
-		flushptr = LogStandbySnapshot();
+		/*
+		 * Make sure we have enough information to start.
+		 *
+		 * Only consider transactions of the current database if our plugin is
+		 * not supposed to access shared catalogs.
+		 */
+		dbid = accessSharedCatalogsInDecoding ? InvalidOid : MyDatabaseId;
+		flushptr = LogStandbySnapshot(dbid);
 
 		/* and make sure it's fsynced to disk */
 		XLogFlush(flushptr);

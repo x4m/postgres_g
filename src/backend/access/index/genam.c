@@ -37,6 +37,14 @@
 #include "utils/ruleutils.h"
 #include "utils/snapmgr.h"
 
+/*
+ * If a backend is going to do logical decoding and if the output plugin does
+ * not need to access shared catalogs, setting this variable to false can make
+ * the decoding startup faster. In particular, the backend will not need to
+ * wait for completion of already running transactions in other databases.
+ */
+bool		accessSharedCatalogsInDecoding = true;
+
 
 /* ----------------------------------------------------------------
  *		general access method routines
@@ -393,6 +401,16 @@ systable_beginscan(Relation heapRelation,
 {
 	SysScanDesc sysscan;
 	Relation	irel;
+
+	/*
+	 * If this backend promised that it won't access shared catalogs during
+	 * logical decoding, this seems to be the right place to check.
+	 *
+	 * XXX Should this be ereport(ERROR) ?
+	 */
+	Assert(!HistoricSnapshotActive() ||
+		   accessSharedCatalogsInDecoding ||
+		   !heapRelation->rd_rel->relisshared);
 
 	if (indexOK &&
 		!IgnoreSystemIndexes &&

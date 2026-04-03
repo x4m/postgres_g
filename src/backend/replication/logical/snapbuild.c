@@ -125,6 +125,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#include "access/genam.h"
 #include "access/heapam_xlog.h"
 #include "access/transam.h"
 #include "access/xact.h"
@@ -1465,7 +1466,14 @@ SnapBuildWaitSnapshot(xl_running_xacts *running, TransactionId cutoff)
 	 */
 	if (!RecoveryInProgress())
 	{
-		LogStandbySnapshot();
+		Oid			dbid;
+
+		/*
+		 * Only consider transactions of the current database if our plugin is
+		 * not supposed to access shared catalogs.
+		 */
+		dbid = accessSharedCatalogsInDecoding ? InvalidOid : MyDatabaseId;
+		LogStandbySnapshot(dbid);
 	}
 }
 

@@ -137,6 +137,14 @@ typedef struct IndexOrderByDistance
 } IndexOrderByDistance;
 
 /*
+ * Is the backend interested in shared catalogs when performing logical
+ * decoding?
+ *
+ * XXX Is there a better place for this declaration?
+ */
+extern bool accessSharedCatalogsInDecoding;
+
+/*
  * generalized index_ interface routines (in indexam.c)
  */
 

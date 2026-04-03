@@ -16,6 +16,7 @@
  */
 #include "postgres.h"
 
+#include "access/genam.h"
 #include "access/table.h"
 #include "access/xlog_internal.h"
 #include "access/xlogutils.h"
@@ -236,6 +237,13 @@ repack_setup_logical_decoding(Oid relid)
 						  false);
 
 	EnsureLogicalDecodingEnabled();
+
+	/*
+	 * By declaring that our output plugin does not need shared catalogs, we
+	 * avoid waiting for completion of transactions running in other databases
+	 * than the one we're connected to.
+	 */
+	accessSharedCatalogsInDecoding = false;
 
 	/*
 	 * Neither prepare_write nor do_write callback nor update_progress is

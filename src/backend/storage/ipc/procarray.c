@@ -2631,9 +2631,11 @@ ProcArrayInstallRestoredXmin(TransactionId xmin, PGPROC *proc)
  *
  * Note that if any transaction has overflowed its cached subtransactions
  * then there is no real need include any subtransactions.
+ *
+ * If 'dbid' is valid, only gather transactions running in that database.
  */
 RunningTransactions
-GetRunningTransactionData(void)
+GetRunningTransactionData(Oid dbid)
 {
 	/* result workspace */
 	static RunningTransactionsData CurrentRunningXactsData;
@@ -2709,6 +2711,18 @@ GetRunningTransactionData(void)
 			continue;
 
 		/*
+		 * Filter by database OID if requested.
+		 */
+		if (OidIsValid(dbid))
+		{
+			int			pgprocno = arrayP->pgprocnos[index];
+			PGPROC	   *proc = &allProcs[pgprocno];
+
+			if (proc->databaseId != dbid)
+				continue;
+		}
+
+		/*
 		 * Be careful not to exclude any xids before calculating the values of
 		 * oldestRunningXid and suboverflowed, since these are used to clean
 		 * up transaction information held on standbys.
@@ -2759,6 +2773,12 @@ GetRunningTransactionData(void)
 			int			nsubxids;
 
 			/*
+			 * Filter by database OID if requested.
+			 */
+			if (OidIsValid(dbid) && proc->databaseId != dbid)
+				continue;
+
+			/*
 			 * Save subtransaction XIDs. Other backends can't add or remove
 			 * entries while we're holding XidGenLock.
 			 */
@@ -2791,6 +2811,7 @@ GetRunningTransactionData(void)
 	 * increases if slots do.
 	 */
 
+	CurrentRunningXacts->dbid = dbid;
 	CurrentRunningXacts->xcnt = count - subcount;
 	CurrentRunningXacts->subxcnt = subcount;
 	CurrentRunningXacts->subxid_status = suboverflowed ? SUBXIDS_IN_SUBTRANS : SUBXIDS_IN_ARRAY;
