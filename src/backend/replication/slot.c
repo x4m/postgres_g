@@ -1669,19 +1669,25 @@ CheckLogicalSlotExists(void)
  * slots.
  */
 void
-CheckSlotRequirements(void)
+CheckSlotRequirements(bool repack)
 {
+	int		limit;
+
 	/*
 	 * NB: Adding a new requirement likely means that RestoreSlotFromDisk()
 	 * needs the same check.
 	 */
 
-	/* XXX we should be able to check exactly which type of slot we need */
-	if (max_replication_slots + max_repack_replication_slots == 0)
+	if (repack)
+		limit = max_repack_replication_slots;
+	else
+		limit = max_replication_slots;
+
+	if (limit == 0)
 		ereport(ERROR,
-				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
-				 errmsg("replication slots can only be used if \"%s\" > 0 or \"%s\" > 0",
-						"max_replication_slots", "max_repack_replication_slots")));
+				errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
+				errmsg("replication slots can only be used if \"%s\" > 0",
+					   repack ? "max_repack_replication_slots" : "max_replication_slots"));
 
 	if (wal_level < WAL_LEVEL_REPLICA)
 		ereport(ERROR,

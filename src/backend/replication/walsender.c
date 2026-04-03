@@ -1240,7 +1240,7 @@ CreateReplicationSlot(CreateReplicationSlotCmd *cmd)
 
 		Assert(cmd->kind == REPLICATION_KIND_LOGICAL);
 
-		CheckLogicalDecodingRequirements();
+		CheckLogicalDecodingRequirements(false);
 
 		/*
 		 * Initially create persistent slot as ephemeral - that allows us to
@@ -1309,6 +1309,7 @@ CreateReplicationSlot(CreateReplicationSlotCmd *cmd)
 		Assert(IsLogicalDecodingEnabled());
 
 		ctx = CreateInitDecodingContext(cmd->plugin, NIL, need_full_snapshot,
+										false,
 										InvalidXLogRecPtr,
 										XL_ROUTINE(.page_read = logical_read_xlog_page,
 												   .segment_open = WalSndSegmentOpen,
@@ -1466,7 +1467,7 @@ StartLogicalReplication(StartReplicationCmd *cmd)
 	QueryCompletion qc;
 
 	/* make sure that our requirements are still fulfilled */
-	CheckLogicalDecodingRequirements();
+	CheckLogicalDecodingRequirements(false);
 
 	Assert(!MyReplicationSlot);
 

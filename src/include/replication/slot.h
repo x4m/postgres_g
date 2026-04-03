@@ -378,7 +378,7 @@ extern void ReplicationSlotDropAtPubNode(WalReceiverConn *wrconn, char *slotname
 extern void StartupReplicationSlots(void);
 extern void CheckPointReplicationSlots(bool is_shutdown);
 
-extern void CheckSlotRequirements(void);
+extern void CheckSlotRequirements(bool repack);
 extern void CheckSlotPermissions(void);
 extern ReplicationSlotInvalidationCause
 			GetSlotInvalidationCause(const char *cause_name);

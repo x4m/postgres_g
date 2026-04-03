@@ -90,7 +90,7 @@ pg_create_physical_replication_slot(PG_FUNCTION_ARGS)
 
 	CheckSlotPermissions();
 
-	CheckSlotRequirements();
+	CheckSlotRequirements(false);
 
 	create_physical_replication_slot(NameStr(*name),
 									 immediately_reserve,
@@ -164,6 +164,7 @@ create_logical_replication_slot(char *name, char *plugin,
 	 */
 	ctx = CreateInitDecodingContext(plugin, NIL,
 									false,	/* just catalogs is OK */
+									false,	/* not repack */
 									restart_lsn,
 									XL_ROUTINE(.page_read = read_local_xlog_page,
 											   .segment_open = wal_segment_open,
@@ -203,7 +204,7 @@ pg_create_logical_replication_slot(PG_FUNCTION_ARGS)
 
 	CheckSlotPermissions();
 
-	CheckLogicalDecodingRequirements();
+	CheckLogicalDecodingRequirements(false);
 
 	create_logical_replication_slot(NameStr(*name),
 									NameStr(*plugin),
@@ -240,7 +241,7 @@ pg_drop_replication_slot(PG_FUNCTION_ARGS)
 
 	CheckSlotPermissions();
 
-	CheckSlotRequirements();
+	CheckSlotRequirements(false);
 
 	ReplicationSlotDrop(NameStr(*name), true);
 
@@ -648,9 +649,9 @@ copy_replication_slot(FunctionCallInfo fcinfo, bool logical_slot)
 	CheckSlotPermissions();
 
 	if (logical_slot)
-		CheckLogicalDecodingRequirements();
+		CheckLogicalDecodingRequirements(false);
 	else
-		CheckSlotRequirements();
+		CheckSlotRequirements(false);
 
 	LWLockAcquire(ReplicationSlotControlLock, LW_SHARED);
 
