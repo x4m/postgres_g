@@ -27,8 +27,9 @@
 #define SPGIST_LEAF_CONSISTENT_PROC		5
 #define SPGIST_COMPRESS_PROC			6
 #define SPGIST_OPTIONS_PROC				7
+#define SPGIST_EXTRACTVALUE_PROC		8
 #define SPGISTNRequiredProc				5
-#define SPGISTNProc						7
+#define SPGISTNProc						8
 
 /*
  * Argument structs for spg_config method

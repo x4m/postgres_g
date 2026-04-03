@@ -18,6 +18,7 @@
 #include "access/genam.h"
 #include "access/relscan.h"
 #include "access/spgist_private.h"
+#include "common/hashfn.h"
 #include "executor/instrument_node.h"
 #include "miscadmin.h"
 #include "pgstat.h"
@@ -27,6 +28,49 @@
 #include "utils/lsyscache.h"
 #include "utils/memutils.h"
 #include "utils/rel.h"
+
+/*
+ * Simplehash implementation for TID deduplication in multi-entry scans.
+ *
+ * When an opclass provides an extractValue function, each heap tuple produces
+ * multiple index entries.  During scans, we must deduplicate results so that
+ * each heap TID is returned only once.
+ */
+
+/* Hash table entry for basic TID dedup */
+typedef struct SPGTIDHashEntry
+{
+	ItemPointerData tid;		/* TID (hashtable key) */
+	uint32		hash;			/* hash value (cached) */
+	char		status;			/* hash status */
+} SPGTIDHashEntry;
+
+static inline uint32
+spg_tid_hash_fn(ItemPointerData tid)
+{
+	uint32		h = murmurhash32(ItemPointerGetBlockNumber(&tid));
+
+	return murmurhash32(h + ItemPointerGetOffsetNumber(&tid));
+}
+
+static inline bool
+spg_tid_match_fn(ItemPointerData a, ItemPointerData b)
+{
+	return ItemPointerEquals(&a, &b);
+}
+
+/* --- spgtid hash table (declare + define) --- */
+#define SH_PREFIX spgtid
+#define SH_ELEMENT_TYPE SPGTIDHashEntry
+#define SH_KEY_TYPE ItemPointerData
+#define SH_KEY tid
+#define SH_HASH_KEY(tb, key) spg_tid_hash_fn(key)
+#define SH_EQUAL(tb, a, b) spg_tid_match_fn(a, b)
+#define SH_SCOPE static inline
+#define SH_DECLARE
+#define SH_DEFINE
+#include "lib/simplehash.h"
+
 
 typedef void (*storeRes_func) (SpGistScanOpaque so, ItemPointer heapPtr,
 							   Datum leafValue, bool isNull,
@@ -157,6 +201,14 @@ resetSpGistScanOpaque(SpGistScanOpaque so)
 	MemoryContext oldCtx;
 
 	MemoryContextReset(so->traversalCxt);
+
+	/*
+	 * For multi-entry indexes, set up TID deduplication hash table.  The hash
+	 * table lives in traversalCxt and is destroyed/recreated on each rescan.
+	 */
+	if (OidIsValid(index_getprocid(so->state.index, 1,
+								   SPGIST_EXTRACTVALUE_PROC)))
+		so->tidHash = spgtid_create(so->traversalCxt, 256, NULL);
 
 	oldCtx = MemoryContextSwitchTo(so->traversalCxt);
 
@@ -363,6 +415,9 @@ spgbeginscan(Relation rel, int keysz, int orderbysz)
 	fmgr_info_copy(&so->leafConsistentFn,
 				   index_getprocinfo(rel, 1, SPGIST_LEAF_CONSISTENT_PROC),
 				   CurrentMemoryContext);
+
+	/* tidHash will be set up by resetSpGistScanOpaque if needed */
+	so->tidHash = NULL;
 
 	so->indexCollation = rel->rd_indcollation[0];
 
@@ -571,25 +626,53 @@ spgLeafTest(SpGistScanOpaque so, SpGistSearchItem *item,
 		{
 			/* the scan is ordered -> add the item to the queue */
 			MemoryContext oldCxt = MemoryContextSwitchTo(so->traversalCxt);
-			SpGistSearchItem *heapItem = spgNewHeapItem(so, item->level,
-														leafTuple,
-														leafValue,
-														recheck,
-														recheckDistances,
-														isnull,
-														distances);
 
-			spgAddSearchItemToQueue(so, heapItem);
+			/*
+			 * For multi-entry ordered scans, skip leaf entries whose TIDs
+			 * have already been returned by the ordered dequeue path.  We
+			 * use lookup (not insert) here: a TID must remain enqueueable
+			 * until it is actually dequeued, so that the pairing heap can
+			 * pick the copy with the smallest distance.
+			 */
+			if (so->tidHash &&
+				spgtid_lookup(so->tidHash, leafTuple->heapPtr))
+			{
+				MemoryContextSwitchTo(oldCxt);
+			}
+			else
+			{
+				SpGistSearchItem *heapItem = spgNewHeapItem(so, item->level,
+															leafTuple,
+															leafValue,
+															recheck,
+															recheckDistances,
+															isnull,
+															distances);
 
-			MemoryContextSwitchTo(oldCxt);
+				spgAddSearchItemToQueue(so, heapItem);
+				MemoryContextSwitchTo(oldCxt);
+			}
 		}
 		else
 		{
-			/* non-ordered scan, so report the item right away */
-			Assert(!recheckDistances);
-			storeRes(so, &leafTuple->heapPtr, leafValue, isnull,
-					 leafTuple, recheck, false, NULL);
-			*reportedSome = true;
+			/*
+			 * Non-ordered scan, so report the item right away.
+			 *
+			 * For multi-entry indexes, check the TID hash table to avoid
+			 * returning duplicate heap TIDs.
+			 */
+			bool		found = false;
+
+			if (so->tidHash)
+				spgtid_insert(so->tidHash, leafTuple->heapPtr, &found);
+
+			if (!found)
+			{
+				Assert(!recheckDistances);
+				storeRes(so, &leafTuple->heapPtr, leafValue, isnull,
+						 leafTuple, recheck, false, NULL);
+				*reportedSome = true;
+			}
 		}
 	}
 
@@ -830,6 +913,25 @@ redirect:
 		{
 			/* We store heap items in the queue only in case of ordered search */
 			Assert(so->numberOfNonNullOrderBys > 0);
+
+			/*
+			 * For multi-entry ordered scans, deduplicate using tidHash.
+			 * The pairing heap ensures we see the smallest distance first;
+			 * tidHash skips subsequent duplicates for the same TID.
+			 */
+			if (so->tidHash)
+			{
+				bool		found;
+
+				spgtid_insert(so->tidHash, item->heapPtr, &found);
+				if (found)
+				{
+					spgFreeSearchItem(so, item);
+					MemoryContextReset(so->tempCxt);
+					continue;	/* already returned this TID */
+				}
+			}
+
 			storeRes(so, &item->heapPtr, item->value, item->isNull,
 					 item->leafTuple, item->recheck,
 					 item->recheckDistances, item->distances);
@@ -921,7 +1023,11 @@ redirect:
 }
 
 
-/* storeRes subroutine for getbitmap case */
+/*
+ * storeRes subroutine for getbitmap case.
+ * The bitmap itself handles deduplication, so no extra work needed for
+ * multi-entry.
+ */
 static void
 storeBitmap(SpGistScanOpaque so, ItemPointer heapPtr,
 			Datum leafValue, bool isnull,
@@ -1082,6 +1188,14 @@ spgcanreturn(Relation index, int attno)
 	/* INCLUDE attributes can always be fetched for index-only scans */
 	if (attno > 1)
 		return true;
+
+	/*
+	 * Multi-entry indexes store decomposed sub-entries in the key column,
+	 * not the original datum, so the key column cannot be returned in an
+	 * index-only scan.
+	 */
+	if (OidIsValid(index_getprocid(index, 1, SPGIST_EXTRACTVALUE_PROC)))
+		return false;
 
 	/* We can do it if the opclass config function says so */
 	cache = spgGetCache(index);

@@ -44,23 +44,60 @@ spgistBuildCallback(Relation index, ItemPointer tid, Datum *values,
 	SpGistBuildState *buildstate = (SpGistBuildState *) state;
 	MemoryContext oldCtx;
 
-	/* Work in temp context, and reset it after each tuple */
-	oldCtx = MemoryContextSwitchTo(buildstate->tmpCtx);
-
 	/*
 	 * Even though no concurrent insertions can be happening, we still might
 	 * get a buffer-locking failure due to bgwriter or checkpointer taking a
 	 * lock on some buffer.  So we need to be willing to retry.  We can flush
 	 * any temp data when retrying.
+	 *
+	 * If the opclass provides an extractValue function, extract multiple
+	 * entries and insert each one.  Otherwise, insert a single entry.
+	 *
+	 * We extract entries in the caller's memory context so that the entries
+	 * array survives MemoryContextReset(tmpCtx) in the retry loop.
 	 */
-	while (!spgdoinsert(index, &buildstate->spgstate, tid,
-						values, isnull))
+	if (OidIsValid(index_getprocid(index, 1, SPGIST_EXTRACTVALUE_PROC)))
 	{
-		MemoryContextReset(buildstate->tmpCtx);
-	}
+		Datum	   *entries;
+		bool	   *nullFlags;
+		int32		nentries;
+		int			i;
 
-	/* Update total tuple count */
-	buildstate->indtuples += 1;
+		entries = spgExtractEntries(index, values[spgKeyColumn],
+								   isnull[spgKeyColumn],
+								   &nentries, &nullFlags);
+
+		oldCtx = MemoryContextSwitchTo(buildstate->tmpCtx);
+
+		for (i = 0; i < nentries; i++)
+		{
+			values[spgKeyColumn] = entries[i];
+			isnull[spgKeyColumn] = nullFlags[i];
+
+			while (!spgdoinsert(index, &buildstate->spgstate, tid,
+								values, isnull))
+			{
+				MemoryContextReset(buildstate->tmpCtx);
+			}
+		}
+
+		/* Update total tuple count */
+		buildstate->indtuples += nentries;
+	}
+	else
+	{
+		/* Work in temp context, and reset it after each tuple */
+		oldCtx = MemoryContextSwitchTo(buildstate->tmpCtx);
+
+		while (!spgdoinsert(index, &buildstate->spgstate, tid,
+							values, isnull))
+		{
+			MemoryContextReset(buildstate->tmpCtx);
+		}
+
+		/* Update total tuple count */
+		buildstate->indtuples += 1;
+	}
 
 	MemoryContextSwitchTo(oldCtx);
 	MemoryContextReset(buildstate->tmpCtx);
@@ -193,20 +230,54 @@ spginsert(Relation index, Datum *values, bool *isnull,
 	insertCtx = AllocSetContextCreate(CurrentMemoryContext,
 									  "SP-GiST insert temporary context",
 									  ALLOCSET_DEFAULT_SIZES);
-	oldCtx = MemoryContextSwitchTo(insertCtx);
-
-	initSpGistState(&spgstate, index);
 
 	/*
 	 * We might have to repeat spgdoinsert() multiple times, if conflicts
 	 * occur with concurrent insertions.  If so, reset the insertCtx each time
 	 * to avoid cumulative memory consumption.  That means we also have to
 	 * redo initSpGistState(), but it's cheap enough not to matter.
+	 *
+	 * If the opclass provides an extractValue function, extract multiple
+	 * entries and insert each one separately.  We extract entries in the
+	 * caller's memory context so that the entries array survives
+	 * MemoryContextReset(insertCtx) in the retry loop.
 	 */
-	while (!spgdoinsert(index, &spgstate, ht_ctid, values, isnull))
+	if (OidIsValid(index_getprocid(index, 1, SPGIST_EXTRACTVALUE_PROC)))
 	{
-		MemoryContextReset(insertCtx);
+		Datum	   *entries;
+		bool	   *nullFlags;
+		int32		nentries;
+		int			i;
+
+		entries = spgExtractEntries(index, values[spgKeyColumn],
+								   isnull[spgKeyColumn],
+								   &nentries, &nullFlags);
+
+		oldCtx = MemoryContextSwitchTo(insertCtx);
 		initSpGistState(&spgstate, index);
+
+		for (i = 0; i < nentries; i++)
+		{
+			values[spgKeyColumn] = entries[i];
+			isnull[spgKeyColumn] = nullFlags[i];
+
+			while (!spgdoinsert(index, &spgstate, ht_ctid, values, isnull))
+			{
+				MemoryContextReset(insertCtx);
+				initSpGistState(&spgstate, index);
+			}
+		}
+	}
+	else
+	{
+		oldCtx = MemoryContextSwitchTo(insertCtx);
+		initSpGistState(&spgstate, index);
+
+		while (!spgdoinsert(index, &spgstate, ht_ctid, values, isnull))
+		{
+			MemoryContextReset(insertCtx);
+			initSpGistState(&spgstate, index);
+		}
 	}
 
 	SpGistUpdateMetaPage(index);

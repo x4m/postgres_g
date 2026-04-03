@@ -246,10 +246,11 @@ spgGetCache(Relation index)
 
 		if (cache->config.leafType != atttype)
 		{
-			if (!OidIsValid(index_getprocid(index, 1, SPGIST_COMPRESS_PROC)))
+			if (!OidIsValid(index_getprocid(index, 1, SPGIST_COMPRESS_PROC)) &&
+				!OidIsValid(index_getprocid(index, 1, SPGIST_EXTRACTVALUE_PROC)))
 				ereport(ERROR,
 						(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-						 errmsg("compress method must be defined when leaf type is different from input type")));
+						 errmsg("compress or extractValue method must be defined when leaf type is different from input type")));
 
 			fillTypeDesc(&cache->attLeafType, cache->config.leafType);
 		}
@@ -1364,4 +1365,60 @@ spgproperty(Oid index_oid, int attno,
 	*isnull = false;
 
 	return true;
+}
+
+/*
+ * spgExtractEntries -- extract multiple index entries from one heap tuple.
+ *
+ * Calls the opclass's extractValue function to decompose the indexed datum
+ * into multiple sub-entries.  Returns an array of Datum values and sets
+ * *nentries to the count.  *nullFlags is set to a boolean array indicating
+ * which entries are NULL (or NULL if none are).
+ *
+ * If the datum is NULL or extractValue returns no entries, a single NULL
+ * entry is produced.
+ */
+Datum *
+spgExtractEntries(Relation index, Datum value, bool isnull,
+				  int32 *nentries, bool **nullFlags)
+{
+	Datum	   *entries;
+
+	/* NULL datum produces a single NULL entry */
+	if (isnull)
+	{
+		*nentries = 1;
+		entries = palloc(sizeof(Datum));
+		entries[0] = (Datum) 0;
+		*nullFlags = palloc(sizeof(bool));
+		(*nullFlags)[0] = true;
+		return entries;
+	}
+
+	/* Call the opclass's extractValue function */
+	*nullFlags = NULL;
+	entries = (Datum *)
+		DatumGetPointer(FunctionCall3Coll(index_getprocinfo(index, 1,
+															SPGIST_EXTRACTVALUE_PROC),
+										  index->rd_indcollation[0],
+										  value,
+										  PointerGetDatum(nentries),
+										  PointerGetDatum(nullFlags)));
+
+	/* Handle empty or NULL result: produce a single NULL entry */
+	if (entries == NULL || *nentries <= 0)
+	{
+		*nentries = 1;
+		entries = palloc(sizeof(Datum));
+		entries[0] = (Datum) 0;
+		*nullFlags = palloc(sizeof(bool));
+		(*nullFlags)[0] = true;
+		return entries;
+	}
+
+	/* Create nullFlags array if the function didn't */
+	if (*nullFlags == NULL)
+		*nullFlags = palloc0_array(bool, *nentries);
+
+	return entries;
 }

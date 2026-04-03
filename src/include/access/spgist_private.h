@@ -193,6 +193,13 @@ typedef struct SpGistScanOpaqueData
 	MemoryContext tempCxt;		/* short-lived memory context */
 	MemoryContext traversalCxt; /* single scan lifetime memory context */
 
+	/*
+	 * For multi-entry indexes: hash table for TID deduplication.  Each heap
+	 * tuple produces multiple index entries, so we track which TIDs have been
+	 * returned.  NULL for standard (non-multi-entry) indexes.
+	 */
+	struct spgtid_hash *tidHash;
+
 	/* Control flags showing whether to search nulls and/or non-nulls */
 	bool		searchNulls;	/* scan matches (all) null entries */
 	bool		searchNonNulls; /* scan matches (some) non-null entries */
@@ -532,6 +539,8 @@ extern OffsetNumber SpGistPageAddNewItem(SpGistState *state, Page page,
 extern bool spgproperty(Oid index_oid, int attno,
 						IndexAMProperty prop, const char *propname,
 						bool *res, bool *isnull);
+extern Datum *spgExtractEntries(Relation index, Datum value, bool isnull,
+								int32 *nentries, bool **nullFlags);
 
 /* spgdoinsert.c */
 extern void spgUpdateNodeLink(SpGistInnerTuple tup, int nodeN,
