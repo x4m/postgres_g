@@ -287,6 +287,13 @@ struct VacuumCutoffs
 	 */
 	TransactionId FreezeLimit;
 	MultiXactId MultiXactCutoff;
+
+	/*
+	 * Oldest xmin and catalog xmin of any replication slot obtained from the
+	 * same ComputeXidHorizons() call that computed OldestXmin.
+	 */
+	TransactionId OldestSlotXmin;
+	TransactionId OldestSlotCatalogXmin;
 };
 
 /*
