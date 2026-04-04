@@ -1408,3 +1408,57 @@ ERROR:  column "oid" not found in data type compositetable
 LINE 1: SELECT (NULL::compositetable).oid;
                 ^
 DROP TABLE compositetable;
+-- ALTER TYPE mid-cursor-scan must be detected and raise an error.
+CREATE TYPE mycomptype AS (a INT, b INT);
+BEGIN;
+DECLARE cur1 CURSOR FOR
+    SELECT (i, i * 100)::mycomptype FROM generate_series(1, 5) i;
+FETCH cur1;
+   row   
+---------
+ (1,100)
+(1 row)
+
+ALTER TYPE mycomptype ALTER ATTRIBUTE b TYPE TEXT;
+FETCH cur1;
+ERROR:  cursor scan cannot continue after composite type "mycomptype" was altered
+HINT:  Close and reopen the cursor after ALTER TYPE.
+COMMIT;
+DROP TYPE mycomptype;
+-- Same check applies when a nested composite type is altered.
+CREATE TYPE myinnertype AS (x INT, y INT);
+CREATE TYPE myoutertype AS (a INT, b myinnertype);
+BEGIN;
+DECLARE cur2 CURSOR FOR
+    SELECT (i, (i * 10, i * 100)::myinnertype)::myoutertype
+    FROM generate_series(1, 5) i;
+FETCH cur2;
+      row       
+----------------
+ (1,"(10,100)")
+(1 row)
+
+ALTER TYPE myinnertype ALTER ATTRIBUTE y TYPE TEXT;
+FETCH cur2;
+ERROR:  cursor scan cannot continue after composite type "myinnertype" was altered
+HINT:  Close and reopen the cursor after ALTER TYPE.
+COMMIT;
+DROP TYPE myoutertype;
+DROP TYPE myinnertype;
+-- MOVE goes through the same portal path and must also be rejected.
+CREATE TYPE mycomptype2 AS (a INT, b INT);
+BEGIN;
+DECLARE cur3 CURSOR FOR
+    SELECT (i, i)::mycomptype2 FROM generate_series(1, 10) i;
+FETCH cur3;
+  row  
+-------
+ (1,1)
+(1 row)
+
+ALTER TYPE mycomptype2 ALTER ATTRIBUTE b TYPE TEXT;
+MOVE cur3;
+ERROR:  cursor scan cannot continue after composite type "mycomptype2" was altered
+HINT:  Close and reopen the cursor after ALTER TYPE.
+COMMIT;
+DROP TYPE mycomptype2;

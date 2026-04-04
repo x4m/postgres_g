@@ -25,8 +25,12 @@
 #include "pg_trace.h"
 #include "tcop/pquery.h"
 #include "tcop/utility.h"
+#include "catalog/pg_type_d.h"
+#include "utils/builtins.h"
+#include "utils/lsyscache.h"
 #include "utils/memutils.h"
 #include "utils/snapmgr.h"
+#include "utils/typcache.h"
 
 
 /*
@@ -425,6 +429,103 @@ FetchStatementTargetList(Node *stmt)
  * On return, portal is ready to accept PortalRun() calls, and the result
  * tupdesc (if any) is known.
  */
+
+/*
+ * CollectCompositeTypeVersions
+ *		Record typid's tupDesc_identifier, then recurse into its composite-type
+ *		attributes.  Duplicate OIDs are skipped.  Arrays are repalloc'd as
+ *		needed; n/alloc are updated in place.
+ */
+static void
+CollectCompositeTypeVersions(Oid typid,
+							 Oid **oids, uint64 **versions,
+							 int *n, int *alloc)
+{
+	TypeCacheEntry *typentry;
+	TupleDesc	tupdesc;
+
+	for (int i = 0; i < *n; i++)	/* skip if already recorded */
+		if ((*oids)[i] == typid)
+			return;
+
+	typentry = lookup_type_cache(typid, TYPECACHE_TUPDESC);
+
+	if (*n >= *alloc)
+	{
+		*alloc *= 2;
+		*oids = repalloc(*oids, *alloc * sizeof(Oid));
+		*versions = repalloc(*versions, *alloc * sizeof(uint64));
+	}
+
+	(*oids)[*n] = typid;
+	(*versions)[*n] = typentry->tupDesc_identifier;
+	(*n)++;
+
+	tupdesc = typentry->tupDesc;
+	if (tupdesc == NULL)
+		return;
+
+	for (int i = 0; i < tupdesc->natts; i++)
+	{
+		Form_pg_attribute attr = TupleDescAttr(tupdesc, i);
+
+		if (!attr->attisdropped &&
+			attr->atttypid != RECORDOID &&
+			get_typtype(attr->atttypid) == TYPTYPE_COMPOSITE)
+			CollectCompositeTypeVersions(attr->atttypid,
+										 oids, versions, n, alloc);
+	}
+}
+
+/*
+ * InitPortalCompositeTypeVersions
+ *		Snapshot tupDesc_identifier for every named composite type reachable
+ *		from portal->tupDesc (including nested types).  Called once at cursor
+ *		open; checked at each FETCH to detect mid-scan ALTER TYPE.
+ */
+static void
+InitPortalCompositeTypeVersions(Portal portal)
+{
+	TupleDesc	tupdesc = portal->tupDesc;
+	MemoryContext oldcxt;
+	int			alloc = 8;
+	int			n = 0;
+	Oid		   *oids;
+	uint64	   *versions;
+
+	if (tupdesc == NULL)
+		return;
+
+	oldcxt = MemoryContextSwitchTo(portal->portalContext);
+	oids = palloc(alloc * sizeof(Oid));
+	versions = palloc(alloc * sizeof(uint64));
+
+	for (int i = 0; i < tupdesc->natts; i++)
+	{
+		Form_pg_attribute attr = TupleDescAttr(tupdesc, i);
+
+		if (!attr->attisdropped &&
+			attr->atttypid != RECORDOID &&
+			get_typtype(attr->atttypid) == TYPTYPE_COMPOSITE)
+			CollectCompositeTypeVersions(attr->atttypid,
+										 &oids, &versions, &n, &alloc);
+	}
+
+	MemoryContextSwitchTo(oldcxt);
+
+	if (n > 0)
+	{
+		portal->nCursorCompositeTypes = n;
+		portal->cursorCompositeTypeOids = oids;
+		portal->cursorCompositeTypeVersions = versions;
+	}
+	else
+	{
+		pfree(oids);
+		pfree(versions);
+	}
+}
+
 void
 PortalStart(Portal portal, ParamListInfo params,
 			int eflags, Snapshot snapshot)
@@ -521,6 +622,12 @@ PortalStart(Portal portal, ParamListInfo params,
 				 * Remember tuple descriptor (computed by ExecutorStart)
 				 */
 				portal->tupDesc = queryDesc->tupDesc;
+
+				/*
+				 * Record type-cache versions for any named composite-type
+				 * result columns so that FETCH can detect mid-scan ALTER TYPE.
+				 */
+				InitPortalCompositeTypeVersions(portal);
 
 				/*
 				 * Reset cursor position data to "start of query"
@@ -1382,6 +1489,28 @@ PortalRunFetch(Portal portal,
 	MemoryContext oldContext;
 
 	Assert(PortalIsValid(portal));
+
+	/*
+	 * Reject the fetch if any composite type in the result has been altered
+	 * since the cursor was opened; HeapTuples carry no type-version tag so
+	 * the mismatch cannot be caught later.
+	 */
+	if (portal->nCursorCompositeTypes > 0)
+	{
+		for (int i = 0; i < portal->nCursorCompositeTypes; i++)
+		{
+			Oid			typid = portal->cursorCompositeTypeOids[i];
+			TypeCacheEntry *typentry =
+				lookup_type_cache(typid, TYPECACHE_TUPDESC);
+
+			if (typentry->tupDesc_identifier != portal->cursorCompositeTypeVersions[i])
+				ereport(ERROR,
+						(errcode(ERRCODE_INVALID_CURSOR_STATE),
+						 errmsg("cursor scan cannot continue after composite type \"%s\" was altered",
+								format_type_be(typid)),
+						 errhint("Close and reopen the cursor after ALTER TYPE.")));
+		}
+	}
 
 	/*
 	 * Check for improper portal use, and mark portal active.

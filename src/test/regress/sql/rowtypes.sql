@@ -562,3 +562,39 @@ SELECT (NULL::compositetable).a;
 SELECT (NULL::compositetable).oid;
 
 DROP TABLE compositetable;
+
+-- ALTER TYPE mid-cursor-scan must be detected and raise an error.
+CREATE TYPE mycomptype AS (a INT, b INT);
+BEGIN;
+DECLARE cur1 CURSOR FOR
+    SELECT (i, i * 100)::mycomptype FROM generate_series(1, 5) i;
+FETCH cur1;
+ALTER TYPE mycomptype ALTER ATTRIBUTE b TYPE TEXT;
+FETCH cur1;
+COMMIT;
+DROP TYPE mycomptype;
+
+-- Same check applies when a nested composite type is altered.
+CREATE TYPE myinnertype AS (x INT, y INT);
+CREATE TYPE myoutertype AS (a INT, b myinnertype);
+BEGIN;
+DECLARE cur2 CURSOR FOR
+    SELECT (i, (i * 10, i * 100)::myinnertype)::myoutertype
+    FROM generate_series(1, 5) i;
+FETCH cur2;
+ALTER TYPE myinnertype ALTER ATTRIBUTE y TYPE TEXT;
+FETCH cur2;
+COMMIT;
+DROP TYPE myoutertype;
+DROP TYPE myinnertype;
+
+-- MOVE goes through the same portal path and must also be rejected.
+CREATE TYPE mycomptype2 AS (a INT, b INT);
+BEGIN;
+DECLARE cur3 CURSOR FOR
+    SELECT (i, i)::mycomptype2 FROM generate_series(1, 10) i;
+FETCH cur3;
+ALTER TYPE mycomptype2 ALTER ATTRIBUTE b TYPE TEXT;
+MOVE cur3;
+COMMIT;
+DROP TYPE mycomptype2;

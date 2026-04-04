@@ -160,6 +160,11 @@ typedef struct PortalData
 	/* and these are the format codes to use for the columns: */
 	int16	   *formats;		/* a format code for each column */
 
+	/* tupDesc_identifier snapshots for composite types in the result columns */
+	int			nCursorCompositeTypes;	/* 0 if none */
+	Oid		   *cursorCompositeTypeOids;
+	uint64	   *cursorCompositeTypeVersions;
+
 	/*
 	 * Outermost ActiveSnapshot for execution of the portal's queries.  For
 	 * all but a few utility commands, we require such a snapshot to exist.
