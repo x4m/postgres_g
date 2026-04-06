@@ -786,6 +786,21 @@ autovacuum_naptime = 1s
 $primary6->start;
 $primary6->safe_psql('postgres', "CREATE EXTENSION xid_wraparound");
 
+$primary6->safe_psql(
+	'postgres', qq{
+	CREATE PROCEDURE consume_xid(cnt int)
+	AS \$\$
+	DECLARE
+	    i int;
+	BEGIN
+	    FOR i IN 1..cnt LOOP
+	        EXECUTE 'SELECT pg_current_xact_id()';
+	        COMMIT;
+	    END LOOP;
+	END;
+	\$\$ LANGUAGE plpgsql;
+});
+
 $backup_name = 'backup6';
 $primary6->backup($backup_name);
 
@@ -825,7 +840,7 @@ my $consumed = 0;
 
 while ($consumed < $max_xids)
 {
-	$primary6->safe_psql('postgres', "SELECT consume_xids($chunk)");
+	$primary6->safe_psql('postgres', "CALL consume_xid($chunk)");
 	$consumed += $chunk;
 	my $remaining = $max_xids - $consumed;
 	diag "consumed $consumed / $max_xids XIDs ($remaining remaining)";
@@ -837,7 +852,7 @@ verify_invalidation_and_recovery($primary6, 'sb6_slot',
 # Consume 1B more XIDs — combining with the 2.2B consumed above, the total
 # of 3.2B exceeds the 2^31 (~2.1B) usable XID space (xidStopLimit), i.e.
 # more than one full wraparound cycle, proving the system is healthy.
-$primary6->safe_psql('postgres', "SELECT consume_xids(1000000000)");
+$primary6->safe_psql('postgres', "CALL consume_xid(1000000000)");
 ok(1, 'writes succeed after autovacuum invalidated the slot');
 
 $primary6->stop;
