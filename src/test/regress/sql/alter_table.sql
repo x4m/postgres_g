@@ -2056,6 +2056,28 @@ CREATE TYPE test_type_empty AS ();
 DROP TYPE test_type_empty;
 
 --
+-- Plans scanning a set-returning SQL function that returns a named composite
+-- type must be invalidated when that composite type gains attributes, even if
+-- the function's pg_proc row is not updated (the typed table follows the type).
+--
+CREATE TYPE planinv_ct AS (a int, b int);
+CREATE TABLE planinv_tbl OF planinv_ct;
+INSERT INTO planinv_tbl VALUES (1, 2);
+CREATE FUNCTION planinv_srf() RETURNS SETOF planinv_ct
+  LANGUAGE sql STABLE AS $$ SELECT * FROM planinv_tbl $$;
+-- Use composite-row form so result type (planinv_ct OID) stays the same after
+-- ADD ATTRIBUTE and the replanned query returns new attribute values cleanly.
+PREPARE planinv_p AS SELECT p FROM planinv_srf() p;
+EXECUTE planinv_p;
+ALTER TYPE planinv_ct ADD ATTRIBUTE c int CASCADE;
+UPDATE planinv_tbl SET c = 99;
+EXECUTE planinv_p;
+DEALLOCATE planinv_p;
+DROP FUNCTION planinv_srf();
+DROP TABLE planinv_tbl;
+DROP TYPE planinv_ct;
+
+--
 -- typed tables: OF / NOT OF
 --
 
