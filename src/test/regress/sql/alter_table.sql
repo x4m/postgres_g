@@ -2056,6 +2056,39 @@ CREATE TYPE test_type_empty AS ();
 DROP TYPE test_type_empty;
 
 --
+-- Plans scanning a set-returning function that returns a named composite type
+-- must be invalidated when that type gains attributes.  The fix records the
+-- composite's underlying relation OID (typrelid) in the plan's invalItems so
+-- the relcache invalidation from ALTER TYPE reaches the cached plan.
+--
+-- SECURITY DEFINER prevents inlining.  Without inlining the outer plan holds
+-- only the function's proc OID in invalItems, not the table OID; therefore
+-- only the typrelid dependency added by the fix causes invalidation.
+-- Without the fix, EXECUTE silently returns stale data (missing the new
+-- column); with the fix the stale plan is detected and an error is raised.
+--
+CREATE TYPE planinv_ct AS (a int, b int);
+CREATE TABLE planinv_tbl (a int, b int);
+INSERT INTO planinv_tbl VALUES (1, 2);
+CREATE FUNCTION planinv_srf() RETURNS SETOF planinv_ct
+  LANGUAGE sql STABLE SECURITY DEFINER AS $$ SELECT * FROM planinv_tbl $$;
+PREPARE planinv_p AS SELECT * FROM planinv_srf();
+EXECUTE planinv_p;
+ALTER TYPE planinv_ct ADD ATTRIBUTE c int;
+ALTER TABLE planinv_tbl ADD COLUMN c int DEFAULT 99;
+-- The cached plan is invalidated; SELECT * would widen the result type so the
+-- executor raises an error rather than silently returning stale data.
+EXECUTE planinv_p;
+-- After re-preparing, all three columns are returned correctly.
+DEALLOCATE planinv_p;
+PREPARE planinv_p AS SELECT * FROM planinv_srf();
+EXECUTE planinv_p;
+DEALLOCATE planinv_p;
+DROP FUNCTION planinv_srf();
+DROP TABLE planinv_tbl;
+DROP TYPE planinv_ct;
+
+--
 -- typed tables: OF / NOT OF
 --
 
