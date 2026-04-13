@@ -2065,9 +2065,29 @@ FindAffixes(AffixNode *node, const char *word, int wrdlen, int *level, int type)
 	return NULL;
 }
 
+/*
+ * Checks to see if affix applies to word, transforms word if so.
+ *
+ * word: input word
+ * len: length of input word
+ * Affix: affix to consider
+ * flagflags: context flags showing whether we are handling a compound word
+ * newword: output buffer (MUST be of length 2 * MAXNORMLEN)
+ * baselen: input/output argument
+ *
+ * If baselen isn't NULL, then *baselen is used to return the length of
+ * the non-changed part of the word when applying a suffix, and is used
+ * to detect whether the input contained only a prefix and suffix when
+ * later applying a prefix.
+ *
+ * Returns newword on success, or NULL if the affix can't be applied.
+ * On success, the modified word is stored into newword.
+ */
 static char *
 CheckAffix(const char *word, size_t len, AFFIX *Affix, int flagflags, char *newword, int *baselen)
 {
+	size_t		findlen;
+
 	/*
 	 * Check compound allow flags
 	 */
@@ -2103,8 +2123,15 @@ CheckAffix(const char *word, size_t len, AFFIX *Affix, int flagflags, char *neww
 	/*
 	 * make replace pattern of affix
 	 */
+	Assert(len == strlen(word));
+	findlen = strlen(Affix->find);
 	if (Affix->type == FF_SUFFIX)
 	{
+		/* protect against buffer overrun */
+		if (len < Affix->replen || len >= 2 * MAXNORMLEN ||
+			len - Affix->replen + findlen >= 2 * MAXNORMLEN)
+			return NULL;
+
 		strcpy(newword, word);
 		strcpy(newword + len - Affix->replen, Affix->find);
 		if (baselen)			/* store length of non-changed part of word */
@@ -2112,11 +2139,16 @@ CheckAffix(const char *word, size_t len, AFFIX *Affix, int flagflags, char *neww
 	}
 	else
 	{
+		/* protect against buffer overrun */
+		if (len < Affix->replen ||
+			findlen + len - Affix->replen >= 2 * MAXNORMLEN)
+			return NULL;
+
 		/*
 		 * if prefix is an all non-changed part's length then all word
 		 * contains only prefix and suffix, so out
 		 */
-		if (baselen && *baselen + strlen(Affix->find) <= Affix->replen)
+		if (baselen && *baselen + findlen <= Affix->replen)
 			return NULL;
 		strcpy(newword, Affix->find);
 		strcat(newword, word + Affix->replen);
