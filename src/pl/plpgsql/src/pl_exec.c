@@ -316,8 +316,9 @@ static int	exec_stmt_close(PLpgSQL_execstate *estate,
 							PLpgSQL_stmt_close *stmt);
 static int	exec_stmt_exit(PLpgSQL_execstate *estate,
 						   PLpgSQL_stmt_exit *stmt);
+static void check_rec_type_unchanged(PLpgSQL_rec *rec);
 static int	exec_stmt_return(PLpgSQL_execstate *estate,
-							 PLpgSQL_stmt_return *stmt);
+						 PLpgSQL_stmt_return *stmt);
 static int	exec_stmt_return_next(PLpgSQL_execstate *estate,
 								  PLpgSQL_stmt_return_next *stmt);
 static int	exec_stmt_return_query(PLpgSQL_execstate *estate,
@@ -3218,6 +3219,37 @@ exec_stmt_exit(PLpgSQL_execstate *estate, PLpgSQL_stmt_exit *stmt)
 }
 
 
+/*
+ * check_rec_type_unchanged
+ *
+ * Verify that the composite type of a PLpgSQL_rec variable has not been
+ * structurally modified since the variable was last populated.  If ALTER TYPE
+ * ... ALTER ATTRIBUTE was executed within the same function body after the
+ * variable was written, the stored binary representation would be
+ * misinterpreted by the caller using the new type descriptor.
+ *
+ * We compare the tupdesc identifier recorded in the expanded record header
+ * against the current identifier from the type cache.  These differ whenever
+ * the composite type's column set has changed.
+ */
+static void
+check_rec_type_unchanged(PLpgSQL_rec *rec)
+{
+	TypeCacheEntry *typentry;
+
+	if (!OidIsValid(rec->rectypeid) || rec->rectypeid == RECORDOID || rec->erh == NULL)
+		return;
+
+	typentry = lookup_type_cache(rec->rectypeid, TYPECACHE_TUPDESC);
+	if (typentry->tupDesc_identifier != rec->erh->er_tupdesc_id)
+		ereport(ERROR,
+				(errcode(ERRCODE_INVALID_OBJECT_DEFINITION),
+				 errmsg("composite type %s was altered during function execution",
+						format_type_be(rec->rectypeid)),
+				 errdetail("Variable \"%s\" was populated before the type change.",
+						   rec->refname)));
+}
+
 /* ----------
  * exec_stmt_return			Evaluate an expression and start
  *					returning from the function.
@@ -3289,26 +3321,41 @@ exec_stmt_return(PLpgSQL_execstate *estate, PLpgSQL_stmt_return *stmt)
 				}
 				break;
 
-			case PLPGSQL_DTYPE_ROW:
-			case PLPGSQL_DTYPE_REC:
-				{
-					/* exec_eval_datum can handle these cases */
-					int32		rettypmod;
+		case PLPGSQL_DTYPE_ROW:
+			{
+				/* exec_eval_datum can handle these cases */
+				int32		rettypmod;
 
-					exec_eval_datum(estate,
-									retvar,
-									&estate->rettype,
-									&rettypmod,
-									&estate->retval,
-									&estate->retisnull);
-				}
-				break;
+				exec_eval_datum(estate,
+								retvar,
+								&estate->rettype,
+								&rettypmod,
+								&estate->retval,
+								&estate->retisnull);
+			}
+			break;
 
-			default:
-				elog(ERROR, "unrecognized dtype: %d", retvar->dtype);
-		}
+		case PLPGSQL_DTYPE_REC:
+			{
+				PLpgSQL_rec *rec = (PLpgSQL_rec *) retvar;
+				int32		rettypmod;
 
-		return PLPGSQL_RC_RETURN;
+				check_rec_type_unchanged(rec);
+
+				exec_eval_datum(estate,
+								retvar,
+								&estate->rettype,
+								&rettypmod,
+								&estate->retval,
+								&estate->retisnull);
+			}
+			break;
+
+		default:
+			elog(ERROR, "unrecognized dtype: %d", retvar->dtype);
+	}
+
+	return PLPGSQL_RC_RETURN;
 	}
 
 	if (stmt->expr != NULL)
@@ -3430,33 +3477,35 @@ exec_stmt_return_next(PLpgSQL_execstate *estate,
 				}
 				break;
 
-			case PLPGSQL_DTYPE_REC:
-				{
-					PLpgSQL_rec *rec = (PLpgSQL_rec *) retvar;
-					TupleDesc	rec_tupdesc;
-					TupleConversionMap *tupmap;
+		case PLPGSQL_DTYPE_REC:
+			{
+				PLpgSQL_rec *rec = (PLpgSQL_rec *) retvar;
+				TupleDesc	rec_tupdesc;
+				TupleConversionMap *tupmap;
 
-					/* If rec is null, try to convert it to a row of nulls */
-					if (rec->erh == NULL)
-						instantiate_empty_record_variable(estate, rec);
-					if (ExpandedRecordIsEmpty(rec->erh))
-						deconstruct_expanded_record(rec->erh);
+				/* If rec is null, try to convert it to a row of nulls */
+				if (rec->erh == NULL)
+					instantiate_empty_record_variable(estate, rec);
+				if (ExpandedRecordIsEmpty(rec->erh))
+					deconstruct_expanded_record(rec->erh);
 
-					/* Use eval_mcontext for tuple conversion work */
-					oldcontext = MemoryContextSwitchTo(get_eval_mcontext(estate));
-					rec_tupdesc = expanded_record_get_tupdesc(rec->erh);
-					tupmap = convert_tuples_by_position(rec_tupdesc,
-														tupdesc,
-														gettext_noop("wrong record type supplied in RETURN NEXT"));
-					tuple = expanded_record_get_tuple(rec->erh);
-					if (tupmap)
-						tuple = execute_attr_map_tuple(tuple, tupmap);
-					tuplestore_puttuple(estate->tuple_store, tuple);
-					MemoryContextSwitchTo(oldcontext);
-				}
-				break;
+				check_rec_type_unchanged(rec);
 
-			case PLPGSQL_DTYPE_ROW:
+				/* Use eval_mcontext for tuple conversion work */
+				oldcontext = MemoryContextSwitchTo(get_eval_mcontext(estate));
+				rec_tupdesc = expanded_record_get_tupdesc(rec->erh);
+				tupmap = convert_tuples_by_position(rec_tupdesc,
+													tupdesc,
+													gettext_noop("wrong record type supplied in RETURN NEXT"));
+				tuple = expanded_record_get_tuple(rec->erh);
+				if (tupmap)
+					tuple = execute_attr_map_tuple(tuple, tupmap);
+				tuplestore_puttuple(estate->tuple_store, tuple);
+				MemoryContextSwitchTo(oldcontext);
+			}
+			break;
+
+		case PLPGSQL_DTYPE_ROW:
 				{
 					PLpgSQL_row *row = (PLpgSQL_row *) retvar;
 
@@ -4040,17 +4089,44 @@ plpgsql_estate_setup(PLpgSQL_execstate *estate,
 	estate->retisset = func->fn_retset;
 
 	/*
-	 * Keep named composite SETOF return types stable for the whole function
-	 * execution.  This prevents concurrent ALTER TYPE from changing rowshape
-	 * between statement setup and RETURN QUERY execution.
+	 * Keep named composite types stable for the whole function execution by
+	 * acquiring AccessShareLock on each composite type's underlying relation.
+	 * This covers both the SETOF return type and any composite local
+	 * variables, preventing concurrent ALTER TYPE from changing rowshape
+	 * mid-execution and causing type confusion when the variable's value is
+	 * returned or passed to other functions.
 	 */
-	if (estate->retisset && estate->retistuple)
 	{
 		Oid			typrelid;
+		int			i;
 
-		typrelid = typeOrDomainTypeRelid(estate->fn_rettype);
-		if (OidIsValid(typrelid))
-			LockRelationOid(typrelid, AccessShareLock);
+		/* Return type (trigger functions have fn_rettype = InvalidOid) */
+		if (estate->retistuple && OidIsValid(estate->fn_rettype))
+		{
+			typrelid = typeOrDomainTypeRelid(estate->fn_rettype);
+			if (OidIsValid(typrelid))
+				LockRelationOid(typrelid, AccessShareLock);
+		}
+
+		/* Local composite variables (declared as named composite types) */
+		for (i = 0; i < func->ndatums; i++)
+		{
+			PLpgSQL_datum *datum = func->datums[i];
+
+			if (datum->dtype == PLPGSQL_DTYPE_REC)
+			{
+				PLpgSQL_rec *rec = (PLpgSQL_rec *) datum;
+
+				if (OidIsValid(rec->rectypeid) &&
+					rec->rectypeid != RECORDOID &&
+					rec->datatype != NULL)
+				{
+					typrelid = typeOrDomainTypeRelid(rec->rectypeid);
+					if (OidIsValid(typrelid))
+						LockRelationOid(typrelid, AccessShareLock);
+				}
+			}
+		}
 	}
 
 	estate->readonly_func = func->fn_readonly;
@@ -5457,32 +5533,40 @@ exec_eval_datum(PLpgSQL_execstate *estate,
 				break;
 			}
 
-		case PLPGSQL_DTYPE_REC:
-			{
-				PLpgSQL_rec *rec = (PLpgSQL_rec *) datum;
+	case PLPGSQL_DTYPE_REC:
+		{
+			PLpgSQL_rec *rec = (PLpgSQL_rec *) datum;
 
-				if (rec->erh == NULL)
+			if (rec->erh == NULL)
+			{
+				/* Treat uninstantiated record as a simple NULL */
+				*value = (Datum) 0;
+				*isnull = true;
+				/* Report variable's declared type */
+				*typeid = rec->rectypeid;
+				*typetypmod = -1;
+			}
+			else
+			{
+				if (ExpandedRecordIsEmpty(rec->erh))
 				{
-					/* Treat uninstantiated record as a simple NULL */
+					/* Empty record is also a NULL */
 					*value = (Datum) 0;
 					*isnull = true;
-					/* Report variable's declared type */
-					*typeid = rec->rectypeid;
-					*typetypmod = -1;
 				}
 				else
 				{
-					if (ExpandedRecordIsEmpty(rec->erh))
-					{
-						/* Empty record is also a NULL */
-						*value = (Datum) 0;
-						*isnull = true;
-					}
-					else
-					{
-						*value = ExpandedRecordGetDatum(rec->erh);
-						*isnull = false;
-					}
+					/*
+					 * Verify the composite type has not been structurally
+					 * modified since the variable was populated.  This
+					 * catches cases where the value is passed to another
+					 * function that would interpret the bytes using a fresh
+					 * type descriptor from the catalog.
+					 */
+					check_rec_type_unchanged(rec);
+					*value = ExpandedRecordGetDatum(rec->erh);
+					*isnull = false;
+				}
 					if (rec->rectypeid != RECORDOID)
 					{
 						/* Report variable's declared type, if not RECORD */

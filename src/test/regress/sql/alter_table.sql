@@ -2093,6 +2093,25 @@ DROP FUNCTION planinv_srf();
 DROP TABLE planinv_tbl;
 DROP TYPE planinv_ct;
 
+-- Test that returning a composite local variable after ALTER TYPE on that
+-- composite type within the same function raises an error.  Without the
+-- check the stored binary representation would be misinterpreted by the
+-- caller using the new type descriptor.
+CREATE TYPE planinv_lv_ct AS (a int);
+CREATE TABLE planinv_lv_tbl (a int);
+INSERT INTO planinv_lv_tbl VALUES (42);
+CREATE FUNCTION planinv_lv_f() RETURNS planinv_lv_ct LANGUAGE plpgsql AS $$
+DECLARE r planinv_lv_ct;
+BEGIN
+  SELECT a INTO r.a FROM planinv_lv_tbl;
+  ALTER TYPE planinv_lv_ct ALTER ATTRIBUTE a TYPE bigint;
+  RETURN r;
+END; $$;
+SELECT planinv_lv_f();  -- ERROR: composite type was altered during function execution
+DROP FUNCTION planinv_lv_f();
+DROP TABLE planinv_lv_tbl;
+DROP TYPE planinv_lv_ct CASCADE;
+
 --
 -- typed tables: OF / NOT OF
 --
