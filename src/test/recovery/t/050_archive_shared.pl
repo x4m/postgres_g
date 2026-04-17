@@ -267,4 +267,142 @@ my $standby3_count = $standby3->safe_psql('postgres', 'SELECT COUNT(*) FROM test
 ok($standby2_count >= 3500, "standby2 has all data (got $standby2_count rows)");
 ok($standby3_count >= 3500, "standby3 has all data (got $standby3_count rows)");
 
+###############################################################################
+# Test 5: checkpoint on standby must NOT delete WAL that has .ready status
+#
+# In archive_mode=shared, the standby relies on archival reports from the
+# primary to know when a segment is safe to delete.  Segments not yet
+# confirmed as archived have .ready files.  A checkpoint (CreateRestartPoint)
+# must not remove those WAL files because they may be needed for recovery
+# after a standby promotion if the primary never archived them.
+#
+# Root cause: XLogArchiveCheckDone() treats archive_mode=shared the same as
+# archive_mode=on during recovery, bypassing the .ready/.done check.
+###############################################################################
+
+note("Test 5: checkpoint must not delete WAL with .ready on standby");
+
+my $archive_dir5 = PostgreSQL::Test::Utils::tempdir();
+my $primary5    = PostgreSQL::Test::Cluster->new('primary5');
+$primary5->init(has_archiving => 1, allows_streaming => 1);
+$primary5->append_conf(
+	'postgresql.conf', qq{
+archive_mode = shared
+archive_command = 'cp %p "$archive_dir5/%f"'
+});
+$primary5->start;
+$primary5->safe_psql('postgres', 'CREATE TABLE t5 (i int);');
+
+# Ensure WAL activity exists in the current segment before switching.
+# pg_switch_wal() is a no-op when called at the very start of a segment,
+# so we write a row first to guarantee there is WAL to switch away from.
+$primary5->safe_psql('postgres', 'INSERT INTO t5 VALUES (0);');
+$primary5->safe_psql('postgres', 'SELECT pg_switch_wal();');
+
+# Wait for archiver to archive the switched segment
+$primary5->poll_query_until('postgres',
+	'SELECT archived_count > 0 FROM pg_stat_archiver')
+  or die "primary5: archiver did not start";
+
+# Create standby without wal_keep_size so checkpoint is free to recycle segments
+# backup() returns an empty list (bare "return"), so the backup name must be
+# stored separately before passing it to init_from_backup.
+$primary5->backup('backup5');
+my $standby5 = PostgreSQL::Test::Cluster->new('standby5');
+$standby5->init_from_backup($primary5, 'backup5', has_streaming => 1);
+$standby5->append_conf(
+	'postgresql.conf', qq{
+archive_mode = shared
+archive_command = 'cp %p "$archive_dir5/%f"'
+wal_receiver_status_interval = 1s
+});
+$standby5->start;
+$primary5->wait_for_catchup($standby5);
+
+# Break archiving on primary: new segments received by standby will get .ready
+$primary5->adjust_conf('postgresql.conf', 'archive_command', "'/bin/false'");
+$primary5->reload;
+
+# Generate several complete WAL segments.  After the standby replays all of
+# them its redo pointer is well past the first few, making those candidates
+# for checkpoint removal.
+for (1 .. 6)
+{
+	$primary5->safe_psql('postgres',
+		'INSERT INTO t5 SELECT generate_series(1,1000);');
+	$primary5->safe_psql('postgres', 'SELECT pg_switch_wal();');
+}
+$primary5->wait_for_catchup($standby5);
+
+# Collect every WAL segment that has a .ready file on the standby
+my $status_dir5 = $standby5->data_dir . '/pg_wal/archive_status';
+my @ready5;
+if (opendir(my $dh, $status_dir5))
+{
+	@ready5 = map { s/\.ready$//r } grep { /\.ready$/ } readdir($dh);
+	closedir($dh);
+}
+my $n_ready5 = scalar @ready5;
+note("Before checkpoint: $n_ready5 WAL files with .ready");
+cmp_ok($n_ready5, '>', 0, "standby has .ready WAL files before checkpoint");
+
+# Trigger CreateRestartPoint (the standby equivalent of CHECKPOINT).
+# It must not remove WAL files that carry a .ready status.
+$standby5->safe_psql('postgres', 'CHECKPOINT');
+
+my $wal_dir5 = $standby5->data_dir . '/pg_wal';
+my $deleted5 = 0;
+for my $f (@ready5)
+{
+	unless (-f "$wal_dir5/$f")
+	{
+		$deleted5++;
+		diag("BUG: $f had .ready but checkpoint deleted it from standby");
+	}
+}
+is($deleted5, 0,
+	"checkpoint does not delete WAL with .ready (not yet archived by primary)");
+
+###############################################################################
+# Test 6: after archiving is restored on primary, standby .ready -> .done
+#
+# When archive_command is broken for a while and then fixed, the primary will
+# archive the previously-failed segments.  The walsender sends an archival
+# status report to the standby which then converts .ready to .done.
+# This verifies the end-to-end recovery of the mechanism after an outage.
+###############################################################################
+
+note("Test 6: .ready files become .done after archiving restored on primary");
+
+# Capture archived_count before restoring so we can detect new archival
+my $archived_before5 =
+  $primary5->safe_psql('postgres', 'SELECT archived_count FROM pg_stat_archiver');
+
+# Restore archiving
+$primary5->adjust_conf('postgresql.conf', 'archive_command',
+	qq{'cp %p "$archive_dir5/%f"'});
+$primary5->reload;
+
+# Wait for primary to archive the segments that failed during the outage
+$primary5->poll_query_until('postgres',
+	"SELECT archived_count > $archived_before5 FROM pg_stat_archiver")
+  or die "primary5: archiver did not catch up after archive_command restored";
+
+# The walsender sends archival status reports every ~10 s.  Wait up to
+# timeout_default seconds for every .ready file to transition to .done.
+my $remaining5 = $n_ready5;
+for (my $i = 0; $i < $PostgreSQL::Test::Utils::timeout_default; $i++)
+{
+	$remaining5 = 0;
+	if (opendir(my $dh, $status_dir5))
+	{
+		$remaining5 = scalar(grep { /\.ready$/ } readdir($dh));
+		closedir($dh);
+	}
+	last if $remaining5 == 0;
+	sleep(1);
+}
+is($remaining5, 0,
+	"all .ready files become .done after archiving restored on primary");
+
 done_testing();

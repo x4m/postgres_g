@@ -2759,10 +2759,13 @@ WalSndArchivalReport(void)
 		return;
 	last_archival_report_timestamp = now;
 	/*
-	 * Get archiver statistics. We use non-blocking access to avoid delaying
-	 * replication if stats collector is slow. If stats are unavailable or
-	 * stale, we'll just try again at the next interval.
+	 * Get archiver statistics.  The pgstat snapshot is cached per-session and
+	 * is only invalidated at transaction boundaries.  The walsender runs
+	 * without transaction boundaries, so we must clear the snapshot explicitly
+	 * to avoid reading stale data (e.g. last_archived_wal stuck at its initial
+	 * empty value even after the archiver has archived new segments).
 	 */
+	pgstat_clear_snapshot();
 	archiver_stats = pgstat_fetch_stat_archiver();
 	if (archiver_stats == NULL)
 		return;
