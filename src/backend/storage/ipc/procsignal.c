@@ -37,6 +37,7 @@
 #include "storage/smgr.h"
 #include "storage/subsystems.h"
 #include "tcop/tcopprot.h"
+#include "utils/injection_point.h"
 #include "utils/memutils.h"
 #include "utils/wait_event.h"
 
@@ -207,14 +208,62 @@ ProcSignalInit(const uint8 *cancel_key, int cancel_key_len)
 	if (cancel_key_len > 0)
 		memcpy(slot->pss_cancel_key, cancel_key, cancel_key_len);
 	slot->pss_cancel_key_len = cancel_key_len;
-	pg_atomic_write_u32(&slot->pss_pid, MyProcPid);
 
+	/*
+	 * pss_pid is set last, after all other fields are initialized, so that
+	 * anyone scanning the slots sees a fully initialized entry once pss_pid
+	 * becomes non-zero.  Since pss_pid is a pg_atomic_uint32, this write is
+	 * atomic and visible without holding pss_mutex.
+	 *
+	 * Note: we release the spinlock before setting pss_pid.  This is safe
+	 * because pss_pid is written last (after all fields it must be consistent
+	 * with are already set), and because pss_pid is itself an atomic type.
+	 * Any reader that sees pss_pid != 0 is guaranteed to observe all the
+	 * preceding field writes.
+	 */
 	SpinLockRelease(&slot->pss_mutex);
 
 	/* Spinlock is released, do the check */
 	if (old_pss_pid != 0)
 		elog(LOG, "process %d taking over ProcSignal slot %d, but it's not empty",
 			 MyProcPid, MyProcNumber);
+
+	/*
+	 * Injection point to help testing the race between EmitProcSignalBarrier
+	 * and ProcSignalInit.  A barrier emitted while we are paused here will
+	 * not send us SIGUSR1 (our pss_pid is still 0), yet after we set pss_pid
+	 * below, WaitForProcSignalBarrier will see our stale pss_barrierGeneration
+	 * and wait for us to catch up.
+	 */
+	INJECTION_POINT("procsignal-init-before-pid-set", NULL);
+
+	pg_atomic_write_u32(&slot->pss_pid, MyProcPid);
+
+	/*
+	 * A ProcSignalBarrier may have been emitted after we read
+	 * psh_barrierGeneration above but before we set pss_pid just now.  In
+	 * that case the barrier's SIGUSR1 loop didn't see our pss_pid (it was
+	 * still 0), so we won't receive a signal for it.  However,
+	 * WaitForProcSignalBarrier will now find our slot with a stale
+	 * pss_barrierGeneration and block waiting for us to catch up.
+	 *
+	 * Guard against this by re-reading the global generation.  If it has
+	 * advanced, update our local generation (skipping any callbacks, since
+	 * we're a fresh process with no cached state to invalidate) and broadcast
+	 * on our condition variable so any concurrent WaitForProcSignalBarrier
+	 * can stop waiting for us.
+	 */
+	{
+		uint64		current_gen =
+			pg_atomic_read_u64(&ProcSignal->psh_barrierGeneration);
+
+		if (current_gen > barrier_generation)
+		{
+			pg_atomic_write_u32(&slot->pss_barrierCheckMask, 0);
+			pg_atomic_write_u64(&slot->pss_barrierGeneration, current_gen);
+			ConditionVariableBroadcast(&slot->pss_barrierCV);
+		}
+	}
 
 	/* Remember slot location for CheckProcSignal */
 	MyProcSignalSlot = slot;
@@ -416,6 +465,15 @@ EmitProcSignalBarrier(ProcSignalBarrierType type)
 				SpinLockRelease(&slot->pss_mutex);
 		}
 	}
+
+	/*
+	 * Injection point to help testing the race between EmitProcSignalBarrier
+	 * and ProcSignalInit.  Pausing here allows a test to release a backend
+	 * that was stuck in ProcSignalInit (with pss_pid still 0 and therefore
+	 * not signaled above), so that it can set pss_pid before
+	 * WaitForProcSignalBarrier runs.
+	 */
+	INJECTION_POINT("emit-proc-signal-barrier-done", NULL);
 
 	return generation;
 }

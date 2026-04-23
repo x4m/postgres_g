@@ -26,6 +26,7 @@
 #include "storage/dsm_registry.h"
 #include "storage/ipc.h"
 #include "storage/lwlock.h"
+#include "storage/procsignal.h"
 #include "storage/shmem.h"
 #include "utils/builtins.h"
 #include "utils/guc.h"
@@ -585,4 +586,53 @@ _PG_init(void)
 		return;
 
 	RegisterShmemCallbacks(&injection_shmem_callbacks);
+}
+
+/*
+ * injection_points_emit_barrier
+ *
+ * Emit a ProcSignalBarrier of type SMGRRELEASE and return the barrier
+ * generation number.  This is a test-only helper to trigger the barrier
+ * mechanism from SQL without permanent side effects.
+ */
+PG_FUNCTION_INFO_V1(injection_points_emit_barrier);
+Datum
+injection_points_emit_barrier(PG_FUNCTION_ARGS)
+{
+	uint64		generation;
+
+	generation = EmitProcSignalBarrier(PROCSIGNAL_BARRIER_SMGRRELEASE);
+
+	PG_RETURN_INT64((int64) generation);
+}
+
+/*
+ * injection_points_wait_for_barrier
+ *
+ * Wait for the given barrier generation to be acknowledged by all backends.
+ * This is a test-only helper that can be used together with
+ * injection_points_emit_barrier() to reproduce and verify behavior around
+ * ProcSignalBarrier handling.
+ *
+ * The "procsignal-barrier-before-wait" injection point fires between the
+ * emit and the wait, letting tests interpose between the two steps.
+ */
+PG_FUNCTION_INFO_V1(injection_points_wait_for_barrier);
+Datum
+injection_points_wait_for_barrier(PG_FUNCTION_ARGS)
+{
+	int64		generation = PG_GETARG_INT64(0);
+
+	/*
+	 * Injection point between barrier emission and waiting.  A test can pause
+	 * here to allow a backend that was not yet visible during emission (its
+	 * pss_pid was 0) to set its pss_pid, thereby creating the race condition
+	 * where WaitForProcSignalBarrier will find a backend with a stale barrier
+	 * generation that never received SIGUSR1 for this barrier.
+	 */
+	INJECTION_POINT("procsignal-barrier-before-wait", NULL);
+
+	WaitForProcSignalBarrier((uint64) generation);
+
+	PG_RETURN_VOID();
 }

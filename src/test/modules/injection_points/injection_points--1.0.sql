@@ -108,3 +108,26 @@ CREATE FUNCTION removable_cutoff(rel regclass)
 RETURNS xid8
 AS 'MODULE_PATHNAME'
 LANGUAGE C CALLED ON NULL INPUT;
+
+--
+-- injection_points_emit_barrier()
+--
+-- Emits a ProcSignalBarrier of type SMGRRELEASE and returns the barrier
+-- generation number.  For testing purposes only.
+--
+CREATE FUNCTION injection_points_emit_barrier()
+RETURNS int8
+AS 'MODULE_PATHNAME', 'injection_points_emit_barrier'
+LANGUAGE C STRICT PARALLEL UNSAFE;
+
+--
+-- injection_points_wait_for_barrier(generation int8)
+--
+-- Waits for all backends to acknowledge the given barrier generation.
+-- Fires the 'procsignal-barrier-before-wait' injection point between the
+-- emit and the wait, allowing tests to control timing.  For testing only.
+--
+CREATE FUNCTION injection_points_wait_for_barrier(generation int8)
+RETURNS void
+AS 'MODULE_PATHNAME', 'injection_points_wait_for_barrier'
+LANGUAGE C STRICT PARALLEL UNSAFE;
