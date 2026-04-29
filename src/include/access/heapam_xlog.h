@@ -225,10 +225,21 @@ typedef struct xl_multi_insert_tuple
  *
  * HEAP_UPDATE_BLKREF_OLD: old page, if different. (no data, just a reference
  * to the block)
+ *
+ * HEAP_UPDATE_BLKREF_VM_NEW: VM page covering the new heap page. Registered
+ * when XLH_UPDATE_NEW_ALL_VISIBLE_CLEARED is set and the new heap page's VM
+ * bit was actually cleared. Also covers the old heap page's VM bits when both
+ * heap pages map to the same VM page.
+ *
+ * HEAP_UPDATE_BLKREF_VM_OLD: VM page covering the old heap page. Only
+ * registered when XLH_UPDATE_OLD_ALL_VISIBLE_CLEARED is set, the old heap
+ * page's VM bits are on a different VM page from the new heap page's, and the
+ * old heap page's VM bit was actually cleared.
  */
-
-#define HEAP_UPDATE_BLKREF_NEW        0
-#define HEAP_UPDATE_BLKREF_OLD        1
+#define HEAP_UPDATE_BLKREF_NEW		0
+#define HEAP_UPDATE_BLKREF_OLD		1
+#define HEAP_UPDATE_BLKREF_VM_NEW	2
+#define HEAP_UPDATE_BLKREF_VM_OLD	3
 
 typedef struct xl_heap_update
 {
