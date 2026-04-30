@@ -125,6 +125,8 @@ our $min_compat = 12;
 
 # list of file reservations made by get_free_port
 my @port_reservation_files;
+my @combinebackup_debug_logs;
+my %combinebackup_debug_logs_printed;
 
 # We want to choose a server port above the range that servers typically use
 # on Unix systems and below the range those systems typically use for ephemeral
@@ -898,7 +900,9 @@ pathnames that should be used for the target cluster.
 
 To restore from an incremental backup, pass the parameter combine_with_prior
 as a reference to an array of prior backup names with which this backup
-is to be combined using pg_combinebackup.
+is to be combined using pg_combinebackup.  pg_combinebackup is run with
+--debug, but the output is captured in a temporary file and only copied to the
+test log if pg_combinebackup fails or if a later test fails.
 
 Streaming replication can be enabled on this node by passing the keyword
 parameter has_streaming => 1. This is disabled by default.
@@ -964,7 +968,7 @@ sub init_from_backup
 		}
 		push @combineargs, @prior_backup_path, $backup_path,
 		  '--output' => $data_path;
-		PostgreSQL::Test::Utils::system_or_bail(@combineargs);
+		_run_pg_combinebackup_with_debug_log(@combineargs);
 	}
 	elsif (defined $params{tar_program})
 	{
@@ -1077,6 +1081,81 @@ port = $port
 	$self->enable_restoring($root_node, $params{standby})
 	  if $params{has_restoring};
 	return;
+}
+
+sub _run_pg_combinebackup_with_debug_log
+{
+	my (@cmd) = @_;
+	my $debug_log = PostgreSQL::Test::Utils::tempdir('pg_combinebackup') .
+	  '/debug.log';
+
+	push @combinebackup_debug_logs, $debug_log;
+
+	print("# Running: " . join(" ", @cmd) . "\n");
+	# If this pg_combinebackup invocation itself fails, print its captured
+	# output immediately. Successful invocations may still be printed later if
+	# some subsequent TAP assertion in this test script fails.
+	if (!IPC::Run::run(\@cmd, '&>' => $debug_log))
+	{
+		_print_pg_combinebackup_debug_log($debug_log);
+
+		if ($? == -1)
+		{
+			BAIL_OUT(
+				sprintf(
+					"failed to execute command \"%s\": $!", join(" ", @cmd)));
+		}
+		elsif ($? & 127)
+		{
+			BAIL_OUT(
+				sprintf(
+					"command \"%s\" died with signal %d",
+					join(" ", @cmd), $? & 127));
+		}
+		else
+		{
+			BAIL_OUT(
+				sprintf(
+					"command \"%s\" exited with value %d",
+					join(" ", @cmd), $? >> 8));
+		}
+	}
+}
+
+sub _print_pg_combinebackup_debug_log
+{
+	my ($debug_log) = @_;
+
+	return unless -e $debug_log;
+	return if $combinebackup_debug_logs_printed{$debug_log}++;
+
+	diag("pg_combinebackup debug output from $debug_log:\n" .
+	  PostgreSQL::Test::Utils::slurp_file($debug_log));
+}
+
+# Keep pg_combinebackup debug logs until test exit. If pg_combinebackup itself
+# fails, its log is printed at the failure site above. If pg_combinebackup
+# succeeds but a later TAP assertion fails, print the retained logs here so the
+# regress output includes the combine step that produced the restored state.
+# Remove the logs after a clean run.
+END
+{
+	# take care not to change the script's exit value
+	my $exit_code = $?;
+
+	if ($exit_code == 0 && PostgreSQL::Test::Utils::all_tests_passing())
+	{
+		unlink @combinebackup_debug_logs;
+	}
+	else
+	{
+		foreach my $debug_log (@combinebackup_debug_logs)
+		{
+			_print_pg_combinebackup_debug_log($debug_log);
+		}
+	}
+
+	$? = $exit_code;
 }
 
 =pod
