@@ -297,6 +297,7 @@ typedef struct
 static inline Size
 VARSIZE(const void *PTR)
 {
+	Assert(VARATT_IS_4B(PTR));
 	return VARSIZE_4B(PTR);
 }
 

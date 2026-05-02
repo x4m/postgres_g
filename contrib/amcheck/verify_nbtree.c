@@ -2888,8 +2888,14 @@ bt_normalize_tuple(BtreeCheckState *state, IndexTuple itup)
 							ItemPointerGetBlockNumber(&(itup->t_tid)),
 							ItemPointerGetOffsetNumber(&(itup->t_tid)),
 							RelationGetRelationName(state->rel))));
-		else if (!VARATT_IS_COMPRESSED(DatumGetPointer(normalized[i])) &&
-				 VARSIZE(DatumGetPointer(normalized[i])) > TOAST_INDEX_TARGET &&
+		else if (VARATT_IS_COMPRESSED(DatumGetPointer(normalized[i])))
+		{
+			formnewtup = true;
+			normalized[i] = PointerGetDatum(PG_DETOAST_DATUM(normalized[i]));
+			need_free[i] = true;
+		}
+		else if ((VARATT_IS_SHORT(DatumGetPointer(normalized[i])) ||
+				 VARSIZE(DatumGetPointer(normalized[i])) > TOAST_INDEX_TARGET) &&
 				 (att->attstorage == TYPSTORAGE_EXTENDED ||
 				  att->attstorage == TYPSTORAGE_MAIN))
 		{
@@ -2899,12 +2905,6 @@ bt_normalize_tuple(BtreeCheckState *state, IndexTuple itup)
 			 * was formed with different storage settings.  So, force forming.
 			 */
 			formnewtup = true;
-		}
-		else if (VARATT_IS_COMPRESSED(DatumGetPointer(normalized[i])))
-		{
-			formnewtup = true;
-			normalized[i] = PointerGetDatum(PG_DETOAST_DATUM(normalized[i]));
-			need_free[i] = true;
 		}
 
 		/*
