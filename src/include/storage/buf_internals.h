@@ -591,13 +591,14 @@ extern void TerminateBufferIO(BufferDesc *buf, bool clear_dirty, uint64 set_flag
 
 /* freelist.c */
 extern IOContext IOContextForStrategy(BufferAccessStrategy strategy);
-extern Buffer StrategyGetBuffer(BufferAccessStrategy strategy,
+extern Buffer GetBufferFromRing(BufferAccessStrategy strategy,
 								IOContext io_context);
-extern bool StrategyRejectBuffer(BufferAccessStrategy strategy,
-								 BufferDesc *buf, uint64 buf_state);
+extern void AddBufferToRing(BufferAccessStrategy strategy, Buffer bufnum);
+extern Buffer GetBufferFromClocksweep(IOContext io_context);
 
 extern int	StrategySyncStart(uint32 *complete_passes, uint32 *num_buf_alloc);
 extern void StrategyNotifyBgWriter(int bgwprocno);
+extern bool StrategyRejectBuffer(BufferAccessStrategy strategy, BufferDesc *buf, uint64 buf_state);
 
 /* buf_table.c */
 extern uint32 BufTableHashCode(BufferTag *tagPtr);

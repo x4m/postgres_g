@@ -2545,7 +2545,8 @@ InvalidateVictimBuffer(BufferDesc *buf_hdr)
  * Helper to claim a victim buffer -- which is invalidating its existing
  * contents (including flushing the old contents first if needed).
  * Returns true if it successfully claimed the victim buffer and false if it
- * failed to do so. Buffer must already be pinned.
+ * failed to do so. Buffer must already be pinned, but if we fail to claim it
+ * we will unpin it.
  */
 bool
 ClaimVictimBuffer(BufferAccessStrategy strategy,
@@ -2603,8 +2604,7 @@ ClaimVictimBuffer(BufferAccessStrategy strategy,
 		 * We need to hold the content lock in at least share-exclusive mode
 		 * to safely inspect the page LSN.
 		 */
-		if (strategy && from_ring &&
-			StrategyRejectBuffer(strategy, buf_hdr, buf_state))
+		if (from_ring && StrategyRejectBuffer(strategy, buf_hdr, buf_state))
 		{
 			UnlockReleaseBuffer(bufnum);
 			return false;
@@ -2649,11 +2649,19 @@ GetVictimBuffer(BufferAccessStrategy strategy, IOContext io_context)
 	ResourceOwnerEnlarge(CurrentResourceOwner);
 
 	/*
-	 * Select a victim buffer.  The buffer is returned pinned and owned by
-	 * this backend.
+	 * Select a victim buffer. The buffer is returned pinned and owned by this
+	 * backend and is already cleaned and invalidated.
 	 */
-	bufnum = StrategyGetBuffer(strategy, io_context);
+	if (strategy)
+		bufnum = GetBufferFromRing(strategy, io_context);
 
+	/* If no strategy or didn't find a strategy buffer, get one from SB */
+	if (!BufferIsValid(bufnum))
+	{
+		bufnum = GetBufferFromClocksweep(io_context);
+		if (strategy)
+			AddBufferToRing(strategy, bufnum);
+	}
 
 	/* a final set of sanity checks */
 #ifdef USE_ASSERT_CHECKING
@@ -4599,8 +4607,7 @@ FlushBuffer(BufferDesc *buf, SMgrRelation reln, IOObject io_object,
 	 * If a shared buffer which was added to the ring later because the
 	 * current strategy buffer is pinned or in use or because all strategy
 	 * buffers were dirty and rejected (for BAS_BULKREAD operations only)
-	 * requires flushing, this is counted as an IOCONTEXT_NORMAL IOOP_WRITE
-	 * (from_ring will be false).
+	 * requires flushing, this is counted as an IOCONTEXT_NORMAL IOOP_WRITE.
 	 *
 	 * When a strategy is not in use, the write can only be a "regular" write
 	 * of a dirty shared buffer (IOCONTEXT_NORMAL IOOP_WRITE).

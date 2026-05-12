@@ -96,13 +96,9 @@ typedef struct BufferAccessStrategyData
 
 
 /* Prototypes for internal functions */
-static BufferDesc *GetBufferFromRing(BufferAccessStrategy strategy,
-									 uint64 *buf_state);
-static void AddBufferToRing(BufferAccessStrategy strategy,
-							Buffer bufnum);
 
 /*
- * ClockSweepTick - Helper routine for StrategyGetBuffer()
+ * ClockSweepTick - Helper routine for GetBufferFromClocksweep()
  *
  * Move the clock hand one buffer ahead of its current position and return the
  * id of the buffer now under the hand.
@@ -167,72 +163,15 @@ ClockSweepTick(void)
 }
 
 /*
- * StrategyGetBuffer
- *
- *	Called by the bufmgr to get the next candidate buffer to use in
- *	GetVictimBuffer(). The only hard requirement GetVictimBuffer() has is that
- *	the selected buffer must not currently be pinned by anyone.
- *
- *	strategy is a BufferAccessStrategy object, or NULL for default strategy.
- *
- *	It is the callers responsibility to ensure the buffer ownership can be
- *	tracked via TrackNewBufferPin().
- *
- *	The buffer is pinned and marked as owned, using TrackNewBufferPin(),
- *	before returning.
+ *	Return a buffer from clock sweep, pinned and marked as owned using
+ *	TrackNewBufferPin(). It is the caller's responsibility to make sure the
+ *	buffer ownership can be tracked.
  */
 Buffer
-StrategyGetBuffer(BufferAccessStrategy strategy, IOContext io_context)
+GetBufferFromClocksweep(IOContext io_context)
 {
-	BufferDesc *buf;
-	Buffer		bufnum;
 	int			bgwprocno;
 	int			trycounter;
-	uint64		buf_state;
-	bool		buf_valid;
-
-	/*
-	 * If given a strategy object, see whether it can select a buffer. We
-	 * assume strategy objects don't need buffer_strategy_lock.
-	 */
-	if (strategy != NULL)
-	{
-		int			ring_tries;
-
-		/*
-		 * Don't loop around the ring forever. If we can't reuse any of the
-		 * ring buffers (e.g. because they are all concurrently locked), fall
-		 * back to the clock sweep after one full pass.
-		 */
-		for (ring_tries = 0; ring_tries < strategy->nbuffers; ring_tries++)
-		{
-			buf = GetBufferFromRing(strategy, &buf_state);
-			if (buf == NULL)
-				break;
-
-			bufnum = BufferDescriptorGetBuffer(buf);
-			/* Don't use a stale buf_state value after InvalidateVictimBuffer */
-			buf_valid = buf_state & BM_VALID;
-			if (ClaimVictimBuffer(strategy, buf, bufnum, buf_state,
-								  true, io_context))
-			{
-				/*
-				 * Blocks evicted from buffers already in the strategy ring
-				 * are counted as IOOP_REUSE in the corresponding strategy
-				 * context.
-				 *
-				 * We can only count this now that we've successfully claimed
-				 * the buffer and invalidated its previous tenant. Previously
-				 * we may have been forced to release the buffer due to
-				 * concurrent pinners or erroring out.
-				 */
-				if (buf_valid)
-					pgstat_count_io_op(IOOBJECT_RELATION, io_context,
-									   IOOP_REUSE, 1, 0);
-				return bufnum;
-			}
-		}
-	}
 
 	/*
 	 * If asked, we need to waken the bgwriter. Since we don't want to rely on
@@ -271,8 +210,11 @@ StrategyGetBuffer(BufferAccessStrategy strategy, IOContext io_context)
 	trycounter = NBuffers;
 	for (;;)
 	{
+		BufferDesc *buf;
+		Buffer		bufnum = InvalidBuffer;
 		uint64		old_buf_state;
-		uint64		local_buf_state;
+		uint64		buf_state;
+		bool		buf_valid;
 
 		buf = GetBufferDescriptor(ClockSweepTick());
 
@@ -283,7 +225,7 @@ StrategyGetBuffer(BufferAccessStrategy strategy, IOContext io_context)
 		old_buf_state = pg_atomic_read_u64(&buf->state);
 		for (;;)
 		{
-			local_buf_state = old_buf_state;
+			buf_state = old_buf_state;
 
 			/*
 			 * If the buffer is pinned or has a nonzero usage_count, we cannot
@@ -291,7 +233,7 @@ StrategyGetBuffer(BufferAccessStrategy strategy, IOContext io_context)
 			 * scanning.
 			 */
 
-			if (BUF_STATE_GET_REFCOUNT(local_buf_state) != 0)
+			if (BUF_STATE_GET_REFCOUNT(buf_state) != 0)
 			{
 				if (--trycounter == 0)
 				{
@@ -308,18 +250,18 @@ StrategyGetBuffer(BufferAccessStrategy strategy, IOContext io_context)
 			}
 
 			/* See equivalent code in PinBuffer() */
-			if (unlikely(local_buf_state & BM_LOCKED))
+			if (unlikely(buf_state & BM_LOCKED))
 			{
 				old_buf_state = WaitBufHdrUnlocked(buf);
 				continue;
 			}
 
-			if (BUF_STATE_GET_USAGECOUNT(local_buf_state) != 0)
+			if (BUF_STATE_GET_USAGECOUNT(buf_state) != 0)
 			{
-				local_buf_state -= BUF_USAGECOUNT_ONE;
+				buf_state -= BUF_USAGECOUNT_ONE;
 
 				if (pg_atomic_compare_exchange_u64(&buf->state, &old_buf_state,
-												   local_buf_state))
+												   buf_state))
 				{
 					trycounter = NBuffers;
 					break;
@@ -328,16 +270,14 @@ StrategyGetBuffer(BufferAccessStrategy strategy, IOContext io_context)
 			else
 			{
 				/* pin the buffer if the CAS succeeds */
-				local_buf_state += BUF_REFCOUNT_ONE;
+				buf_state += BUF_REFCOUNT_ONE;
 
 				if (pg_atomic_compare_exchange_u64(&buf->state, &old_buf_state,
-												   local_buf_state))
+												   buf_state))
 				{
 					/* Found a usable buffer */
-					buf_state = local_buf_state;
-
-					TrackNewBufferPin(BufferDescriptorGetBuffer(buf));
 					bufnum = BufferDescriptorGetBuffer(buf);
+					TrackNewBufferPin(bufnum);
 
 					/*
 					 * Don't use a stale buf_state value after
@@ -345,12 +285,7 @@ StrategyGetBuffer(BufferAccessStrategy strategy, IOContext io_context)
 					 */
 					buf_valid = buf_state & BM_VALID;
 
-					/*
-					 * If we can't claim the buffer (concurrent pin/dirty), go
-					 * back to the clock sweep to find another one. Don't add
-					 * a buffer we failed to claim to the strategy ring.
-					 */
-					if (ClaimVictimBuffer(strategy, buf, bufnum, buf_state,
+					if (ClaimVictimBuffer(NULL, buf, bufnum, buf_state,
 										  false, io_context))
 					{
 						/*
@@ -371,8 +306,6 @@ StrategyGetBuffer(BufferAccessStrategy strategy, IOContext io_context)
 						if (buf_valid)
 							pgstat_count_io_op(IOOBJECT_RELATION, io_context,
 											   IOOP_EVICT, 1, 0);
-						if (strategy != NULL)
-							AddBufferToRing(strategy, bufnum);
 						return bufnum;
 					}
 
@@ -426,8 +359,8 @@ StrategySyncStart(uint32 *complete_passes, uint32 *num_buf_alloc)
 /*
  * StrategyNotifyBgWriter -- set or clear allocation notification latch
  *
- * If bgwprocno isn't -1, the next invocation of StrategyGetBuffer will
- * set that latch.  Pass -1 to clear the pending notification before it
+ * If bgwprocno isn't -1, the next invocation of GetBufferFromClocksweep()
+ * will set that latch.  Pass -1 to clear the pending notification before it
  * happens.  This feature is used by the bgwriter process to wake itself up
  * from hibernation, and is not meant for anybody else to use.
  */
@@ -436,8 +369,8 @@ StrategyNotifyBgWriter(int bgwprocno)
 {
 	/*
 	 * We acquire buffer_strategy_lock just to ensure that the store appears
-	 * atomic to StrategyGetBuffer.  The bgwriter should call this rather
-	 * infrequently, so there's no performance penalty from being safe.
+	 * atomic to GetBufferFromClocksweep.  The bgwriter should call this
+	 * rather infrequently, so there's no performance penalty from being safe.
 	 */
 	SpinLockAcquire(&StrategyControl->buffer_strategy_lock);
 	StrategyControl->bgwprocno = bgwprocno;
@@ -680,90 +613,121 @@ FreeAccessStrategy(BufferAccessStrategy strategy)
 }
 
 /*
- * GetBufferFromRing -- returns a buffer from the ring, or NULL if the
- *		ring is empty / not usable.
+ * Returns a clean, invalidated buffer from the ring, or InvalidBuffer if the
+ * ring is empty or contains no usable buffers. In that case, the caller will
+ * select a buffer from the clocksweep and add it to the ring.
  *
  * The buffer is pinned and marked as owned, using TrackNewBufferPin(), before
- * returning.
+ * returning. It is the caller's responsibility to make sure the buffer
+ * ownership can be tracked.
  */
-static BufferDesc *
-GetBufferFromRing(BufferAccessStrategy strategy, uint64 *buf_state)
+Buffer
+GetBufferFromRing(BufferAccessStrategy strategy, IOContext io_context)
 {
-	BufferDesc *buf;
-	Buffer		bufnum;
-	uint64		old_buf_state;
-	uint64		local_buf_state;	/* to avoid repeated (de-)referencing */
-
-
-	/* Advance to next ring slot */
-	if (++strategy->current >= strategy->nbuffers)
-		strategy->current = 0;
+	Assert(strategy);
 
 	/*
-	 * If the slot hasn't been filled yet, tell the caller to allocate a new
-	 * buffer with the normal allocation strategy.  He will then fill this
-	 * slot by calling AddBufferToRing with the new buffer.
+	 * Don't loop around the ring forever if none of the strategy buffers meet
+	 * our criteria.
 	 */
-	bufnum = strategy->buffers[strategy->current];
-	if (bufnum == InvalidBuffer)
-		return NULL;
-
-	buf = GetBufferDescriptor(bufnum - 1);
-
-	/*
-	 * Check whether the buffer can be used and pin it if so. Do this using a
-	 * CAS loop, to avoid having to lock the buffer header.
-	 */
-	old_buf_state = pg_atomic_read_u64(&buf->state);
-	for (;;)
+	for (int trycounter = 0; trycounter < strategy->nbuffers; trycounter++)
 	{
-		local_buf_state = old_buf_state;
+		BufferDesc *buf;
+		Buffer		bufnum;
+		uint64		old_buf_state;
+		uint64		buf_state;
+		bool		buf_valid;
+
+		/* Advance to next ring slot */
+		if (++strategy->current >= strategy->nbuffers)
+			strategy->current = 0;
 
 		/*
-		 * If the buffer is pinned we cannot use it under any circumstances.
-		 *
-		 * If usage_count is 0 or 1 then the buffer is fair game (we expect 1,
-		 * since our own previous usage of the ring element would have left it
-		 * there, but it might've been decremented by clock-sweep since then).
-		 * A higher usage_count indicates someone else has touched the buffer,
-		 * so we shouldn't re-use it.
+		 * If the slot hasn't been filled yet, tell the caller to allocate a
+		 * new buffer with the normal allocation strategy. He will then fill
+		 * this slot by calling AddBufferToRing with the new buffer.
 		 */
-		if (BUF_STATE_GET_REFCOUNT(local_buf_state) != 0
-			|| BUF_STATE_GET_USAGECOUNT(local_buf_state) > 1)
-			break;
+		bufnum = strategy->buffers[strategy->current];
+		if (bufnum == InvalidBuffer)
+			return InvalidBuffer;
 
-		/* See equivalent code in PinBuffer() */
-		if (unlikely(local_buf_state & BM_LOCKED))
+		buf = GetBufferDescriptor(bufnum - 1);
+
+		/*
+		 * Check whether the buffer can be used and pin it if so. Do this
+		 * using a CAS loop, to avoid having to lock the buffer header.
+		 */
+		old_buf_state = pg_atomic_read_u64(&buf->state);
+		for (;;)
 		{
-			old_buf_state = WaitBufHdrUnlocked(buf);
-			continue;
+			buf_state = old_buf_state;
+
+			/*
+			 * If the buffer is pinned we cannot use it under any
+			 * circumstances.
+			 *
+			 * If usage_count is 0 or 1 then the buffer is fair game (we
+			 * expect 1, since our own previous usage of the ring element
+			 * would have left it there, but it might've been decremented by
+			 * clock-sweep since then). A higher usage_count indicates someone
+			 * else has touched the buffer, so we shouldn't re-use it.
+			 */
+			if (BUF_STATE_GET_REFCOUNT(buf_state) != 0
+				|| BUF_STATE_GET_USAGECOUNT(buf_state) > 1)
+				return InvalidBuffer;
+
+			/* See equivalent code in PinBuffer() */
+			if (unlikely(buf_state & BM_LOCKED))
+			{
+				old_buf_state = WaitBufHdrUnlocked(buf);
+				continue;
+			}
+
+			/* pin the buffer if the CAS succeeds */
+			buf_state += BUF_REFCOUNT_ONE;
+
+			/* if we can't change state, keep trying */
+			if (pg_atomic_compare_exchange_u64(&buf->state, &old_buf_state,
+											   buf_state))
+			{
+				/* got a pin */
+				TrackNewBufferPin(BufferDescriptorGetBuffer(buf));
+				break;
+			}
 		}
 
-		/* pin the buffer if the CAS succeeds */
-		local_buf_state += BUF_REFCOUNT_ONE;
+		/* Don't use a stale buf_state value after InvalidateVictimBuffer */
+		buf_valid = buf_state & BM_VALID;
 
-		if (pg_atomic_compare_exchange_u64(&buf->state, &old_buf_state,
-										   local_buf_state))
+		if (ClaimVictimBuffer(strategy, buf, bufnum, buf_state, true, io_context))
 		{
-			*buf_state = local_buf_state;
-
-			TrackNewBufferPin(BufferDescriptorGetBuffer(buf));
-			return buf;
+			/*
+			 * Blocks evicted from buffers already in the strategy ring are
+			 * counted as IOOP_REUSE in the corresponding strategy context.
+			 *
+			 * We can only count this now that we've successfully claimed the
+			 * buffer and invalidated its previous tenant. Previously we may
+			 * have been forced to release the buffer due to concurrent
+			 * pinners or erroring out.
+			 */
+			if (buf_valid)
+				pgstat_count_io_op(IOOBJECT_RELATION, io_context, IOOP_REUSE, 1, 0);
+			return bufnum;
 		}
 	}
 
 	/*
 	 * Tell caller to allocate a new buffer with the normal allocation
-	 * strategy.  He'll then replace this ring element via AddBufferToRing.
+	 * strategy. He'll then replace this ring element via AddBufferToRing.
 	 */
-	return NULL;
+	return InvalidBuffer;
 }
 
 /*
  * Records the buffer in the current ring slot. The caller must have already
  * pinned the buffer and invalidated its previous contents.
  */
-static void
+void
 AddBufferToRing(BufferAccessStrategy strategy, Buffer bufnum)
 {
 	strategy->buffers[strategy->current] = bufnum;
