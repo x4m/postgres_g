@@ -853,6 +853,42 @@ mdmaxcombine(SMgrRelation reln, ForkNumber forknum,
 }
 
 /*
+ * Return the start and end block numbers of the segment containing blocknum,
+ * clamped to the current relation fork size.
+ */
+bool
+mdblockbounds(SMgrRelation reln, ForkNumber forknum, BlockNumber blocknum,
+			  BlockNumber *start, BlockNumber *end)
+{
+	BlockNumber nblocks;
+	BlockNumber max_block;
+	BlockNumber segstart;
+	BlockNumber segend;
+
+	nblocks = mdnblocks(reln, forknum);
+	if (nblocks == 0 || blocknum >= nblocks)
+		return false;
+
+	max_block = nblocks - 1;
+	segstart = (blocknum / ((BlockNumber) RELSEG_SIZE)) *
+		((BlockNumber) RELSEG_SIZE);
+	segend = segstart + ((BlockNumber) RELSEG_SIZE - 1);
+
+	/*
+	 * segend is how big the relation fork could be, but if it is the last
+	 * segment of the relation, it may not be full. Be sure segend does not
+	 * exceed the size of the relation.
+	 */
+	if (segend > max_block)
+		segend = max_block;
+
+	*start = segstart;
+	*end = segend;
+
+	return true;
+}
+
+/*
  * mdreadv() -- Read the specified blocks from a relation.
  */
 void

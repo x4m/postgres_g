@@ -104,6 +104,9 @@ typedef struct f_smgr
 								  BlockNumber blocknum, int nblocks);
 	uint32		(*smgr_maxcombine) (SMgrRelation reln, ForkNumber forknum,
 									BlockNumber blocknum);
+	bool		(*smgr_blockbounds) (SMgrRelation reln, ForkNumber forknum,
+									 BlockNumber blocknum,
+									 BlockNumber *start, BlockNumber *end);
 	void		(*smgr_readv) (SMgrRelation reln, ForkNumber forknum,
 							   BlockNumber blocknum,
 							   void **buffers, BlockNumber nblocks);
@@ -139,6 +142,7 @@ static const f_smgr smgrsw[] = {
 		.smgr_zeroextend = mdzeroextend,
 		.smgr_prefetch = mdprefetch,
 		.smgr_maxcombine = mdmaxcombine,
+		.smgr_blockbounds = mdblockbounds,
 		.smgr_readv = mdreadv,
 		.smgr_startreadv = mdstartreadv,
 		.smgr_writev = mdwritev,
@@ -701,6 +705,26 @@ smgrmaxcombine(SMgrRelation reln, ForkNumber forknum,
 
 	HOLD_INTERRUPTS();
 	ret = smgrsw[reln->smgr_which].smgr_maxcombine(reln, forknum, blocknum);
+	RESUME_INTERRUPTS();
+
+	return ret;
+}
+
+/*
+ * Return the start and end block numbers of the storage manager's combinable
+ * range containing blocknum.
+ *
+ * Returns false if blocknum is not within the current relation fork size.
+ */
+bool
+smgrblockbounds(SMgrRelation reln, ForkNumber forknum, BlockNumber blocknum,
+				BlockNumber *start, BlockNumber *end)
+{
+	bool		ret;
+
+	HOLD_INTERRUPTS();
+	ret = smgrsw[reln->smgr_which].smgr_blockbounds(reln, forknum, blocknum,
+													start, end);
 	RESUME_INTERRUPTS();
 
 	return ret;
