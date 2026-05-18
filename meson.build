@@ -3167,6 +3167,8 @@ dl_dep = cc.find_library('dl', required: false)
 
 util_dep = cc.find_library('util', required: false)
 
+anl_dep = cc.find_library('anl', required: false)
+
 getopt_dep = cc.find_library('getopt', required: false)
 gnugetopt_dep = cc.find_library('gnugetopt', required: false)
 # Check if we want to replace getopt/getopt_long even if provided by the system
@@ -3208,6 +3210,7 @@ func_checks = [
   ['elf_aux_info'],
   ['explicit_bzero'],
   ['explicit_memset'],
+  ['getaddrinfo_a', {'dependencies': [anl_dep]}],
   ['getauxval'],
   ['getifaddrs'],
   ['getopt', {'dependencies': [getopt_dep, gnugetopt_dep], 'skip': always_replace_getopt}],

@@ -65,8 +65,30 @@ pg_getaddrinfo_all(const char *hostname, const char *servname,
 		return getaddrinfo_unix(servname, hintp, result);
 
 	/* NULL has special meaning to getaddrinfo(). */
-	rc = getaddrinfo((!hostname || hostname[0] == '\0') ? NULL : hostname,
-					 servname, hintp, result);
+	hostname = (!hostname || hostname[0] == '\0') ? NULL : hostname;
+
+#if defined(HAVE_GETADDRINFO_A)
+	{
+		struct gaicb cb = {
+			.ar_name = hostname,
+			.ar_service = servname,
+			.ar_request = hintp,
+		};
+		struct gaicb *cb_list[] = {&cb};
+
+		rc = getaddrinfo_a(GAI_WAIT, cb_list, lengthof(cb_list), NULL);
+		if (rc)
+			return rc;			/* TODO: it may be useful to fall back? */
+
+		rc = gai_error(&cb);
+		if (rc)
+			return rc;
+
+		*result = cb.ar_result;
+	}
+#else
+	rc = getaddrinfo(hostname, servname, hintp, result);
+#endif
 
 	return rc;
 }
