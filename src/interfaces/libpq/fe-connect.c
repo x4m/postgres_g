@@ -466,6 +466,7 @@ static PGPing internal_ping(PGconn *conn);
 static void pqFreeCommandQueue(PGcmdQueueEntry *queue);
 static bool fillPGconn(PGconn *conn, PQconninfoOption *connOptions);
 static void freePGconn(PGconn *conn);
+static int	resolve_next_host(PGconn *conn);
 static void release_conn_addrinfo(PGconn *conn);
 static int	store_conn_addrinfo(PGconn *conn, struct addrinfo *addrlist);
 static void sendTerminateConn(PGconn *conn);
@@ -3001,131 +3002,18 @@ keep_going:						/* We will come back to here until there is
 	/* Time to advance to next connhost[] entry? */
 	if (conn->try_next_host)
 	{
-		pg_conn_host *ch;
-		struct addrinfo hint;
-		struct addrinfo *addrlist;
-		int			thisport;
 		int			ret;
-		char		portstr[MAXPGPATH];
-
-		if (conn->whichhost + 1 < conn->nconnhost)
-			conn->whichhost++;
-		else
-		{
-			/*
-			 * Oops, no more hosts.
-			 *
-			 * If we are trying to connect in "prefer-standby" mode, then drop
-			 * the standby requirement and start over. Don't do this for
-			 * cancel requests though, since we are certain the list of
-			 * servers won't change as the target_server_type option is not
-			 * applicable to those connections.
-			 *
-			 * Otherwise, an appropriate error message is already set up, so
-			 * we just need to set the right status.
-			 */
-			if (conn->target_server_type == SERVER_TYPE_PREFER_STANDBY &&
-				conn->nconnhost > 0 &&
-				!conn->cancelRequest)
-			{
-				conn->target_server_type = SERVER_TYPE_PREFER_STANDBY_PASS2;
-				conn->whichhost = 0;
-			}
-			else
-				goto error_return;
-		}
-
-		/* Drop any address info for previous host */
-		release_conn_addrinfo(conn);
 
 		/*
 		 * Look up info for the new host.  On failure, log the problem in
 		 * conn->errorMessage, then loop around to try the next host.  (Note
 		 * we don't clear try_next_host until we've succeeded.)
 		 */
-		ch = &conn->connhost[conn->whichhost];
-
-		/* Initialize hint structure */
-		MemSet(&hint, 0, sizeof(hint));
-		hint.ai_socktype = SOCK_STREAM;
-		hint.ai_family = AF_UNSPEC;
-
-		/* Figure out the port number we're going to use. */
-		if (ch->port == NULL || ch->port[0] == '\0')
-			thisport = DEF_PGPORT;
-		else
-		{
-			if (!pqParseIntParam(ch->port, &thisport, conn, "port"))
-				goto error_return;
-
-			if (thisport < 1 || thisport > 65535)
-			{
-				libpq_append_conn_error(conn, "invalid port number: \"%s\"", ch->port);
-				goto keep_going;
-			}
-		}
-		snprintf(portstr, sizeof(portstr), "%d", thisport);
-
-		/* Use pg_getaddrinfo_all() to resolve the address */
-		switch (ch->type)
-		{
-			case CHT_HOST_NAME:
-				ret = pg_getaddrinfo_all(ch->host, portstr, &hint,
-										 &addrlist);
-				if (ret || !addrlist)
-				{
-					libpq_append_conn_error(conn, "could not translate host name \"%s\" to address: %s",
-											ch->host, gai_strerror(ret));
-					goto keep_going;
-				}
-				break;
-
-			case CHT_HOST_ADDRESS:
-				hint.ai_flags = AI_NUMERICHOST;
-				ret = pg_getaddrinfo_all(ch->hostaddr, portstr, &hint,
-										 &addrlist);
-				if (ret || !addrlist)
-				{
-					libpq_append_conn_error(conn, "could not parse network address \"%s\": %s",
-											ch->hostaddr, gai_strerror(ret));
-					goto keep_going;
-				}
-				break;
-
-			case CHT_UNIX_SOCKET:
-				hint.ai_family = AF_UNIX;
-				UNIXSOCK_PATH(portstr, thisport, ch->host);
-				if (strlen(portstr) >= UNIXSOCK_PATH_BUFLEN)
-				{
-					libpq_append_conn_error(conn, "Unix-domain socket path \"%s\" is too long (maximum %zu bytes)",
-											portstr,
-											(UNIXSOCK_PATH_BUFLEN - 1));
-					goto keep_going;
-				}
-
-				/*
-				 * NULL hostname tells pg_getaddrinfo_all to parse the service
-				 * name as a Unix-domain socket path.
-				 */
-				ret = pg_getaddrinfo_all(NULL, portstr, &hint,
-										 &addrlist);
-				if (ret || !addrlist)
-				{
-					libpq_append_conn_error(conn, "could not translate Unix-domain socket path \"%s\" to address: %s",
-											portstr, gai_strerror(ret));
-					goto keep_going;
-				}
-				break;
-		}
-
-		/*
-		 * Store a copy of the addrlist in private memory so we can perform
-		 * randomization for load balancing.
-		 */
-		ret = store_conn_addrinfo(conn, addrlist);
-		pg_freeaddrinfo_all(hint.ai_family, addrlist);
-		if (ret)
-			goto error_return;	/* message already logged */
+		ret = resolve_next_host(conn);
+		if (ret > 0)			/* non-fatal error; continue */
+			goto keep_going;
+		else if (ret < 0)		/* internal error, alloc failure, etc. */
+			goto error_return;
 
 		/*
 		 * If random load balancing is enabled we shuffle the addresses.
@@ -5206,6 +5094,140 @@ pqReleaseConnHosts(PGconn *conn)
 		free(conn->connhost);
 		conn->connhost = NULL;
 	}
+}
+
+/*
+ * Resolves the network addresses for the next pg_conn_host, advancing
+ * conn->whichhost as necessary, and stores them in the conn->addr array.
+ * Returns zero on success, positive for a host-specific failure (in which case
+ * we may attempt to resolve the next host, if any), and negative for a fatal
+ * error.
+ */
+static int
+resolve_next_host(PGconn *conn)
+{
+	pg_conn_host *ch;
+	struct addrinfo hint;
+	struct addrinfo *addrlist;
+	int			thisport;
+	int			ret;
+	char		portstr[MAXPGPATH];
+
+	if (conn->whichhost + 1 < conn->nconnhost)
+		conn->whichhost++;
+	else
+	{
+		/*
+		 * Oops, no more hosts.
+		 *
+		 * If we are trying to connect in "prefer-standby" mode, then drop the
+		 * standby requirement and start over. Don't do this for cancel
+		 * requests though, since we are certain the list of servers won't
+		 * change as the target_server_type option is not applicable to those
+		 * connections.
+		 *
+		 * Otherwise, an appropriate error message is already set up, so we
+		 * just need to set the right status.
+		 */
+		if (conn->target_server_type == SERVER_TYPE_PREFER_STANDBY &&
+			conn->nconnhost > 0 &&
+			!conn->cancelRequest)
+		{
+			conn->target_server_type = SERVER_TYPE_PREFER_STANDBY_PASS2;
+			conn->whichhost = 0;
+		}
+		else
+			return -1;
+	}
+
+	/* Drop any address info for previous host */
+	release_conn_addrinfo(conn);
+
+	ch = &conn->connhost[conn->whichhost];
+
+	/* Initialize hint structure */
+	MemSet(&hint, 0, sizeof(hint));
+	hint.ai_socktype = SOCK_STREAM;
+	hint.ai_family = AF_UNSPEC;
+
+	/* Figure out the port number we're going to use. */
+	if (ch->port == NULL || ch->port[0] == '\0')
+		thisport = DEF_PGPORT;
+	else
+	{
+		if (!pqParseIntParam(ch->port, &thisport, conn, "port"))
+			return -1;
+
+		if (thisport < 1 || thisport > 65535)
+		{
+			libpq_append_conn_error(conn, "invalid port number: \"%s\"", ch->port);
+			return 1;
+		}
+	}
+	snprintf(portstr, sizeof(portstr), "%d", thisport);
+
+	/* Use pg_getaddrinfo_all() to resolve the address */
+	switch (ch->type)
+	{
+		case CHT_HOST_NAME:
+			ret = pg_getaddrinfo_all(ch->host, portstr, &hint,
+									 &addrlist);
+			if (ret || !addrlist)
+			{
+				libpq_append_conn_error(conn, "could not translate host name \"%s\" to address: %s",
+										ch->host, gai_strerror(ret));
+				return 1;
+			}
+			break;
+
+		case CHT_HOST_ADDRESS:
+			hint.ai_flags = AI_NUMERICHOST;
+			ret = pg_getaddrinfo_all(ch->hostaddr, portstr, &hint,
+									 &addrlist);
+			if (ret || !addrlist)
+			{
+				libpq_append_conn_error(conn, "could not parse network address \"%s\": %s",
+										ch->hostaddr, gai_strerror(ret));
+				return 1;
+			}
+			break;
+
+		case CHT_UNIX_SOCKET:
+			hint.ai_family = AF_UNIX;
+			UNIXSOCK_PATH(portstr, thisport, ch->host);
+			if (strlen(portstr) >= UNIXSOCK_PATH_BUFLEN)
+			{
+				libpq_append_conn_error(conn, "Unix-domain socket path \"%s\" is too long (maximum %zu bytes)",
+										portstr,
+										(UNIXSOCK_PATH_BUFLEN - 1));
+				return 1;
+			}
+
+			/*
+			 * NULL hostname tells pg_getaddrinfo_all to parse the service
+			 * name as a Unix-domain socket path.
+			 */
+			ret = pg_getaddrinfo_all(NULL, portstr, &hint,
+									 &addrlist);
+			if (ret || !addrlist)
+			{
+				libpq_append_conn_error(conn, "could not translate Unix-domain socket path \"%s\" to address: %s",
+										portstr, gai_strerror(ret));
+				return 1;
+			}
+			break;
+	}
+
+	/*
+	 * Store a copy of the addrlist in private memory so we can perform
+	 * randomization for load balancing.
+	 */
+	ret = store_conn_addrinfo(conn, addrlist);
+	pg_freeaddrinfo_all(hint.ai_family, addrlist);
+	if (ret)
+		return -1;				/* message already logged */
+
+	return 0;
 }
 
 /*
