@@ -114,6 +114,7 @@ typedef enum
 								 * started.  */
 	CONNECTION_AUTHENTICATING,	/* Authentication is in progress with some
 								 * external system. */
+	CONNECTION_AWAITING_HOST,	/* Waiting for a getaddrinfo/DNS response. */
 } ConnStatusType;
 
 typedef enum

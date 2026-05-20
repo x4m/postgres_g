@@ -23,6 +23,10 @@
 #include "postgres_fe.h"
 #endif
 
+#if defined(HAVE_GETADDRINFO_A)
+#define ASYNC_LOOKUP_SUPPORTED
+#endif
+
 #include <unistd.h>
 #include <sys/stat.h>
 #include <sys/socket.h>
@@ -32,9 +36,13 @@
 #include <arpa/inet.h>
 #include <sys/file.h>
 
+#ifdef ASYNC_LOOKUP_SUPPORTED
+#include <pthread.h>
+#include <signal.h>
+#include <stdatomic.h>
+#endif
+
 #include "common/ip.h"
-
-
 
 static int	getaddrinfo_unix(const char *path,
 							 const struct addrinfo *hintsp,
@@ -93,6 +101,264 @@ pg_getaddrinfo_all(const char *hostname, const char *servname,
 	return rc;
 }
 
+struct async_lookup_ctx
+{
+	atomic_int_fast8_t refcnt;	/* reference count for the allocation */
+
+	struct gaicb cb;			/* the getattrinfo() call description */
+	char	   *hostname;
+	char	   *servname;
+	struct addrinfo *hintp;
+
+	int			self_pipe;		/* write end of the pipe waking up select() */
+};
+
+static void
+release_async_lookup_ctx(struct async_lookup_ctx *ctx)
+{
+	if (atomic_fetch_sub(&ctx->refcnt, 1) != 1)
+		return;
+
+	free(ctx->hostname);
+	free(ctx->servname);
+	free(ctx->hintp);
+	free(ctx);
+}
+
+static void
+lookup_finished(union sigval val)
+{
+	struct async_lookup_ctx *ctx = val.sival_ptr;
+
+	close(ctx->self_pipe);		/* wake up any select()ors */
+
+	release_async_lookup_ctx(ctx);
+}
+
+/*
+ *	pg_getaddrinfo_all_async - get address info for Unix, IPv4 and IPv6 sockets,
+ *	possibly asynchronously
+ *
+ * If async DNS is supported for the given arguments on this platform, address
+ * lookup will be queued in the background.  If successful, *async will be set
+ * to a non-NULL pointer, which must be passed to pg_getaddrinfo_all_finish() to
+ * retrieve the results. Otherwise, *async will be set to NULL and the function
+ * will behave identically to pg_getaddrinfo_all().
+ *
+ * (TODO: intentionally fall back to sync if queuing fails?)
+ *
+ * As with pg_getaddrinfo_all(), hintp is mandatory.
+ *
+ * self_pipe must be the write side of an fd pair that will be used to wake up
+ * any select/poll clients once resolution completes. If the return code is zero
+ * and *async is set to non-NULL upon return, then ownership of this file
+ * descriptor has been passed to a background thread; it MUST NOT be written to,
+ * duplicated, or closed by the caller. (If the return code is nonzero, or if
+ * *async is NULL on return, ownership remains with the caller: the request has
+ * either completed or failed synchronously, and nothing needs to write to the
+ * pipe in that case.)
+ */
+int
+pg_getaddrinfo_all_async(const char *hostname, const char *servname,
+						 const struct addrinfo *hintp, struct addrinfo **result,
+						 int self_pipe, void **async)
+{
+#ifdef ASYNC_LOOKUP_SUPPORTED
+	int			rc;
+	struct async_lookup_ctx *ctx;
+	struct gaicb *cb_list[1];
+	struct sigevent sev = {0};
+	pthread_attr_t attrs;
+
+	*result = NULL;
+	*async = NULL;
+
+	if (hintp->ai_family == AF_UNIX)
+	{
+		/* AF_UNIX lookup is nonblocking; defer to pg_getaddrinfo_all(). */
+		return pg_getaddrinfo_all(hostname, servname, hintp, result);
+	}
+
+	/* ctx holds all our asynchronous state. */
+	ctx = calloc(1, sizeof(struct async_lookup_ctx));
+	if (!ctx)
+		return EAI_MEMORY;
+
+	/* (match pg_getaddrinfo_all behavior) */
+	hostname = (!hostname || hostname[0] == '\0') ? NULL : hostname;
+
+	/* Make copies of our inputs, since they may be stack-allocated. */
+	if (hostname)
+		ctx->hostname = strdup(hostname);
+	if (servname)
+		ctx->servname = strdup(servname);
+	ctx->hintp = malloc(sizeof(*hintp));
+
+	if (!ctx->hostname || !ctx->servname || !ctx->hintp)
+	{
+		rc = EAI_MEMORY;
+		goto fail;
+	}
+
+	memcpy(ctx->hintp, hintp, sizeof(*hintp));
+
+	/*
+	 * ctx->cb corresponds to the getaddrinfo() arguments. ctx->cb.ar_result
+	 * will be set upon completion and doesn't need to be initialized.
+	 */
+	ctx->cb.ar_name = ctx->hostname;
+	ctx->cb.ar_service = ctx->servname;
+	ctx->cb.ar_request = ctx->hintp;
+
+	/* The notification thread will close this, if async queueing succeeds. */
+	ctx->self_pipe = self_pipe;
+
+	/* Set the refcount to 2 (pg_getaddrinfo_all_finish + lookup_finished). */
+	atomic_init(&ctx->refcnt, 2);
+
+	cb_list[0] = &ctx->cb;
+
+	/*
+	 * Set up lookup_finished as our notification callback. It will be called
+	 * from the background, on an unspecified thread.
+	 */
+	sev.sigev_notify = SIGEV_THREAD;
+	sev.sigev_value.sival_ptr = ctx;
+	sev.sigev_notify_function = lookup_finished;
+
+	/*
+	 * XXX: possibly-pointless paranoia. getaddrinfo_a takes a list of
+	 * optional thread attributes for the SIGEV_THREAD notification mode. The
+	 * default list of attributes isn't documented (but it is *not* the same
+	 * as the default pthread_attr_t!). In particular, we want to make sure
+	 * that these tiny ephemeral threads are detached, not joinable.
+	 *
+	 * In practice, if you pass NULL, glibc does indeed assume that you want
+	 * detachable threads as of 2026. But it feels dangerous to implicitly
+	 * rely on that very important detail...
+	 *
+	 * TODO: possibly pull down the stack size? Anything else?
+	 */
+	if (pthread_attr_init(&attrs)
+		|| pthread_attr_setdetachstate(&attrs, PTHREAD_CREATE_DETACHED))
+	{
+		/*
+		 * Documented to be impossible in the glibc implementation, but if the
+		 * impossible happens anyway, errno should contain the failure mode.
+		 */
+		rc = EAI_SYSTEM;
+		goto fail;
+	}
+
+	sev.sigev_notify_attributes = &attrs;
+
+	/* Setup complete; queue our async request. */
+	rc = getaddrinfo_a(GAI_NOWAIT, cb_list, lengthof(cb_list), &sev);
+	if (rc)
+		goto fail;				/* TODO: it may be useful to fall back? */
+
+	/*
+	 * Past this point, we race against the notification thread, which touches
+	 * the contents of ctx. Nothing is allowed to free ctx without going
+	 * through the refcount, and nothing is allowed to touch self_pipe except
+	 * the notification thread.
+	 */
+	*async = ctx;
+	return 0;
+
+fail:
+	free(ctx->hostname);
+	free(ctx->servname);
+	free(ctx->hintp);
+	free(ctx);
+
+	return rc;
+
+#else							/* !ASYNC_LOOKUP_SUPPORTED */
+	*async = NULL;
+	return pg_getaddrinfo_all(hostname, servname, hintp, result);
+#endif
+}
+
+/*
+ * Finish a started call to pg_getaddrinfo_all_async(). This is only relevant if
+ * the async pointer was set by that call, but it MUST be called to release the
+ * allocated resources, even if the database connection has failed for some
+ * other reason. That resource cleanup may complete at some unspecified point in
+ * the future; we don't wait for it here.
+ *
+ * async is the pointer that was provided by pg_getaddrinfo_all_async(). Its
+ * contents must not be touched after this call, because a concurrent thread may
+ * free it without warning.
+ *
+ * If the background lookup request has finished, the (optional) result array
+ * will be pointed to the fetched information. The return code matches the
+ * behavior of getaddrinfo: zero on success, or a non-zero EAI_* code on
+ * failure.
+ *
+ * If the request hasn't finished by this point, we will attempt to cancel it.
+ * (Even if the request cannot be canceled, the outstanding resources will be
+ * released once it completes.) *result will be set to NULL, and a relevant
+ * EAI_* code is returned.
+ *
+ * TODO: test the failure mode where many outstanding uncancellable requests
+ * pile up (high DNS latency?)
+ */
+int
+pg_getaddrinfo_all_finish(void *async, struct addrinfo **result)
+{
+	struct async_lookup_ctx *ctx = async;
+	int			rc;
+
+	if (result)
+		*result = NULL;
+
+	/* First figure out the current state of things. */
+	rc = gai_cancel(&ctx->cb);
+	switch (rc)
+	{
+		case EAI_CANCELED:
+
+			/*
+			 * We have successfully removed the DNS request from the queue.
+			 * The notification callback will still be invoked and we are
+			 * actively racing against it now.
+			 *
+			 * TODO: is this true? *Will* the callback be invoked?
+			 */
+			Assert(false);		/* TODO when does this happen? */
+			break;
+
+		case EAI_NOTCANCELED:
+
+			/*
+			 * The DNS request is already in flight. We are racing against
+			 * both its manipulation of ctx->cb and the notification thread
+			 * (once lookup completes), but we won't wait for its results.
+			 */
+			break;
+
+		case EAI_ALLDONE:
+
+			/*
+			 * The request has finished, and we can take a look at the result.
+			 * But we're *still* racing against the notification thread! We
+			 * must not assume that it's already done with the ctx pointer.
+			 */
+			rc = gai_error(&ctx->cb);
+			if (!rc && result)
+				*result = ctx->cb.ar_result;
+			break;
+
+		default:
+			/* Still want to clean up, but this should not be possible. */
+			Assert(false);
+	}
+
+	release_async_lookup_ctx(ctx);
+
+	return rc;
+}
 
 /*
  *	pg_freeaddrinfo_all - free addrinfo structures for IPv4, IPv6, or Unix

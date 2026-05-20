@@ -527,7 +527,8 @@ struct pg_conn
 										 * know which auth response we're
 										 * sending */
 
-	/* Callbacks for external async authentication */
+	/* Support for external async requests (DNS, authn, etc.) */
+	void	   *async_dns_ctx;
 	PostgresPollingStatusType (*async_auth) (PGconn *conn);
 	void		(*cleanup_async_auth) (PGconn *conn);
 	pgsocket	altsock;		/* alternative socket for client to poll */

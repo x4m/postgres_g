@@ -23,6 +23,11 @@
 extern int	pg_getaddrinfo_all(const char *hostname, const char *servname,
 							   const struct addrinfo *hintp,
 							   struct addrinfo **result);
+extern int	pg_getaddrinfo_all_async(const char *hostname, const char *servname,
+									 const struct addrinfo *hintp,
+									 struct addrinfo **result, pgsocket altsock,
+									 void **async);
+extern int	pg_getaddrinfo_all_finish(void *async, struct addrinfo **result);
 extern void pg_freeaddrinfo_all(int hint_ai_family, struct addrinfo *ai);
 
 extern int	pg_getnameinfo_all(const struct sockaddr_storage *addr, int salen,

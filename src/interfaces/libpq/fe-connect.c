@@ -466,7 +466,8 @@ static PGPing internal_ping(PGconn *conn);
 static void pqFreeCommandQueue(PGcmdQueueEntry *queue);
 static bool fillPGconn(PGconn *conn, PQconninfoOption *connOptions);
 static void freePGconn(PGconn *conn);
-static int	resolve_next_host(PGconn *conn);
+static int	resolve_next_host(PGconn *conn, bool *async);
+static int	finish_async_resolution(PGconn *conn);
 static void release_conn_addrinfo(PGconn *conn);
 static int	store_conn_addrinfo(PGconn *conn, struct addrinfo *addrlist);
 static void sendTerminateConn(PGconn *conn);
@@ -572,6 +573,11 @@ pqDropConnection(PGconn *conn, bool flushInput)
 	conn->async_auth = NULL;
 	/* cleanup_async_auth() should have done this, but make sure */
 	conn->altsock = PGINVALID_SOCKET;
+
+	/*
+	 * TODO gotta clean up async DNS too, but cleanup_async_auth needs to be
+	 * generalized
+	 */
 #ifdef ENABLE_GSS
 	{
 		OM_uint32	min_s;
@@ -2721,6 +2727,8 @@ setTCPUserTimeout(PGconn *conn)
 int
 pqConnectDBStart(PGconn *conn)
 {
+	int			ret;
+
 	if (!conn)
 		return 0;
 
@@ -2772,8 +2780,11 @@ pqConnectDBStart(PGconn *conn)
 	 * asynchronous startup process.  However, we must run it once here,
 	 * because callers expect a success return from this routine to mean that
 	 * we are in PGRES_POLLING_WRITING connection state.
+	 *
+	 * TODO: why writing?
 	 */
-	if (PQconnectPoll(conn) == PGRES_POLLING_WRITING)
+	ret = PQconnectPoll(conn);
+	if (ret == PGRES_POLLING_WRITING || ret == PGRES_POLLING_READING)
 		return 1;
 
 connect_errReturn:
@@ -2913,7 +2924,8 @@ pqConnectDBComplete(PGconn *conn)
  *	 o	If you call PQtrace, ensure that the stream object into which you trace
  *		will not block.
  *	 o	If you do not supply an IP address for the remote host (i.e. you
- *		supply a host name instead) then PQconnectStart will block on
+ *		supply a host name instead) and asynchronous resolution is not
+ *		implemented for your platform, then PQconnectStart will block on
  *		getaddrinfo.  You will be fine if using Unix sockets (i.e. by
  *		supplying neither a host name nor a host address).
  *	 o	If your backend wants to use Kerberos authentication then you must
@@ -2964,6 +2976,11 @@ PQconnectPoll(PGconn *conn)
 				break;
 			}
 
+			/* Also a reading state, but handled separately */
+		case CONNECTION_AWAITING_HOST:
+			/* TODO */
+			break;
+
 			/* These are writing states, so we just proceed. */
 		case CONNECTION_STARTED:
 		case CONNECTION_MADE:
@@ -2999,21 +3016,46 @@ keep_going:						/* We will come back to here until there is
 		conn->try_next_addr = false;
 	}
 
-	/* Time to advance to next connhost[] entry? */
+	/*
+	 * Time to advance to next connhost[] entry, or finish an asynchronous
+	 * lookup?
+	 */
 	if (conn->try_next_host)
 	{
 		int			ret;
+		bool		async = false;
 
 		/*
-		 * Look up info for the new host.  On failure, log the problem in
-		 * conn->errorMessage, then loop around to try the next host.  (Note
-		 * we don't clear try_next_host until we've succeeded.)
+		 * Look up, or finish the lookup of, info for the new host. On
+		 * failure, log the problem in conn->errorMessage, then loop around to
+		 * try the next host.  (Note we don't clear try_next_host until we've
+		 * succeeded.)
 		 */
-		ret = resolve_next_host(conn);
+		if (conn->status != CONNECTION_AWAITING_HOST)
+			ret = resolve_next_host(conn, &async);
+		else
+			ret = finish_async_resolution(conn);
+
 		if (ret > 0)			/* non-fatal error; continue */
+		{
+			conn->status = CONNECTION_NEEDED;	/* TODO maybe just loop here
+												 * instead */
 			goto keep_going;
+		}
 		else if (ret < 0)		/* internal error, alloc failure, etc. */
 			goto error_return;
+		else if (async)
+		{
+			/*
+			 * Resolution is continuing in the background. Assert that we'll
+			 * get back to this point safely.
+			 */
+			Assert(conn->altsock != PGINVALID_SOCKET);
+			Assert(!conn->try_next_addr && conn->try_next_host);
+
+			conn->status = CONNECTION_AWAITING_HOST;
+			return PGRES_POLLING_READING;
+		}
 
 		/*
 		 * If random load balancing is enabled we shuffle the addresses.
@@ -4606,6 +4648,7 @@ keep_going:						/* We will come back to here until there is
 				goto keep_going;
 			}
 
+		case CONNECTION_AWAITING_HOST:	/* handled earlier, not here */
 		default:
 			libpq_append_conn_error(conn,
 									"invalid connection state %d, probably indicative of memory corruption",
@@ -5104,7 +5147,7 @@ pqReleaseConnHosts(PGconn *conn)
  * error.
  */
 static int
-resolve_next_host(PGconn *conn)
+resolve_next_host(PGconn *conn, bool *async)
 {
 	pg_conn_host *ch;
 	struct addrinfo hint;
@@ -5112,6 +5155,8 @@ resolve_next_host(PGconn *conn)
 	int			thisport;
 	int			ret;
 	char		portstr[MAXPGPATH];
+
+	*async = false;
 
 	if (conn->whichhost + 1 < conn->nconnhost)
 		conn->whichhost++;
@@ -5170,14 +5215,47 @@ resolve_next_host(PGconn *conn)
 	switch (ch->type)
 	{
 		case CHT_HOST_NAME:
-			ret = pg_getaddrinfo_all(ch->host, portstr, &hint,
-									 &addrlist);
+			int			pipefds[2];
+
+			if (pipe(pipefds) < 0)
+			{
+				libpq_append_conn_error(conn, "could not create self-pipe: %m");
+				return 1;
+			}
+
+			ret = pg_getaddrinfo_all_async(ch->host, portstr, &hint, &addrlist,
+										   pipefds[1], &conn->async_dns_ctx);
+
+			if (conn->async_dns_ctx)
+			{
+				Assert(ret == 0);
+
+				/*
+				 * Request has been queued successfully. Set up the altsock to
+				 * wake up clients of PQconnectPoll(). Ownership of pipefds[1]
+				 * has passed into the background.
+				 */
+				conn->altsock = pipefds[0];
+				*async = true;
+				return 0;
+			}
+			else
+			{
+				/*
+				 * Synchronous return -- whether success or failure -- means
+				 * we have no need for an altsock.
+				 */
+				close(pipefds[0]);
+				close(pipefds[1]);
+			}
+
 			if (ret || !addrlist)
 			{
 				libpq_append_conn_error(conn, "could not translate host name \"%s\" to address: %s",
 										ch->host, gai_strerror(ret));
 				return 1;
 			}
+
 			break;
 
 		case CHT_HOST_ADDRESS:
@@ -5224,6 +5302,46 @@ resolve_next_host(PGconn *conn)
 	 */
 	ret = store_conn_addrinfo(conn, addrlist);
 	pg_freeaddrinfo_all(hint.ai_family, addrlist);
+	if (ret)
+		return -1;				/* message already logged */
+
+	return 0;
+}
+
+/*
+ * Finishes an asynchronous call to resolve_next_host(), storing the results in
+ * conn->addrs. The return value has the same meaning as resolve_next_host().
+ */
+static int
+finish_async_resolution(PGconn *conn)
+{
+	struct addrinfo *addrlist;
+	int			ret;
+
+	Assert(conn->altsock != PGINVALID_SOCKET);
+	Assert(conn->async_dns_ctx);
+
+	/*
+	 * Our side of the altsock can be released (the other side was closed as
+	 * the wakeup signal).
+	 */
+	close(conn->altsock);
+	conn->altsock = PGINVALID_SOCKET;
+
+	/* Retrieve the results. */
+	ret = pg_getaddrinfo_all_finish(conn->async_dns_ctx, &addrlist);
+	conn->async_dns_ctx = NULL; /* we must not touch this now */
+
+	if (ret || !addrlist)
+	{
+		libpq_append_conn_error(conn, "could not translate host name \"%s\" to address: %s",
+								"TODO" /* FIXME */ , gai_strerror(ret));
+		return 1;
+	}
+
+	/* Store a copy of the addrlist, as in resolve_next_host(). */
+	ret = store_conn_addrinfo(conn, addrlist);
+	pg_freeaddrinfo_all(AF_INET /* XXX */ , addrlist);
 	if (ret)
 		return -1;				/* message already logged */
 
