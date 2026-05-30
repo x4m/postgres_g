@@ -4589,6 +4589,12 @@ OnConflict_CheckForSerializationFailure(const SERIALIZABLEXACT *reader,
 		 */
 		if (MySerializableXact == writer)
 		{
+			/*
+			 * Mark ourselves doomed before raising the error.  Otherwise a
+			 * subtransaction abort (ROLLBACK TO SAVEPOINT) could swallow this
+			 * error and let the transaction commit anyway, defeating SSI.
+			 */
+			MySerializableXact->flags |= SXACT_FLAG_DOOMED;
 			LWLockRelease(SerializableXactHashLock);
 			ereport(ERROR,
 					(errcode(ERRCODE_T_R_SERIALIZATION_FAILURE),
@@ -4598,10 +4604,13 @@ OnConflict_CheckForSerializationFailure(const SERIALIZABLEXACT *reader,
 		}
 		else if (SxactIsPrepared(writer))
 		{
-			LWLockRelease(SerializableXactHashLock);
-
 			/* if we're not the writer, we have to be the reader */
 			Assert(MySerializableXact == reader);
+
+			/* See comment above: doom ourselves before raising the error. */
+			MySerializableXact->flags |= SXACT_FLAG_DOOMED;
+			LWLockRelease(SerializableXactHashLock);
+
 			ereport(ERROR,
 					(errcode(ERRCODE_T_R_SERIALIZATION_FAILURE),
 					 errmsg("could not serialize access due to read/write dependencies among transactions"),
