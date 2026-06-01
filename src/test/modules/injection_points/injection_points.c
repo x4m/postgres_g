@@ -17,12 +17,14 @@
 
 #include "postgres.h"
 
+#include "access/relation.h"
 #include "fmgr.h"
 #include "funcapi.h"
 #include "injection_points.h"
 #include "miscadmin.h"
 #include "nodes/pg_list.h"
 #include "nodes/value.h"
+#include "storage/bufmgr.h"
 #include "storage/dsm_registry.h"
 #include "storage/ipc.h"
 #include "storage/lwlock.h"
@@ -554,6 +556,36 @@ injection_points_list(PG_FUNCTION_ARGS)
 
 	return (Datum) 0;
 #undef NUM_INJECTION_POINTS_LIST
+}
+
+/*
+ * injection_points_flush_buffer
+ *
+ * Test helper: take a SHARE content lock on one buffer and flush it to disk.
+ * Used by the WALBufMappingLock corruption reproducer to deterministically
+ * flush a data page whose modifier (holding the buffer EXCLUSIVE) has just
+ * released its locks on postmaster death.  Taking the content lock blocks in
+ * LWLockAcquire(), which - unlike WaitLatch() - does not react to postmaster
+ * death, so the flush proceeds the instant the modifier lets go.  Crucially
+ * this path needs no WAL insertion lock, so it is not stuck behind a backend
+ * frozen inside AdvanceXLInsertBuffer().
+ */
+PG_FUNCTION_INFO_V1(injection_points_flush_buffer);
+Datum
+injection_points_flush_buffer(PG_FUNCTION_ARGS)
+{
+	Oid			relid = PG_GETARG_OID(0);
+	BlockNumber blkno = (BlockNumber) PG_GETARG_INT64(1);
+	Relation	rel = relation_open(relid, AccessShareLock);
+	Buffer		buf = ReadBuffer(rel, blkno);
+
+	LockBuffer(buf, BUFFER_LOCK_SHARE);
+	FlushOneBuffer(buf);
+	LockBuffer(buf, BUFFER_LOCK_UNLOCK);
+	ReleaseBuffer(buf);
+	relation_close(rel, AccessShareLock);
+
+	PG_RETURN_VOID();
 }
 
 void

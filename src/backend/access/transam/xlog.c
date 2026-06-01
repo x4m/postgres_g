@@ -2103,6 +2103,20 @@ AdvanceXLInsertBuffer(XLogRecPtr upto, TimeLineID tli, bool opportunistic)
 			continue;
 
 		/*
+		 * Test-only stop point.  A backend has just reserved this WAL page for
+		 * initialization but has not advanced XLogCtl->InitializedUpTo yet.
+		 * Freezing here (with the postmaster-death-safe injection wait) stalls
+		 * InitializedUpTo, so other backends that need this page block on
+		 * XLogCtl->InitializedUpToCondVar -- the condition variable waited on
+		 * inside this critical section.  That is exactly the wait that, on the
+		 * buggy WALBufMappingLock-removed code, exits and releases locks on
+		 * postmaster death instead of PANICking.  Only real (non-opportunistic)
+		 * callers participate, to avoid freezing the WAL writer.
+		 */
+		if (!opportunistic)
+			INJECTION_POINT_CACHED("wal-buffer-reserved", NULL);
+
+		/*
 		 * Wait till page gets correctly initialized up to OldPageRqstPtr.
 		 */
 		nextidx = XLogRecPtrToBufIdx(ReservedPtr);

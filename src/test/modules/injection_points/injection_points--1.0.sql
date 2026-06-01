@@ -102,6 +102,17 @@ AS 'MODULE_PATHNAME', 'injection_points_list'
 LANGUAGE C STRICT VOLATILE PARALLEL RESTRICTED;
 
 --
+-- injection_points_flush_buffer()
+--
+-- Take a SHARE content lock on one buffer and flush it to disk.  Test-only
+-- helper for the WALBufMappingLock corruption reproducer.
+--
+CREATE FUNCTION injection_points_flush_buffer(rel regclass, blkno bigint)
+RETURNS void
+AS 'MODULE_PATHNAME', 'injection_points_flush_buffer'
+LANGUAGE C STRICT VOLATILE PARALLEL UNSAFE;
+
+--
 -- regress_injection.c functions
 --
 CREATE FUNCTION removable_cutoff(rel regclass)
