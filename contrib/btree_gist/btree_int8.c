@@ -5,6 +5,7 @@
 
 #include "btree_gist.h"
 #include "btree_utils_num.h"
+#include "catalog/pg_type.h"
 #include "common/int.h"
 #include "utils/rel.h"
 #include "utils/sortsupport.h"
@@ -76,6 +77,21 @@ gbt_int8_dist(const void *a, const void *b, FmgrInfo *flinfo)
 	return GET_FLOAT_DISTANCE(int64, a, b);
 }
 
+/*
+ * Cross-type callbacks
+ */
+GBT_DEFINE_INT_CROSSTYPE(gbt_int8_x_int2, int64, DatumGetInt16)
+GBT_DEFINE_INT_CROSSTYPE(gbt_int8_x_int4, int64, DatumGetInt32)
+
+static const gbt_subtype_info gbt_int8_subtype_ops[] = {
+	{INT2OID,
+		gbt_int8_x_int2_lt, gbt_int8_x_int2_le, gbt_int8_x_int2_eq,
+	gbt_int8_x_int2_ge, gbt_int8_x_int2_gt, gbt_int8_x_int2_dist},
+	{INT4OID,
+		gbt_int8_x_int4_lt, gbt_int8_x_int4_le, gbt_int8_x_int4_eq,
+	gbt_int8_x_int4_ge, gbt_int8_x_int4_gt, gbt_int8_x_int4_dist},
+	{InvalidOid}
+};
 
 static const gbtree_ninfo tinfo =
 {
@@ -88,7 +104,9 @@ static const gbtree_ninfo tinfo =
 	gbt_int8le,
 	gbt_int8lt,
 	gbt_int8key_cmp,
-	gbt_int8_dist
+	gbt_int8_dist,
+	gbt_int8_subtype_ops,
+	INT8OID
 };
 
 
@@ -110,6 +128,40 @@ int8_dist(PG_FUNCTION_ARGS)
 	ra = i64abs(r);
 
 	PG_RETURN_INT64(ra);
+}
+
+PG_FUNCTION_INFO_V1(int8_int2_dist);
+Datum
+int8_int2_dist(PG_FUNCTION_ARGS)
+{
+	int64		a = PG_GETARG_INT64(0);
+	int64		b = (int64) PG_GETARG_INT16(1);
+	int64		r;
+
+	if (pg_sub_s64_overflow(a, b, &r) ||
+		r == PG_INT64_MIN)
+		ereport(ERROR,
+				(errcode(ERRCODE_NUMERIC_VALUE_OUT_OF_RANGE),
+				 errmsg("bigint out of range")));
+
+	PG_RETURN_INT64(i64abs(r));
+}
+
+PG_FUNCTION_INFO_V1(int8_int4_dist);
+Datum
+int8_int4_dist(PG_FUNCTION_ARGS)
+{
+	int64		a = PG_GETARG_INT64(0);
+	int64		b = (int64) PG_GETARG_INT32(1);
+	int64		r;
+
+	if (pg_sub_s64_overflow(a, b, &r) ||
+		r == PG_INT64_MIN)
+		ereport(ERROR,
+				(errcode(ERRCODE_NUMERIC_VALUE_OUT_OF_RANGE),
+				 errmsg("bigint out of range")));
+
+	PG_RETURN_INT64(i64abs(r));
 }
 
 
@@ -137,41 +189,53 @@ Datum
 gbt_int8_consistent(PG_FUNCTION_ARGS)
 {
 	GISTENTRY  *entry = (GISTENTRY *) PG_GETARG_POINTER(0);
-	int64		query = PG_GETARG_INT64(1);
+	Datum		queryDatum = PG_GETARG_DATUM(1);
 	StrategyNumber strategy = (StrategyNumber) PG_GETARG_UINT16(2);
-#ifdef NOT_USED
 	Oid			subtype = PG_GETARG_OID(3);
-#endif
 	bool	   *recheck = (bool *) PG_GETARG_POINTER(4);
 	int64KEY   *kkk = (int64KEY *) DatumGetPointer(entry->key);
+	int64		query;
 	GBT_NUMKEY_R key;
 
 	/* All cases served by this function are exact */
 	*recheck = false;
 
+	if (subtype == InvalidOid || subtype == INT8OID)
+		query = DatumGetInt64(queryDatum);
+	else
+		query = 0;
+
 	key.lower = (GBT_NUMKEY *) &kkk->lower;
 	key.upper = (GBT_NUMKEY *) &kkk->upper;
 
-	PG_RETURN_BOOL(gbt_num_consistent(&key, &query, &strategy,
-									  GIST_LEAF(entry), &tinfo, fcinfo->flinfo));
+	PG_RETURN_BOOL(gbt_num_consistent_x(&key, &query, queryDatum,
+										subtype, PG_GET_COLLATION(),
+										&strategy, GIST_LEAF(entry),
+										&tinfo, fcinfo->flinfo));
 }
 
 Datum
 gbt_int8_distance(PG_FUNCTION_ARGS)
 {
 	GISTENTRY  *entry = (GISTENTRY *) PG_GETARG_POINTER(0);
-	int64		query = PG_GETARG_INT64(1);
-#ifdef NOT_USED
+	Datum		queryDatum = PG_GETARG_DATUM(1);
 	Oid			subtype = PG_GETARG_OID(3);
-#endif
 	int64KEY   *kkk = (int64KEY *) DatumGetPointer(entry->key);
+	int64		query;
 	GBT_NUMKEY_R key;
+
+	if (subtype == InvalidOid || subtype == INT8OID)
+		query = DatumGetInt64(queryDatum);
+	else
+		query = 0;
 
 	key.lower = (GBT_NUMKEY *) &kkk->lower;
 	key.upper = (GBT_NUMKEY *) &kkk->upper;
 
-	PG_RETURN_FLOAT8(gbt_num_distance(&key, &query, GIST_LEAF(entry),
-									  &tinfo, fcinfo->flinfo));
+	PG_RETURN_FLOAT8(gbt_num_distance_x(&key, &query, queryDatum,
+										subtype, PG_GET_COLLATION(),
+										GIST_LEAF(entry),
+										&tinfo, fcinfo->flinfo));
 }
 
 Datum

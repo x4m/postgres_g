@@ -254,6 +254,26 @@ gbt_num_bin_union(Datum *u, GBT_NUMKEY *e, const gbtree_ninfo *tinfo, FmgrInfo *
 
 
 /*
+ * Look up cross-type callbacks for a given query subtype. Returns NULL if
+ * the opclass doesn't advertise cross-type support for this subtype, in
+ * which case callers must fall back to the same-type path.
+ */
+static const gbt_subtype_info *
+gbt_find_subtype_ops(const gbtree_ninfo *tinfo, Oid subtype)
+{
+	const gbt_subtype_info *p;
+
+	if (subtype == InvalidOid || tinfo->subtype_ops == NULL)
+		return NULL;
+	for (p = tinfo->subtype_ops; p->subtype != InvalidOid; p++)
+	{
+		if (p->subtype == subtype)
+			return p;
+	}
+	return NULL;
+}
+
+/*
  * The GiST consistent method
  *
  * Note: we currently assume that no datatypes that use this routine are
@@ -307,6 +327,93 @@ gbt_num_consistent(const GBT_NUMKEY_R *key,
 	return retval;
 }
 
+/*
+ * Verify that "subtype" is one this opclass knows how to handle: it must
+ * either be InvalidOid / the opclass's native type, or be registered in
+ * the dispatch table. Anything else is an operator-family configuration
+ * error.
+ */
+static void
+gbt_check_subtype(const gbtree_ninfo *tinfo, Oid subtype)
+{
+	if (subtype == InvalidOid)
+		return;
+	if (tinfo->type_oid == InvalidOid)
+		return;
+	if (subtype == tinfo->type_oid)
+		return;
+	if (gbt_find_subtype_ops(tinfo, subtype) != NULL)
+		return;
+
+	elog(ERROR,
+		 "btree_gist: cross-type query with subtype %u is not supported "
+		 "by the opclass for type %u (operator-family dispatch table is "
+		 "out of sync with pg_amop)",
+		 subtype, tinfo->type_oid);
+}
+
+/*
+ * Cross-type aware consistent method.
+ */
+bool
+gbt_num_consistent_x(const GBT_NUMKEY_R *key,
+					 const void *query,
+					 Datum queryDatum,
+					 Oid subtype,
+					 Oid collation,
+					 const StrategyNumber *strategy,
+					 bool is_leaf,
+					 const gbtree_ninfo *tinfo,
+					 FmgrInfo *flinfo)
+{
+	const gbt_subtype_info *xt = gbt_find_subtype_ops(tinfo, subtype);
+	gbt_subtype_context cxt;
+
+	if (xt == NULL)
+	{
+		gbt_check_subtype(tinfo, subtype);
+		return gbt_num_consistent(key, query, strategy, is_leaf, tinfo, flinfo);
+	}
+
+	cxt.query = queryDatum;
+	cxt.subtype = subtype;
+	cxt.collation = collation;
+	cxt.flinfo = flinfo;
+	cxt.query_cache = NULL;
+
+	switch (*strategy)
+	{
+		case BTLessEqualStrategyNumber:
+			/* some k in [lower,upper] has k <= q iff lower <= q */
+			return xt->f_le(key->lower, &cxt);
+		case BTLessStrategyNumber:
+			/* leaf: key < q. internal: lower <= q (loose) */
+			return is_leaf ? xt->f_lt(key->lower, &cxt)
+				: xt->f_le(key->lower, &cxt);
+		case BTEqualStrategyNumber:
+			if (is_leaf)
+				return xt->f_eq(key->lower, &cxt);
+			/* internal: lower <= q <= upper */
+			return (xt->f_le(key->lower, &cxt) &&
+					xt->f_ge(key->upper, &cxt));
+		case BTGreaterStrategyNumber:
+
+			/*
+			 * leaf: key > q. internal: upper >= q (loose). Read upper on
+			 * leaves to match the same-type path.
+			 */
+			return is_leaf ? xt->f_gt(key->upper, &cxt)
+				: xt->f_ge(key->upper, &cxt);
+		case BTGreaterEqualStrategyNumber:
+			return xt->f_ge(key->upper, &cxt);
+		case BtreeGistNotEqualStrategyNumber:
+			return !(xt->f_eq(key->lower, &cxt) &&
+					 xt->f_eq(key->upper, &cxt));
+		default:
+			return false;
+	}
+}
+
 
 /*
  * The GiST distance method (for KNN-Gist)
@@ -332,6 +439,47 @@ gbt_num_distance(const GBT_NUMKEY_R *key,
 		retval = 0.0;
 
 	return retval;
+}
+
+/*
+ * Cross-type aware distance method.
+ */
+float8
+gbt_num_distance_x(const GBT_NUMKEY_R *key,
+				   const void *query,
+				   Datum queryDatum,
+				   Oid subtype,
+				   Oid collation,
+				   bool is_leaf,
+				   const gbtree_ninfo *tinfo,
+				   FmgrInfo *flinfo)
+{
+	const gbt_subtype_info *xt = gbt_find_subtype_ops(tinfo, subtype);
+	gbt_subtype_context cxt;
+
+	if (xt == NULL)
+	{
+		gbt_check_subtype(tinfo, subtype);
+		return gbt_num_distance(key, query, is_leaf, tinfo, flinfo);
+	}
+
+	if (xt->f_dist == NULL)
+		elog(ERROR, "KNN search is not supported for btree_gist type %d with subtype %u",
+			 (int) tinfo->t, subtype);
+
+	cxt.query = queryDatum;
+	cxt.subtype = subtype;
+	cxt.collation = collation;
+	cxt.flinfo = flinfo;
+	cxt.query_cache = NULL;
+
+	/* q <= lower <=> lower >= q */
+	if (xt->f_ge(key->lower, &cxt))
+		return xt->f_dist(key->lower, &cxt);
+	/* q >= upper <=> upper <= q */
+	if (xt->f_le(key->upper, &cxt))
+		return xt->f_dist(key->upper, &cxt);
+	return 0.0;
 }
 
 

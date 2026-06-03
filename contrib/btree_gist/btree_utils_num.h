@@ -30,6 +30,36 @@ typedef struct
 
 /* type description */
 
+/*
+ * Cross-type comparison support.
+ *
+ * For cross-type operator support an opclass may supply a NULL-terminated
+ * array of gbt_subtype_info entries, one per supported query subtype. Each
+ * callback receives the index key in its native C representation (pointer
+ * into the compressed key) and a context describing the query value.
+ */
+typedef struct gbt_subtype_context
+{
+	Datum		query;			/* Datum of cxt->subtype */
+	Oid			subtype;		/* right-hand/query operand type */
+	Oid			collation;		/* collation from the support call */
+	FmgrInfo   *flinfo;			/* support-function call context */
+	void	   *query_cache;	/* callback-owned per-call state */
+} gbt_subtype_context;
+
+typedef struct gbt_subtype_info
+{
+	Oid			subtype;		/* InvalidOid terminates the array */
+	bool		(*f_lt) (const void *key, gbt_subtype_context *cxt);
+	bool		(*f_le) (const void *key, gbt_subtype_context *cxt);
+	bool		(*f_eq) (const void *key, gbt_subtype_context *cxt);
+	bool		(*f_ge) (const void *key, gbt_subtype_context *cxt);
+	bool		(*f_gt) (const void *key, gbt_subtype_context *cxt);
+
+	/* NULL if no KNN */
+	float8		(*f_dist) (const void *key, gbt_subtype_context *cxt);
+} gbt_subtype_info;
+
 typedef struct
 {
 
@@ -48,7 +78,52 @@ typedef struct
 	bool		(*f_lt) (const void *, const void *, FmgrInfo *);	/* less than */
 	int			(*f_cmp) (const void *, const void *, FmgrInfo *);	/* key compare function */
 	float8		(*f_dist) (const void *, const void *, FmgrInfo *); /* key distance function */
+
+	/*
+	 * Optional NULL-terminated array of cross-type comparison callbacks. NULL
+	 * if the opclass only supports same-type comparisons.
+	 */
+	const gbt_subtype_info *subtype_ops;
+
+	/*
+	 * Native pg_type OID of the indexed type. Used by the _x APIs to validate
+	 * the subtype passed in from the planner. InvalidOid disables that check,
+	 * which is right for legacy opclasses that don't use _x.
+	 */
+	Oid			type_oid;
 } gbtree_ninfo;
+
+#define GBT_DEFINE_INT_CROSSTYPE(prefix, key_ctype, get_sub) \
+static bool \
+prefix##_lt(const void *k, gbt_subtype_context *cxt) \
+{ \
+	return (int64) *(const key_ctype *) k < (int64) get_sub(cxt->query); \
+} \
+static bool \
+prefix##_le(const void *k, gbt_subtype_context *cxt) \
+{ \
+	return (int64) *(const key_ctype *) k <= (int64) get_sub(cxt->query); \
+} \
+static bool \
+prefix##_eq(const void *k, gbt_subtype_context *cxt) \
+{ \
+	return (int64) *(const key_ctype *) k == (int64) get_sub(cxt->query); \
+} \
+static bool \
+prefix##_ge(const void *k, gbt_subtype_context *cxt) \
+{ \
+	return (int64) *(const key_ctype *) k >= (int64) get_sub(cxt->query); \
+} \
+static bool \
+prefix##_gt(const void *k, gbt_subtype_context *cxt) \
+{ \
+	return (int64) *(const key_ctype *) k > (int64) get_sub(cxt->query); \
+} \
+static float8 \
+prefix##_dist(const void *k, gbt_subtype_context *cxt) \
+{ \
+	return fabs((float8) *(const key_ctype *) k - (float8) get_sub(cxt->query)); \
+}
 
 
 /*
@@ -95,8 +170,18 @@ extern bool gbt_num_consistent(const GBT_NUMKEY_R *key, const void *query,
 							   const StrategyNumber *strategy, bool is_leaf,
 							   const gbtree_ninfo *tinfo, FmgrInfo *flinfo);
 
+extern bool gbt_num_consistent_x(const GBT_NUMKEY_R *key, const void *query,
+								 Datum queryDatum, Oid subtype, Oid collation,
+								 const StrategyNumber *strategy, bool is_leaf,
+								 const gbtree_ninfo *tinfo, FmgrInfo *flinfo);
+
 extern float8 gbt_num_distance(const GBT_NUMKEY_R *key, const void *query,
 							   bool is_leaf, const gbtree_ninfo *tinfo, FmgrInfo *flinfo);
+
+extern float8 gbt_num_distance_x(const GBT_NUMKEY_R *key, const void *query,
+								 Datum queryDatum, Oid subtype, Oid collation,
+								 bool is_leaf,
+								 const gbtree_ninfo *tinfo, FmgrInfo *flinfo);
 
 extern GIST_SPLITVEC *gbt_num_picksplit(const GistEntryVector *entryvec, GIST_SPLITVEC *v,
 										const gbtree_ninfo *tinfo, FmgrInfo *flinfo);
