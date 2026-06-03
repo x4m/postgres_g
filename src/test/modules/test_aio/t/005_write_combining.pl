@@ -26,9 +26,12 @@ synchronous_commit = off
 
 $node->start();
 
+$node->safe_psql('postgres', 'CREATE EXTENSION test_aio');
+
 my $block_size = $node->safe_psql('postgres',
 	"SELECT current_setting('block_size')::int");
 
+test_checkpointer_combines_writes($node, $block_size);
 test_copy_from_combines_writes($node, $block_size);
 
 $node->stop();
@@ -66,6 +69,73 @@ sub assert_combined_writes
 	ok($avg_write_bytes > $block_size, "$label combined writes");
 }
 
+sub assert_writes
+{
+	local $Test::Builder::Level = $Test::Builder::Level + 1;
+
+	my ($node, $label, $backend_type, $context, $expected_writes, $expected_bytes) = @_;
+	my ($writes, $write_bytes, $avg_write_bytes) =
+	  io_stat_writes($node, $backend_type, $context);
+
+	note "$label: writes=$writes write_bytes=$write_bytes avg_write_bytes=$avg_write_bytes";
+
+	is($writes, $expected_writes, "$label write count");
+	is($write_bytes, $expected_bytes, "$label write bytes");
+}
+
+sub assert_writes_at_least
+{
+	local $Test::Builder::Level = $Test::Builder::Level + 1;
+
+	my ($node, $label, $backend_type, $context, $expected_writes, $expected_bytes) = @_;
+	my ($writes, $write_bytes, $avg_write_bytes) =
+	  io_stat_writes($node, $backend_type, $context);
+
+	note "$label: writes=$writes write_bytes=$write_bytes avg_write_bytes=$avg_write_bytes";
+	ok($writes >= $expected_writes,
+		"$label wrote at least $expected_writes times");
+	ok($write_bytes >= $expected_bytes,
+		"$label wrote at least $expected_bytes bytes");
+}
+
+sub assert_blocks_dirty
+{
+	local $Test::Builder::Level = $Test::Builder::Level + 1;
+
+	my ($node, $table, $blocks, $expected, $label) = @_;
+
+	is($node->safe_psql('postgres',
+		"SELECT true = ALL (rel_blocks_are_dirty('$table', ARRAY[$blocks]))"),
+		$expected, $label);
+}
+
+sub assert_any_blocks_dirty
+{
+	local $Test::Builder::Level = $Test::Builder::Level + 1;
+
+	my ($node, $table, $blocks, $expected, $label) = @_;
+
+	is($node->safe_psql('postgres',
+		"SELECT true = ANY (rel_blocks_are_dirty('$table', ARRAY[$blocks]))"),
+		$expected, $label);
+}
+
+sub flush_and_reset_io_stats
+{
+	my ($node, $psql) = @_;
+
+	$psql->query_safe('SELECT pg_stat_force_next_flush()');
+	$node->safe_psql('postgres', "SELECT pg_stat_reset_shared('io')");
+}
+
+sub dirty_blocks
+{
+	my ($psql, $table, $blocks) = @_;
+
+	$psql->query_safe(
+		"SELECT make_blocks_unused_dirty_flushed('$table', ARRAY[$blocks])");
+}
+
 sub test_copy_from_combines_writes
 {
 	my ($node, $block_size) = @_;
@@ -91,4 +161,54 @@ sub test_copy_from_combines_writes
 		$block_size);
 	is($node->safe_psql('postgres', "SELECT count(*) FROM wc_copy"),
 		$rows, 'copy from inserted rows');
+}
+
+sub test_checkpointer_combines_writes
+{
+	my ($node, $block_size) = @_;
+	my $psql = $node->background_psql('postgres', on_error_stop => 0);
+
+	$node->safe_psql(
+		'postgres', qq(
+	CREATE TABLE wc_checkpointer (id int, payload text);
+	INSERT INTO wc_checkpointer SELECT g, repeat('y', 200) FROM generate_series(1, 1000) AS g;
+	SELECT flush_rel_buffers('wc_checkpointer'::regclass);
+	CHECKPOINT;
+	));
+
+	####
+	# Test one big combined write by checkpointer.
+	####
+
+	dirty_blocks($psql, 'wc_checkpointer', '0,1,2,3,4,5');
+	assert_blocks_dirty($node, 'wc_checkpointer', '0,1,2,3,4,5', 't',
+		'contiguous buffers are dirty before checkpoint');
+
+	flush_and_reset_io_stats($node, $psql);
+	$node->safe_psql('postgres', 'CHECKPOINT');
+	$node->safe_psql('postgres', 'SELECT pg_stat_force_next_flush()');
+
+	assert_combined_writes($node, 'contiguous checkpointer', 'checkpointer',
+		'normal', $block_size);
+	assert_any_blocks_dirty($node, 'wc_checkpointer', '0,1,2,3,4,5', 'f',
+		'checkpointer wrote contiguous dirty buffers');
+
+	####
+	# Test multiple single block writes when interspersed blocks are not in
+	# shared buffers.
+	####
+
+	$psql->query_safe(
+		"SELECT invalidate_rel_blocks('wc_checkpointer', ARRAY[1,3,5])");
+	dirty_blocks($psql, 'wc_checkpointer', '0,2,4');
+	flush_and_reset_io_stats($node, $psql);
+	$node->safe_psql('postgres', 'CHECKPOINT');
+	$node->safe_psql('postgres', 'SELECT pg_stat_force_next_flush()');
+
+	assert_writes_at_least($node, 'nonresident gaps checkpointer', 'checkpointer',
+		'normal', 3, 3 * $block_size);
+	assert_any_blocks_dirty($node, 'wc_checkpointer', '0,2,4', 'f',
+		'checkpointer wrote dirty buffers separated by nonresident gaps');
+
+	$psql->quit();
 }
