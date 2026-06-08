@@ -2028,14 +2028,6 @@ XLogTestStallWalBufferInit(void)
 	}
 }
 
-uint64
-XLogTestWalBufferInitGap(void)
-{
-	uint64		initialized = pg_atomic_read_u64(&XLogCtl->InitializedUpTo);
-	uint64		reserved = pg_atomic_read_u64(&XLogCtl->InitializeReserved);
-
-	return reserved - initialized;
-}
 #endif
 
 static void
@@ -2107,14 +2099,6 @@ AdvanceXLInsertBuffer(XLogRecPtr upto, TimeLineID tli, bool opportunistic)
 											&ReservedPtr,
 											ReservedPtr + XLOG_BLCKSZ))
 			continue;
-
-#ifdef USE_INJECTION_POINTS
-		/*
-		 * Test-only stop point for the WALBufMappingLock corruption reproducer.
-		 */
-		if (!opportunistic)
-			INJECTION_POINT_CACHED("wal-buffer-reserved", NULL);
-#endif
 
 		/*
 		 * Wait till page gets correctly initialized up to OldPageRqstPtr.

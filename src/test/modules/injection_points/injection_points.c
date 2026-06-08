@@ -605,72 +605,6 @@ injection_points_stall_wal_buffer_init(PG_FUNCTION_ARGS)
 	PG_RETURN_VOID();
 }
 
-PG_FUNCTION_INFO_V1(injection_points_wal_buffer_init_gap);
-Datum
-injection_points_wal_buffer_init_gap(PG_FUNCTION_ARGS)
-{
-	PG_RETURN_INT64((int64) XLogTestWalBufferInitGap());
-}
-
-/*
- * injection_points_find_locked_dirty_block
- *
- * Scan heap blocks of rel for a buffer whose content lock is held by another
- * backend (ConditionalLockBuffer fails).
- */
-PG_FUNCTION_INFO_V1(injection_points_find_locked_dirty_block);
-Datum
-injection_points_find_locked_dirty_block(PG_FUNCTION_ARGS)
-{
-	Oid			relid = PG_GETARG_OID(0);
-	Relation	rel = relation_open(relid, AccessShareLock);
-	BlockNumber nblocks = RelationGetNumberOfBlocks(rel);
-	BlockNumber blkno;
-
-	for (blkno = 0; blkno < nblocks; blkno++)
-	{
-		Buffer		buf;
-
-		buf = ReadBufferExtended(rel, MAIN_FORKNUM, blkno, RBM_NORMAL, NULL);
-
-		if (!ConditionalLockBuffer(buf))
-		{
-			ReleaseBuffer(buf);
-			relation_close(rel, AccessShareLock);
-			PG_RETURN_INT64((int64) blkno);
-		}
-
-		LockBuffer(buf, BUFFER_LOCK_UNLOCK);
-		ReleaseBuffer(buf);
-	}
-
-	relation_close(rel, AccessShareLock);
-	PG_RETURN_NULL();
-}
-
-/*
- * injection_points_flush_buffer
- *
- * Test helper: EXCLUSIVE content lock on one buffer and flush it to disk.
- */
-PG_FUNCTION_INFO_V1(injection_points_flush_buffer);
-Datum
-injection_points_flush_buffer(PG_FUNCTION_ARGS)
-{
-	Oid			relid = PG_GETARG_OID(0);
-	BlockNumber blkno = (BlockNumber) PG_GETARG_INT64(1);
-	Relation	rel = relation_open(relid, AccessShareLock);
-	Buffer		buf = ReadBuffer(rel, blkno);
-
-	LockBuffer(buf, BUFFER_LOCK_EXCLUSIVE);
-	FlushOneBuffer(buf);
-	LockBuffer(buf, BUFFER_LOCK_UNLOCK);
-	ReleaseBuffer(buf);
-	relation_close(rel, AccessShareLock);
-
-	PG_RETURN_VOID();
-}
-
 /*
  * injection_points_flush_vm_buffer
  *
@@ -750,25 +684,6 @@ injection_points_flush_heap_buffer_raw(PG_FUNCTION_ARGS)
 	relation_close(rel, AccessShareLock);
 
 	PG_RETURN_VOID();
-}
-
-PG_FUNCTION_INFO_V1(injection_points_cassert_enabled);
-Datum
-injection_points_cassert_enabled(PG_FUNCTION_ARGS)
-{
-#ifdef USE_ASSERT_CHECKING
-	PG_RETURN_BOOL(true);
-#else
-	PG_RETURN_BOOL(false);
-#endif
-}
-
-PG_FUNCTION_INFO_V1(injection_points_walbuf_crit_section_assert);
-Datum
-injection_points_walbuf_crit_section_assert(PG_FUNCTION_ARGS)
-{
-	walbuf_crit_section_assert_enabled = PG_GETARG_BOOL(0);
-	PG_RETURN_BOOL(walbuf_crit_section_assert_enabled);
 }
 #endif							/* USE_INJECTION_POINTS */
 

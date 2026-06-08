@@ -4,13 +4,9 @@
 # "Get rid of WALBufMappingLock" (commit bc22dc0e0dd) added to
 # AdvanceXLInsertBuffer() -- not through an artificial injection point.
 #
-# This crosses two pieces:
-#   * t/005_walbuf_crit_section.pl's stall machinery
-#     (injection_points_stall_wal_buffer_init) which deterministically makes the
-#     next WAL inserter block on InitializedUpToCondVar (WalBufferInit) while
-#     still inside a critical section, and
-#   * Andrey Borodin's "VM corruption on standby" reproducer (pgsql-hackers,
-#     Aug 2025).
+# This crosses injection_points_stall_wal_buffer_init(), which makes the next
+# WAL inserter block on InitializedUpToCondVar (WalBufferInit), with Andrey
+# Borodin's "VM corruption on standby" reproducer (pgsql-hackers, Aug 2025).
 #
 # Scenario:
 #   1. A row is frozen, so heap block 0 is ALL_VISIBLE/ALL_FROZEN in the VM, on
@@ -46,6 +42,23 @@ if (($ENV{enable_injection_points} // '') ne 'yes')
 if ($windows_os)
 {
 	plan skip_all => 'Kill9 works unpredictably on Windows';
+}
+
+sub poll_start_after_kill9
+{
+	my ($node) = @_;
+
+	for (my $attempts = 0;
+		 $attempts < 10 * $PostgreSQL::Test::Utils::timeout_default;
+		 $attempts++)
+	{
+		return if $node->start(fail_ok => 1);
+
+		usleep(100_000);
+		$node->stop('fast', fail_ok => 1);
+	}
+
+	$node->start;
 }
 
 my $node = PostgreSQL::Test::Cluster->new('primary');
@@ -98,15 +111,10 @@ $flusher->query_safe(q{SELECT injection_points_flush_vm_buffer('x'::regclass, 0)
 
 # p1: stall WAL buffer init, then INSERT into block 0.  heap_insert() clears the
 # VM bit, then hangs in AdvanceXLInsertBuffer() on the WalBufferInit CV.
-#
-# The CritSectionCount assert (detection patch used by t/005) is a process-local
-# flag, so it must be disabled inside *this* backend before it sleeps on the CV;
-# otherwise the INSERT aborts instead of stalling.
 my $p1 = $node->background_psql('postgres', on_error_stop => 0);
 $p1->query_until(
 	qr/p1_go/, q{
 	\echo p1_go
-	SELECT injection_points_walbuf_crit_section_assert(false);
 	SELECT injection_points_stall_wal_buffer_init();
 	INSERT INTO x VALUES (1);
 });
@@ -139,7 +147,7 @@ foreach my $i (1 .. 100)
 eval { $p1->quit; };
 eval { $flusher->quit; };
 
-$node->poll_start;
+poll_start_after_kill9($node);
 
 my $frozen_after = $node->safe_psql('postgres',
 	q{SELECT count(*) FROM pg_visibility_map('x') WHERE all_frozen});

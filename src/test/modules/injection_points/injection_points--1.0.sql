@@ -99,37 +99,6 @@ RETURNS void
 AS 'MODULE_PATHNAME', 'injection_points_stall_wal_buffer_init'
 LANGUAGE C STRICT VOLATILE PARALLEL UNSAFE;
 
---
--- injection_points_wal_buffer_init_gap()
---
--- Test-only: bytes between InitializedUpTo and InitializeReserved.
---
-CREATE FUNCTION injection_points_wal_buffer_init_gap()
-RETURNS bigint
-AS 'MODULE_PATHNAME', 'injection_points_wal_buffer_init_gap'
-LANGUAGE C STRICT VOLATILE PARALLEL UNSAFE;
-
---
--- injection_points_find_locked_dirty_block()
---
--- Return block number of a buffer for rel held by another backend, or NULL.
---
-CREATE FUNCTION injection_points_find_locked_dirty_block(rel regclass)
-RETURNS bigint
-AS 'MODULE_PATHNAME', 'injection_points_find_locked_dirty_block'
-LANGUAGE C STRICT VOLATILE PARALLEL UNSAFE;
-
---
--- injection_points_flush_buffer()
---
--- Take EXCLUSIVE content lock on one buffer and flush it to disk.  Test-only.
---
-CREATE FUNCTION injection_points_flush_buffer(rel regclass, blkno bigint)
-RETURNS void
-AS 'MODULE_PATHNAME', 'injection_points_flush_buffer'
-LANGUAGE C STRICT VOLATILE PARALLEL UNSAFE;
-
---
 -- injection_points_flush_vm_buffer()
 --
 -- Test-only: EXCLUSIVE lock and flush one visibility map fork page to disk.
@@ -147,26 +116,6 @@ LANGUAGE C STRICT VOLATILE PARALLEL UNSAFE;
 CREATE FUNCTION injection_points_flush_heap_buffer_raw(rel regclass, blkno bigint)
 RETURNS void
 AS 'MODULE_PATHNAME', 'injection_points_flush_heap_buffer_raw'
-LANGUAGE C STRICT VOLATILE PARALLEL UNSAFE;
-
---
--- injection_points_cassert_enabled()
---
--- True when server was built with assertion checking enabled.
---
-CREATE FUNCTION injection_points_cassert_enabled()
-RETURNS boolean
-AS 'MODULE_PATHNAME', 'injection_points_cassert_enabled'
-LANGUAGE C STRICT STABLE PARALLEL SAFE;
-
---
--- injection_points_walbuf_crit_section_assert()
---
--- Enable/disable CritSectionCount assert in WaitEventSetWait (default on).
---
-CREATE FUNCTION injection_points_walbuf_crit_section_assert(enable boolean)
-RETURNS boolean
-AS 'MODULE_PATHNAME', 'injection_points_walbuf_crit_section_assert'
 LANGUAGE C STRICT VOLATILE PARALLEL UNSAFE;
 
 --
