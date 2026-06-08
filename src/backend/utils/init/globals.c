@@ -44,6 +44,13 @@ volatile uint32 InterruptHoldoffCount = 0;
 volatile uint32 QueryCancelHoldoffCount = 0;
 volatile uint32 CritSectionCount = 0;
 
+/*
+ * Test hook for WALBufMappingLock corruption reproducer: when true,
+ * WaitEventSetWait() asserts CritSectionCount == 0 (Kirill/Andrey detection
+ * patch).  Corruption test disables via injection_points_walbuf_crit_section_assert().
+ */
+bool		walbuf_crit_section_assert_enabled = true;
+
 int			MyProcPid;
 pg_time_t	MyStartTime;
 TimestampTz MyStartTimestamp;

@@ -63,6 +63,11 @@ extern bool InjectionPointDetach(const char *name);
 /* Get the current set of injection points attached */
 extern List *InjectionPointList(void);
 
+#ifdef USE_INJECTION_POINTS
+extern void XLogTestStallWalBufferInit(void);
+extern uint64 XLogTestWalBufferInitGap(void);
+#endif
+
 #ifdef EXEC_BACKEND
 extern PGDLLIMPORT struct InjectionPointsCtl *ActiveInjectionPoints;
 #endif

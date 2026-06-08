@@ -1044,6 +1044,8 @@ WaitEventSetWait(WaitEventSet *set, long timeout,
 	long		cur_timeout = -1;
 
 	Assert(nevents > 0);
+	if (walbuf_crit_section_assert_enabled)
+		Assert(CritSectionCount == 0);
 
 	/*
 	 * Initialize timeout if requested.  We must record the current time so

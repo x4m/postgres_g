@@ -105,6 +105,12 @@ extern PGDLLIMPORT volatile uint32 InterruptHoldoffCount;
 extern PGDLLIMPORT volatile uint32 QueryCancelHoldoffCount;
 extern PGDLLIMPORT volatile uint32 CritSectionCount;
 
+/*
+ * When true, WaitEventSetWait() asserts CritSectionCount == 0.  Used by
+ * injection_points test helpers for WAL buffer corruption reproducers.
+ */
+extern PGDLLIMPORT bool walbuf_crit_section_assert_enabled;
+
 /* in tcop/postgres.c */
 extern void ProcessInterrupts(void);
 
