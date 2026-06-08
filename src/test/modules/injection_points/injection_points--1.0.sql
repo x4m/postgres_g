@@ -90,6 +90,35 @@ AS 'MODULE_PATHNAME', 'injection_points_list'
 LANGUAGE C STRICT VOLATILE PARALLEL RESTRICTED;
 
 --
+-- injection_points_stall_wal_buffer_init()
+--
+-- Test-only: stall WAL buffer page initialization (see XLogTestStallWalBufferInit).
+--
+CREATE FUNCTION injection_points_stall_wal_buffer_init()
+RETURNS void
+AS 'MODULE_PATHNAME', 'injection_points_stall_wal_buffer_init'
+LANGUAGE C STRICT VOLATILE PARALLEL UNSAFE;
+
+-- injection_points_flush_vm_buffer()
+--
+-- Test-only: EXCLUSIVE lock and flush one visibility map fork page to disk.
+--
+CREATE FUNCTION injection_points_flush_vm_buffer(rel regclass, vmblk bigint)
+RETURNS void
+AS 'MODULE_PATHNAME', 'injection_points_flush_vm_buffer'
+LANGUAGE C STRICT VOLATILE PARALLEL UNSAFE;
+
+--
+-- injection_points_flush_heap_buffer_raw()
+--
+-- Test-only: write one dirty heap page to disk without taking its content lock.
+--
+CREATE FUNCTION injection_points_flush_heap_buffer_raw(rel regclass, blkno bigint)
+RETURNS void
+AS 'MODULE_PATHNAME', 'injection_points_flush_heap_buffer_raw'
+LANGUAGE C STRICT VOLATILE PARALLEL UNSAFE;
+
+--
 -- injection_points_stats_numcalls()
 --
 -- Reports statistics, if any, related to the given injection point.

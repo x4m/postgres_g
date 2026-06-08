@@ -17,21 +17,27 @@
 
 #include "postgres.h"
 
+#include "access/relation.h"
+#include "access/xlog.h"
 #include "fmgr.h"
 #include "funcapi.h"
 #include "injection_stats.h"
 #include "miscadmin.h"
 #include "nodes/pg_list.h"
 #include "nodes/value.h"
+#include "storage/bufpage.h"
+#include "storage/bufmgr.h"
 #include "storage/condition_variable.h"
 #include "storage/dsm_registry.h"
 #include "storage/ipc.h"
 #include "storage/lwlock.h"
 #include "storage/shmem.h"
+#include "storage/smgr.h"
 #include "utils/builtins.h"
 #include "utils/guc.h"
 #include "utils/injection_point.h"
 #include "utils/memutils.h"
+#include "utils/rel.h"
 #include "utils/wait_event.h"
 
 PG_MODULE_MAGIC;
@@ -583,6 +589,103 @@ injection_points_list(PG_FUNCTION_ARGS)
 	return (Datum) 0;
 #undef NUM_INJECTION_POINTS_LIST
 }
+
+#ifdef USE_INJECTION_POINTS
+/*
+ * injection_points_stall_wal_buffer_init
+ *
+ * Leave InitializedUpTo one WAL page behind InitializeReserved so the next
+ * backend that writes WAL blocks on InitializedUpToCondVar (WalBufferInit).
+ */
+PG_FUNCTION_INFO_V1(injection_points_stall_wal_buffer_init);
+Datum
+injection_points_stall_wal_buffer_init(PG_FUNCTION_ARGS)
+{
+	XLogTestStallWalBufferInit();
+	PG_RETURN_VOID();
+}
+
+/*
+ * injection_points_flush_vm_buffer
+ *
+ * Like injection_points_flush_buffer, but targets the visibility map fork.
+ * Used by the VM-corruption reproducer: while a backend is stalled inside
+ * AdvanceXLInsertBuffer() (in heap_insert's critical section, after
+ * visibilitymap_clear() dirtied the VM page but before its WAL was written),
+ * the VM buffer is dirty yet not content-locked, so it can be flushed to disk
+ * here.  After a crash the VM bit is clear on disk although the change was
+ * never WAL-logged.
+ *
+ * We deliberately do NOT use FlushOneBuffer(): that enforces the WAL-before-
+ * data rule via XLogFlush(), which calls WaitXLogInsertionsToFinish() and would
+ * deadlock against the very backend we left stalled mid-WAL-insertion.  Writing
+ * the page out directly with smgrwrite() models what the checkpointer/bgwriter
+ * does in the small window after the stalled backend bails out on postmaster
+ * death (releasing its WAL insertion lock), but deterministically.  kill -9
+ * leaves the write in the OS page cache, so it survives into recovery.
+ */
+PG_FUNCTION_INFO_V1(injection_points_flush_vm_buffer);
+Datum
+injection_points_flush_vm_buffer(PG_FUNCTION_ARGS)
+{
+	Oid			relid = PG_GETARG_OID(0);
+	BlockNumber vmblk = (BlockNumber) PG_GETARG_INT64(1);
+	Relation	rel = relation_open(relid, AccessShareLock);
+	Buffer		buf;
+	PGIOAlignedBlock pagecopy;
+
+	buf = ReadBufferExtended(rel, VISIBILITYMAP_FORKNUM, vmblk,
+							 RBM_NORMAL, NULL);
+
+	/*
+	 * Copy the (dirty) page under a share lock, then write it out raw.  smgr
+	 * I/O requires a PG_IO_ALIGN_SIZE-aligned buffer, hence PGAlignedBlock.
+	 */
+	LockBuffer(buf, BUFFER_LOCK_SHARE);
+	memcpy(pagecopy.data, BufferGetPage(buf), BLCKSZ);
+	LockBuffer(buf, BUFFER_LOCK_UNLOCK);
+
+	PageSetChecksumInplace((Page) pagecopy.data, vmblk);
+	smgrwrite(RelationGetSmgr(rel), VISIBILITYMAP_FORKNUM, vmblk,
+			  pagecopy.data, false);
+
+	ReleaseBuffer(buf);
+	relation_close(rel, AccessShareLock);
+
+	PG_RETURN_VOID();
+}
+
+/*
+ * injection_points_flush_heap_buffer_raw
+ *
+ * Write a dirty heap page to disk without taking its content lock and without
+ * enforcing WAL-before-data.  This is intentionally unsafe test machinery for
+ * the VM-corruption reproducer: the target backend is stalled in
+ * AdvanceXLInsertBuffer() after heap_insert() has already cleared
+ * PD_ALL_VISIBLE on the heap page, but while still holding the heap buffer's
+ * content lock.
+ */
+PG_FUNCTION_INFO_V1(injection_points_flush_heap_buffer_raw);
+Datum
+injection_points_flush_heap_buffer_raw(PG_FUNCTION_ARGS)
+{
+	Oid			relid = PG_GETARG_OID(0);
+	BlockNumber blkno = (BlockNumber) PG_GETARG_INT64(1);
+	Relation	rel = relation_open(relid, AccessShareLock);
+	Buffer		buf = ReadBuffer(rel, blkno);
+	PGIOAlignedBlock pagecopy;
+
+	memcpy(pagecopy.data, BufferGetPage(buf), BLCKSZ);
+	PageSetChecksumInplace((Page) pagecopy.data, blkno);
+	smgrwrite(RelationGetSmgr(rel), MAIN_FORKNUM, blkno,
+			  pagecopy.data, false);
+
+	ReleaseBuffer(buf);
+	relation_close(rel, AccessShareLock);
+
+	PG_RETURN_VOID();
+}
+#endif							/* USE_INJECTION_POINTS */
 
 
 void
