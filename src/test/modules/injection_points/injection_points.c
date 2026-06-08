@@ -17,6 +17,7 @@
 
 #include "postgres.h"
 
+#include "access/xlog.h"
 #include "fmgr.h"
 #include "funcapi.h"
 #include "injection_stats.h"
@@ -583,6 +584,22 @@ injection_points_list(PG_FUNCTION_ARGS)
 	return (Datum) 0;
 #undef NUM_INJECTION_POINTS_LIST
 }
+
+#ifdef USE_INJECTION_POINTS
+/*
+ * injection_points_stall_wal_buffer_init
+ *
+ * Leave InitializedUpTo one WAL page behind InitializeReserved so the next
+ * backend that writes WAL blocks on InitializedUpToCondVar (WalBufferInit).
+ */
+PG_FUNCTION_INFO_V1(injection_points_stall_wal_buffer_init);
+Datum
+injection_points_stall_wal_buffer_init(PG_FUNCTION_ARGS)
+{
+	XLogTestStallWalBufferInit();
+	PG_RETURN_VOID();
+}
+#endif							/* USE_INJECTION_POINTS */
 
 
 void

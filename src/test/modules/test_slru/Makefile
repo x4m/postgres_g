@@ -7,7 +7,7 @@ OBJS = \
 	test_multixact.o
 PGFILEDESC = "test_slru - test module for SLRUs"
 
-EXTRA_INSTALL=src/test/modules/injection_points
+EXTRA_INSTALL=src/test/modules/injection_points contrib/pg_visibility
 export enable_injection_points
 TAP_TESTS = 1
 

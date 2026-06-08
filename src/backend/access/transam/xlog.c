@@ -77,6 +77,7 @@
 #include "postmaster/startup.h"
 #include "postmaster/walsummarizer.h"
 #include "postmaster/walwriter.h"
+#include "replication/message.h"
 #include "replication/origin.h"
 #include "replication/slot.h"
 #include "replication/snapbuild.h"
@@ -1995,6 +1996,40 @@ XLogRecPtrToBytePos(XLogRecPtr ptr)
  * unwritten data. Any new pages are initialized to zeros, with pages headers
  * initialized properly.
  */
+#ifdef USE_INJECTION_POINTS
+/*
+ * Test-only helpers for the WALBufMappingLock corruption reproducer.
+ */
+void
+XLogTestStallWalBufferInit(void)
+{
+	uint64		initialized = pg_atomic_read_u64(&XLogCtl->InitializedUpTo);
+	uint64		reserved = pg_atomic_read_u64(&XLogCtl->InitializeReserved);
+	XLogRecPtr	reservedptr;
+	XLogRecPtr	pageend;
+	int			padbytes;
+	char	   *pad;
+
+	if (reserved < initialized + XLOG_BLCKSZ)
+		pg_atomic_write_u64(&XLogCtl->InitializeReserved, initialized + XLOG_BLCKSZ);
+
+	/*
+	 * Move CurrBytePos near end-of-page so the very next WAL record must cross
+	 * into the reserved-but-uninitialized page and wait on WalBufferInit.
+	 */
+	reservedptr = GetXLogInsertRecPtr();
+	pageend = reservedptr - (reservedptr % XLOG_BLCKSZ) + XLOG_BLCKSZ;
+	padbytes = (int) (pageend - reservedptr) - 64;
+	if (padbytes > 0)
+	{
+		pad = palloc0(padbytes);
+		LogLogicalMessage("stall-fill", pad, padbytes, false, false);
+		pfree(pad);
+	}
+}
+
+#endif
+
 static void
 AdvanceXLInsertBuffer(XLogRecPtr upto, TimeLineID tli, bool opportunistic)
 {
@@ -7694,6 +7729,7 @@ CheckPointGuts(XLogRecPtr checkPointRedo, int flags)
 	CheckPointSUBTRANS();
 	CheckPointMultiXact();
 	CheckPointPredicate();
+	INJECTION_POINT("checkpoint-before-buffer-sync", NULL);
 	CheckPointBuffers(flags);
 
 	/* Perform all queued up fsyncs */

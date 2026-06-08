@@ -90,6 +90,16 @@ AS 'MODULE_PATHNAME', 'injection_points_list'
 LANGUAGE C STRICT VOLATILE PARALLEL RESTRICTED;
 
 --
+-- injection_points_stall_wal_buffer_init()
+--
+-- Test-only: stall WAL buffer page initialization (see XLogTestStallWalBufferInit).
+--
+CREATE FUNCTION injection_points_stall_wal_buffer_init()
+RETURNS void
+AS 'MODULE_PATHNAME', 'injection_points_stall_wal_buffer_init'
+LANGUAGE C STRICT VOLATILE PARALLEL UNSAFE;
+
+--
 -- injection_points_stats_numcalls()
 --
 -- Reports statistics, if any, related to the given injection point.
