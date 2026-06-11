@@ -43,6 +43,7 @@ tests += {
   'bd': meson.current_build_dir(),
   'tap': {
     'env': {
+      'enable_injection_points': get_option('injection_points') ? 'yes' : 'no',
       'INJECTION_POINTS_STATE': injection_points_state.full_path(),
     },
     'tests': [
