@@ -27,6 +27,12 @@ ISOLATION_OPTS = --temp-config $(top_srcdir)/src/test/modules/injection_points/e
 # The injection points are cluster-wide, so disable installcheck
 NO_INSTALLCHECK = 1
 
+# Standalone client used by the TAP tests to wait on and wake up injection
+# points without a backend connection.  It is built alongside the module
+# (MODULE_big already owns OBJS, so it cannot go through PGXS PROGRAM) and its
+# absolute path is exported for the TAP tests.
+INJ_STATE_CLIENT = injection_points_state$(X)
+
 export enable_injection_points
 
 ifdef USE_PGXS
@@ -51,3 +57,15 @@ check:
 endif
 
 endif
+
+# Build the standalone state client.  Its object is compiled by the implicit
+# rule (which adds -I. so injection_points.h is found) and it links against no
+# backend libraries.
+all: $(INJ_STATE_CLIENT)
+
+$(INJ_STATE_CLIENT): injection_points_state.o
+	$(CC) $(CFLAGS) $< $(LDFLAGS) $(LDFLAGS_EX) $(LIBS) -o $@
+
+clean: clean-injection-points-state
+clean-injection-points-state:
+	rm -f $(INJ_STATE_CLIENT) injection_points_state.o
