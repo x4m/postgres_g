@@ -24,6 +24,8 @@ ISOLATION = basic \
 # some isolation tests require wal_level=replica
 ISOLATION_OPTS = --temp-config $(top_srcdir)/src/test/modules/injection_points/extra.conf
 
+TAP_TESTS = 1
+
 # The injection points are cluster-wide, so disable installcheck
 NO_INSTALLCHECK = 1
 
@@ -34,6 +36,7 @@ NO_INSTALLCHECK = 1
 INJ_STATE_CLIENT = injection_points_state$(X)
 
 export enable_injection_points
+export INJECTION_POINTS_STATE := $(abspath $(INJ_STATE_CLIENT))
 
 ifdef USE_PGXS
 PG_CONFIG = pg_config

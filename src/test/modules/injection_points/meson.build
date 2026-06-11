@@ -41,6 +41,15 @@ tests += {
   'name': 'injection_points',
   'sd': meson.current_source_dir(),
   'bd': meson.current_build_dir(),
+  'tap': {
+    'env': {
+      'INJECTION_POINTS_STATE': injection_points_state.full_path(),
+    },
+    'tests': [
+      't/001_wait_without_sql.pl',
+    ],
+    'deps': [injection_points_state],
+  },
   'regress': {
     'sql': [
       'injection_points',
