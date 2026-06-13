@@ -62,6 +62,9 @@ extern List *InjectionPointList(void);
 
 #ifdef EXEC_BACKEND
 extern PGDLLIMPORT struct InjectionPointsCtl *ActiveInjectionPoints;
+#ifdef USE_INJECTION_POINTS
+extern void InjectionPointShmemAttach(void);
+#endif
 #endif
 
 #endif							/* INJECTION_POINT_H */

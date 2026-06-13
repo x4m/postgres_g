@@ -99,9 +99,6 @@ typedef struct
 	HANDLE		UsedShmemSegID;
 #endif
 	void	   *UsedShmemSegAddr;
-#ifdef USE_INJECTION_POINTS
-	struct InjectionPointsCtl *ActiveInjectionPoints;
-#endif
 	PROC_HDR   *ProcGlobal;
 	PGPROC	   *AuxiliaryProcs;
 	PGPROC	   *PreparedXactProcs;
@@ -682,6 +679,17 @@ SubPostmasterMain(int argc, char *argv[])
 	{
 		InitShmemAllocator(UsedShmemSegAddr);
 		ShmemCallRequestCallbacks();
+
+#ifdef USE_INJECTION_POINTS
+		/*
+		 * Map the file-backed active injection points array now.  The shmem
+		 * attach callback also does this, but not until InitProcess(), which
+		 * is too late for points that fire earlier in child startup (e.g.
+		 * "backend-initialize").  Forked children inherit the postmaster's
+		 * mapping and never reach this EXEC_BACKEND-only path.
+		 */
+		InjectionPointShmemAttach();
+#endif
 	}
 
 	/*
@@ -729,10 +737,6 @@ save_backend_variables(BackendParameters *param,
 #endif
 	param->UsedShmemSegID = UsedShmemSegID;
 	param->UsedShmemSegAddr = UsedShmemSegAddr;
-
-#ifdef USE_INJECTION_POINTS
-	param->ActiveInjectionPoints = ActiveInjectionPoints;
-#endif
 
 	param->ProcGlobal = ProcGlobal;
 	param->AuxiliaryProcs = AuxiliaryProcs;
@@ -985,10 +989,6 @@ restore_backend_variables(BackendParameters *param)
 #endif
 	UsedShmemSegID = param->UsedShmemSegID;
 	UsedShmemSegAddr = param->UsedShmemSegAddr;
-
-#ifdef USE_INJECTION_POINTS
-	ActiveInjectionPoints = param->ActiveInjectionPoints;
-#endif
 
 	ProcGlobal = param->ProcGlobal;
 	AuxiliaryProcs = param->AuxiliaryProcs;
