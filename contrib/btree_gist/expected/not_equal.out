@@ -39,3 +39,28 @@ INSERT INTO zoo VALUES(123, 'lion');
 ERROR:  conflicting key value violates exclusion constraint "zoo_cage_animal_excl"
 DETAIL:  Key (cage, animal)=(123, lion) conflicts with existing key (cage, animal)=(123, zebra).
 INSERT INTO zoo VALUES(124, 'lion');
+-- "not equals" on a multi-level index over a variable-length, prefix-truncated
+-- opclass (bit/varbit).  Internal-node keys are truncated common prefixes, and
+-- for bit/varbit they are plain bytea blobs rather than varbit values; the <>
+-- consistent branch must not apply the type's equality function to them.  Doing
+-- so silently dropped matching rows (so a conflicting tuple could escape an
+-- exclusion constraint) and could pass a negative length to memcmp() and crash
+-- the backend.
+CREATE TABLE ne_vbit (a varbit);
+-- many short values, enough to build a tree taller than one page
+INSERT INTO ne_vbit
+  SELECT B'1' || (g % 7)::bit(3)::varbit FROM generate_series(1, 20000) g;
+CREATE INDEX ne_vbit_idx ON ne_vbit USING gist (a);
+-- B'1' is shorter than (hence distinct from) every stored value, so the index
+-- must return every row -- exactly like a sequential scan.
+SET enable_seqscan = on; SET enable_indexscan = off; SET enable_bitmapscan = off;
+CREATE TEMP TABLE ne_seq AS SELECT count(*) AS c FROM ne_vbit WHERE a <> B'1';
+SET enable_seqscan = off; SET enable_indexscan = on; SET enable_bitmapscan = on;
+SELECT count(*) = (SELECT c FROM ne_seq) AS index_matches_seqscan
+  FROM ne_vbit WHERE a <> B'1';
+ index_matches_seqscan 
+-----------------------
+ t
+(1 row)
+
+RESET enable_seqscan; RESET enable_indexscan; RESET enable_bitmapscan;

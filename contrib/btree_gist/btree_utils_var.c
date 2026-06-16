@@ -611,8 +611,26 @@ gbt_var_consistent(GBT_VARKEY_R *key,
 					|| gbt_var_node_pf_match(key, query, tinfo);
 			break;
 		case BtreeGistNotEqualStrategyNumber:
-			retval = !(tinfo->f_eq(query, key->lower, collation, flinfo) &&
-					   tinfo->f_eq(query, key->upper, collation, flinfo));
+
+			/*
+			 * The equality test is only meaningful for leaf keys, which hold
+			 * the original datum (lower == upper).  An internal node holds a
+			 * truncated, common-prefix key whose lower/upper are not full
+			 * datums of the indexed type; for the bit/varbit opclasses they
+			 * are even plain bytea blobs rather than varbit values.  Applying
+			 * the type's equality function (e.g. biteq) to such a key is a
+			 * type confusion: it can both produce wrong answers (allowing a
+			 * conflicting tuple to escape an exclusion constraint) and, when
+			 * the underlying comparator derives a length from the misread
+			 * header, pass a negative size to memcmp() and crash the backend.
+			 * We cannot prove that an internal node covers only "query", so be
+			 * conservative and always descend.
+			 */
+			if (is_leaf)
+				retval = !(tinfo->f_eq(query, key->lower, collation, flinfo) &&
+						   tinfo->f_eq(query, key->upper, collation, flinfo));
+			else
+				retval = true;
 			break;
 		default:
 			retval = false;
