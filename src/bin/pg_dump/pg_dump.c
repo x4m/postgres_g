@@ -493,6 +493,7 @@ main(int argc, char **argv)
 		{"attribute-inserts", no_argument, &dopt.column_inserts, 1},
 		{"binary-upgrade", no_argument, &dopt.binary_upgrade, 1},
 		{"column-inserts", no_argument, &dopt.column_inserts, 1},
+		{"create-table-data-placeholders", no_argument, NULL, 26},
 		{"disable-dollar-quoting", no_argument, &dopt.disable_dollar_quoting, 1},
 		{"disable-triggers", no_argument, &dopt.disable_triggers, 1},
 		{"enable-row-security", no_argument, &dopt.enable_row_security, 1},
@@ -799,6 +800,10 @@ main(int argc, char **argv)
 				dopt.restrict_key = pg_strdup(optarg);
 				break;
 
+			case 26:
+				dopt.create_table_data_placeholders = true;
+				break;
+
 			default:
 				/* getopt_long already emitted a complaint */
 				pg_log_error_hint("Try \"%s --help\" for more information.", progname);
@@ -886,8 +891,33 @@ main(int argc, char **argv)
 				 "--on-conflict-do-nothing",
 				 "--inserts", "--rows-per-insert", "--column-inserts");
 
+	if (dopt.create_table_data_placeholders &&
+		tabledata_exclude_patterns.head == NULL &&
+		tabledata_exclude_patterns_and_children.head == NULL)
+		pg_fatal("option %s requires option %s or %s",
+				 "--create-table-data-placeholders",
+				 "--exclude-table-data", "--exclude-table-data-and-children");
+
+	if (dopt.create_table_data_placeholders &&
+		dopt.dump_inserts != 0)
+		pg_fatal("option %s cannot be used with %s, %s, or %s",
+				 "--create-table-data-placeholders",
+				 "--inserts", "--column-inserts", "--rows-per-insert");
+
+	check_mut_excl_opts(dopt.create_table_data_placeholders,
+						"--create-table-data-placeholders",
+						schema_only, "-s/--schema-only");
+	check_mut_excl_opts(dopt.create_table_data_placeholders,
+						"--create-table-data-placeholders",
+						no_data, "--no-data");
+
 	/* Identify archive format to emit */
 	archiveFormat = parseArchiveFormat(format, &archiveMode);
+
+	if (dopt.create_table_data_placeholders &&
+		archiveFormat != archDirectory)
+		pg_fatal("option %s is only supported by the directory format",
+				 "--create-table-data-placeholders");
 
 	/* archiveFormat specific setup */
 	if (archiveFormat == archNull)
@@ -1329,6 +1359,10 @@ help(const char *progname)
 	printf(_("  -x, --no-privileges          do not dump privileges (grant/revoke)\n"));
 	printf(_("  --binary-upgrade             for use by upgrade utilities only\n"));
 	printf(_("  --column-inserts             dump data as INSERT commands with column names\n"));
+	printf(_("  --create-table-data-placeholders\n"
+			 "                               create TABLE DATA placeholders for tables\n"
+			 "                               excluded with --exclude-table-data\n"
+			 "                               (directory format and COPY data only)\n"));
 	printf(_("  --disable-dollar-quoting     disable dollar quoting, use SQL standard quoting\n"));
 	printf(_("  --disable-triggers           disable triggers during data-only restore\n"));
 	printf(_("  --enable-row-security        enable row security (dump only content user has\n"
@@ -2356,6 +2390,29 @@ selectDumpableObject(DumpableObject *dobj, Archive *fout)
 }
 
 /*
+ * Dump an empty data file for a table whose data was excluded with
+ * --exclude-table-data but --create-table-data-placeholders was set.
+ */
+static int
+dumpTableData_empty(Archive *fout, const void *dcontext)
+{
+	const TableDataInfo *tdinfo = dcontext;
+	const TableInfo *tbinfo = tdinfo->tdtable;
+
+	pg_log_info("creating table data placeholder for excluded table \"%s.%s\"",
+				tbinfo->dobj.namespace->dobj.name, tbinfo->dobj.name);
+
+	/*
+	 * Emit the COPY end marker, as dumpTableData_copy() does for an empty
+	 * table.  Archive formats store raw COPY data in separate blobs/files.
+	 */
+	if (fout->dopt->dump_inserts == 0)
+		archprintf(fout, "\\.\n\n\n");
+
+	return 1;
+}
+
+/*
  *	Dump a table's contents for loading using the COPY command
  *	- this routine is called by the Archiver when it wants the table
  *	  to be dumped.
@@ -2895,7 +2952,8 @@ dumpTableData(Archive *fout, const TableDataInfo *tdinfo)
 	if (dopt->dump_inserts == 0)
 	{
 		/* Dump/restore using COPY */
-		dumpFn = dumpTableData_copy;
+		dumpFn = tdinfo->tableDataPlaceholder ?
+			dumpTableData_empty : dumpTableData_copy;
 		/* must use 2 steps here 'cause fmtId is nonreentrant */
 		printfPQExpBuffer(copyBuf, "COPY %s ",
 						  copyFrom);
@@ -2906,7 +2964,8 @@ dumpTableData(Archive *fout, const TableDataInfo *tdinfo)
 	else
 	{
 		/* Restore using INSERT */
-		dumpFn = dumpTableData_insert;
+		dumpFn = tdinfo->tableDataPlaceholder ?
+			dumpTableData_empty : dumpTableData_insert;
 		copyStmt = NULL;
 	}
 
@@ -3026,6 +3085,7 @@ static void
 makeTableDataInfo(DumpOptions *dopt, TableInfo *tbinfo)
 {
 	TableDataInfo *tdinfo;
+	bool		data_excluded;
 
 	/*
 	 * Nothing to do if we already decided to dump the table.  This will
@@ -3056,9 +3116,20 @@ makeTableDataInfo(DumpOptions *dopt, TableInfo *tbinfo)
 		return;
 
 	/* Check that the data is not explicitly excluded */
-	if (simple_oid_list_member(&tabledata_exclude_oids,
-							   tbinfo->dobj.catId.oid))
-		return;
+	data_excluded = simple_oid_list_member(&tabledata_exclude_oids,
+										   tbinfo->dobj.catId.oid);
+	if (data_excluded)
+	{
+		/*
+		 * This option only preserves COPY-backed table data archive entries.
+		 * Sequences and materialized views do not have replaceable .dat files
+		 * in this workflow, so preserve existing exclusion behavior for them.
+		 */
+		if (!dopt->create_table_data_placeholders ||
+			tbinfo->relkind == RELKIND_SEQUENCE ||
+			tbinfo->relkind == RELKIND_MATVIEW)
+			return;
+	}
 
 	/* OK, let's dump it */
 	tdinfo = pg_malloc_object(TableDataInfo);
@@ -3081,6 +3152,7 @@ makeTableDataInfo(DumpOptions *dopt, TableInfo *tbinfo)
 	tdinfo->dobj.namespace = tbinfo->dobj.namespace;
 	tdinfo->tdtable = tbinfo;
 	tdinfo->filtercond = NULL;	/* might get set later */
+	tdinfo->tableDataPlaceholder = data_excluded;
 	addObjectDependency(&tdinfo->dobj, tbinfo->dobj.dumpId);
 
 	/* A TableDataInfo contains data, of course */

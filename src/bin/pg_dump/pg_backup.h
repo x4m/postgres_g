@@ -198,6 +198,7 @@ typedef struct _dumpOptions
 	int			use_setsessauth;
 	int			enable_row_security;
 	int			load_via_partition_root;
+	bool		create_table_data_placeholders;
 
 	/* default, if no "inclusion" switches appear, is to dump everything */
 	bool		include_everything;

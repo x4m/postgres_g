@@ -721,6 +721,43 @@ PostgreSQL documentation
      </varlistentry>
 
      <varlistentry>
+      <term><option>--create-table-data-placeholders</option></term>
+      <listitem>
+       <para>
+        When used together with <option>--exclude-table-data</option> or
+        <option>--exclude-table-data-and-children</option> in directory output
+        format (<option>-Fd</option> or <option>--format=directory</option>),
+        still create a <literal>TABLE DATA</literal> archive entry (including
+        the usual <command>COPY</command> statement) for each excluded table,
+        but do not dump the table's rows.  A data file named after the table's
+        dump ID (for example <filename>3541.dat</filename>) is created
+        containing only the <command>COPY</command> end marker
+        (<literal>\.</literal>) as a placeholder.
+       </para>
+       <para>
+        This option is intended for workflows where excluded table data is
+        loaded separately after the dump is taken, for example by replacing
+        the placeholder data file with externally produced data before
+        restore.  Excluded sequences and materialized views are not affected:
+        their data is still omitted from the dump, as with
+        <option>--exclude-table-data</option> alone.
+       </para>
+       <para>
+        <option>--create-table-data-placeholders</option> cannot be used
+        without <option>--exclude-table-data</option> or
+        <option>--exclude-table-data-and-children</option>.  It is only
+        supported when directory output format is selected
+        (<option>-Fd</option> or <option>--format=directory</option>) and
+        data is being dumped as <command>COPY</command> (the default).
+        It cannot be used with <option>--inserts</option>,
+        <option>--column-inserts</option>, <option>--rows-per-insert</option>,
+        <option>-s</option>/<option>--schema-only</option>, or
+        <option>--no-data</option>.
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
       <term><option>--disable-dollar-quoting</option></term>
       <listitem>
        <para>
@@ -830,6 +867,13 @@ PostgreSQL documentation
         To exclude data for all tables in the database, see <option>--schema-only</option>
         or <option>--statistics-only</option>.
        </para>
+       <para>
+        By default, tables matched by this option are omitted from the
+        dump's <literal>TABLE DATA</literal> section entirely.  To still
+        create a <literal>TABLE DATA</literal> entry with a placeholder data
+        file in directory format, see
+        <option>--create-table-data-placeholders</option>.
+       </para>
       </listitem>
      </varlistentry>
 
@@ -841,6 +885,12 @@ PostgreSQL documentation
         except that it also excludes data of any partitions or inheritance
         child tables of the table(s) matching the
         <replaceable class="parameter">pattern</replaceable>.
+       </para>
+       <para>
+        As with <option>--exclude-table-data</option>, matched tables are
+        omitted from the <literal>TABLE DATA</literal> section unless
+        <option>--create-table-data-placeholders</option> is also
+        specified.
        </para>
       </listitem>
      </varlistentry>
