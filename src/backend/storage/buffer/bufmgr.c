@@ -663,7 +663,6 @@ static bool PinBuffer(BufferDesc *buf, BufferUsageCountChange usage_count_change
 static void PinBuffer_Locked(BufferDesc *buf);
 static void UnpinBuffer(BufferDesc *buf);
 static void UnpinBufferNoOwner(BufferDesc *buf);
-static void BufferSync(int flags);
 static int	SyncOneBuffer(int buf_id, bool skip_recently_used,
 						  WritebackContext *wb_context);
 static void WaitIO(BufferDesc *buf);
@@ -3768,7 +3767,7 @@ TrackNewBufferPin(Buffer buf)
 #include "lib/sort_template.h"
 
 /*
- * BufferSync -- Write out all dirty buffers in the pool.
+ * Write out all dirty buffers in the buffer pool.
  *
  * This is called at checkpoint time to write out all dirty shared buffers.
  * The checkpoint request flags should be passed in.  If CHECKPOINT_FAST is
@@ -3776,9 +3775,12 @@ TrackNewBufferPin(Buffer buf)
  * CHECKPOINT_END_OF_RECOVERY or CHECKPOINT_FLUSH_UNLOGGED is set, we write
  * even unlogged buffers, which are otherwise skipped.  The remaining flags
  * currently have no effect here.
+ *
+ * Note: temporary relations do not participate in checkpoints, so they don't
+ * need to be flushed.
  */
-static void
-BufferSync(int flags)
+void
+CheckPointBuffers(int flags)
 {
 	uint64		buf_state;
 	int			buf_id;
@@ -4648,20 +4650,6 @@ DebugPrintBufferRefcount(Buffer buffer)
 					  buf->tag.blockNum, buf_state & BUF_FLAG_MASK,
 					  BUF_STATE_GET_REFCOUNT(buf_state), loccount);
 	return result;
-}
-
-/*
- * CheckPointBuffers
- *
- * Flush all dirty blocks in buffer pool to disk at checkpoint time.
- *
- * Note: temporary relations do not participate in checkpoints, so they don't
- * need to be flushed.
- */
-void
-CheckPointBuffers(int flags)
-{
-	BufferSync(flags);
 }
 
 /*
