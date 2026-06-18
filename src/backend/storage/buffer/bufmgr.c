@@ -2541,36 +2541,21 @@ InvalidateVictimBuffer(BufferDesc *buf_hdr)
 	return true;
 }
 
-static Buffer
-GetVictimBuffer(BufferAccessStrategy strategy, IOContext io_context)
+/*
+ * Helper to claim a victim buffer -- which is invalidating its existing
+ * contents (including flushing the old contents first if needed).
+ * Returns true if it successfully claimed the victim buffer and false if it
+ * failed to do so. Buffer must already be pinned.
+ */
+bool
+ClaimVictimBuffer(BufferAccessStrategy strategy,
+				  BufferDesc *buf_hdr, Buffer bufnum, uint64 buf_state,
+				  bool from_ring, IOContext io_context)
 {
-	BufferDesc *buf_hdr;
-	Buffer		buf;
-	uint64		buf_state;
-	bool		from_ring;
-	bool		buf_valid;
-
-	/*
-	 * Ensure, before we pin a victim buffer, that there's a free refcount
-	 * entry and resource owner slot for the pin.
-	 */
-	ReservePrivateRefCountEntry();
-	ResourceOwnerEnlarge(CurrentResourceOwner);
-
-	/* we return here if a prospective victim buffer gets used concurrently */
-again:
-
-	/*
-	 * Select a victim buffer.  The buffer is returned pinned and owned by
-	 * this backend.
-	 */
-	buf_hdr = StrategyGetBuffer(strategy, &buf_state, &from_ring);
-	buf = BufferDescriptorGetBuffer(buf_hdr);
-
 	/*
 	 * We shouldn't have any other pins for this buffer.
 	 */
-	CheckBufferIsPinnedOnce(buf);
+	CheckBufferIsPinnedOnce(bufnum);
 
 	/*
 	 * If the buffer was dirty, try to write it out.  There is a race
@@ -2598,14 +2583,14 @@ again:
 		 * index pages, and the second one just happens to be trying to split
 		 * the page the first one got from StrategyGetBuffer.)
 		 */
-		if (!BufferLockConditional(buf, buf_hdr, BUFFER_LOCK_SHARE_EXCLUSIVE))
+		if (!BufferLockConditional(bufnum, buf_hdr, BUFFER_LOCK_SHARE_EXCLUSIVE))
 		{
 			/*
 			 * Someone else has locked the buffer, so give it up and loop back
 			 * to get another one.
 			 */
 			UnpinBuffer(buf_hdr);
-			goto again;
+			return false;
 		}
 
 		/*
@@ -2616,26 +2601,22 @@ again:
 		 * XLogNeedsFlush() is not meaningful for them.
 		 *
 		 * We need to hold the content lock in at least share-exclusive mode
-		 * to safely inspect the page LSN, so this couldn't have been done
-		 * inside StrategyGetBuffer().
+		 * to safely inspect the page LSN.
 		 */
 		if (strategy && from_ring &&
 			StrategyRejectBuffer(strategy, buf_hdr, buf_state))
 		{
-			UnlockReleaseBuffer(buf);
-			goto again;
+			UnlockReleaseBuffer(bufnum);
+			return false;
 		}
 
 		/* OK, do the I/O */
 		FlushBuffer(buf_hdr, NULL, IOOBJECT_RELATION, io_context);
-		LockBuffer(buf, BUFFER_LOCK_UNLOCK);
+		LockBuffer(bufnum, BUFFER_LOCK_UNLOCK);
 
 		ScheduleBufferTagForWriteback(&BackendWritebackContext, io_context,
 									  &buf_hdr->tag);
 	}
-
-	/* Don't use a stale buf_state value after InvalidateVictimBuffer */
-	buf_valid = buf_state & BM_VALID;
 
 	/*
 	 * If the buffer has an entry in the buffer mapping table, delete it. This
@@ -2645,43 +2626,47 @@ again:
 	if ((buf_state & BM_TAG_VALID) && !InvalidateVictimBuffer(buf_hdr))
 	{
 		UnpinBuffer(buf_hdr);
-		goto again;
+		return false;
 	}
 
-	if (buf_valid)
-	{
-		/*
-		 * When a BufferAccessStrategy is in use, blocks evicted from shared
-		 * buffers are counted as IOOP_EVICT in the corresponding context
-		 * (e.g. IOCONTEXT_BULKWRITE). Shared buffers are evicted by a
-		 * strategy in two cases: 1) while initially claiming buffers for the
-		 * strategy ring 2) to replace an existing strategy ring buffer
-		 * because it is pinned or in use and cannot be reused.
-		 *
-		 * Blocks evicted from buffers already in the strategy ring are
-		 * counted as IOOP_REUSE in the corresponding strategy context.
-		 *
-		 * At this point, we can accurately count evictions and reuses,
-		 * because we have successfully claimed the valid buffer and
-		 * invalidated its previous tenant. Previously, we may have been
-		 * forced to release the buffer due to concurrent pinners or erroring
-		 * out.
-		 */
-		pgstat_count_io_op(IOOBJECT_RELATION, io_context,
-						   from_ring ? IOOP_REUSE : IOOP_EVICT, 1, 0);
-	}
+	return true;
+}
+
+static Buffer
+GetVictimBuffer(BufferAccessStrategy strategy, IOContext io_context)
+{
+	Buffer		bufnum = InvalidBuffer;
+#ifdef USE_ASSERT_CHECKING
+	BufferDesc *buf_hdr;
+	uint64		buf_state;
+#endif
+
+	/*
+	 * Ensure, before we pin a victim buffer, that there's a free refcount
+	 * entry and resource owner slot for the pin.
+	 */
+	ReservePrivateRefCountEntry();
+	ResourceOwnerEnlarge(CurrentResourceOwner);
+
+	/*
+	 * Select a victim buffer.  The buffer is returned pinned and owned by
+	 * this backend.
+	 */
+	bufnum = StrategyGetBuffer(strategy, io_context);
+
 
 	/* a final set of sanity checks */
 #ifdef USE_ASSERT_CHECKING
+	buf_hdr = GetBufferDescriptor(bufnum - 1);
 	buf_state = pg_atomic_read_u64(&buf_hdr->state);
 
 	Assert(BUF_STATE_GET_REFCOUNT(buf_state) == 1);
 	Assert(!(buf_state & (BM_TAG_VALID | BM_VALID | BM_DIRTY)));
 
-	CheckBufferIsPinnedOnce(buf);
+	CheckBufferIsPinnedOnce(bufnum);
 #endif
 
-	return buf;
+	return bufnum;
 }
 
 /*

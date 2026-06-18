@@ -99,7 +99,7 @@ typedef struct BufferAccessStrategyData
 static BufferDesc *GetBufferFromRing(BufferAccessStrategy strategy,
 									 uint64 *buf_state);
 static void AddBufferToRing(BufferAccessStrategy strategy,
-							BufferDesc *buf);
+							Buffer bufnum);
 
 /*
  * ClockSweepTick - Helper routine for StrategyGetBuffer()
@@ -181,14 +181,15 @@ ClockSweepTick(void)
  *	The buffer is pinned and marked as owned, using TrackNewBufferPin(),
  *	before returning.
  */
-BufferDesc *
-StrategyGetBuffer(BufferAccessStrategy strategy, uint64 *buf_state, bool *from_ring)
+Buffer
+StrategyGetBuffer(BufferAccessStrategy strategy, IOContext io_context)
 {
 	BufferDesc *buf;
+	Buffer		bufnum;
 	int			bgwprocno;
 	int			trycounter;
-
-	*from_ring = false;
+	uint64		buf_state;
+	bool		buf_valid;
 
 	/*
 	 * If given a strategy object, see whether it can select a buffer. We
@@ -196,11 +197,40 @@ StrategyGetBuffer(BufferAccessStrategy strategy, uint64 *buf_state, bool *from_r
 	 */
 	if (strategy != NULL)
 	{
-		buf = GetBufferFromRing(strategy, buf_state);
-		if (buf != NULL)
+		int			ring_tries;
+
+		/*
+		 * Don't loop around the ring forever. If we can't reuse any of the
+		 * ring buffers (e.g. because they are all concurrently locked), fall
+		 * back to the clock sweep after one full pass.
+		 */
+		for (ring_tries = 0; ring_tries < strategy->nbuffers; ring_tries++)
 		{
-			*from_ring = true;
-			return buf;
+			buf = GetBufferFromRing(strategy, &buf_state);
+			if (buf == NULL)
+				break;
+
+			bufnum = BufferDescriptorGetBuffer(buf);
+			/* Don't use a stale buf_state value after InvalidateVictimBuffer */
+			buf_valid = buf_state & BM_VALID;
+			if (ClaimVictimBuffer(strategy, buf, bufnum, buf_state,
+								  true, io_context))
+			{
+				/*
+				 * Blocks evicted from buffers already in the strategy ring
+				 * are counted as IOOP_REUSE in the corresponding strategy
+				 * context.
+				 *
+				 * We can only count this now that we've successfully claimed
+				 * the buffer and invalidated its previous tenant. Previously
+				 * we may have been forced to release the buffer due to
+				 * concurrent pinners or erroring out.
+				 */
+				if (buf_valid)
+					pgstat_count_io_op(IOOBJECT_RELATION, io_context,
+									   IOOP_REUSE, 1, 0);
+				return bufnum;
+			}
 		}
 	}
 
@@ -304,13 +334,49 @@ StrategyGetBuffer(BufferAccessStrategy strategy, uint64 *buf_state, bool *from_r
 												   local_buf_state))
 				{
 					/* Found a usable buffer */
-					if (strategy != NULL)
-						AddBufferToRing(strategy, buf);
-					*buf_state = local_buf_state;
+					buf_state = local_buf_state;
 
 					TrackNewBufferPin(BufferDescriptorGetBuffer(buf));
+					bufnum = BufferDescriptorGetBuffer(buf);
 
-					return buf;
+					/*
+					 * Don't use a stale buf_state value after
+					 * InvalidateVictimBuffer
+					 */
+					buf_valid = buf_state & BM_VALID;
+
+					/*
+					 * If we can't claim the buffer (concurrent pin/dirty), go
+					 * back to the clock sweep to find another one. Don't add
+					 * a buffer we failed to claim to the strategy ring.
+					 */
+					if (ClaimVictimBuffer(strategy, buf, bufnum, buf_state,
+										  false, io_context))
+					{
+						/*
+						 * Blocks evicted from shared buffers are counted as
+						 * IOOP_EVICT in the corresponding context, even when
+						 * a strategy is in use. Shared buffers are evicted by
+						 * a strategy in two cases: 1) while initially
+						 * claiming buffers for the strategy ring 2) to
+						 * replace an existing strategy ring buffer because it
+						 * is pinned or in use and cannot be reused.
+						 *
+						 * We can only count this now that we've successfully
+						 * claimed the buffer and invalidated its previous
+						 * tenant. Previously we may have been forced to
+						 * release the buffer due to concurrent pinners or
+						 * erroring out.
+						 */
+						if (buf_valid)
+							pgstat_count_io_op(IOOBJECT_RELATION, io_context,
+											   IOOP_EVICT, 1, 0);
+						if (strategy != NULL)
+							AddBufferToRing(strategy, bufnum);
+						return bufnum;
+					}
+
+					break;
 				}
 			}
 		}
@@ -694,15 +760,13 @@ GetBufferFromRing(BufferAccessStrategy strategy, uint64 *buf_state)
 }
 
 /*
- * AddBufferToRing -- add a buffer to the buffer ring
- *
- * Caller must hold the buffer header spinlock on the buffer.  Since this
- * is called with the spinlock held, it had better be quite cheap.
+ * Records the buffer in the current ring slot. The caller must have already
+ * pinned the buffer and invalidated its previous contents.
  */
 static void
-AddBufferToRing(BufferAccessStrategy strategy, BufferDesc *buf)
+AddBufferToRing(BufferAccessStrategy strategy, Buffer bufnum)
 {
-	strategy->buffers[strategy->current] = BufferDescriptorGetBuffer(buf);
+	strategy->buffers[strategy->current] = bufnum;
 }
 
 /*
