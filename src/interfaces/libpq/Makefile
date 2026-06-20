@@ -34,6 +34,7 @@ OBJS = \
 	fe-auth-scram.o \
 	fe-cancel.o \
 	fe-connect.o \
+	fe-connect-resolve.o \
 	fe-exec.o \
 	fe-lobj.o \
 	fe-misc.o \

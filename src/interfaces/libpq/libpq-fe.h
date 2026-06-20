@@ -114,6 +114,8 @@ typedef enum
 								 * started.  */
 	CONNECTION_AUTHENTICATING,	/* Authentication is in progress with some
 								 * external system. */
+	CONNECTION_RESOLVING,		/* Asynchronously resolving the host list via
+								 * a registered resolver. */
 } ConnStatusType;
 
 typedef enum
@@ -208,6 +210,64 @@ typedef enum
  * The contents of this struct are not supposed to be known to applications.
  */
 typedef struct pg_conn PGconn;
+
+/*
+ * Asynchronous host-resolver interface.
+ *
+ * A resolver maps a name to a list of candidate endpoints.  The name may be
+ * a cluster name for service discovery (for example resolved via a DNS SVCB
+ * backend), or - in principle - an ordinary host name resolved to its
+ * A/AAAA addresses; either way the result feeds libpq's normal multi-host
+ * connection path.
+ *
+ * Resolvers are pluggable: an application or driver registers an
+ * implementation with PQsetResolver(), so a backend (for example one built
+ * on c-ares) can be shipped and installed separately from libpq itself.
+ *
+ * The interface is asynchronous so that name resolution does not block
+ * PQconnectPoll(): libpq drives the resolver through its socket the same way
+ * it drives the connection socket.
+ */
+
+/* One resolved endpoint.  "addr" is a pre-resolved IP, or "" if unknown. */
+typedef struct PQresolvedEndpoint
+{
+	unsigned short priority;	/* lower is preferred (RFC 2782 / RFC 9460) */
+	unsigned short port;
+	char		target[256];	/* hostname (DNS max is 253) */
+	char		addr[46];		/* IPv4/IPv6 text form, or "" */
+} PQresolvedEndpoint;
+
+/*
+ * Methods implemented by a resolver.  All callbacks operate on an opaque,
+ * resolver-defined handle returned by start().
+ */
+typedef struct PQresolverMethods
+{
+	/* Begin resolving "name"; return a handle, or NULL on error (message
+	 * appended to conn). */
+	void	   *(*start) (PGconn *conn, const char *name);
+
+	/* Report the socket to wait on and its direction; set *sock to -1 when
+	 * there is currently nothing to wait for. */
+	void		(*socket) (void *handle, int *sock, int *forwrite);
+
+	/* Advance resolution.  Returns PGRES_POLLING_READING/WRITING while in
+	 * progress, PGRES_POLLING_OK when endpoints are ready, or
+	 * PGRES_POLLING_FAILED on error (message appended to conn). */
+	PostgresPollingStatusType (*poll) (PGconn *conn, void *handle);
+
+	/* After PGRES_POLLING_OK: return the resolved endpoints (owned by the
+	 * resolver until finish()) and their count. */
+	int			(*results) (void *handle, PQresolvedEndpoint **endpoints);
+
+	/* Release the handle and all associated state. */
+	void		(*finish) (void *handle);
+} PQresolverMethods;
+
+/* Register (or, with NULL, clear) the resolver used for asynchronous host
+ * resolution.  Process-wide; not thread-safe against concurrent connects. */
+extern void PQsetResolver(const PQresolverMethods *methods);
 
 /* PGcancelConn encapsulates a cancel connection to the backend.
  * The contents of this struct are not supposed to be known to applications.

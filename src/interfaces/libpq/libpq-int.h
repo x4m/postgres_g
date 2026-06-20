@@ -371,6 +371,11 @@ typedef struct pg_conn_host
 struct pg_conn
 {
 	/* Saved values of connection options */
+	char	   *discoverhost;	/* cluster name for service discovery; when
+								 * set, it is resolved asynchronously at connect
+								 * time and the result replaces the host list.
+								 * Mutually exclusive with pghost and
+								 * pghostaddr. */
 	char	   *pghost;			/* the machine on which the server is running,
 								 * or a path to a UNIX-domain socket, or a
 								 * comma-separated list of machines and/or
@@ -482,6 +487,8 @@ struct pg_conn
 	int			whichhost;		/* host we're currently trying/connected to */
 	pg_conn_host *connhost;		/* details about each named host */
 	char	   *connip;			/* IP address for current network connection */
+	void	   *resolve_state;	/* opaque handle of the in-progress resolver,
+								 * while in CONNECTION_RESOLVING; NULL otherwise */
 
 	/*
 	 * The pending command queue as a singly-linked list.  Head is the command

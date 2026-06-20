@@ -30,6 +30,7 @@
 #include "common/string.h"
 #include "fe-auth.h"
 #include "fe-auth-oauth.h"
+#include "fe-connect-resolve.h"
 #include "libpq-fe.h"
 #include "libpq-int.h"
 #include "mb/pg_wchar.h"
@@ -230,6 +231,10 @@ static const internalPQconninfoOption PQconninfoOptions[] = {
 	{"dbname", "PGDATABASE", NULL, NULL,
 		"Database-Name", "", 20,
 	offsetof(struct pg_conn, dbName)},
+
+	{"discover", NULL, NULL, NULL,
+		"Service-Discovery-Host", "", 40,
+	offsetof(struct pg_conn, discoverhost)},
 
 	{"host", "PGHOST", NULL, NULL,
 		"Database-Host", "", 40,
@@ -1245,6 +1250,113 @@ index_of_allowed_sasl_mech(PGconn *conn, const pg_fe_sasl_mech *mech)
 	return -1;
 }
 
+/* qsort comparator: order resolved endpoints by priority ascending. */
+static int
+cmp_endpoint_priority(const void *a, const void *b)
+{
+	const PQresolvedEndpoint *ea = (const PQresolvedEndpoint *) a;
+	const PQresolvedEndpoint *eb = (const PQresolvedEndpoint *) b;
+
+	return (int) ea->priority - (int) eb->priority;
+}
+
+/*
+ *		buildConnhostFromEndpoints
+ *
+ * Build conn->connhost[] directly from a resolved endpoint list (replacing
+ * any array built before resolution), sorted by priority ascending.  Used by
+ * the asynchronous resolution path once a resolver has produced the host
+ * list; the result then feeds the normal multi-host connection machinery.
+ * Returns false (with conn->status and errorMessage set) on error.
+ */
+static bool
+buildConnhostFromEndpoints(PGconn *conn, PQresolvedEndpoint *endpoints,
+						   int nendpoints)
+{
+	if (nendpoints <= 0)
+	{
+		conn->status = CONNECTION_BAD;
+		libpq_append_conn_error(conn, "no endpoints resolved for \"%s\"",
+								conn->discoverhost);
+		return false;
+	}
+
+	qsort(endpoints, nendpoints, sizeof(PQresolvedEndpoint),
+		  cmp_endpoint_priority);
+
+	/* Discard any host list built before resolution and rebuild it. */
+	pqReleaseConnHosts(conn);
+
+	conn->whichhost = 0;
+	conn->nconnhost = nendpoints;
+	conn->connhost = (pg_conn_host *) calloc(nendpoints, sizeof(pg_conn_host));
+	if (conn->connhost == NULL)
+		goto oom;
+
+	for (int i = 0; i < nendpoints; i++)
+	{
+		pg_conn_host *ch = &conn->connhost[i];
+		char		portbuf[16];
+
+		ch->host = strdup(endpoints[i].target);
+		if (ch->host == NULL)
+			goto oom;
+
+		if (endpoints[i].addr[0] != '\0')
+		{
+			ch->hostaddr = strdup(endpoints[i].addr);
+			if (ch->hostaddr == NULL)
+				goto oom;
+			ch->type = CHT_HOST_ADDRESS;
+		}
+		else
+			ch->type = CHT_HOST_NAME;
+
+		snprintf(portbuf, sizeof(portbuf), "%u", endpoints[i].port);
+		ch->port = strdup(portbuf);
+		if (ch->port == NULL)
+			goto oom;
+
+		/* Per-host password from the password file, as for explicit hosts. */
+		if ((conn->pgpass == NULL || conn->pgpass[0] == '\0') &&
+			conn->pgpassfile != NULL && conn->pgpassfile[0] != '\0')
+		{
+			const char *password_errmsg = NULL;
+
+			ch->password = passwordFromFile(ch->host, ch->port, conn->dbName,
+											conn->pguser, conn->pgpassfile,
+											&password_errmsg);
+			if (password_errmsg != NULL)
+			{
+				conn->status = CONNECTION_BAD;
+				libpq_append_conn_error(conn, "%s", password_errmsg);
+				return false;
+			}
+		}
+	}
+
+	/* Apply random load balancing to the resolved list, as for explicit hosts. */
+	if (conn->load_balance_type == LOAD_BALANCE_RANDOM)
+	{
+		libpq_prng_init(conn);
+		for (int i = 1; i < conn->nconnhost; i++)
+		{
+			int			j = pg_prng_uint64_range(&conn->prng_state, 0, i);
+			pg_conn_host temp = conn->connhost[j];
+
+			conn->connhost[j] = conn->connhost[i];
+			conn->connhost[i] = temp;
+		}
+	}
+
+	return true;
+
+oom:
+	conn->status = CONNECTION_BAD;
+	libpq_append_conn_error(conn, "out of memory");
+	return false;
+}
+
 /*
  *		pqConnectOptions2
  *
@@ -1259,9 +1371,27 @@ pqConnectOptions2(PGconn *conn)
 	int			i;
 
 	/*
+	 * "discover" replaces the host list with one obtained at connect time
+	 * from the registered resolver, so it cannot be combined with an explicit
+	 * host or hostaddr.
+	 */
+	if (conn->discoverhost && conn->discoverhost[0] != '\0' &&
+		((conn->pghost && conn->pghost[0] != '\0') ||
+		 (conn->pghostaddr && conn->pghostaddr[0] != '\0')))
+	{
+		libpq_append_conn_error(conn, "%s cannot be combined with %s or %s",
+								"discover", "host", "hostaddr");
+		return false;
+	}
+
+	/*
 	 * Allocate memory for details about each host to which we might possibly
 	 * try to connect.  For that, count the number of elements in the hostaddr
 	 * or host options.  If neither is given, assume one host.
+	 *
+	 * When "discover" is set the real host list is not known until the
+	 * resolver runs; a placeholder array is built here and replaced once
+	 * resolution completes (see buildConnhostFromEndpoints()).
 	 */
 	conn->whichhost = 0;
 	if (conn->pghostaddr && conn->pghostaddr[0] != '\0')
@@ -2759,7 +2889,15 @@ pqConnectDBStart(PGconn *conn)
 		conn->try_next_addr = false;
 	}
 
-	conn->status = CONNECTION_NEEDED;
+	/*
+	 * If a service-discovery host was given, resolve it asynchronously first;
+	 * the resolved endpoints replace the placeholder host list before we begin
+	 * connecting.
+	 */
+	if (conn->discoverhost && conn->discoverhost[0] != '\0')
+		conn->status = CONNECTION_RESOLVING;
+	else
+		conn->status = CONNECTION_NEEDED;
 
 	/* Also reset the target_server_type state if needed */
 	if (conn->target_server_type == SERVER_TYPE_PREFER_STANDBY_PASS2)
@@ -2770,10 +2908,16 @@ pqConnectDBStart(PGconn *conn)
 	 * so that it can easily be re-executed if needed again during the
 	 * asynchronous startup process.  However, we must run it once here,
 	 * because callers expect a success return from this routine to mean that
-	 * we are in PGRES_POLLING_WRITING connection state.
+	 * we are in PGRES_POLLING_WRITING connection state.  When the host list
+	 * is being resolved asynchronously the first poll instead leaves us
+	 * waiting to read the resolver socket, so accept that too.
 	 */
-	if (PQconnectPoll(conn) == PGRES_POLLING_WRITING)
-		return 1;
+	{
+		PostgresPollingStatusType pollres = PQconnectPoll(conn);
+
+		if (pollres == PGRES_POLLING_WRITING || pollres == PGRES_POLLING_READING)
+			return 1;
+	}
 
 connect_errReturn:
 
@@ -2975,6 +3119,49 @@ PQconnectPoll(PGconn *conn)
 		case CONNECTION_CHECK_TARGET:
 		case CONNECTION_AUTHENTICATING:
 			break;
+
+		case CONNECTION_RESOLVING:
+			{
+				/*
+				 * Drive the asynchronous resolver.  While it is in progress we
+				 * wait on its socket exactly like a connection socket; once it
+				 * finishes, build connhost[] from the resolved endpoints and
+				 * fall through to the normal connection path.
+				 */
+				PostgresPollingStatusType rstatus;
+
+				if (conn->resolve_state == NULL)
+					rstatus = pqResolveStart(conn);
+				else
+					rstatus = pqResolvePoll(conn);
+
+				if (rstatus == PGRES_POLLING_READING ||
+					rstatus == PGRES_POLLING_WRITING)
+					return rstatus;
+
+				if (rstatus == PGRES_POLLING_FAILED)
+				{
+					pqResolveCleanup(conn);
+					goto error_return;
+				}
+
+				/* PGRES_POLLING_OK: resolution complete. */
+				{
+					PQresolvedEndpoint *endpoints;
+					int			n = pqResolveResults(conn, &endpoints);
+					bool		ok = buildConnhostFromEndpoints(conn, endpoints, n);
+
+					pqResolveCleanup(conn);
+					if (!ok)
+						goto error_return;
+				}
+
+				conn->status = CONNECTION_NEEDED;
+				conn->whichhost = -1;
+				conn->try_next_host = true;
+				conn->try_next_addr = false;
+				break;
+			}
 
 		default:
 			libpq_append_conn_error(conn, "invalid connection state, probably indicative of memory corruption");
@@ -5102,6 +5289,7 @@ freePGconn(PGconn *conn)
 	}
 
 	/* free everything not freed in pqClosePGconn */
+	free(conn->discoverhost);
 	free(conn->pghost);
 	free(conn->pghostaddr);
 	free(conn->pgport);
