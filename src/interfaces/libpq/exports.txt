@@ -212,3 +212,4 @@ PQfullProtocolVersion     209
 appendPQExpBufferVA       210
 PQgetThreadLock           211
 PQsetResolver             212
+PQinitSvcbResolver        213

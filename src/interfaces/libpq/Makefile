@@ -29,12 +29,22 @@ ifneq ($(PORTNAME), win32)
 override CFLAGS += $(PTHREAD_CFLAGS)
 endif
 
+# Built-in DNS SVCB resolver (prototype): enable the c-ares backend in
+# fe-connect-svcb.c when pkg-config finds libcares.  Production would gate
+# this behind a proper --with-cares configure option (and likely ship the
+# resolver as a separate module).
+CARES_LIBS := $(shell pkg-config --libs libcares 2>/dev/null)
+ifneq ($(CARES_LIBS),)
+override CPPFLAGS += $(shell pkg-config --cflags libcares 2>/dev/null) -DUSE_CARES
+endif
+
 OBJS = \
 	$(WIN32RES) \
 	fe-auth-scram.o \
 	fe-cancel.o \
 	fe-connect.o \
 	fe-connect-resolve.o \
+	fe-connect-svcb.o \
 	fe-exec.o \
 	fe-lobj.o \
 	fe-misc.o \
@@ -95,6 +105,8 @@ endif
 ifeq ($(PORTNAME), win32)
 SHLIB_LINK += -lshell32 -lws2_32 -lsecur32 $(filter -lcomerr32 -lkrb5_32, $(LIBS))
 endif
+# Built-in DNS SVCB resolver (c-ares), when enabled.
+SHLIB_LINK += $(CARES_LIBS)
 SHLIB_PREREQS = submake-libpgport
 
 SHLIB_EXPORTS = exports.txt
