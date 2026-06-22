@@ -307,10 +307,17 @@ DropTableXactCallback(XactEvent event, void *arg, XLogRecPtr commit_lsn)
 		}
 	}
 
-	/* Clean up after commit or abort */
+	/*
+	 * Clean up after commit, abort or prepare.  On PREPARE TRANSACTION the
+	 * TopTransactionContext (which holds the list) is about to be destroyed,
+	 * so we must release the list and reset the static pointer here too;
+	 * otherwise it would dangle and corrupt the next transaction's list.
+	 * (DROP within a prepared transaction is simply not logged.)
+	 */
 	if (event == XACT_EVENT_COMMIT ||
 		event == XACT_EVENT_ABORT ||
-		event == XACT_EVENT_PARALLEL_ABORT)
+		event == XACT_EVENT_PARALLEL_ABORT ||
+		event == XACT_EVENT_PREPARE)
 	{
 		/* Free the DropTableInfo structures */
 		foreach(lc, pending_drop_tables)
