@@ -241,6 +241,8 @@ pgstat_get_io_context_name(IOContext io_context)
 {
 	switch (io_context)
 	{
+		case IOCONTEXT_BULKLOAD:
+			return "bulkload";
 		case IOCONTEXT_BULKREAD:
 			return "bulkread";
 		case IOCONTEXT_BULKWRITE:
@@ -414,9 +416,10 @@ pgstat_tracks_io_object(BackendType bktype, IOObject io_object,
 
 	/*
 	 * Currently, IO on temporary relations can only occur in the
-	 * IOCONTEXT_NORMAL IOContext.
+	 * IOCONTEXT_NORMAL and IOCONTEXT_BULKLOAD IOContexts.
 	 */
 	if (io_context != IOCONTEXT_NORMAL &&
+		io_context != IOCONTEXT_BULKLOAD &&
 		io_object == IOOBJECT_TEMP_RELATION)
 		return false;
 
@@ -434,7 +437,8 @@ pgstat_tracks_io_object(BackendType bktype, IOObject io_object,
 		bktype == B_WAL_SUMMARIZER || bktype == B_WAL_WRITER ||
 		bktype == B_WAL_RECEIVER;
 
-	if (no_temp_rel && io_context == IOCONTEXT_NORMAL &&
+	if (no_temp_rel &&
+		(io_context == IOCONTEXT_NORMAL || io_context == IOCONTEXT_BULKLOAD) &&
 		io_object == IOOBJECT_TEMP_RELATION)
 		return false;
 
@@ -452,7 +456,8 @@ pgstat_tracks_io_object(BackendType bktype, IOObject io_object,
 	 * do so, excluding those rows from the view makes the view easier to use.
 	 */
 	if ((bktype == B_CHECKPOINTER || bktype == B_BG_WRITER) &&
-		(io_context == IOCONTEXT_BULKREAD ||
+		(io_context == IOCONTEXT_BULKLOAD ||
+		 io_context == IOCONTEXT_BULKREAD ||
 		 io_context == IOCONTEXT_BULKWRITE ||
 		 io_context == IOCONTEXT_VACUUM))
 		return false;
@@ -461,7 +466,8 @@ pgstat_tracks_io_object(BackendType bktype, IOObject io_object,
 		return false;
 
 	if ((bktype == B_AUTOVAC_WORKER || bktype == B_AUTOVAC_LAUNCHER) &&
-		io_context == IOCONTEXT_BULKWRITE)
+		(io_context == IOCONTEXT_BULKLOAD ||
+		 io_context == IOCONTEXT_BULKWRITE))
 		return false;
 
 	return true;
@@ -523,6 +529,16 @@ pgstat_tracks_io_op(BackendType bktype, IOObject io_object,
 	 * valid in certain contexts.
 	 */
 	if (io_context == IOCONTEXT_BULKREAD && io_op == IOOP_EXTEND)
+		return false;
+
+	/*
+	 * IOCONTEXT_BULKLOAD covers relation data written by bypassing shared
+	 * buffers (see bulk_write.c), which only ever extends or overwrites
+	 * relation blocks.  The matching fsync is counted separately under
+	 * IOCONTEXT_NORMAL (see below).
+	 */
+	if (io_context == IOCONTEXT_BULKLOAD &&
+		!(io_op == IOOP_EXTEND || io_op == IOOP_WRITE))
 		return false;
 
 	strategy_io_context = io_context == IOCONTEXT_BULKREAD ||
