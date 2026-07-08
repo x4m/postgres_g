@@ -66,6 +66,7 @@ tests += {
     },
     'tests': [
       't/001_wait_without_sql.pl',
+      't/002_preauth_slots.pl',
     ],
   },
 }
