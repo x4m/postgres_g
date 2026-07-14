@@ -2344,6 +2344,14 @@ vacuum_rel(Oid relid, RangeVar *relation, VacuumParams params,
 		toast_vacuum_params.options |= VACOPT_PROCESS_MAIN;
 		toast_vacuum_params.toast_parent = relid;
 
+		/*
+		 * Allow tests to pause here, after the main relation has been
+		 * vacuumed but before its TOAST table is, to exercise the horizon
+		 * race that can leave the TOAST table more aggressively cleaned than
+		 * the main relation.
+		 */
+		INJECTION_POINT("vacuum-before-toast", NULL);
+
 		vacuum_rel(toast_relid, NULL, toast_vacuum_params, bstrategy,
 				   isTopLevel);
 	}
