@@ -34,6 +34,11 @@ $node2->init_from_backup($node1, 'backup1', has_streaming => 1);
 $node2->enable_archiving();
 $node2->start;
 
+# node1 is never fenced and shares node2's WAL archive.
+$node1->append_conf('postgresql.conf',
+	"archive_mode = on\narchive_command = 'cp \"%p\" \"" . $node2->archive_dir . "/%f\"'");
+$node1->restart;
+
 # Wait for node2 to catch up.
 $node1->wait_for_replay_catchup($node2);
 
@@ -70,6 +75,25 @@ my $node1_final_lsn = $node1->safe_psql('postgres',
 # Promote node2. This creates a timeline switch that node3 must follow.
 $node2->promote;
 $node2->poll_query_until('postgres', "SELECT pg_is_in_recovery() = 'f';");
+
+# node3 adopts timeline 2, then node1 (still on timeline 1) completes the switch
+# segment with divergent WAL; timeline 2's copy is not archived yet, so recovery
+# falls back to node1's segment and applies the divergent WAL.
+$node3->wait_for_log(qr/new target timeline is 2/);
+$node1->safe_psql('postgres',
+	'CREATE TABLE divergent_only (); SELECT pg_switch_wal();');
+$node3->poll_query_until('postgres',
+	"SELECT to_regclass('divergent_only') IS NOT NULL");
+is( $node3->safe_psql(
+		'postgres',
+		"SELECT count(*) FROM pg_class WHERE relname = 'divergent_only'"),
+	'0', 'node3 must not apply divergent WAL from the old timeline');
+
+# We fail above because of the recovery bug.  The rest is the original
+# summarizer checks, kept verbatim but disabled: once recovery has diverged node3
+# never reaches timeline 2.
+if (0)
+{
 
 # Cause the partial segment to get archived on the *new* timeline.
 #
@@ -120,6 +144,8 @@ for my $line (@summary_lines)
 	my ($stdout, $stderr) = run_command([ 'pg_walsummary', $filename ]);
 	is($stdout, '', "pg_walsummary TLI $tli $start_lsn-$end_lsn: no blocks");
 	is($stderr, '', "pg_walsummary TLI $tli $start_lsn-$end_lsn: no error");
+}
+
 }
 
 done_testing();
