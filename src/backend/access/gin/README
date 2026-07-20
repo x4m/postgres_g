@@ -390,88 +390,95 @@ produced by split.  Parent 'c' is about to have downlink inserted.
 
 Vacuum never deletes tuples or pages from the entry tree. It traverses entry
 tree leafs in logical order by rightlinks and removes deletable TIDs from
-posting lists. Posting trees are processed by links from entry tree leafs. They
-are vacuumed in two stages. At first stage, deletable TIDs are removed from
-leafs. If first stage detects at least one empty page, then at the second stage
-ginScanPostingTreeToDelete() deletes empty pages.
+posting lists. Posting trees are processed by links from entry tree leafs.
 
-ginScanPostingTreeToDelete() traverses the whole tree in depth-first manner.
-It starts from the full cleanup lock on the tree root.  This lock prevents all
-the concurrent insertions into this tree while we're deleting pages.  However,
-there are still might be some in-progress readers, who traversed root before
-we locked it.
+A posting tree is vacuumed in a single left-to-right sweep over its leaf
+level: vacuum descends to the leftmost leaf and follows rightlinks, removing
+deletable TIDs from each leaf, and deleting leaf pages that have become
+completely empty.  While advancing, the current page is kept locked until the
+lock on its right sibling is acquired (lock coupling), following the same
+left-to-right locking order as stepping right, so the sweep cannot deadlock
+with concurrent insertions or searches.  A page is deleted only if no other
+backend holds a pin on it (so that, together with the exclusive lock, we
+effectively hold a cleanup lock): a pin would mean that some scan has copied
+the page's contents and may yet return to it.  If the page is pinned, we
+just leave it in place; a future vacuum can delete it.  Concurrent
+insertions into the tree are not locked out; correctness is maintained as
+described below.
 
-The picture below shows tree state after page deletion algorithm traversed to
-leftmost leaf of the tree.
+The picture below shows the sweep positioned at leaf 'f', with its left
+sibling 'e' still locked.
 
-               aE
+               a
+           /   |   \
+       b       c       d
+     / | \     | \     | \
+   eE  fE  g   h   i   j   k
+
+To delete leaf 'f', vacuum locates the parent page by descending to the
+leftmost internal page one level above the leaves before the sweep, and then
+walking right, as downlinks can only move rightwards (when internal pages
+split).  With 'e', 'f' and the parent 'b' exclusively locked, the downlink to
+'f' is removed from 'b', the rightlink of 'e' is redirected from 'f' to 'g',
+and 'f' is marked with the 'deleted' flag and stamped with the newest xid
+which might visit it.
+
+               a
            /   |   \
        bE      c       d
-     / | \     | \     | \
-   eE  f   g   h   i   j   k
+     /  \      | \     | \
+   eE  fDE g   h   i   j   k
 
-Deletion algorithm keeps exclusive locks on left siblings of pages comprising
-currently investigated path.  Thus, if current page is to be removed, all
-required pages to remove both downlink and rightlink are already locked.  That
-avoids potential right to left page locking order, which could deadlock with
-concurrent stepping right.
-
-A search concurrent to page deletion might already have read a pointer to the
-page to be deleted, and might be just about to follow it.  A page can be reached
+A search or insertion concurrent to the page deletion might already have read
+a pointer to 'f', and might be just about to follow it.  A page can be reached
 via the right-link of its left sibling, or via its downlink in the parent.
 
 To prevent a backend from reaching a deleted page via a right-link, stepping
 right algorithm doesn't release lock on the current page until lock of the
-right page is acquired.
+right page is acquired; and vacuum, in turn, only deletes a page while holding
+the lock on its left sibling, so it cannot overtake such a backend.
 
-The downlink is more tricky.  A search descending the tree must release the lock
-on the parent page before locking the child, or it could deadlock with a
-concurrent split of the child page; a page split locks the parent, while already
-holding a lock on the child page.  So, deleted page cannot be reclaimed
-immediately.  Instead, we have to wait for every transaction, which might wait
-to reference this page, to finish.  Corresponding processes must observe that
-the page is marked deleted and recover accordingly.
+The downlink is more tricky.  A search descending the tree must release the
+lock on the parent page before locking the child, or it could deadlock with a
+concurrent split of the child page; a page split locks the parent, while
+already holding a lock on the child page.  So, a backend that read the
+downlink to 'f' before vacuum removed it may arrive at 'f' after 'f' was
+deleted.  Both searches and insertions recover by stepping right from the
+deleted page, which keeps its rightlink; the keyspace of the deleted page has
+been implicitly merged into its right sibling (in the parent, keys between
+the previous downlink's key and the deleted downlink's key now fall to the
+next downlink).  For the same reason, a deleted page cannot be reclaimed
+immediately: we have to wait for every transaction, which might visit this
+page, to finish.  The xid stamped on the deleted page guarantees that the
+page wouldn't be reused till all such backends are gone.
 
-The picture below shows tree state after page deletion algorithm further
-traversed the tree.  Currently investigated path is 'a-c-h'.  Left siblings 'b'
-and 'g' of 'c' and 'h' correspondingly are also exclusively locked.
+Some pages must survive even when empty, for the tree to stay navigable:
 
-               aE
-           /   |   \
-       bE      cE      d
-     / | \     | \     | \
-   e   f   gE  hE  i   j   k
+* The leftmost leaf, and more generally the leftmost page of each level, is
+  never deleted.  Full scans of a posting tree descend by leftmost downlinks
+  without comparing keys and cannot recover by moving right, so the leftmost
+  page they land on must not go away.
 
-The next picture shows tree state after page 'h' was deleted.  It's marked with
-'deleted' flag and newest xid, which might visit it.  Downlink from 'c' to 'h'
-is also deleted.
+* A page referenced by the last downlink of its parent is never deleted.
+  Posting tree internal pages have no high keys; the key of the last
+  downlink is treated as "right infinity" within the parent's keyspace.
+  Removing the last downlink would cut the parent's effective keyspace
+  short, misrouting subsequent insertions of keys between the remaining
+  downlinks' keys and the parent's right bound into pages under the
+  parent's right sibling, and corrupting the key order of the tree.  A
+  useful consequence of this rule is that an internal page always keeps at
+  least one downlink.
 
-               aE
-           /   |   \
-       bE      cE      d
-     / | \       \     | \
-   e   f   gE  hD  iE  j   k
+* The rightmost leaf is never deleted.
 
-However, it's still possible that concurrent reader has seen downlink from 'c'
-to 'h' before we deleted it.  In that case this reader will step right from 'h'
-to till find non-deleted page.  Xid-marking of page 'h' guarantees that this
-page wouldn't be reused till all such readers gone.  Next leaf page under
-investigation is 'i'.  'g' remains locked as it becomes left sibling of 'i'.
-
-The next picture shows tree state after 'i' and 'c' was deleted.  Internal page
-'c' was deleted because it appeared to have no downlinks.  The path under
-investigation is 'a-d-j'.  Pages 'b' and 'g' are locked as self siblings of 'd'
-and 'j'.
-
-               aE
-           /       \
-       bE      cD      dE
-     / | \             | \
-   e   f   gE  hD  iD  jE  k
+* Internal pages are never deleted.  Deleting them safely would require
+  true high keys, as in the regular B-tree indexam.  Empty internal pages
+  cannot arise anyway, as the last downlink is never removed.
 
 During the replay of page deletion at standby, the page's left sibling, the
-target page, and its parent, are locked in that order.  This order guarantees
-no deadlock with concurrent reads.
+target page, and its parent, are locked in that order.  This is the same
+order in which vacuum acquires them, and it guarantees no deadlock with
+concurrent reads.
 
 Predicate Locking
 -----------------

@@ -168,10 +168,8 @@ ginFindLeafPage(GinBtree btree, bool searchMode,
  *
  * The next page is locked first, before releasing the current page. This is
  * crucial to prevent concurrent VACUUM from deleting a page that we are about
- * to step to. (The lock-coupling isn't strictly necessary when we are
- * traversing the tree to find an insert location, because page deletion grabs
- * a cleanup lock on the root to prevent any concurrent inserts. See Page
- * deletion section in the README. But there's no harm in doing it always.)
+ * to step to: VACUUM deletes a page only while holding a lock on its left
+ * sibling. See Page deletion section in the README.
  */
 Buffer
 ginStepRight(Buffer buffer, Relation index, int lockmode)
@@ -229,8 +227,9 @@ ginFindParents(GinBtree btree, GinBtreeStack *stack)
 	 * Unwind the stack all the way up to the root, leaving only the root
 	 * item.
 	 *
-	 * Be careful not to release the pin on the root page! The pin on root
-	 * page is required to lock out concurrent vacuums on the tree.
+	 * This search visits only internal pages, which vacuum never deletes,
+	 * so we don't need any special protection from concurrent vacuums.
+	 * Keeping the pin on the root page just saves a buffer lookup.
 	 */
 	root = stack->parent;
 	while (root->parent)
@@ -769,11 +768,10 @@ ginFinishSplit(GinBtree btree, GinBtreeStack *stack, bool freestack,
  * split that we just made ourselves. The difference is that stack->buffer may
  * be merely share-locked on entry, and will be upgraded to exclusive mode.
  *
- * Note: Upgrading the lock momentarily releases it. Doing that in a scan
- * would not be OK, because a concurrent VACUUM might delete the page while
- * we're not holding the lock. It's OK in an insert, though, because VACUUM
- * has a different mechanism that prevents it from running concurrently with
- * inserts. (Namely, it holds a cleanup lock on the root.)
+ * Note: Upgrading the lock momentarily releases it. That is OK, because
+ * we hold a pin on the page throughout, and a concurrent VACUUM can only
+ * delete a page after acquiring a cleanup lock on it, which requires that
+ * nobody else holds a pin on it.
  */
 static void
 ginFinishOldSplit(GinBtree btree, GinBtreeStack *stack, GinStatsData *buildStats, int access)
