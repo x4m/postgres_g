@@ -196,6 +196,9 @@ note("Standby has $done_count .done files");
 ok(-f "$standby_archive_status/$primary_last_archived.done",
 	"WAL segment $primary_last_archived done file exists in standby pg_wal/archive_status");
 
+is($primary_last_archived, $standby->safe_psql('postgres',
+	q{SELECT primary_last_archived from pg_stat_wal_receiver; }),  "standby wal receiver stat view updated with primary last archived wal");
+
 ###############################################################################
 # Test 2: Cascading replication
 ###############################################################################
@@ -220,6 +223,9 @@ my $cascading_archived_before = $primary->safe_psql('postgres', 'SELECT archived
 
 my $current_walfile = $primary->safe_psql('postgres', "SELECT pg_walfile_name(pg_current_wal_lsn());");
 
+$cascade_standby->safe_psql('postgres',
+	q{SELECT injection_points_attach('walreceiver-after-primary-last-archived', 'wait')});
+
 $primary->safe_psql(
 	'postgres', q{
 	CHECKPOINT;
@@ -233,6 +239,15 @@ my $walfile_done = "pg_wal/archive_status/$current_walfile.done";
 $primary->poll_query_until('postgres',
 	"SELECT archived_count > $cascading_archived_before FROM pg_stat_archiver")
 	or die "Timed out waiting for primary to archive segment in cascading test";
+
+
+wait_for_injection_point($cascade_standby, 'walreceiver-after-primary-last-archived');
+
+$cascade_standby->safe_psql(
+	'postgres', qq[
+SELECT injection_points_detach('walreceiver-after-primary-last-archived');
+SELECT injection_points_wakeup('walreceiver-after-primary-last-archived');
+]);
 
 # Wait for cascading standby to catch up
 $standby->wait_for_catchup($cascade_standby);
@@ -256,5 +271,10 @@ ok( !-f "$cascade_data/$walfile_ready",
 ok( -f "$cascade_data/$walfile_done",
 	".done file exists on cascade replica for WAL segment $current_walfile"
 );
+
+
+is($current_walfile, $cascade_standby->safe_psql('postgres',
+	q{SELECT primary_last_archived from pg_stat_wal_receiver; }), 
+	"cascade standby wal receiver stat view updated with primary last archived wal");
 
 done_testing();
