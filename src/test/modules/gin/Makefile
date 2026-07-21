@@ -1,8 +1,10 @@
 # src/test/modules/gin/Makefile
 
-EXTRA_INSTALL = src/test/modules/injection_points
+EXTRA_INSTALL = src/test/modules/injection_points contrib/amcheck
 
 REGRESS = gin_incomplete_splits
+
+ISOLATION = vacuum_posting_tree
 
 ifdef USE_PGXS
 PG_CONFIG = pg_config

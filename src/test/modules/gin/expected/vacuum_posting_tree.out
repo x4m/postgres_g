@@ -1,0 +1,131 @@
+Parsed test spec with 2 sessions
+
+starting permutation: v_attach_notice v_delete v_vacuum v_detach_notice c_count c_check
+injection_points_set_local
+--------------------------
+                          
+(1 row)
+
+step v_attach_notice: 
+    SELECT injection_points_attach('gin-vacuum-delete-posting-page', 'notice');
+
+injection_points_attach
+-----------------------
+                       
+(1 row)
+
+step v_delete: 
+    DELETE FROM gin_pt WHERE k BETWEEN 5000 AND 25000;
+
+vacuumer: NOTICE:  notice triggered for injection point gin-vacuum-delete-posting-page
+vacuumer: NOTICE:  notice triggered for injection point gin-vacuum-delete-posting-page
+vacuumer: NOTICE:  notice triggered for injection point gin-vacuum-delete-posting-page
+step v_vacuum: 
+    VACUUM gin_pt;
+
+step v_detach_notice: 
+    SELECT injection_points_detach('gin-vacuum-delete-posting-page');
+
+injection_points_detach
+-----------------------
+                       
+(1 row)
+
+step c_count: 
+    SELECT count(*) FROM gin_pt WHERE i @> array[1];
+
+count
+-----
+ 9999
+(1 row)
+
+step c_check: 
+    SELECT gin_index_check('gin_pt_idx');
+
+gin_index_check
+---------------
+               
+(1 row)
+
+
+starting permutation: v_attach_notice v_attach_wait v_delete v_vacuum c_count c_insert c_detach_wake v_detach_notice c_count c_check
+injection_points_set_local
+--------------------------
+                          
+(1 row)
+
+step v_attach_notice: 
+    SELECT injection_points_attach('gin-vacuum-delete-posting-page', 'notice');
+
+injection_points_attach
+-----------------------
+                       
+(1 row)
+
+step v_attach_wait: 
+    SELECT injection_points_attach('gin-vacuum-posting-tree-resume', 'wait');
+
+injection_points_attach
+-----------------------
+                       
+(1 row)
+
+step v_delete: 
+    DELETE FROM gin_pt WHERE k BETWEEN 5000 AND 25000;
+
+step v_vacuum: 
+    VACUUM gin_pt;
+ <waiting ...>
+step c_count: 
+    SELECT count(*) FROM gin_pt WHERE i @> array[1];
+
+count
+-----
+ 9999
+(1 row)
+
+step c_insert: 
+    INSERT INTO gin_pt(i) SELECT array[1] FROM generate_series(1, 1000);
+
+step c_detach_wake: 
+    SELECT injection_points_detach('gin-vacuum-posting-tree-resume');
+    SELECT injection_points_wakeup('gin-vacuum-posting-tree-resume');
+
+injection_points_detach
+-----------------------
+                       
+(1 row)
+
+injection_points_wakeup
+-----------------------
+                       
+(1 row)
+
+vacuumer: NOTICE:  notice triggered for injection point gin-vacuum-delete-posting-page
+vacuumer: NOTICE:  notice triggered for injection point gin-vacuum-delete-posting-page
+vacuumer: NOTICE:  notice triggered for injection point gin-vacuum-delete-posting-page
+step v_vacuum: <... completed>
+step v_detach_notice: 
+    SELECT injection_points_detach('gin-vacuum-delete-posting-page');
+
+injection_points_detach
+-----------------------
+                       
+(1 row)
+
+step c_count: 
+    SELECT count(*) FROM gin_pt WHERE i @> array[1];
+
+count
+-----
+10999
+(1 row)
+
+step c_check: 
+    SELECT gin_index_check('gin_pt_idx');
+
+gin_index_check
+---------------
+               
+(1 row)
+

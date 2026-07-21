@@ -23,6 +23,7 @@
 #include "storage/lmgr.h"
 #include "storage/predicate.h"
 #include "storage/read_stream.h"
+#include "utils/injection_point.h"
 #include "utils/memutils.h"
 
 struct GinVacuumState
@@ -420,6 +421,14 @@ ginVacuumPostingTree(GinVacuumState *gvs, BlockNumber rootBlkno)
 
 		vacuum_delay_point(false);
 
+		/*
+		 * A wait here can be used to pause the sweep between two leaf
+		 * pages, while no buffer locks or pins are held, letting a
+		 * concurrent session mutate the part of the tree that the sweep
+		 * has not reached yet.
+		 */
+		INJECTION_POINT("gin-vacuum-posting-tree-resume", NULL);
+
 		prevBuffer = ReadBufferExtended(gvs->index, MAIN_FORKNUM, prevBlkno,
 										RBM_NORMAL, gvs->strategy);
 		LockBuffer(prevBuffer, GIN_EXCLUSIVE);
@@ -465,6 +474,14 @@ ginVacuumPostingTree(GinVacuumState *gvs, BlockNumber rootBlkno)
 			parentBuffer = ginLockLeafParent(gvs, &parentBlkno, blkno, &off);
 			if (BufferIsValid(parentBuffer))
 			{
+				/*
+				 * This fires with the two leaf pages and the parent page
+				 * all exclusively locked.  A 'wait' attached here pauses
+				 * vacuum at its maximum lock footprint, blocking any
+				 * concurrent descent through the parent page.
+				 */
+				INJECTION_POINT("gin-vacuum-delete-posting-page", NULL);
+
 				ginDeletePostingPage(gvs, buffer, prevBuffer, parentBuffer,
 									 off);
 				UnlockReleaseBuffer(parentBuffer);

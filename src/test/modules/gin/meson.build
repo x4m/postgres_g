@@ -13,4 +13,9 @@ tests += {
       'gin_incomplete_splits',
     ],
   },
+  'isolation': {
+    'specs': [
+      'vacuum_posting_tree',
+    ],
+  },
 }
