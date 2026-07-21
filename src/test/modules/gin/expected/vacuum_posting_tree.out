@@ -1,6 +1,11 @@
-Parsed test spec with 2 sessions
+Parsed test spec with 3 sessions
 
 starting permutation: v_attach_notice v_delete v_vacuum v_detach_notice c_count c_check
+injection_points_set_local
+--------------------------
+                          
+(1 row)
+
 injection_points_set_local
 --------------------------
                           
@@ -49,6 +54,11 @@ gin_index_check
 
 
 starting permutation: v_attach_notice v_attach_wait v_delete v_vacuum c_count c_insert c_detach_wake v_detach_notice c_count c_check
+injection_points_set_local
+--------------------------
+                          
+(1 row)
+
 injection_points_set_local
 --------------------------
                           
@@ -119,6 +129,199 @@ step c_count:
 count
 -----
 10999
+(1 row)
+
+step c_check: 
+    SELECT gin_index_check('gin_pt_idx');
+
+gin_index_check
+---------------
+               
+(1 row)
+
+
+starting permutation: v_attach_wait_delete v_delete v_vacuum i_insert_batch c_wait_insert_blocked_then_wake_delete i_noop c_count c_check
+injection_points_set_local
+--------------------------
+                          
+(1 row)
+
+injection_points_set_local
+--------------------------
+                          
+(1 row)
+
+step v_attach_wait_delete: 
+    SELECT injection_points_attach('gin-vacuum-delete-posting-page', 'wait');
+
+injection_points_attach
+-----------------------
+                       
+(1 row)
+
+step v_delete: 
+    DELETE FROM gin_pt WHERE k BETWEEN 5000 AND 25000;
+
+step v_vacuum: 
+    VACUUM gin_pt;
+ <waiting ...>
+step i_insert_batch: 
+    INSERT INTO gin_pt(i) SELECT array[1] FROM generate_series(1, 1000);
+ <waiting ...>
+step c_wait_insert_blocked_then_wake_delete: 
+    DO $$
+    BEGIN
+        WHILE NOT EXISTS (
+            SELECT 1 FROM pg_stat_activity
+            WHERE query LIKE '%INSERT INTO gin_pt%'
+              AND pid != pg_backend_pid()
+              AND wait_event_type = 'Buffer')
+        LOOP
+            PERFORM pg_sleep(0.001);
+        END LOOP;
+    END;
+    $$;
+    SELECT injection_points_detach('gin-vacuum-delete-posting-page');
+    SELECT injection_points_wakeup('gin-vacuum-delete-posting-page');
+
+injection_points_detach
+-----------------------
+                       
+(1 row)
+
+injection_points_wakeup
+-----------------------
+                       
+(1 row)
+
+step v_vacuum: <... completed>
+step i_insert_batch: <... completed>
+step i_noop: 
+
+step c_count: 
+    SELECT count(*) FROM gin_pt WHERE i @> array[1];
+
+count
+-----
+10999
+(1 row)
+
+step c_check: 
+    SELECT gin_index_check('gin_pt_idx');
+
+gin_index_check
+---------------
+               
+(1 row)
+
+
+starting permutation: i_attach_error i_split_fail i_detach_error i_attach_wait_finish i_insert_one v_attach_wait v_vacuum c_wake_resume_then_finish v_noop c_count c_check
+injection_points_set_local
+--------------------------
+                          
+(1 row)
+
+injection_points_set_local
+--------------------------
+                          
+(1 row)
+
+step i_attach_error: 
+    SELECT injection_points_attach('gin-leave-leaf-split-incomplete', 'error');
+
+injection_points_attach
+-----------------------
+                       
+(1 row)
+
+inserter: NOTICE:  insert failed: error triggered for injection point gin-leave-leaf-split-incomplete
+step i_split_fail: 
+    DO $$
+    BEGIN
+        INSERT INTO gin_pt(i) SELECT array[1] FROM generate_series(1, 20000);
+    EXCEPTION WHEN OTHERS THEN
+        RAISE NOTICE 'insert failed: %', SQLERRM;
+    END;
+    $$;
+
+step i_detach_error: 
+    SELECT injection_points_detach('gin-leave-leaf-split-incomplete');
+
+injection_points_detach
+-----------------------
+                       
+(1 row)
+
+step i_attach_wait_finish: 
+    SELECT injection_points_attach('gin-finish-incomplete-split', 'wait');
+
+injection_points_attach
+-----------------------
+                       
+(1 row)
+
+step i_insert_one: 
+    INSERT INTO gin_pt(i) VALUES (array[1]);
+ <waiting ...>
+step v_attach_wait: 
+    SELECT injection_points_attach('gin-vacuum-posting-tree-resume', 'wait');
+
+injection_points_attach
+-----------------------
+                       
+(1 row)
+
+step v_vacuum: 
+    VACUUM gin_pt;
+ <waiting ...>
+step c_wake_resume_then_finish: 
+    SELECT injection_points_detach('gin-vacuum-posting-tree-resume');
+    SELECT injection_points_wakeup('gin-vacuum-posting-tree-resume');
+    DO $$
+    BEGIN
+        WHILE NOT EXISTS (
+            SELECT 1 FROM pg_stat_activity
+            WHERE query LIKE '%VACUUM gin_pt%'
+              AND pid != pg_backend_pid()
+              AND wait_event_type = 'Buffer')
+        LOOP
+            PERFORM pg_sleep(0.001);
+        END LOOP;
+    END;
+    $$;
+    SELECT injection_points_detach('gin-finish-incomplete-split');
+    SELECT injection_points_wakeup('gin-finish-incomplete-split');
+
+injection_points_detach
+-----------------------
+                       
+(1 row)
+
+injection_points_wakeup
+-----------------------
+                       
+(1 row)
+
+injection_points_detach
+-----------------------
+                       
+(1 row)
+
+injection_points_wakeup
+-----------------------
+                       
+(1 row)
+
+step i_insert_one: <... completed>
+step v_vacuum: <... completed>
+step v_noop: 
+
+step c_count: 
+    SELECT count(*) FROM gin_pt WHERE i @> array[1];
+
+count
+-----
+30001
 (1 row)
 
 step c_check: 
