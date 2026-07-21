@@ -1831,9 +1831,14 @@ WaitReadBuffers(ReadBuffersOperation *operation)
 				/*
 				 * The IO operation itself was already counted earlier, in
 				 * AsyncReadBuffers(), this just accounts for the wait time.
+				 * For foreign IO the read is counted by the initiating
+				 * backend, and this backend counts the buffer as a hit, so
+				 * recording read time here would leave read time without
+				 * any reads in this backend's statistics.
 				 */
-				pgstat_count_io_op_time(io_object, io_context, IOOP_READ,
-										io_start, 0, 0);
+				if (!operation->foreign_io)
+					pgstat_count_io_op_time(io_object, io_context, IOOP_READ,
+											io_start, 0, 0);
 			}
 			else
 			{
