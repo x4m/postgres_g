@@ -31,6 +31,7 @@
 #include "replication/walsender.h"
 #include "storage/fd.h"
 #include "storage/ipc.h"
+#include "utils/injection_point.h"
 #include "utils/wait_event.h"
 
 /*
@@ -366,9 +367,8 @@ KeepFileRestoredFromArchive(const char *path, const char *xlogfname)
 
 	if (stat(xlogfpath, &statbuf) == 0)
 	{
-		char		oldpath[MAXPGPATH];
-
 #ifdef WIN32
+		char		oldpath[MAXPGPATH];
 		static unsigned int deletedcounter = 1;
 
 		/*
@@ -390,17 +390,16 @@ KeepFileRestoredFromArchive(const char *path, const char *xlogfname)
 					 errmsg("could not rename file \"%s\" to \"%s\": %m",
 							xlogfpath, oldpath)));
 		}
-#else
-		/* same-size buffers, so this never truncates */
-		strlcpy(oldpath, xlogfpath, MAXPGPATH);
-#endif
 		if (unlink(oldpath) != 0)
 			ereport(FATAL,
 					(errcode_for_file_access(),
 					 errmsg("could not remove file \"%s\": %m",
 							xlogfpath)));
+#endif
 		reload = true;
 	}
+
+	INJECTION_POINT("keepfile-restored-before-rename", NULL);
 
 	durable_rename(path, xlogfpath, ERROR);
 
