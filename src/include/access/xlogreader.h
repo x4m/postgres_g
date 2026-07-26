@@ -256,6 +256,13 @@ struct XLogReaderState
 	uint32		decompression_buffer_size;
 
 	/*
+	 * One decompression context per compression stream met so far, indexed by
+	 * the stream id in the record.  Void because the type belongs to whichever
+	 * compression library the build has.
+	 */
+	void	  **stream_dctx;
+
+	/*
 	 * Queue of records that have been decoded.  This is a linked list that
 	 * usually consists of consecutive records in decode_buffer, but may also
 	 * contain oversized records allocated with palloc().

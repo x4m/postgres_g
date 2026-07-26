@@ -177,6 +177,15 @@ XLogReaderFree(XLogReaderState *state)
 		pfree(state->readRecordBuf);
 	if (state->decompression_buffer)
 		pfree(state->decompression_buffer);
+#ifdef USE_ZSTD
+	if (state->stream_dctx)
+	{
+		for (int i = 0; i < XLR_MAX_STREAMS; i++)
+			if (state->stream_dctx[i])
+				ZSTD_freeDCtx((ZSTD_DCtx *) state->stream_dctx[i]);
+		pfree(state->stream_dctx);
+	}
+#endif
 	pfree(state->readBuf);
 	pfree(state);
 }
@@ -1838,7 +1847,70 @@ XLogDecompressRecordIfNeeded(XLogReaderState *state,
 		dst_h->xl_tot_len = src->decompressed_length;
 		dst = (char *) &dst_h[1];
 
+#ifdef USE_ZSTD
+		if (src->stream != XLR_NO_STREAM)
+		{
+			ZSTD_DCtx  *dctx;
+			ZSTD_inBuffer in;
+			ZSTD_outBuffer out;
+
+			if (src->method != XLR_COMPRESS_ZSTD)
+			{
+				report_invalid_record(state,
+									  "streamed record at %X/%08X uses an unexpected compression method",
+									  LSN_FORMAT_ARGS(recptr));
+				return NULL;
+			}
+
+			if (state->stream_dctx == NULL)
+				state->stream_dctx = palloc0(sizeof(void *) * XLR_MAX_STREAMS);
+
+			dctx = (ZSTD_DCtx *) state->stream_dctx[src->stream];
+			if (dctx == NULL)
+			{
+				dctx = ZSTD_createDCtx();
+				if (dctx == NULL)
+				{
+					report_invalid_record(state,
+										  "out of memory while decompressing record at %X/%08X",
+										  LSN_FORMAT_ARGS(recptr));
+					return NULL;
+				}
+				state->stream_dctx[src->stream] = dctx;
+			}
+
+			if (src->stream_flags & XLR_STREAM_RESET)
+				ZSTD_DCtx_reset(dctx, ZSTD_reset_session_only);
+
+			in.src = (char *) &src[1];
+			in.size = srclen;
+			in.pos = 0;
+			out.dst = dst;
+			out.size = body_len;
+			out.pos = 0;
+
+			while (in.pos < in.size)
+			{
+				size_t		ret = ZSTD_decompressStream(dctx, &out, &in);
+
+				if (ZSTD_isError(ret))
+				{
+					decomp_success = false;
+					break;
+				}
+				if (out.pos == out.size && in.pos < in.size)
+				{
+					decomp_success = false;
+					break;
+				}
+			}
+			if (decomp_success && out.pos != body_len)
+				decomp_success = false;
+		}
+		else if (src->method == XLR_COMPRESS_LZ4)
+#else
 		if (src->method == XLR_COMPRESS_LZ4)
+#endif
 		{
 #ifdef USE_LZ4
 			if (LZ4_decompress_safe((char *) &src[1], dst,

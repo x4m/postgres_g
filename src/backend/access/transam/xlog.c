@@ -143,6 +143,7 @@ int			max_slot_wal_keep_size_mb = -1;
 int			wal_decode_buffer_size = 512 * 1024;
 bool		track_wal_io_timing = false;
 int			wal_compression_threshold = 512;
+int			wal_compression_streams = 0;
 
 #ifdef WAL_DEBUG
 bool		XLOG_DEBUG = false;
@@ -575,6 +576,34 @@ typedef enum
 
 static XLogCtlData *XLogCtl = NULL;
 
+/*
+ * State of one WAL compression stream.
+ *
+ * The compressor itself cannot live here: it is a libzstd object full of
+ * pointers, and shared memory is not mapped at the same address in every
+ * process under EXEC_BACKEND.  So a backend keeps its own compressor and
+ * leases the stream: while it owns the slot it may compress against what it
+ * put there before, and a backend taking the slot over has to start the
+ * stream afresh, which it announces with XLR_STREAM_RESET.
+ */
+typedef struct WALCompressionSlot
+{
+	LWLock		lock;			/* held across compress + insert */
+	int			owner;			/* ProcNumber holding the lease, or -1 */
+	uint64		generation;		/* bumped whenever the stream restarts */
+	XLogRecPtr	redo;			/* RedoRecPtr the stream started under */
+	XLogSegNo	seg;			/* segment the stream started in */
+	bool		restart;		/* next record has to restart the stream */
+} WALCompressionSlot;
+
+typedef union WALCompressionSlotPadded
+{
+	WALCompressionSlot s;
+	char		pad[PG_CACHE_LINE_SIZE];
+} WALCompressionSlotPadded;
+
+static WALCompressionSlotPadded *WALCompressionSlots = NULL;
+
 /* a private copy of XLogCtl->Insert.WALInsertLocks, for convenience */
 static WALInsertLockPadded *WALInsertLocks = NULL;
 
@@ -767,6 +796,64 @@ XLogGetRecordTotalLen(XLogRecord *record)
 	return record->xl_tot_len;
 }
 #endif
+
+/*
+ * Take the lease on a compression stream, and say whether the stream has to
+ * start over.  The lock is held until XLogCompressionStreamRelease(), so that
+ * records enter the stream in the same order they are given their LSNs.
+ *
+ * A stream restarts when another backend used the slot in the meantime (its
+ * compressor state is in that other process and is gone for us), when a
+ * checkpoint moved the redo point out from under it, or when the previous
+ * record ran into the next WAL segment, which keeps a segment decodable on
+ * its own.
+ */
+bool
+XLogCompressionStreamAcquire(int slot, XLogRecPtr redo)
+{
+	WALCompressionSlot *s = &WALCompressionSlots[slot].s;
+	bool		restart;
+
+	LWLockAcquire(&s->lock, LW_EXCLUSIVE);
+
+	restart = (s->restart || s->owner != MyProcNumber || s->redo != redo);
+	if (restart)
+	{
+		s->owner = MyProcNumber;
+		s->generation++;
+		s->redo = redo;
+		s->restart = false;
+	}
+	return restart;
+}
+
+/*
+ * Release the lease.  "failed" means the record never made it into WAL, so
+ * whatever we fed the compressor has to be thrown away by everyone.
+ */
+void
+XLogCompressionStreamRelease(int slot, XLogRecPtr end_pos, bool restarted,
+							 bool failed)
+{
+	WALCompressionSlot *s = &WALCompressionSlots[slot].s;
+
+	if (failed)
+	{
+		s->owner = -1;
+		s->restart = true;
+	}
+	else if (XLogRecPtrIsValid(end_pos))
+	{
+		XLogSegNo	seg;
+
+		XLByteToSeg(end_pos - 1, seg, wal_segment_size);
+		if (restarted)
+			s->seg = seg;
+		else if (seg != s->seg)
+			s->restart = true;	/* we have left the segment we started in */
+	}
+	LWLockRelease(&s->lock);
+}
 
 /*
  * Insert an XLOG record represented by an already-constructed chain of data
@@ -5340,6 +5427,11 @@ XLOGShmemRequest(void *arg)
 
 	/* WAL insertion locks, plus alignment */
 	size = add_size(size, mul_size(sizeof(WALInsertLockPadded), NUM_XLOGINSERT_LOCKS + 1));
+
+	/* WAL compression stream slots, plus alignment slack */
+	if (wal_compression_streams > 0)
+		size = add_size(size, mul_size(sizeof(WALCompressionSlotPadded),
+									   wal_compression_streams + 1));
 	/* xlblocks array */
 	size = add_size(size, mul_size(sizeof(pg_atomic_uint64), XLOGbuffers));
 	/* extra alignment padding for XLOG I/O buffers */
@@ -5421,6 +5513,26 @@ XLOGShmemInit(void *arg)
 		LWLockInitialize(&WALInsertLocks[i].l.lock, LWTRANCHE_WAL_INSERT);
 		pg_atomic_init_u64(&WALInsertLocks[i].l.insertingAt, InvalidXLogRecPtr);
 		WALInsertLocks[i].l.lastImportantAt = InvalidXLogRecPtr;
+	}
+
+	/* WAL compression streams, likewise aligned to their padded size */
+	if (wal_compression_streams > 0)
+	{
+		allocptr += sizeof(WALCompressionSlotPadded) -
+			((uintptr_t) allocptr) % sizeof(WALCompressionSlotPadded);
+		WALCompressionSlots = (WALCompressionSlotPadded *) allocptr;
+		allocptr += sizeof(WALCompressionSlotPadded) * wal_compression_streams;
+
+		for (i = 0; i < wal_compression_streams; i++)
+		{
+			LWLockInitialize(&WALCompressionSlots[i].s.lock,
+							 LWTRANCHE_WAL_COMPRESSION_STREAM);
+			WALCompressionSlots[i].s.owner = -1;
+			WALCompressionSlots[i].s.generation = 0;
+			WALCompressionSlots[i].s.redo = InvalidXLogRecPtr;
+			WALCompressionSlots[i].s.seg = 0;
+			WALCompressionSlots[i].s.restart = true;
+		}
 	}
 
 	/*

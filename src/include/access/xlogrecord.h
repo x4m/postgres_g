@@ -205,8 +205,20 @@ typedef struct XLogCompressionHeader
 	XLogRecord	record_header;
 	uint32		decompressed_length;
 	uint8		method;			/* XLR_COMPRESS_* */
-	/* 3 bytes of padding here, initialize to zero */
+	uint8		stream;			/* stream slot, or XLR_NO_STREAM */
+	uint8		stream_flags;	/* XLR_STREAM_* */
+	/* 1 byte of padding here, initialize to zero */
 } XLogCompressionHeader;
+
+/*
+ * A record compressed on its own carries XLR_NO_STREAM.  Otherwise "stream"
+ * names the compression stream it belongs to, and the record can only be
+ * decompressed after every earlier record of that stream.  XLR_STREAM_RESET
+ * says the stream starts here, so the reader must discard what it had.
+ */
+#define XLR_MAX_STREAMS		255
+#define XLR_NO_STREAM		0xFF
+#define XLR_STREAM_RESET	0x01
 
 #define SizeOfXLogCompressedRecord	sizeof(XLogCompressionHeader)
 
