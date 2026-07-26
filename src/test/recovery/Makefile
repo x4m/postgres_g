@@ -12,6 +12,7 @@
 EXTRA_INSTALL=contrib/pg_prewarm \
 	contrib/pg_walinspect \
 	contrib/pg_stat_statements \
+	contrib/pg_walinspect \
 	contrib/test_decoding \
 	src/test/modules/injection_points \
 	src/test/modules/test_wait_lsn
