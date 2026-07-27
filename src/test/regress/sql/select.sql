@@ -149,6 +149,55 @@ INSERT INTO nocols DEFAULT VALUES;
 SELECT * FROM nocols n, LATERAL (VALUES(n.*)) v;
 
 --
+-- Test FROM-first syntax: FROM may be written ahead of SELECT, and SELECT
+-- may then be omitted entirely
+--
+FROM int8_tbl SELECT q1, q2 ORDER BY q1, q2;
+FROM int8_tbl ORDER BY q1, q2;
+FROM int8_tbl SELECT ALL q1 ORDER BY q1;
+FROM int8_tbl SELECT DISTINCT q1 ORDER BY q1;
+FROM int8_tbl SELECT DISTINCT ON (q1) q1, q2 ORDER BY q1, q2;
+
+-- an empty target list is as acceptable as it is in SELECT ... FROM
+FROM int8_tbl SELECT WHERE q1 = 123;
+
+-- the other clauses keep their usual places and meanings
+FROM int8_tbl SELECT q1, count(*) WHERE q2 <> 456
+  GROUP BY q1 HAVING count(*) > 1 ORDER BY q1;
+FROM int8_tbl SELECT q1, count(*) OVER w
+  WINDOW w AS (PARTITION BY q1) ORDER BY q1 LIMIT 3;
+FROM int8_tbl WHERE q1 <> q2 ORDER BY q1, q2 LIMIT 2 FOR UPDATE;
+FROM int8_tbl a JOIN int8_tbl b ON a.q2 = b.q1 SELECT a.q1, b.q2
+  ORDER BY a.q1, b.q2;
+FROM generate_series(1, 3) g(i), LATERAL (SELECT i * 2) s(j) SELECT i, j
+  ORDER BY i;
+
+-- and it nests like any other SELECT
+SELECT * FROM (FROM int8_tbl SELECT q1 AS x) ss ORDER BY x;
+WITH cte AS (FROM int8_tbl) FROM cte SELECT count(*);
+FROM int8_tbl SELECT q1 UNION FROM int8_tbl SELECT q2 ORDER BY 1;
+(FROM int8_tbl SELECT q1) EXCEPT (FROM int8_tbl SELECT q2) ORDER BY 1;
+
+-- works in the places a SELECT can be embedded in another statement
+CREATE TEMP TABLE fromfirst_tbl (q bigint);
+INSERT INTO fromfirst_tbl FROM int8_tbl SELECT q1 WHERE q1 = 123;
+INSERT INTO fromfirst_tbl FROM int8_tbl SELECT DISTINCT q2 WHERE q2 = 456;
+TABLE fromfirst_tbl;
+COPY (FROM fromfirst_tbl) TO stdout;
+FROM fromfirst_tbl SELECT q INTO TEMP TABLE fromfirst_into WHERE q = 123;
+TABLE fromfirst_into;
+
+-- a stored query is deparsed as an ordinary SELECT
+CREATE TEMP VIEW fromfirst_view AS FROM int8_tbl SELECT q1 WHERE q2 > 0;
+SELECT pg_get_viewdef('fromfirst_view'::regclass);
+
+-- SELECT has to come right after the FROM list, and DISTINCT still requires
+-- a target list
+FROM int8_tbl WHERE q1 = 123 SELECT q1;
+FROM int8_tbl SELECT DISTINCT;
+FROM;
+
+--
 -- Test ORDER BY options
 --
 

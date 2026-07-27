@@ -1775,6 +1775,40 @@ SELECT * FROM (SELECT * FROM mytable FOR UPDATE) ss ORDER BY column1;
   </caution>
   </refsect2>
 
+  <refsect2 id="sql-from-first" xreflabel="FROM-First Syntax">
+   <title><literal>FROM</literal>-First Syntax</title>
+
+   <para>
+    The <literal>FROM</literal> clause can be written ahead of the
+    <literal>SELECT</literal> clause, so that
+<programlisting>
+FROM <replaceable class="parameter">from_item</replaceable> [, ...] SELECT <replaceable class="parameter">select_list</replaceable>
+</programlisting>
+    means the same as
+<programlisting>
+SELECT <replaceable class="parameter">select_list</replaceable> FROM <replaceable class="parameter">from_item</replaceable> [, ...]
+</programlisting>
+    All the remaining clauses keep their usual positions, that is, they
+    follow the select list.  The <literal>SELECT</literal> clause can also be
+    left out entirely, which is equivalent to writing
+    <literal>SELECT *</literal>; so <literal>FROM films</literal> is much like
+    <literal>TABLE films</literal>, except that the other clauses, such as
+    <literal>WHERE</literal>, can still be used with it.
+   </para>
+
+   <para>
+    This form is accepted wherever an ordinary <command>SELECT</command> is,
+    for example in a sub-<command>SELECT</command>, in a
+    <literal>WITH</literal> query, or in <command>INSERT</command> ...
+    <command>SELECT</command>.  It names the data sources before the
+    expressions computed from them, which is the order in which the clauses
+    are logically evaluated (see above).  That is convenient when a query is
+    composed interactively, since a client can then complete the column names
+    of the select list, which it has no way to do while the select list comes
+    first.
+   </para>
+  </refsect2>
+
   <refsect2 id="sql-table">
    <title><literal>TABLE</literal> Command</title>
 
@@ -2054,6 +2088,22 @@ SELECT 2+2;
     Some other <acronym>SQL</acronym> databases cannot do this except
     by introducing a dummy one-row table from which to do the
     <command>SELECT</command>.
+   </para>
+  </refsect2>
+
+  <refsect2>
+   <title><literal>FROM</literal>-First Syntax</title>
+
+   <para>
+    Writing the <literal>FROM</literal> clause ahead of the
+    <literal>SELECT</literal> clause, or leaving the
+    <literal>SELECT</literal> clause out altogether, is a
+    <productname>PostgreSQL</productname> extension; the SQL standard
+    requires a query specification to begin with <literal>SELECT</literal>.
+    Some other database systems accept the same extension.  A query written
+    this way is stored and displayed in the standard form, for example when a
+    view definition is shown by <function>pg_get_viewdef</function>.
+    (See <xref linkend="sql-from-first"/> above.)
    </para>
   </refsect2>
 

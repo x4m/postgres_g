@@ -165,6 +165,7 @@ static Node *makeBitStringConst(char *str, int location);
 static Node *makeNullAConst(int location);
 static Node *makeAConst(Node *v, int location);
 static RoleSpec *makeRoleSpec(RoleSpecType type, int location);
+static List *makeStarTargetList(void);
 static void check_qualified_name(List *names, core_yyscan_t yyscanner);
 static List *check_func_name(List *names, core_yyscan_t yyscanner);
 static List *check_indirection(List *indirection, core_yyscan_t yyscanner);
@@ -13747,6 +13748,13 @@ select_clause:
  *
  * NOTE: only the leftmost component SelectStmt should have INTO.
  * However, this is not checked by the grammar; parse analysis must check it.
+ *
+ * The FROM-first productions accept the FROM clause ahead of the SELECT
+ * clause, and allow the SELECT clause to be omitted altogether; leaving it
+ * out means SELECT *.  That is not in the SQL standard, but it lets a query
+ * be written in the order its clauses are logically evaluated in, which is
+ * handy for clients completing column names.  They produce exactly the same
+ * SelectStmt as the standard spelling does.
  */
 simple_select:
 			SELECT opt_all_clause opt_target_list
@@ -13782,23 +13790,61 @@ simple_select:
 					n->windowClause = $9;
 					$$ = (Node *) n;
 				}
+			| FROM from_list SELECT opt_all_clause opt_target_list
+			into_clause where_clause
+			group_clause having_clause window_clause
+				{
+					SelectStmt *n = makeNode(SelectStmt);
+
+					n->targetList = $5;
+					n->intoClause = $6;
+					n->fromClause = $2;
+					n->whereClause = $7;
+					n->groupClause = ($8)->list;
+					n->groupDistinct = ($8)->distinct;
+					n->havingClause = $9;
+					n->windowClause = $10;
+					$$ = (Node *) n;
+				}
+			| FROM from_list SELECT distinct_clause target_list
+			into_clause where_clause
+			group_clause having_clause window_clause
+				{
+					SelectStmt *n = makeNode(SelectStmt);
+
+					n->distinctClause = $4;
+					n->targetList = $5;
+					n->intoClause = $6;
+					n->fromClause = $2;
+					n->whereClause = $7;
+					n->groupClause = ($8)->list;
+					n->groupDistinct = ($8)->distinct;
+					n->havingClause = $9;
+					n->windowClause = $10;
+					$$ = (Node *) n;
+				}
+			| FROM from_list where_clause
+			group_clause having_clause window_clause
+				{
+					/* omitted SELECT clause is the same as SELECT * */
+					SelectStmt *n = makeNode(SelectStmt);
+
+					n->targetList = makeStarTargetList();
+					n->fromClause = $2;
+					n->whereClause = $3;
+					n->groupClause = ($4)->list;
+					n->groupDistinct = ($4)->distinct;
+					n->havingClause = $5;
+					n->windowClause = $6;
+					$$ = (Node *) n;
+				}
 			| values_clause							{ $$ = $1; }
 			| TABLE relation_expr
 				{
 					/* same as SELECT * FROM relation_expr */
-					ColumnRef  *cr = makeNode(ColumnRef);
-					ResTarget  *rt = makeNode(ResTarget);
 					SelectStmt *n = makeNode(SelectStmt);
 
-					cr->fields = list_make1(makeNode(A_Star));
-					cr->location = -1;
-
-					rt->name = NULL;
-					rt->indirection = NIL;
-					rt->val = (Node *) cr;
-					rt->location = -1;
-
-					n->targetList = list_make1(rt);
+					n->targetList = makeStarTargetList();
 					n->fromClause = list_make1($2);
 					$$ = (Node *) n;
 				}
@@ -20140,6 +20186,29 @@ makeRoleSpec(RoleSpecType type, int location)
 	spec->location = location;
 
 	return spec;
+}
+
+/* makeStarTargetList --- build the target list for an implicit "SELECT *"
+ *
+ * Used where the syntax doesn't spell out a target list, that is TABLE and
+ * a FROM-first SELECT with the SELECT clause omitted.  The locations are
+ * unknown, since nothing in the source text corresponds to the star.
+ */
+static List *
+makeStarTargetList(void)
+{
+	ColumnRef  *cr = makeNode(ColumnRef);
+	ResTarget  *rt = makeNode(ResTarget);
+
+	cr->fields = list_make1(makeNode(A_Star));
+	cr->location = -1;
+
+	rt->name = NULL;
+	rt->indirection = NIL;
+	rt->val = (Node *) cr;
+	rt->location = -1;
+
+	return list_make1(rt);
 }
 
 /* check_qualified_name --- check the result of qualified_name production
