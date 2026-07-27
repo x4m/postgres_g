@@ -1260,7 +1260,8 @@ static const char *const sql_commands[] = {
 	"ABORT", "ALTER", "ANALYZE", "BEGIN", "CALL", "CHECKPOINT", "CLOSE", "CLUSTER",
 	"COMMENT", "COMMIT", "COPY", "CREATE", "DEALLOCATE", "DECLARE",
 	"DELETE FROM", "DISCARD", "DO", "DROP", "END", "EXECUTE", "EXPLAIN",
-	"FETCH", "GRANT", "IMPORT FOREIGN SCHEMA", "INSERT INTO", "LISTEN", "LOAD", "LOCK",
+	"FETCH", "FROM", "GRANT", "IMPORT FOREIGN SCHEMA", "INSERT INTO",
+	"LISTEN", "LOAD", "LOCK",
 	"MERGE INTO", "MOVE", "NOTIFY", "PREPARE",
 	"REASSIGN", "REFRESH MATERIALIZED VIEW", "REINDEX", "RELEASE", "REPACK",
 	"RESET", "REVOKE", "ROLLBACK",
@@ -1884,6 +1885,13 @@ psql_completion(const char *text, int start, int end)
 #define prev7_wd  (previous_words[6])
 #define prev8_wd  (previous_words[7])
 #define prev9_wd  (previous_words[8])
+
+	/*
+	 * previous_words[] runs backwards, so this is how to get at the second
+	 * word on the line.  As above, only use this where a HeadMatches() or
+	 * similar test has already proven that there are that many words.
+	 */
+#define second_wd (previous_words[previous_words_count - 2])
 
 	/* Match the last N words before point, case-insensitively. */
 #define TailMatches(...) \
@@ -4607,6 +4615,46 @@ match_previous_words(int pattern_id,
 /* FOREIGN SERVER */
 	else if (TailMatches("FOREIGN", "SERVER"))
 		COMPLETE_WITH_QUERY(Query_for_list_of_servers);
+
+/*
+ * FROM-first SELECT.  Naming the table ahead of the select list is what
+ * makes the select list itself completable: a query that begins with SELECT
+ * doesn't say yet what it selects from.  Columns of the clauses that follow
+ * are already completed for ordinary queries, but by rules that take the
+ * word just before the clause to be the table name, which it is not once a
+ * select list sits in between.
+ */
+	/* Complete "FROM <table>" with SELECT or the clauses that can follow */
+	else if (Matches("FROM", MatchAny) && !ends_with(prev_wd, ','))
+		COMPLETE_WITH("SELECT", "WHERE", "GROUP BY", "HAVING", "WINDOW",
+					  "UNION", "INTERSECT", "EXCEPT", "ORDER BY",
+					  "LIMIT", "OFFSET", "FETCH FIRST", "FOR");
+	/* Complete "FROM <table> SELECT" with the table's columns */
+	else if (Matches("FROM", MatchAny, "SELECT"))
+		COMPLETE_WITH_ATTR_PLUS(prev2_wd, "*", "ALL", "DISTINCT");
+	else if (Matches("FROM", MatchAny, "SELECT", "ALL|DISTINCT"))
+		COMPLETE_WITH_ATTR_PLUS(prev3_wd, "*");
+	/* Likewise for each further item of the select list */
+	else if (HeadMatches("FROM", MatchAny, "SELECT") &&
+			 ends_with(prev_wd, ','))
+		COMPLETE_WITH_ATTR(second_wd);
+	/* The columns are also what WHERE, GROUP BY and ORDER BY are written from */
+	else if (HeadMatches("FROM", MatchAny, "SELECT") &&
+			 TailMatches("WHERE|BY|HAVING"))
+		COMPLETE_WITH_ATTR(second_wd);
+
+	/*
+	 * Complete a select list with the clauses that can follow it.  The last
+	 * word is an item of the list only if the one before it is SELECT or
+	 * ended with a comma; otherwise we are somewhere in a later clause and
+	 * have nothing useful to say.
+	 */
+	else if (Matches("FROM", MatchAny, "SELECT", MatchAnyN) &&
+			 (pg_strcasecmp(prev2_wd, "SELECT") == 0 ||
+			  ends_with(prev2_wd, ',')))
+		COMPLETE_WITH("AS", "WHERE", "GROUP BY", "HAVING", "WINDOW",
+					  "UNION", "INTERSECT", "EXCEPT", "ORDER BY",
+					  "LIMIT", "OFFSET", "FETCH FIRST", "FOR");
 
 /*
  * GRANT and REVOKE are allowed inside CREATE SCHEMA and

@@ -186,6 +186,24 @@ check_completion("select * from TAB\t", qr/tab1 /, "automatically fold case");
 
 clear_query();
 
+# check FROM-first queries: naming the table before the select list is what
+# lets us offer the columns of that table
+check_completion("fr\t", qr/from /, "complete fr<tab> to from");
+
+check_completion("tab1 sel\t", qr/tab1 select /,
+	"complete SELECT after the table of a FROM-first query");
+
+check_completion("\t\t", qr/c1 +c2/,
+	"offer the table's columns in a FROM-first select list");
+
+check_completion("c1, c2\t", qr/c1, c2 /,
+	"offer the columns again after a comma");
+
+check_completion("where c\t\t", qr/c1 +c2/,
+	"offer the columns in the WHERE clause of a FROM-first query");
+
+clear_query();
+
 # check case-sensitive keyword replacement
 # note: various versions of readline/libedit handle backspacing
 # differently, so just check that the replacement comes out correctly
