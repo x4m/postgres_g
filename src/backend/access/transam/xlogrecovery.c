@@ -263,8 +263,12 @@ static bool pendingWalRcvRestart = false;
 static TimestampTz XLogReceiptTime = 0;
 static XLogSource XLogReceiptSource = XLOG_FROM_ANY;
 
-/* Local copy of WalRcv->flushedUpto */
-static XLogRecPtr flushedUpto = InvalidXLogRecPtr;
+/*
+ * Local copy of WalRcv->writtenUpto.  Recovery reads WAL as soon as the
+ * walreceiver has written it, without waiting for it to become durable; the
+ * write-ahead rule is kept by WalRcvWaitForFlush() instead.
+ */
+static XLogRecPtr writtenUpto = InvalidXLogRecPtr;
 static TimeLineID receiveTLI = 0;
 
 /*
@@ -3327,12 +3331,12 @@ retry:
 	/* See if we need to retrieve more data */
 	if (readFile < 0 ||
 		(readSource == XLOG_FROM_STREAM &&
-		 flushedUpto < targetPagePtr + reqLen))
+		 writtenUpto < targetPagePtr + reqLen))
 	{
 		if (readFile >= 0 &&
 			xlogreader->nonblocking &&
 			readSource == XLOG_FROM_STREAM &&
-			flushedUpto < targetPagePtr + reqLen)
+			writtenUpto < targetPagePtr + reqLen)
 			return XLREAD_WOULDBLOCK;
 
 		switch (WaitForWALToBecomeAvailable(targetPagePtr + reqLen,
@@ -3371,10 +3375,10 @@ retry:
 	 */
 	if (readSource == XLOG_FROM_STREAM)
 	{
-		if (((targetPagePtr) / XLOG_BLCKSZ) != (flushedUpto / XLOG_BLCKSZ))
+		if (((targetPagePtr) / XLOG_BLCKSZ) != (writtenUpto / XLOG_BLCKSZ))
 			readLen = XLOG_BLCKSZ;
 		else
-			readLen = XLogSegmentOffset(flushedUpto, wal_segment_size) -
+			readLen = XLogSegmentOffset(writtenUpto, wal_segment_size) -
 				targetPageOff;
 	}
 	else
@@ -3869,7 +3873,7 @@ WaitForWALToBecomeAvailable(XLogRecPtr RecPtr, bool randAccess,
 						RequestXLogStreaming(tli, ptr, PrimaryConnInfo,
 											 PrimarySlotName,
 											 wal_receiver_create_temp_slot);
-						flushedUpto = InvalidXLogRecPtr;
+						writtenUpto = InvalidXLogRecPtr;
 					}
 
 					/*
@@ -3893,14 +3897,14 @@ WaitForWALToBecomeAvailable(XLogRecPtr RecPtr, bool randAccess,
 					 * XLogReceiptTime will not advance, so the grace time
 					 * allotted to conflicting queries will decrease.
 					 */
-					if (RecPtr < flushedUpto)
+					if (RecPtr < writtenUpto)
 						havedata = true;
 					else
 					{
 						XLogRecPtr	latestChunkStart;
 
-						flushedUpto = GetWalRcvFlushRecPtr(&latestChunkStart, &receiveTLI);
-						if (RecPtr < flushedUpto && receiveTLI == curFileTLI)
+						writtenUpto = GetWalRcvWrittenRecPtr(&latestChunkStart, &receiveTLI);
+						if (RecPtr < writtenUpto && receiveTLI == curFileTLI)
 						{
 							havedata = true;
 							if (latestChunkStart <= RecPtr)

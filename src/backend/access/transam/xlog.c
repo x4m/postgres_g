@@ -2767,6 +2767,22 @@ UpdateMinRecoveryPoint(XLogRecPtr lsn, bool force)
 		 * (See also the comments about corrupt LSNs in XLogFlush.)
 		 */
 		newMinRecoveryPoint = GetCurrentReplayRecPtr(&newMinRecoveryPointTLI);
+
+		/*
+		 * Replay can be ahead of what the walreceiver has made durable.
+		 * Promising in pg_control to recover further than the WAL we actually
+		 * hold would leave this standby unable to reach its own consistency
+		 * point after a crash, so hold the value down to durable WAL.  The
+		 * caller has already waited for 'lsn' itself.
+		 */
+		if (WalRcvStreaming())
+		{
+			XLogRecPtr	durable = GetWalRcvFlushRecPtr(NULL, NULL);
+
+			if (!XLogRecPtrIsInvalid(durable) && newMinRecoveryPoint > durable)
+				newMinRecoveryPoint = Max(durable, lsn);
+		}
+
 		if (!force && newMinRecoveryPoint < lsn)
 			elog(WARNING,
 				 "xlog min recovery request %X/%08X is past current point %X/%08X",
@@ -2812,6 +2828,13 @@ XLogFlush(XLogRecPtr record)
 	 */
 	if (!XLogInsertAllowed())
 	{
+		/*
+		 * Recovery replays WAL as soon as the walreceiver has written it, so
+		 * this is where the write-ahead rule is kept for a standby: the caller
+		 * is about to put a page on disk and must not do so until the WAL
+		 * describing it is durable.
+		 */
+		WalRcvWaitForFlush(record);
 		UpdateMinRecoveryPoint(record, false);
 		return;
 	}
@@ -8239,6 +8262,14 @@ CreateRestartPoint(int flags)
 	 * UpdateCheckPointDistanceEstimate()
 	 */
 	PriorRedoPtr = ControlFile->checkPointCopy.redo;
+
+	/*
+	 * The checkpoint record we are about to point pg_control at has been
+	 * replayed, but on a standby that only means the walreceiver has written
+	 * it.  Recovery after a crash starts by reading that record, so wait until
+	 * it is actually on disk.
+	 */
+	WalRcvWaitForFlush(lastCheckPointEndPtr);
 
 	/*
 	 * Update pg_control, using current time.  Check that it still shows an

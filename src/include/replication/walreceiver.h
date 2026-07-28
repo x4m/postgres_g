@@ -149,11 +149,26 @@ typedef struct
 
 	/*
 	 * Like flushedUpto, but advanced after writing and before flushing,
-	 * without the need to acquire the spin lock.  Data can be read by another
-	 * process up to this point, but shouldn't be used for data integrity
-	 * purposes.
+	 * without the need to acquire the spin lock.  Recovery replays WAL up to
+	 * this point, which is sound because a page modified by such a record is
+	 * held back from disk until the WAL behind it is durable.  Nothing that
+	 * claims durability may rely on it.
 	 */
 	pg_atomic_uint64 writtenUpto;
+
+	/*
+	 * The timeline that writtenUpto is on, and the start of the batch that
+	 * carried it, which recovery uses the way it uses latestChunkStart.  Both
+	 * are protected by mutex.
+	 */
+	TimeLineID	writtenTLI;
+	XLogRecPtr	latestWriteChunkStart;
+
+	/*
+	 * Signalled whenever flushedUpto advances, so that a process holding a
+	 * dirty page can wait for the WAL behind it to become durable.
+	 */
+	ConditionVariable flushCV;
 
 	/*
 	 * request walreceiver reply?  This doesn't need to be locked; memory
@@ -500,6 +515,9 @@ extern void RequestXLogStreaming(TimeLineID tli, XLogRecPtr recptr,
 								 bool create_temp_slot);
 extern XLogRecPtr GetWalRcvFlushRecPtr(XLogRecPtr *latestChunkStart, TimeLineID *receiveTLI);
 extern XLogRecPtr GetWalRcvWriteRecPtr(void);
+extern XLogRecPtr GetWalRcvWrittenRecPtr(XLogRecPtr *latestChunkStart,
+										 TimeLineID *writtenTLI);
+extern void WalRcvWaitForFlush(XLogRecPtr lsn);
 extern int	GetReplicationApplyDelay(void);
 extern int	GetReplicationTransferLatency(void);
 
