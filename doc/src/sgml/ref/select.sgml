@@ -1788,12 +1788,26 @@ FROM <replaceable class="parameter">from_item</replaceable> [, ...] SELECT <repl
 <programlisting>
 SELECT <replaceable class="parameter">select_list</replaceable> FROM <replaceable class="parameter">from_item</replaceable> [, ...]
 </programlisting>
-    All the remaining clauses keep their usual positions, that is, they
-    follow the select list.  The <literal>SELECT</literal> clause can also be
-    left out entirely, which is equivalent to writing
-    <literal>SELECT *</literal>; so <literal>FROM films</literal> is much like
-    <literal>TABLE films</literal>, except that the other clauses, such as
-    <literal>WHERE</literal>, can still be used with it.
+    The <literal>SELECT</literal> clause can also be left out entirely, which
+    is equivalent to writing <literal>SELECT *</literal>; so
+    <literal>FROM films</literal> is much like <literal>TABLE films</literal>,
+    except that the other clauses, such as <literal>WHERE</literal>, can still
+    be used with it.
+   </para>
+
+   <para>
+    The <literal>WHERE</literal>, <literal>GROUP BY</literal>,
+    <literal>HAVING</literal> and <literal>WINDOW</literal> clauses may be
+    written either before or after the select list, so the select list can be
+    put last of all, after everything it is computed from:
+<programlisting>
+FROM films WHERE len &gt; '02:00' GROUP BY kind SELECT kind, count(*)
+</programlisting>
+    A given clause may of course only be written once; writing one on both
+    sides of the select list is an error.  The clauses that follow the select
+    list in an ordinary <command>SELECT</command> and have no counterpart
+    here, that is <literal>ORDER BY</literal>, <literal>LIMIT</literal> and
+    the locking clauses, keep their usual place at the end of the query.
    </para>
 
    <para>
@@ -1805,7 +1819,8 @@ SELECT <replaceable class="parameter">select_list</replaceable> FROM <replaceabl
     are logically evaluated (see above).  That is convenient when a query is
     composed interactively, since a client can then complete the column names
     of the select list, which it has no way to do while the select list comes
-    first.
+    first.  Putting the select list last extends that to the columns
+    introduced by <literal>GROUP BY</literal>.
    </para>
   </refsect2>
 

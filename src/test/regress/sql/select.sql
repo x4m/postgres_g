@@ -191,9 +191,21 @@ TABLE fromfirst_into;
 CREATE TEMP VIEW fromfirst_view AS FROM int8_tbl SELECT q1 WHERE q2 > 0;
 SELECT pg_get_viewdef('fromfirst_view'::regclass);
 
--- SELECT has to come right after the FROM list, and DISTINCT still requires
--- a target list
-FROM int8_tbl WHERE q1 = 123 SELECT q1;
+-- the select list can also be put last, after the clauses it is computed
+-- from
+FROM int8_tbl WHERE q1 <> 123 GROUP BY q1 HAVING count(*) > 1
+  SELECT q1, count(*) ORDER BY q1;
+FROM int8_tbl WHERE q1 = 123 SELECT DISTINCT q2 ORDER BY q2;
+FROM int8_tbl WINDOW w AS (PARTITION BY q1)
+  SELECT q1, count(*) OVER w ORDER BY q1 LIMIT 3;
+-- and the clauses can be split around it, though not repeated
+FROM int8_tbl WHERE q1 <> q2 SELECT q2, count(*) GROUP BY q2 ORDER BY q2;
+FROM int8_tbl WHERE q1 = 123 SELECT q1 WHERE q2 = 456;
+FROM int8_tbl GROUP BY q1 SELECT q1 GROUP BY q1;
+FROM int8_tbl HAVING count(*) > 0 SELECT count(*) HAVING count(*) > 0;
+FROM int8_tbl WINDOW w AS () SELECT q1 WINDOW w AS ();
+
+-- DISTINCT still requires a target list
 FROM int8_tbl SELECT DISTINCT;
 FROM;
 

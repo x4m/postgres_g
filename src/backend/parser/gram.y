@@ -123,6 +123,23 @@ typedef struct GroupClause
 	List	   *list;
 } GroupClause;
 
+/*
+ * Private struct for the result of from_first_clauses production.  These
+ * clauses can appear on either side of the select list of a FROM-first
+ * SELECT, so we keep the locations to report one written on both sides.
+ */
+typedef struct FromFirstClauses
+{
+	Node	   *whereClause;
+	ParseLoc	whereLoc;
+	GroupClause *groupClause;
+	ParseLoc	groupLoc;
+	Node	   *havingClause;
+	ParseLoc	havingLoc;
+	List	   *windowClause;
+	ParseLoc	windowLoc;
+} FromFirstClauses;
+
 /* Private structs for the result of key_actions and key_action productions */
 typedef struct KeyAction
 {
@@ -166,6 +183,10 @@ static Node *makeNullAConst(int location);
 static Node *makeAConst(Node *v, int location);
 static RoleSpec *makeRoleSpec(RoleSpecType type, int location);
 static List *makeStarTargetList(void);
+static void applyFromFirstClauses(SelectStmt *stmt,
+								  FromFirstClauses *before,
+								  FromFirstClauses *after,
+								  core_yyscan_t yyscanner);
 static void check_qualified_name(List *names, core_yyscan_t yyscanner);
 static List *check_func_name(List *names, core_yyscan_t yyscanner);
 static List *check_indirection(List *indirection, core_yyscan_t yyscanner);
@@ -270,6 +291,7 @@ static Node *makeRecursiveViewSelect(char *relname, List *aliases, Node *query);
 	struct SelectLimit *selectlimit;
 	SetQuantifier setquantifier;
 	struct GroupClause *groupclause;
+	struct FromFirstClauses *fromfirstclauses;
 	MergeMatchKind mergematch;
 	MergeWhenClause *mergewhen;
 	struct KeyActions *keyactions;
@@ -464,6 +486,7 @@ static Node *makeRecursiveViewSelect(char *relname, List *aliases, Node *query);
 %type <retoptionkind> returning_option_kind
 %type <node>	opt_routine_body
 %type <groupclause> group_clause
+%type <fromfirstclauses> from_first_clauses
 %type <list>	group_by_list
 %type <node>	group_by_item empty_grouping_set rollup_clause cube_clause
 %type <node>	grouping_sets_clause
@@ -13755,6 +13778,15 @@ select_clause:
  * be written in the order its clauses are logically evaluated in, which is
  * handy for clients completing column names.  They produce exactly the same
  * SelectStmt as the standard spelling does.
+ *
+ * The clauses that come between FROM and the select list may be written on
+ * either side of the SELECT clause, so that the select list can be put last,
+ * after everything it is computed from.  Both sides are therefore collected
+ * as from_first_clauses and merged by applyFromFirstClauses(), which rejects
+ * a clause that was written twice.  Requiring the grammar itself to accept a
+ * clause on only one side would need a lookahead it does not have: at the
+ * SELECT token there is no way to know whether an omitted WHERE belongs
+ * before or after it.
  */
 simple_select:
 			SELECT opt_all_clause opt_target_list
@@ -13790,52 +13822,39 @@ simple_select:
 					n->windowClause = $9;
 					$$ = (Node *) n;
 				}
-			| FROM from_list SELECT opt_all_clause opt_target_list
-			into_clause where_clause
-			group_clause having_clause window_clause
-				{
-					SelectStmt *n = makeNode(SelectStmt);
-
-					n->targetList = $5;
-					n->intoClause = $6;
-					n->fromClause = $2;
-					n->whereClause = $7;
-					n->groupClause = ($8)->list;
-					n->groupDistinct = ($8)->distinct;
-					n->havingClause = $9;
-					n->windowClause = $10;
-					$$ = (Node *) n;
-				}
-			| FROM from_list SELECT distinct_clause target_list
-			into_clause where_clause
-			group_clause having_clause window_clause
-				{
-					SelectStmt *n = makeNode(SelectStmt);
-
-					n->distinctClause = $4;
-					n->targetList = $5;
-					n->intoClause = $6;
-					n->fromClause = $2;
-					n->whereClause = $7;
-					n->groupClause = ($8)->list;
-					n->groupDistinct = ($8)->distinct;
-					n->havingClause = $9;
-					n->windowClause = $10;
-					$$ = (Node *) n;
-				}
-			| FROM from_list where_clause
-			group_clause having_clause window_clause
+			| FROM from_list from_first_clauses
 				{
 					/* omitted SELECT clause is the same as SELECT * */
 					SelectStmt *n = makeNode(SelectStmt);
 
 					n->targetList = makeStarTargetList();
 					n->fromClause = $2;
-					n->whereClause = $3;
-					n->groupClause = ($4)->list;
-					n->groupDistinct = ($4)->distinct;
-					n->havingClause = $5;
-					n->windowClause = $6;
+					applyFromFirstClauses(n, $3, NULL, yyscanner);
+					$$ = (Node *) n;
+				}
+			| FROM from_list from_first_clauses
+			SELECT opt_all_clause opt_target_list
+			into_clause from_first_clauses
+				{
+					SelectStmt *n = makeNode(SelectStmt);
+
+					n->targetList = $6;
+					n->intoClause = $7;
+					n->fromClause = $2;
+					applyFromFirstClauses(n, $3, $8, yyscanner);
+					$$ = (Node *) n;
+				}
+			| FROM from_list from_first_clauses
+			SELECT distinct_clause target_list
+			into_clause from_first_clauses
+				{
+					SelectStmt *n = makeNode(SelectStmt);
+
+					n->distinctClause = $5;
+					n->targetList = $6;
+					n->intoClause = $7;
+					n->fromClause = $2;
+					applyFromFirstClauses(n, $3, $8, yyscanner);
 					$$ = (Node *) n;
 				}
 			| values_clause							{ $$ = $1; }
@@ -13859,6 +13878,27 @@ simple_select:
 			| select_clause EXCEPT set_quantifier select_clause
 				{
 					$$ = makeSetOp(SETOP_EXCEPT, $3 == SET_QUANTIFIER_ALL, $1, $4);
+				}
+		;
+
+/*
+ * The clauses of a FROM-first SELECT that may precede or follow its select
+ * list.  See the note above simple_select.
+ */
+from_first_clauses:
+			where_clause group_clause having_clause window_clause
+				{
+					FromFirstClauses *n = palloc_object(FromFirstClauses);
+
+					n->whereClause = $1;
+					n->whereLoc = @1;
+					n->groupClause = $2;
+					n->groupLoc = @2;
+					n->havingClause = $3;
+					n->havingLoc = @3;
+					n->windowClause = $4;
+					n->windowLoc = @4;
+					$$ = n;
 				}
 		;
 
@@ -20209,6 +20249,66 @@ makeStarTargetList(void)
 	rt->location = -1;
 
 	return list_make1(rt);
+}
+
+/* applyFromFirstClauses --- fill in the clauses of a FROM-first SELECT
+ *
+ * "before" holds the clauses written between the FROM list and the select
+ * list, "after" those written after it (NULL if there is no select list).
+ * Each clause may be given on either side but not on both.
+ */
+static void
+applyFromFirstClauses(SelectStmt *stmt,
+					  FromFirstClauses *before, FromFirstClauses *after,
+					  core_yyscan_t yyscanner)
+{
+	FromFirstClauses *group = before;
+
+	if (after)
+	{
+		if (after->whereClause)
+		{
+			if (before->whereClause)
+				ereport(ERROR,
+						(errcode(ERRCODE_SYNTAX_ERROR),
+						 errmsg("multiple WHERE clauses not allowed"),
+						 parser_errposition(after->whereLoc)));
+			before->whereClause = after->whereClause;
+		}
+		if (after->groupClause->list)
+		{
+			if (before->groupClause->list)
+				ereport(ERROR,
+						(errcode(ERRCODE_SYNTAX_ERROR),
+						 errmsg("multiple GROUP BY clauses not allowed"),
+						 parser_errposition(after->groupLoc)));
+			group = after;
+		}
+		if (after->havingClause)
+		{
+			if (before->havingClause)
+				ereport(ERROR,
+						(errcode(ERRCODE_SYNTAX_ERROR),
+						 errmsg("multiple HAVING clauses not allowed"),
+						 parser_errposition(after->havingLoc)));
+			before->havingClause = after->havingClause;
+		}
+		if (after->windowClause)
+		{
+			if (before->windowClause)
+				ereport(ERROR,
+						(errcode(ERRCODE_SYNTAX_ERROR),
+						 errmsg("multiple WINDOW clauses not allowed"),
+						 parser_errposition(after->windowLoc)));
+			before->windowClause = after->windowClause;
+		}
+	}
+
+	stmt->whereClause = before->whereClause;
+	stmt->groupClause = group->groupClause->list;
+	stmt->groupDistinct = group->groupClause->distinct;
+	stmt->havingClause = before->havingClause;
+	stmt->windowClause = before->windowClause;
 }
 
 /* check_qualified_name --- check the result of qualified_name production

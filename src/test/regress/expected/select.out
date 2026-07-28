@@ -686,12 +686,58 @@ SELECT pg_get_viewdef('fromfirst_view'::regclass);
    WHERE (q2 > 0);
 (1 row)
 
--- SELECT has to come right after the FROM list, and DISTINCT still requires
--- a target list
-FROM int8_tbl WHERE q1 = 123 SELECT q1;
-ERROR:  syntax error at or near "SELECT"
-LINE 1: FROM int8_tbl WHERE q1 = 123 SELECT q1;
-                                     ^
+-- the select list can also be put last, after the clauses it is computed
+-- from
+FROM int8_tbl WHERE q1 <> 123 GROUP BY q1 HAVING count(*) > 1
+  SELECT q1, count(*) ORDER BY q1;
+        q1        | count 
+------------------+-------
+ 4567890123456789 |     3
+(1 row)
+
+FROM int8_tbl WHERE q1 = 123 SELECT DISTINCT q2 ORDER BY q2;
+        q2        
+------------------
+              456
+ 4567890123456789
+(2 rows)
+
+FROM int8_tbl WINDOW w AS (PARTITION BY q1)
+  SELECT q1, count(*) OVER w ORDER BY q1 LIMIT 3;
+        q1        | count 
+------------------+-------
+              123 |     2
+              123 |     2
+ 4567890123456789 |     3
+(3 rows)
+
+-- and the clauses can be split around it, though not repeated
+FROM int8_tbl WHERE q1 <> q2 SELECT q2, count(*) GROUP BY q2 ORDER BY q2;
+        q2         | count 
+-------------------+-------
+ -4567890123456789 |     1
+               123 |     1
+               456 |     1
+  4567890123456789 |     1
+(4 rows)
+
+FROM int8_tbl WHERE q1 = 123 SELECT q1 WHERE q2 = 456;
+ERROR:  multiple WHERE clauses not allowed
+LINE 1: FROM int8_tbl WHERE q1 = 123 SELECT q1 WHERE q2 = 456;
+                                               ^
+FROM int8_tbl GROUP BY q1 SELECT q1 GROUP BY q1;
+ERROR:  multiple GROUP BY clauses not allowed
+LINE 1: FROM int8_tbl GROUP BY q1 SELECT q1 GROUP BY q1;
+                                            ^
+FROM int8_tbl HAVING count(*) > 0 SELECT count(*) HAVING count(*) > 0;
+ERROR:  multiple HAVING clauses not allowed
+LINE 1: FROM int8_tbl HAVING count(*) > 0 SELECT count(*) HAVING cou...
+                                                          ^
+FROM int8_tbl WINDOW w AS () SELECT q1 WINDOW w AS ();
+ERROR:  multiple WINDOW clauses not allowed
+LINE 1: FROM int8_tbl WINDOW w AS () SELECT q1 WINDOW w AS ();
+                                               ^
+-- DISTINCT still requires a target list
 FROM int8_tbl SELECT DISTINCT;
 ERROR:  syntax error at or near ";"
 LINE 1: FROM int8_tbl SELECT DISTINCT;

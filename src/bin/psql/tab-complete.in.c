@@ -4632,14 +4632,16 @@ match_previous_words(int pattern_id,
 	/* Complete "FROM <table> SELECT" with the table's columns */
 	else if (Matches("FROM", MatchAny, "SELECT"))
 		COMPLETE_WITH_ATTR_PLUS(prev2_wd, "*", "ALL", "DISTINCT");
+	/* Likewise for a select list written after the other clauses */
+	else if (HeadMatches("FROM", MatchAny) && TailMatches("SELECT"))
+		COMPLETE_WITH_ATTR_PLUS(second_wd, "*", "ALL", "DISTINCT");
 	else if (Matches("FROM", MatchAny, "SELECT", "ALL|DISTINCT"))
 		COMPLETE_WITH_ATTR_PLUS(prev3_wd, "*");
-	/* Likewise for each further item of the select list */
-	else if (HeadMatches("FROM", MatchAny, "SELECT") &&
-			 ends_with(prev_wd, ','))
+	/* Likewise for each further item of a list, wherever it is written */
+	else if (HeadMatches("FROM", MatchAny) && ends_with(prev_wd, ','))
 		COMPLETE_WITH_ATTR(second_wd);
 	/* The columns are also what WHERE, GROUP BY and ORDER BY are written from */
-	else if (HeadMatches("FROM", MatchAny, "SELECT") &&
+	else if (HeadMatches("FROM", MatchAny) &&
 			 TailMatches("WHERE|BY|HAVING"))
 		COMPLETE_WITH_ATTR(second_wd);
 

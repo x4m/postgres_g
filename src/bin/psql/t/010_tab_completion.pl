@@ -204,6 +204,15 @@ check_completion("where c\t\t", qr/c1 +c2/,
 
 clear_query();
 
+# the same when the select list is written after the other clauses
+check_completion("from tab1 group by c\t\t", qr/c1 +c2/,
+	"offer the columns in the GROUP BY of a FROM-first query");
+
+check_completion("1 select \t\t", qr/c1 +c2/,
+	"offer the columns in a select list written last");
+
+clear_query();
+
 # check case-sensitive keyword replacement
 # note: various versions of readline/libedit handle backspacing
 # differently, so just check that the replacement comes out correctly
