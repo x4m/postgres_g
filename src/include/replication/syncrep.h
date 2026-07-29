@@ -72,6 +72,7 @@ typedef struct SyncRepConfigData
 } SyncRepConfigData;
 
 extern PGDLLIMPORT SyncRepConfigData *SyncRepConfig;
+extern PGDLLIMPORT bool SyncRepWaitCancelable;
 extern PGDLLIMPORT int startup_synchronous_standby_level;
 
 /* user-settable parameters for synchronous replication */
