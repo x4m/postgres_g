@@ -17,6 +17,11 @@ use PostgreSQL::Test::Cluster;
 use PostgreSQL::Test::Utils;
 use Test::More;
 
+if ($ENV{enable_injection_points} ne 'yes')
+{
+	plan skip_all => 'Injection points not supported by this build';
+}
+
 # Use 1 MB WAL segments so we can generate many segments cheaply.
 my $wal_segsize = 1;
 
@@ -52,6 +57,16 @@ wal_keep_size   = 0 # to trigger wal deletion
 });
 $primary->start;
 
+# Check if the extension injection_points is available, as it may be
+# possible that this script is run with installcheck, where the module
+# would not be installed by default.
+if (!$primary->check_extension('injection_points'))
+{
+	plan skip_all => 'Extension injection_points not installed';
+}
+
+$primary->safe_psql('postgres', q(CREATE EXTENSION injection_points));
+
 my $backup_name = 'standby_backup';
 $primary->backup($backup_name);
 
@@ -65,6 +80,10 @@ wal_receiver_status_interval = 1s
 wal_keep_size              = 0 # to trigger wal deletion
 });
 $standby->start;
+
+# Pause the standby's archiver so received segments keep their .ready files.
+$standby->safe_psql('postgres',
+	q{SELECT injection_points_attach('pgarch-main-loop', 'wait')});
 
 $primary->wait_for_catchup($standby);
 

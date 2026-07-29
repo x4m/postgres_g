@@ -380,9 +380,9 @@ static const internalPQconninfoOption PQconninfoOptions[] = {
 		"Replication", "D", 5,
 	offsetof(struct pg_conn, replication)},
 
-	{"archive_status_reports", NULL, NULL, NULL,
-		"Replication", "D", 5,
-	offsetof(struct pg_conn, archive_status_reports)},
+	{"archive_status_report_interval", NULL, NULL, NULL,
+		"Replication", "D", 10,
+	offsetof(struct pg_conn, archive_status_report_interval)},
 
 	{"target_session_attrs", "PGTARGETSESSIONATTRS",
 		DefaultTargetSessionAttrs, NULL,
@@ -5122,7 +5122,7 @@ freePGconn(PGconn *conn)
 	free(conn->fbappname);
 	free(conn->dbName);
 	free(conn->replication);
-	free(conn->archive_status_reports);
+	free(conn->archive_status_report_interval);
 	free(conn->pgservice);
 	free(conn->pgservicefile);
 	free(conn->pguser);

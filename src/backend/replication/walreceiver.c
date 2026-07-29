@@ -856,6 +856,7 @@ static void
 XLogWalRcvProcessMsg(unsigned char type, char *buf, Size len, TimeLineID tli)
 {
 	int			hdrlen;
+	TimestampTz now;
 	XLogRecPtr	dataStart;
 	XLogRecPtr	walEnd;
 	TimestampTz sendTime;
@@ -931,8 +932,11 @@ XLogWalRcvProcessMsg(unsigned char type, char *buf, Size len, TimeLineID tli)
 							 errcode(ERRCODE_PROTOCOL_VIOLATION),
 							 errmsg_internal("unexpected character in primary's last archived filename"));
 
+				now = GetCurrentTimestamp();
+
 				SpinLockAcquire(&PgArch->lock);
 				memcpy(PgArch->primary_last_archived, primary_last_archived, sizeof(PgArch->primary_last_archived));
+				PgArch->last_archival_report_timestamp = now;
 				SpinLockRelease(&PgArch->lock);
 
 				INJECTION_POINT("walreceiver-after-primary-last-archived", NULL);

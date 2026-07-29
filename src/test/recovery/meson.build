@@ -65,6 +65,7 @@ tests += {
       't/054_unlogged_sequence_promotion.pl',
       't/055_archive_shared.pl',
       't/056_archive_shared_checkpoint.pl',
+      't/057_archive_shared_hazards.pl',
     ],
   },
 }

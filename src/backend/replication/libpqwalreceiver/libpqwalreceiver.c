@@ -22,6 +22,7 @@
 #include <unistd.h>
 #include <sys/time.h>
 
+#include "access/xlog.h"
 #include "common/connect.h"
 #include "funcapi.h"
 #include "libpq-fe.h"
@@ -154,6 +155,7 @@ libpqrcv_connect(const char *conninfo, bool replication, bool logical,
 	const char *vals[6];
 	int			i = 0;
 	char	   *options_val = NULL;
+	char	   *archive_interval_val = NULL;
 
 	/*
 	 * Re-validate connection string. The validation already happened at DDL
@@ -219,8 +221,9 @@ libpqrcv_connect(const char *conninfo, bool replication, bool logical,
 
 	if (expect_archive_reports)
 	{
-		keys[++i] = "archive_status_reports";
-		vals[i] = "true";
+		archive_interval_val = psprintf("%d", XLogArchiveStatusReportInterval);
+		keys[++i] = "archive_status_report_interval";
+		vals[i] = archive_interval_val;
 	}
 
 	keys[++i] = NULL;
@@ -239,6 +242,8 @@ libpqrcv_connect(const char *conninfo, bool replication, bool logical,
 
 	if (options_val != NULL)
 		pfree(options_val);
+	if (archive_interval_val != NULL)
+		pfree(archive_interval_val);
 
 	if (PQstatus(conn->streamConn) != CONNECTION_OK)
 		goto bad_connection_errmsg;

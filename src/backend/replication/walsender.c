@@ -135,7 +135,9 @@ WalSnd	   *MyWalSnd = NULL;
 bool		am_walsender = false;	/* Am I a walsender process? */
 bool		am_cascading_walsender = false; /* Am I cascading WAL to another
 											 * standby? */
-bool		am_archive_status_walsender = false; /* Am I replying with archive status reports? */
+int			archive_status_report_interval = 0; /* interval (ms) between
+												 * archive status reports; 0
+												 * disables them */
 bool		am_db_walsender = false;	/* Connected to a database? */
 
 /* GUC variables */
@@ -2870,7 +2872,7 @@ WalSndArchivalReport(void)
 	char		last_archived[MAX_XFN_CHARS + 1];
 
 	/* Only send reports when requested */
-	if (!am_archive_status_walsender)
+	if (archive_status_report_interval <= 0)
 		return;
 
 	if (MyWalSnd->state != WALSNDSTATE_CATCHUP &&
@@ -2892,7 +2894,7 @@ WalSndArchivalReport(void)
 	 * This avoids excessive pgstat access.
 	 */
 	if (now < TimestampTzPlusMilliseconds(last_archival_report_timestamp,
-										  XLogArchiveStatusReportInterval))
+										  archive_status_report_interval))
 		return;
 
 	last_archival_report_timestamp = now;

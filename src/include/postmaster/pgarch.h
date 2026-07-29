@@ -45,6 +45,8 @@ typedef struct PgArchData
 	/* Last archived WAL segment file reported by the primary */
 	char primary_last_archived[MAX_XFN_CHARS + 1];
 
+	TimestampTz last_archival_report_timestamp;
+
 	/*
 	 * Forces a directory scan in pgarch_readyXlog().
 	 */

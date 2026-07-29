@@ -27,7 +27,7 @@ typedef enum
 /* global state */
 extern PGDLLIMPORT bool am_walsender;
 extern PGDLLIMPORT bool am_cascading_walsender;
-extern PGDLLIMPORT bool am_archive_status_walsender;
+extern PGDLLIMPORT int archive_status_report_interval;
 extern PGDLLIMPORT bool am_db_walsender;
 extern PGDLLIMPORT bool wake_wal_senders;
 

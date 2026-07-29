@@ -50,6 +50,7 @@
 #include "storage/shmem.h"
 #include "storage/subsystems.h"
 #include "utils/guc.h"
+#include "utils/injection_point.h"
 #include "utils/memutils.h"
 #include "utils/ps_status.h"
 #include "utils/resowner.h"
@@ -65,6 +66,15 @@
 									 * archive status directory; in seconds. */
 #define PGARCH_RESTART_INTERVAL 10	/* How often to attempt to restart a
 									 * failed archiver; in seconds. */
+
+/*
+ * In archive_mode=shared, a standby normally relies on the primary's archival
+ * status reports and does not archive segments itself.  If reports stop
+ * arriving, the standby must fall back to archiving on its own to avoid
+ * accumulating WAL forever.  We wait for this many report intervals to pass
+ * with no report before starting to archive locally.
+ */
+#define PGARCH_SHARED_FALLBACK_INTERVALS 3
 
 /*
  * Maximum number of retries allowed when attempting to archive a WAL
@@ -172,6 +182,15 @@ PgArchShmemInit(void *arg)
 	pg_atomic_init_u32(&PgArch->force_dir_scan, 0);
 
 	PgArch->primary_last_archived[0] = '\0';
+
+	/*
+	 * Seed the report timestamp when starting up during recovery so that the
+	 * archiver does not rush to archive segments itself right after startup.
+	 * We give the primary a chance to send its first archival report before
+	 * the fallback timeout (see pgarch_MainLoop) elapses.
+	 */
+	if (RecoveryInProgress())
+		PgArch->last_archival_report_timestamp = GetCurrentTimestamp();
 
 	SpinLockInit(&PgArch->lock);
 }
@@ -307,6 +326,8 @@ static void
 pgarch_MainLoop(void)
 {
 	bool		time_to_stop;
+	bool		do_copy_loop;
+	TimestampTz last_archival_report_timestamp;
 
 	/*
 	 * There shouldn't be anything for the archiver to do except to wait for a
@@ -316,6 +337,8 @@ pgarch_MainLoop(void)
 	do
 	{
 		ResetLatch(MyLatch);
+
+		INJECTION_POINT("pgarch-main-loop", NULL);
 
 		/* When we get SIGUSR2, we do one more archive cycle, then exit */
 		time_to_stop = ready_to_stop;
@@ -342,8 +365,45 @@ pgarch_MainLoop(void)
 				break;
 		}
 
-		/* Do what we're here for */
-		pgarch_ArchiverCopyLoop();
+		if (RecoveryInProgress() && XLogArchivingShared())
+		{
+			int64		fallback_ms;
+
+			SpinLockAcquire(&PgArch->lock);
+			last_archival_report_timestamp = PgArch->last_archival_report_timestamp;
+			SpinLockRelease(&PgArch->lock);
+
+			/*
+			 * Compute the fallback timeout in 64-bit arithmetic:
+			 * XLogArchiveStatusReportInterval can be as large as INT_MAX / 2,
+			 * so multiplying it as an int would overflow.
+			 */
+			fallback_ms = (int64) XLogArchiveStatusReportInterval *
+				PGARCH_SHARED_FALLBACK_INTERVALS;
+
+			/*
+			 * Only archive locally once we have gone long enough without a
+			 * report from the primary.  Note that an incoming report does not
+			 * set our latch, so we may notice the timeout up to
+			 * PGARCH_AUTOWAKE_INTERVAL late; that coarse granularity is fine
+			 * for a fallback path.
+			 */
+			do_copy_loop = GetCurrentTimestamp() >
+				TimestampTzPlusMilliseconds(last_archival_report_timestamp,
+											fallback_ms);
+		}
+		else
+		{
+			do_copy_loop = true;
+		}
+
+		if (do_copy_loop)
+		{
+			/* Do what we're here for */
+			pgarch_ArchiverCopyLoop();
+
+			INJECTION_POINT("pgarch-main-loop-after-copy", NULL);
+		}
 
 		/*
 		 * Sleep until a signal is received, or until a poll is forced by
