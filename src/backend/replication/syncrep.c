@@ -89,6 +89,7 @@
 
 /* User-settable parameters for sync rep */
 char	   *SyncRepStandbyNames;
+int			startup_synchronous_standby_level = SYNCHRONOUS_COMMIT_OFF;
 
 #define SyncStandbysDefined() \
 	(SyncRepStandbyNames != NULL && SyncRepStandbyNames[0] != '\0')
@@ -1144,4 +1145,79 @@ assign_synchronous_commit(int newval, void *extra)
 			SyncRepWaitMode = SYNC_REP_NO_WAIT;
 			break;
 	}
+}
+
+void
+SyncRepInitStartupSync(XLogRecPtr recovery_end_lsn)
+{
+	LWLockAcquire(SyncRepLock, LW_EXCLUSIVE);
+	WalSndCtl->startup_sync_lsn = recovery_end_lsn;
+	WalSndCtl->startup_sync_complete =
+		startup_synchronous_standby_level < SYNCHRONOUS_COMMIT_REMOTE_WRITE;
+	LWLockRelease(SyncRepLock);
+}
+
+/*
+ * Return whether the end-of-recovery LSN has reached the configured
+ * synchronous standbys.  Once opened, the gate remains open until the next
+ * postmaster start.
+ */
+bool
+SyncRepStartupSyncComplete(void)
+{
+	bool		bypassed = false;
+	bool		can_complete = false;
+	bool		complete;
+	int mode;
+
+	switch (startup_synchronous_standby_level)
+	{
+		case SYNCHRONOUS_COMMIT_REMOTE_WRITE:
+			mode = SYNC_REP_WAIT_WRITE;
+			break;
+		case SYNCHRONOUS_COMMIT_REMOTE_FLUSH:
+			mode = SYNC_REP_WAIT_FLUSH;
+			break;
+		case SYNCHRONOUS_COMMIT_REMOTE_APPLY:
+			mode = SYNC_REP_WAIT_APPLY;
+			break;
+		default:
+			return true;
+	}
+
+	LWLockAcquire(SyncRepLock, LW_SHARED);
+	complete = WalSndCtl->startup_sync_complete;
+	if (!complete &&
+		(WalSndCtl->sync_standbys_status & SYNC_STANDBY_INIT) != 0)
+	{
+		if ((WalSndCtl->sync_standbys_status & SYNC_STANDBY_DEFINED) == 0)
+			can_complete = true;
+		else if (WalSndCtl->lsn[mode] >= WalSndCtl->startup_sync_lsn)
+			can_complete = true;
+	}
+	LWLockRelease(SyncRepLock);
+
+	if (can_complete)
+	{
+		LWLockAcquire(SyncRepLock, LW_EXCLUSIVE);
+		complete = WalSndCtl->startup_sync_complete;
+		if (!complete &&
+			(WalSndCtl->sync_standbys_status & SYNC_STANDBY_INIT) != 0)
+		{
+			if ((WalSndCtl->sync_standbys_status & SYNC_STANDBY_DEFINED) == 0)
+				bypassed = complete = true;
+			else if (WalSndCtl->lsn[mode] >= WalSndCtl->startup_sync_lsn)
+				complete = true;
+
+			WalSndCtl->startup_sync_complete = complete;
+		}
+		LWLockRelease(SyncRepLock);
+	}
+
+	if (bypassed)
+		ereport(LOG,
+				(errmsg("startup synchronous replication wait bypassed"),
+				 errdetail("\"synchronous_standby_names\" is empty.")));
+
+	return complete;
 }

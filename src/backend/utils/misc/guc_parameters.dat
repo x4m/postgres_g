@@ -2894,6 +2894,13 @@
   check_hook => 'check_standard_conforming_strings',
 },
 
+{ name => 'startup_synchronous_standby_level', type => 'enum', context => 'PGC_POSTMASTER', group => 'REPLICATION_PRIMARY',
+  short_desc => 'Sets the synchronization level required before ordinary connections are allowed after startup.',
+  variable => 'startup_synchronous_standby_level',
+  boot_val => 'SYNCHRONOUS_COMMIT_OFF',
+  options => 'synchronous_commit_options',
+},
+
 { name => 'statement_timeout', type => 'int', context => 'PGC_USERSET', group => 'CLIENT_CONN_STATEMENT',
   short_desc => 'Sets the maximum allowed duration of any statement.',
   long_desc => '0 disables the timeout.',

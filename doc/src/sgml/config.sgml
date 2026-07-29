@@ -5054,6 +5054,40 @@ restore_command = 'copy "C:\\server\\archivedir\\%f" "%p"'  # Windows
 
     <variablelist>
 
+     <varlistentry id="guc-startup-synchronous-standby-level"
+                   xreflabel="startup_synchronous_standby_level">
+      <term><varname>startup_synchronous_standby_level</varname> (<type>enum</type>)
+      <indexterm>
+       <primary><varname>startup_synchronous_standby_level</varname> configuration parameter</primary>
+      </indexterm>
+      </term>
+      <listitem>
+       <para>
+        Specifies how far the end-of-recovery WAL location must be processed
+        by the synchronous standbys before ordinary client connections are
+        allowed after server startup.  Valid values are
+        <literal>remote_apply</literal>, <literal>on</literal>,
+        <literal>remote_write</literal>, <literal>local</literal>, and
+        <literal>off</literal> (the default).  The meanings of these values
+        are the same as for <xref linkend="guc-synchronous-commit"/>.
+        Values <literal>local</literal> and <literal>off</literal> disable
+        this check.
+       </para>
+       <para>
+        WAL sender connections are allowed while the check is pending, so
+        that standbys can connect and make progress.  Once the configured
+        synchronous standbys have processed the end-of-recovery WAL location,
+        ordinary connections remain allowed until the next server start,
+        even if those standbys subsequently disconnect.  Setting
+        <xref linkend="guc-synchronous-standby-names"/> to an empty value
+        explicitly bypasses the check.
+       </para>
+       <para>
+        This parameter can only be set at server start.
+       </para>
+      </listitem>
+     </varlistentry>
+
      <varlistentry id="guc-synchronous-standby-names" xreflabel="synchronous_standby_names">
       <term><varname>synchronous_standby_names</varname> (<type>string</type>)
       <indexterm>
