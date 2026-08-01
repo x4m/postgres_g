@@ -1,0 +1,39 @@
+\chapter{Конкурентное сопровождение индекса}
+\label{ch:maintenance}
+
+\section{Сборка мусора в физическом порядке страниц}
+% Логический обход дерева при вакуумировании даёт случайное чтение;
+% физический порядок — последовательное.
+% \commit{fe280694d0d}{Scan GiST indexes in physical order during VACUUM}.
+
+\section{Удаление и переиспользование страниц}
+% \commit{7df159a620b}{Delete empty pages during GiST VACUUM},
+% \commit{9eb5607e699}{Refactor checks for deleted GiST pages}.
+
+\section{Полные идентификаторы транзакций}
+% Условие безопасного переиспользования страницы — «страница удалена достаточно
+% давно». На 32-битных счётчиках это условие ломается при зацикливании.
+% \commit{6655a7299d8}{Use full 64-bit XID for checking if a deleted GiST page is old enough}.
+% Смежное: \commit{4ed8f0913bf}{Index SLRUs by 64-bit integers}.
+
+\section{Снижение времени ожидания блокировок в обратном индексе}
+% \commit{218f51584d5}{Reduce page locking in GIN vacuum} и последующие
+% исправления взаимоблокировок \code{fd83c83d094}, \code{c6ade7a8cd3},
+% \code{52ac6cd2d0c}. Опубликовано: JPCS 2018.
+% Отдельно разобрать, почему первая версия породила три дефекта — это
+% содержательный материал для главы о верификации.
+
+\section{Предикатные блокировки}
+% \commit{3ad55863e93}{Add predicate locking for GiST},
+% \commit{0bef1c0678d}{Re-think predicate locking on GIN indexes}.
+% Сериализуемая изоляция над обобщённым деревом: на каком уровне гранулярности
+% брать предикатную блокировку, чтобы не порождать ложные конфликты.
+
+\section{Упреждающее чтение при сопровождении}
+% \commit{69273b818b1}{Use streaming read I/O in GiST vacuuming},
+% \commit{e215166c9c8}{SP-GiST}, \commit{c5c239e26e3}{btree}.
+% Связь с моделью §\ref{ch:models}.
+
+\section{Экспериментальная оценка}
+
+\section{Выводы по главе}

@@ -1,0 +1,74 @@
+% P1 — Sorting-based construction of generalized search trees.
+% Самый готовый результат: материал целиком в upstream, эксперимент
+% воспроизводится на релизных версиях. См. thesis/plan/20-publications.md.
+
+\documentclass[11pt, a4paper]{article}
+
+\usepackage{fontspec}
+\usepackage{polyglossia}
+\setdefaultlanguage{english}
+\setotherlanguage{russian}
+\setmainfont{Times New Roman}[Ligatures=TeX]
+\newfontfamily\cyrillicfont{Times New Roman}[Ligatures=TeX]
+
+\usepackage{geometry}
+\geometry{a4paper, margin=25mm}
+\usepackage{amsmath, amssymb, graphicx, booktabs, listings}
+\usepackage[hidelinks]{hyperref}
+
+\lstset{basicstyle=\ttfamily\small, breaklines=true, frame=single}
+
+\title{Sorting-based construction of generalized search trees}
+\author{Andrey Borodin \and Sergey Porshnev}
+\date{}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+% 150--200 слов. Каркас:
+% Задача: построение обобщённого дерева поиска последовательной вставкой стоит
+% O(N log_f N) обращений к страницам и не использует того, что весь набор данных
+% известен заранее.
+% Подход: свести построение к сортировке по кривой, сохраняющей локальность, и
+% заполнять страницы снизу вверх; обобщить на произвольный класс операторов через
+% интерфейс поддержки сортировки.
+% Проблема: наивная сортированная сборка увеличивает перекрытие нелистовых
+% ключей, и выигрыш на построении оборачивается проигрышем на поиске.
+% Решение: <алгоритм из f1ea98a7975>.
+% Результат: <числа с прогонов>. Реализация принята в основную ветку PostgreSQL
+% и поставляется с версиями 14 и старше.
+\end{abstract}
+
+\section{Introduction}
+% GiST как абстракция; кто и когда что сделал; почему построение индекса —
+% отдельная задача, а не частный случай вставки.
+
+\section{Related work}
+% Сортированная сборка для R-деревьев (STR, Hilbert packing); почему перенос на
+% обобщённое дерево нетривиален: класс операторов не обязан задавать порядок.
+
+\section{Sorted build for a generalized search tree}
+\subsection{Locality-preserving order and the sortsupport interface}
+\subsection{Bottom-up page packing and right links}
+\subsection{Non-leaf key overlap and its compensation}
+% Ядро новизны.
+
+\section{Implementation}
+% Ссылки на коммиты: 16fa9b2b30a, 265ea567852, 6f0bc5e1daf, f1ea98a7975,
+% e4309f73f69. Отдельно — история отката d92b1cdbab4 и возврата: честный
+% рассказ о том, почему первая версия sortsupport для btree_gist была отозвана.
+
+\section{Evaluation}
+% Наборы данных, конфигурация, версии. Метрики: время построения, размер
+% индекса, время поиска, перекрытие нелистовых ключей.
+
+\section{Limitations}
+% Типы и распределения, на которых сортированная сборка проигрывает.
+
+\section{Conclusion}
+
+\bibliographystyle{plain}
+\bibliography{../../common/refs}
+
+\end{document}

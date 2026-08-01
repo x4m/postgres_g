@@ -1,0 +1,58 @@
+% Общая преамбула. Сборка: XeLaTeX (локально — tectonic).
+% Оформление приближено к ГОСТ Р 7.0.11-2011: Times New Roman 14 пт,
+% полуторный интервал, абзацный отступ 1,25 см, поля 30/15/20/20 мм.
+
+% babel, а не polyglossia: русские подписи polyglossia задаёт через LICR
+% (\CYRP\cyrr...), что под fontspec без T2A разваливается на \begin{document}.
+\usepackage{fontspec}
+\usepackage[english, russian]{babel}
+
+\setmainfont{Times New Roman}[Ligatures=TeX]
+\setmonofont{Menlo}[Scale=0.85]
+
+\usepackage{geometry}
+\geometry{a4paper, left=30mm, right=15mm, top=20mm, bottom=20mm}
+
+\usepackage{setspace}
+\onehalfspacing
+\usepackage{indentfirst}
+\setlength{\parindent}{1.25cm}
+
+\usepackage{amsmath, amssymb}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{longtable}
+\usepackage{caption}
+\captionsetup{labelsep=period, singlelinecheck=false, justification=centering}
+
+\usepackage{listings}
+\lstset{
+  basicstyle=\ttfamily\small,
+  breaklines=true,
+  columns=fullflexible,
+  keepspaces=true,
+  showstringspaces=false,
+  frame=single,
+  framesep=4pt,
+}
+
+\usepackage[hidelinks]{hyperref}
+\usepackage{cleveref}
+
+% Нумерация формул, рисунков и таблиц — сквозная в пределах главы.
+\numberwithin{equation}{chapter}
+\numberwithin{figure}{chapter}
+\numberwithin{table}{chapter}
+
+% Заголовки глав по ГОСТ: прописными, по центру, без «Глава».
+\usepackage{titlesec}
+\titleformat{\chapter}[block]
+  {\normalfont\bfseries\centering}{\thechapter}{1em}{\MakeUppercase}
+\titlespacing*{\chapter}{0pt}{0pt}{24pt}
+
+% Служебные макросы для терминологии, чтобы не расходиться по тексту.
+\newcommand{\gist}{GiST}
+\newcommand{\pg}{PostgreSQL}
+\newcommand{\code}[1]{\texttt{#1}}
+% Ссылка на коммит upstream: \commit{16fa9b2b30a}{Add support for building GiST index by sorting}
+\newcommand{\commit}[2]{\code{#1} <<#2>>}

@@ -1,0 +1,203 @@
+% Общая библиография диссертации и статей.
+% Часть записей перенесена из ref_1701.bib (BDAS 2017).
+
+% ---------------------------------------------------------------- классика
+
+@book{hellerstein1995generalized,
+  title     = {Generalized search trees for database systems},
+  author    = {Hellerstein, Joseph M and Naughton, Jeffrey F and Pfeffer, Avi},
+  year      = {1995},
+  publisher = {University of Wisconsin-Madison}
+}
+
+@inproceedings{kornacker1997concurrency,
+  title        = {Concurrency and recovery in generalized search trees},
+  author       = {Kornacker, Marcel and Mohan, C and Hellerstein, Joseph M},
+  booktitle    = {ACM SIGMOD Record},
+  volume       = {26},
+  pages        = {62--72},
+  year         = {1997},
+  organization = {ACM}
+}
+
+@inproceedings{guttman1984r,
+  title        = {R-trees: a dynamic index structure for spatial searching},
+  author       = {Guttman, Antonin},
+  booktitle    = {ACM SIGMOD Record},
+  volume       = {14},
+  pages        = {47--57},
+  year         = {1984},
+  organization = {ACM}
+}
+
+@inproceedings{beckmann1990rstar,
+  title        = {The R*-tree: an efficient and robust access method for points and rectangles},
+  author       = {Beckmann, Norbert and Kriegel, Hans-Peter and Schneider, Ralf and Seeger, Bernhard},
+  booktitle    = {ACM SIGMOD Record},
+  volume       = {19},
+  pages        = {322--331},
+  year         = {1990},
+  organization = {ACM}
+}
+
+@inproceedings{beckmann2009rrstar,
+  title        = {A revised R*-tree in comparison with related index structures},
+  author       = {Beckmann, Norbert and Seeger, Bernhard},
+  booktitle    = {Proceedings of the 2009 ACM SIGMOD International Conference on Management of Data},
+  pages        = {799--812},
+  year         = {2009},
+  organization = {ACM}
+}
+
+@inproceedings{bayer1971binary,
+  title        = {Binary B-trees for virtual memory},
+  author       = {Bayer, Rudolf},
+  booktitle    = {Proceedings of the 1971 ACM SIGFIDET Workshop on Data Description, Access and Control},
+  pages        = {219--235},
+  year         = {1971},
+  organization = {ACM}
+}
+
+@article{lehman1981btree,
+  title   = {Efficient locking for concurrent operations on B-trees},
+  author  = {Lehman, Philip L and Yao, S Bing},
+  journal = {ACM Transactions on Database Systems},
+  volume  = {6},
+  number  = {4},
+  pages   = {650--670},
+  year    = {1981}
+}
+
+@book{garcia2000database,
+  title     = {Database system implementation},
+  author    = {Garcia-Molina, Hector and Ullman, Jeffrey D and Widom, Jennifer},
+  year      = {2000},
+  publisher = {Prentice Hall}
+}
+
+@inproceedings{chilingarian2004postgresql,
+  title     = {PostgreSQL: the suitable DBMS solution for astronomy and astrophysics},
+  author    = {Chilingarian, Igor and Bartunov, Oleg and Richter, Janko and Sigaev, Teodor},
+  booktitle = {Astronomical Data Analysis Software and Systems (ADASS) XIII},
+  volume    = {314},
+  pages     = {225},
+  year      = {2004}
+}
+
+@inproceedings{ports2012ssi,
+  title     = {Serializable snapshot isolation in PostgreSQL},
+  author    = {Ports, Dan R K and Grittner, Kevin},
+  booktitle = {Proceedings of the VLDB Endowment},
+  volume    = {5},
+  number    = {12},
+  pages     = {1850--1861},
+  year      = {2012}
+}
+
+% ------------------------------------------------------- собственные работы
+
+@inproceedings{borodin2017memory,
+  title        = {Optimization of memory operations in generalized search trees of PostgreSQL},
+  author       = {Borodin, Andrey and Mirvoda, Sergey and Kulikov, Ilia and Porshnev, Sergey},
+  booktitle    = {Beyond Databases, Architectures and Structures (BDAS)},
+  series       = {Communications in Computer and Information Science},
+  pages        = {224--232},
+  year         = {2017},
+  organization = {Springer}
+}
+
+@inproceedings{borodin2017penalty,
+  title        = {Improving penalty function of R-tree over generalized index search tree},
+  author       = {Borodin, Andrey and Mirvoda, Sergey and Porshnev, Sergey},
+  booktitle    = {IEEE 2nd International Conference on Big Data Analysis (ICBDA)},
+  year         = {2017},
+  organization = {IEEE}
+}
+
+@inproceedings{borodin2016debug,
+  title        = {Database index debug techniques: a case study},
+  author       = {Borodin, Andrey and Mirvoda, Sergey and Porshnev, Sergey},
+  booktitle    = {Beyond Databases, Architectures and Structures (BDAS)},
+  pages        = {648--658},
+  year         = {2016},
+  doi          = {10.1007/978-3-319-34099-9_50},
+  organization = {Springer}
+}
+
+@article{borodin2018gin,
+  title   = {Improving generalized inverted index lock wait times},
+  author  = {Borodin, Andrey and Mirvoda, Sergey and Porshnev, Sergey and Bakunov, Ilia},
+  journal = {Journal of Physics: Conference Series},
+  volume  = {1015},
+  year    = {2018}
+}
+
+@article{borodin2016highd,
+  title   = {Analysis of multidimensional data with high dimensionality: data access problems and possible solutions},
+  author  = {Borodin, Andrey and Mirvoda, Sergey and Porshnev, Sergey},
+  journal = {ITM Web of Conferences},
+  volume  = {10},
+  year    = {2016}
+}
+
+@inproceedings{borodin2015dsql,
+  title        = {On design of domain-specific query language for the metallurgical industry},
+  author       = {Borodin, Andrey and Kiselev, Yuri and Mirvoda, Sergey and Porshnev, Sergey},
+  booktitle    = {Beyond Databases, Architectures and Structures (BDAS)},
+  pages        = {505--515},
+  year         = {2015},
+  organization = {Springer}
+}
+
+@book{borodin2012monograph,
+  title     = {Алгоритмы быстрого доступа к многомерным данным в OLAP-системах},
+  author    = {Бородин, А. М.},
+  year      = {2012},
+  pages     = {180},
+  publisher = {LAP Lambert Academic Publishing}
+}
+
+@article{borodin2011estimation,
+  title   = {Аналитические способы оценки эффективности применения пространственных индексов в OLAP-системах},
+  author  = {Бородин, А. М. and Поршнев, С. В.},
+  journal = {Научно-технические ведомости СПбГПУ. Информатика. Телекоммуникации. Управление},
+  number  = {2 (120)},
+  pages   = {93--100},
+  year    = {2011}
+}
+
+@article{borodin2011parallel,
+  title   = {О параллельном построении пространственных индексов основной памяти в OLAP-системах},
+  author  = {Бородин, А. М. and Поршнев, С. В.},
+  journal = {Научно-технические ведомости СПбГПУ. Информатика. Телекоммуникации. Управление},
+  number  = {1 (97)},
+  pages   = {72--74},
+  year    = {2011}
+}
+
+@article{borodin2008tpu,
+  title   = {Использование пространственных индексов для обработки аналитических запросов и агрегирования многомерных данных в ИАС},
+  author  = {Бородин, А. М. and Поршнев, С. В. and Сидоров, М. А.},
+  journal = {Известия Томского политехнического университета},
+  volume  = {313},
+  number  = {5},
+  pages   = {64--67},
+  year    = {2008}
+}
+
+@phdthesis{borodin2011thesis,
+  title  = {Разработка быстрых алгоритмов доступа к многомерным данным в OLAP-системах},
+  author = {Бородин, А. М.},
+  school = {Сибирский государственный университет телекоммуникаций и информатики},
+  year   = {2011},
+  type   = {Дис. канд. техн. наук}
+}
+
+% ------------------------------------------------------------------ прочее
+
+@misc{pgdocs,
+  title        = {PostgreSQL Documentation. Chapter 65: GiST Indexes},
+  author       = {{PostgreSQL Global Development Group}},
+  howpublished = {\url{https://www.postgresql.org/docs/current/gist.html}},
+  year         = {2026}
+}

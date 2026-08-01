@@ -1,0 +1,36 @@
+\documentclass[14pt, a4paper]{extreport}
+
+\input{../common/preamble}
+
+\title{Модели, алгоритмы и программные средства организации обобщённых деревьев
+поиска для доступа к многомерным данным в системах управления базами данных}
+\author{Бородин Андрей Михайлович}
+\date{}
+
+\begin{document}
+
+\input{front/titlepage}
+
+\tableofcontents
+
+\include{chapters/00-intro}
+\include{chapters/01-state-of-the-art}
+\include{chapters/02-models}
+\include{chapters/03-fanout}
+\include{chapters/04-sorted-build}
+\include{chapters/05-maintenance}
+\include{chapters/06-verification}
+\include{chapters/07-evaluation}
+\include{chapters/08-conclusion}
+
+% biblatex/biber tectonic не запускает, поэтому классический BibTeX.
+% ugost2008 — ГОСТ 7.0.5-2008; если пакета gost нет в бандле, поставить unsrt.
+\renewcommand{\bibname}{Список использованных источников}
+\bibliographystyle{ugost2008}
+\bibliography{../common/refs}
+
+\appendix
+\include{appendix/a-commits}
+\include{appendix/b-implementation}
+
+\end{document}

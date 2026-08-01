@@ -1,0 +1,33 @@
+\chapter{Верификация структурных инвариантов индекса}
+\label{ch:verification}
+
+\section{Инварианты обобщённого дерева поиска}
+% Родительский ключ покрывает ключи потомков; правая ссылка ведёт к соседу того
+% же уровня; удалённая страница недостижима. Формализовать список.
+
+\section{Проверка родительских ключей и порядка элементов}
+% \commit{14ffaece0fb}{amcheck: Add gin_index_check() to verify GIN index},
+% \commit{d70b17636dd}{amcheck: Move common routines into a separate module},
+% исправления \code{0cf205e122a}, \code{cdd1a431f21}, \code{0b54b392334}.
+% Для GiST: тред 51827, работа не завершена.
+
+\section{Обход правых ссылок со сцеплением блокировок}
+% \commit{39132b784ae}{Teach amcheck to verify sibling links in all cases}.
+
+\section{Нормализация индексных кортежей}
+% \commit{b1fe8efdf17}, \commit{ab65dfb0fb2} — сравнение кортежей, различающихся
+% только представлением varlena.
+
+\section{Верификация на реплике и в процессе восстановления}
+% \commit{6754fe65a4c}{amcheck: Skip unlogged relations during recovery},
+% \commit{1f28982e409}{amcheck: Fix snapshot usage in bt_index_parent_check}.
+
+\section{Коды ошибок повреждения данных}
+% \commit{8ec97e78a77}{Add error codes when vacuum discovers VM corruption} —
+% отличать повреждение от прочих отказов программно, а не по тексту сообщения.
+
+\section{Отладка индексных структур}
+% Задел: BDAS 2016 «Database Index Debug Techniques». Показать переход от
+% средства отладки к штатной функции СУБД.
+
+\section{Выводы по главе}

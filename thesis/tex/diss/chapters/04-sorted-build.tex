@@ -1,0 +1,35 @@
+\chapter{Построение обобщённого дерева поиска сортировкой}
+\label{ch:sorted-build}
+
+\section{Сведение построения к сортировке}
+% Кривая, сохраняющая локальность (Z-order), задаёт порядок, в котором соседние
+% по ключу элементы оказываются соседними в последовательности. Дерево строится
+% снизу вверх заполнением страниц подряд.
+
+\section{Интерфейс поддержки сортировки для класса операторов}
+% Обобщение на произвольный класс операторов, а не на конкретный тип:
+% \commit{16fa9b2b30a}{Add support for building GiST index by sorting}.
+% Валидация: \commit{6f0bc5e1daf}{Fix missing validation for the new GiST sortsupport functions}.
+
+\section{Правые ссылки при построении снизу вверх}
+% \commit{265ea567852}{Set right-links during sorted GiST index build} — без них
+% нарушается инвариант, на который опирается конкурентный поиск (см. гл.~\ref{ch:verification}).
+
+\section{Перекрытие нелистовых ключей}
+% Главная проблема сортированной сборки: выигрыш на построении оборачивается
+% проигрышем на поиске из-за роста перекрытия внутренних ключей.
+% Решение: \commit{f1ea98a7975}{Reduce non-leaf keys overlap in GiST indexes produced by a sorted build}.
+% Это ядро новизны главы.
+
+\section{Специализация компараторов}
+% \commit{53d3daa491b}{Specialize intarray sorting},
+% \commit{30229be755e}{Simplify SortSupport for the macaddr data type}.
+
+\section{Границы применимости}
+% Типы и распределения, на которых сортированная сборка проигрывает вставке.
+% История отката \code{d92b1cdbab4} и возврата \commit{e4309f73f69}{Add support
+% for sorted gist index builds to btree_gist} — предметный материал для этого раздела.
+
+\section{Экспериментальная оценка}
+
+\section{Выводы по главе}

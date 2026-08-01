@@ -1,0 +1,36 @@
+\chapter{Перечень результатов, принятых в основную ветку PostgreSQL}
+\label{app:commits}
+
+% Таблица: идентификатор коммита, дата, заголовок, релиз, глава диссертации.
+% Источник — thesis/plan/10-contributions.md; таблицу генерировать оттуда,
+% чтобы она не расходилась с планом.
+
+\begin{longtable}{lllp{5cm}c}
+\toprule
+Коммит & Дата & Заголовок & Релиз & Глава \\
+\midrule
+\endhead
+\code{b1328d78f88} & 2016-09-09 & Invent PageIndexTupleOverwrite & 10 & \ref{ch:fanout} \\
+\code{218f51584d5} & 2017-03-23 & Reduce page locking in GIN vacuum & 10 & \ref{ch:maintenance} \\
+\code{d3a4f89d8a3} & 2017-09-19 & Allow no-op GiST support functions to be omitted & 11 & \ref{ch:fanout} \\
+\code{de1d042f597} & 2017-11-20 & Index-only scans in cube and seg & 11 & \ref{ch:sota} \\
+\code{3ad55863e93} & 2018-03-27 & Add predicate locking for GiST & 11 & \ref{ch:maintenance} \\
+\code{0bef1c0678d} & 2018-05-04 & Re-think predicate locking on GIN indexes & 11 & \ref{ch:maintenance} \\
+\code{2a6368343ff} & 2018-09-19 & KNN searches in SP-GiST & 12 & \ref{ch:sota} \\
+\code{fe280694d0d} & 2019-03-05 & Scan GiST indexes in physical order during VACUUM & 12 & \ref{ch:maintenance} \\
+\code{f2e403803fe} & 2019-03-10 & INCLUDE attributes in GiST & 12 & \ref{ch:fanout} \\
+\code{7df159a620b} & 2019-03-22 & Delete empty pages during GiST VACUUM & 12 & \ref{ch:maintenance} \\
+\code{6655a7299d8} & 2019-07-24 & 64-bit XID for deleted GiST pages & 13 & \ref{ch:maintenance} \\
+\code{39132b784ae} & 2019-08-08 & amcheck: verify sibling links in all cases & 13 & \ref{ch:verification} \\
+\code{16fa9b2b30a} & 2020-09-17 & Build GiST index by sorting & 14 & \ref{ch:sorted-build} \\
+\code{265ea567852} & 2020-10-01 & Set right-links during sorted GiST build & 14 & \ref{ch:sorted-build} \\
+\code{09c1c6ab4bc} & 2021-04-05 & INCLUDE'd columns in SP-GiST & 14 & \ref{ch:fanout} \\
+\code{f1ea98a7975} & 2022-02-07 & Reduce non-leaf keys overlap in sorted GiST build & 15 & \ref{ch:sorted-build} \\
+\code{4ed8f0913bf} & 2023-11-29 & Index SLRUs by 64-bit integers & 17 & \ref{ch:maintenance} \\
+\code{14ffaece0fb} & 2025-03-29 & amcheck: gin\_index\_check() & 18 & \ref{ch:verification} \\
+\code{69273b818b1} & 2025-03-21 & Streaming read I/O in GiST vacuuming & 18 & \ref{ch:maintenance} \\
+\code{e4309f73f69} & 2025-04-03 & Sorted gist index builds in btree\_gist & 18 & \ref{ch:sorted-build} \\
+\bottomrule
+\end{longtable}
+
+% TODO: дополнить до полного перечня, добавить столбец «публикация».
