@@ -13,6 +13,8 @@ thesis/
     10-contributions.md   карта вкладов: тред в hackers → коммит → статья → глава
     20-publications.md    публикации: что есть, чего не хватает, план статей
     30-talks.md           доклады на PGCon, PGConf.dev, PGConf.Russia
+    40-sources.md         разнарядка на ~200 источников, треды как первоисточники
+    50-benchmarks.md      стенд, что на нём можно и нельзя мерить, очередь прогонов
   tex/
     common/preamble.tex   общая преамбула (XeLaTeX/tectonic, ГОСТ-подобное оформление)
     common/refs.bib       общая библиография

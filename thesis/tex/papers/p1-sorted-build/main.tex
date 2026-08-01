@@ -457,6 +457,25 @@ Second, the correctness condition of Section~\ref{sec:correctness} calls for a
 verification procedure that checks the consistency of an operator class rather
 than of a particular index.
 
+\section*{Acknowledgements}
+
+The work on non-leaf key overlap (Section~\ref{sec:overlap}) started as a
+distributed hackathon convened by Darafei Praliaskouski, who brought the
+problem~--- a spatial index that was built quickly and queried slowly~--- and
+gathered the participants. Aliaksandr Kalenik and Sergei Shoulbakov took part
+in it; many alternatives were tried before the one described here was chosen,
+and the discarded ones informed the design as much as the accepted one. We
+thank Heikki Linnakangas, Thomas Munro, Pavel Borisov, Andres Freund, Alexander
+Korotkov and Bernd Helmle for review of the implementation, and Bernd Helmle
+for the \code{btree\_gist} work of Section~\ref{sec:correctness}.
+
+% Соавторство: договорено оставить авторами Бородина и Поршнева, а всех, с кем
+% писался код, назвать здесь. Участники хакатона против не возражают; для
+% защиты вклад по этому разделу считается личным (применён патч автора).
+% TODO: получить экспорт чата хакатона у Д. Пролесковского — там перебранные
+% альтернативы, из которых можно сделать содержательный раздел «отвергнутые
+% варианты» вместо нынешнего умолчания о них.
+
 \bibliographystyle{plain}
 \bibliography{../../common/refs}
 
