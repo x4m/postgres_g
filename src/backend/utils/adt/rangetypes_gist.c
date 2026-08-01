@@ -295,8 +295,22 @@ multirange_gist_consistent(PG_FUNCTION_ARGS)
 	if (GIST_LEAF(entry))
 	{
 		if (!OidIsValid(subtype) || subtype == ANYMULTIRANGEOID)
-			result = range_gist_consistent_leaf_multirange(typcache, strategy, key,
-														   DatumGetMultirangeTypeP(query));
+		{
+			/*
+			 * The union range is not necessarily contained by a multirange
+			 * that contains the original multirange, because it also covers
+			 * the gaps in the original multirange.  Use the less restrictive
+			 * internal-page test in that case.
+			 */
+			if (strategy == RANGESTRAT_CONTAINED_BY)
+				result = range_gist_consistent_int_multirange(typcache, strategy,
+														key,
+														DatumGetMultirangeTypeP(query));
+			else
+				result = range_gist_consistent_leaf_multirange(typcache, strategy,
+														 key,
+														 DatumGetMultirangeTypeP(query));
+		}
 		else if (subtype == ANYRANGEOID)
 			result = range_gist_consistent_leaf_range(typcache, strategy, key,
 													  DatumGetRangeTypeP(query));
