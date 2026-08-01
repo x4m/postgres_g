@@ -49,6 +49,59 @@
   organization = {ACM}
 }
 
+@inproceedings{leutenegger1997str,
+  title        = {STR: a simple and efficient algorithm for R-tree packing},
+  author       = {Leutenegger, Scott T and Lopez, Mario A and Edgington, Jeffrey},
+  booktitle    = {Proceedings 13th International Conference on Data Engineering},
+  pages        = {497--506},
+  year         = {1997},
+  organization = {IEEE}
+}
+
+@inproceedings{kamel1993hilbert,
+  title        = {On packing R-trees},
+  author       = {Kamel, Ibrahim and Faloutsos, Christos},
+  booktitle    = {Proceedings of the Second International Conference on Information and Knowledge Management},
+  pages        = {490--499},
+  year         = {1993},
+  organization = {ACM}
+}
+
+@inproceedings{roussopoulos1985direct,
+  title        = {Direct spatial search on pictorial databases using packed R-trees},
+  author       = {Roussopoulos, Nick and Leifker, Daniel},
+  booktitle    = {ACM SIGMOD Record},
+  volume       = {14},
+  pages        = {17--31},
+  year         = {1985},
+  organization = {ACM}
+}
+
+@article{orenstein1984zorder,
+  title   = {A class of data structures for associative searching},
+  author  = {Orenstein, Jack A and Merrett, Tim H},
+  journal = {Proceedings of the 3rd ACM SIGACT-SIGMOD Symposium on Principles of Database Systems},
+  pages   = {181--190},
+  year    = {1984}
+}
+
+@techreport{morton1966,
+  title       = {A computer oriented geodetic data base and a new technique in file sequencing},
+  author      = {Morton, Guy M},
+  institution = {IBM Ltd.},
+  address     = {Ottawa, Canada},
+  year        = {1966}
+}
+
+@article{aggarwal1988io,
+  title   = {The input/output complexity of sorting and related problems},
+  author  = {Aggarwal, Alok and Vitter, Jeffrey S},
+  journal = {Communications of the ACM},
+  volume  = {31},
+  pages   = {1116--1127},
+  year    = {1988}
+}
+
 @inproceedings{bayer1971binary,
   title        = {Binary B-trees for virtual memory},
   author       = {Bayer, Rudolf},
@@ -197,6 +250,123 @@
   author       = {Бородин, А. М. and Поршнев, С. В. and Мирвода, С. Г.},
   howpublished = {Свидетельство о регистрации электронного ресурса ОФЭРНИО № 14197 от 2 ноября 2009 г.; инв. номер ВНИТИЦ 45392457.00084-01 99 01},
   year         = {2009}
+}
+
+% ---------------------------------------- обсуждения в списках рассылки
+% Первоисточник по каждому результату: постановка, альтернативы, возражения
+% рецензентов и измерения. Цитируется по message-id первого письма треда.
+% Устойчивая ссылка: https://postgr.es/m/<message-id>
+
+@misc{thread-memmove,
+  author       = {Borodin, Andrey and others},
+  title        = {GiST optimizing memmoves in gistplacetopage for fixed-size updates},
+  howpublished = {Дискуссия в списке рассылки pgsql-hackers},
+  year         = {2016},
+  url          = {https://postgr.es/m/CAJEAwVGQjGGOj6mMSgMwGvtFd5Kwe6VFAxY=uEPZWMDjzbn4VQ@mail.gmail.com}
+}
+
+@misc{thread-penalty,
+  author       = {Borodin, Andrey and others},
+  title        = {GiST penalty functions [PoC]},
+  howpublished = {Дискуссия в списке рассылки pgsql-hackers},
+  year         = {2016},
+  url          = {https://postgr.es/m/CAJEAwVFMo-FXaJ6Lkj8Wtb1br0MtBY48EGMVEJBOodROEGykKg@mail.gmail.com}
+}
+
+@misc{thread-gin-vacuum,
+  author       = {Borodin, Andrey and others},
+  title        = {GIN non-intrusive vacuum of posting tree},
+  howpublished = {Дискуссия в списке рассылки pgsql-hackers},
+  year         = {2016},
+  url          = {https://postgr.es/m/CAJEAwVEA4iLqBfdi3Qm=UwGcFX=h5x0FSbifo2+EE4G3D9e3wQ@mail.gmail.com}
+}
+
+@misc{thread-nocompress,
+  author       = {Borodin, Andrey and others},
+  title        = {Allow GiST opclasses without compress/decompress functions},
+  howpublished = {Дискуссия в списке рассылки pgsql-hackers},
+  year         = {2017},
+  url          = {https://postgr.es/m/CAJEAwVELVx9gYscpE=Be6iJxvdW5unZ_LkcAaVNSeOwvdwtD=A@mail.gmail.com}
+}
+
+@misc{thread-intrapage,
+  author       = {Borodin, Andrey and others},
+  title        = {[WiP] GiST intrapage indexing},
+  howpublished = {Дискуссия в списке рассылки pgsql-hackers},
+  year         = {2018},
+  url          = {https://postgr.es/m/7780A07B-4D04-41E2-B228-166B41D07EEE@yandex-team.ru}
+}
+
+@misc{thread-gist-vacuum,
+  author       = {Borodin, Andrey and others},
+  title        = {GiST VACUUM},
+  howpublished = {Дискуссия в списке рассылки pgsql-hackers},
+  year         = {2018},
+  url          = {https://postgr.es/m/1B9FAC6F-FA19-4A24-8C1B-F4F574844892@yandex-team.ru}
+}
+
+@misc{thread-covering,
+  author       = {Borodin, Andrey and others},
+  title        = {Covering GiST indexes},
+  howpublished = {Дискуссия в списке рассылки pgsql-hackers},
+  year         = {2018},
+  url          = {https://postgr.es/m/73A1A452-AD5F-40D4-BD61-978622FF75C1@yandex-team.ru}
+}
+
+@misc{thread-fast-build,
+  author       = {Borodin, Andrey and others},
+  title        = {Yet another fast GiST build},
+  howpublished = {Дискуссия в списке рассылки pgsql-hackers},
+  year         = {2019},
+  url          = {https://postgr.es/m/1A36620E-CAD8-4267-9067-FB31385E7C0D@yandex-team.ru}
+}
+
+@misc{thread-lock-coupling,
+  author       = {Borodin, Andrey and others},
+  title        = {Amcheck: do rightlink verification with lock coupling},
+  howpublished = {Дискуссия в списке рассылки pgsql-hackers},
+  year         = {2019},
+  url          = {https://postgr.es/m/0EB0CFA8-CBD8-4296-8049-A2C0F28FAE8C@yandex-team.ru}
+}
+
+@misc{thread-amcheck,
+  author       = {Borodin, Andrey and others},
+  title        = {Amcheck verification of GiST and GIN},
+  howpublished = {Дискуссия в списке рассылки pgsql-hackers},
+  year         = {2022},
+  url          = {https://postgr.es/m/45AC9B0A-2B45-40EE-B08F-BDCF5739D1E1@yandex-team.ru}
+}
+
+@misc{thread-readstream,
+  author       = {Borodin, Andrey and others},
+  title        = {Using read\_stream in index vacuum},
+  howpublished = {Дискуссия в списке рассылки pgsql-hackers},
+  year         = {2024},
+  url          = {https://postgr.es/m/DBD427E0-7E57-41D3-AEE1-7DFFA3CAB4EE@yandex-team.ru}
+}
+
+@misc{thread-btree-gist-sort,
+  author       = {Helmle, Bernd and Borodin, Andrey and others},
+  title        = {Sorted gist index builds for btree\_gist},
+  howpublished = {Дискуссия в списке рассылки pgsql-hackers},
+  year         = {2024},
+  url          = {https://postgr.es/m/64d324ce2a6d535d3f0f3baeeea7b25beff82ce4.camel@oopsware.de}
+}
+
+@misc{bug-gin-lwlock-2018,
+  author       = {Chen, Huajun and others},
+  title        = {Connections hang indefinitely while taking a gin index's LWLock buffer\_content lock},
+  howpublished = {Сообщение об ошибке, список рассылки pgsql-bugs},
+  year         = {2018},
+  url          = {https://postgr.es/m/31a702a.14dd.166c1366ac1.Coremail.chjischj@163.com}
+}
+
+@misc{bug-gin-lwlock-2019,
+  author       = {Chen, Huajun and others},
+  title        = {Connections hang indefinitely while taking a gin index's LWLock buffer\_content lock (PG 10.7)},
+  howpublished = {Сообщение об ошибке, список рассылки pgsql-bugs},
+  year         = {2019},
+  url          = {https://postgr.es/m/5c332bd1.87b6.16d7c17aa98.Coremail.chjischj@163.com}
 }
 
 % ------------------------------------------------------------------ прочее

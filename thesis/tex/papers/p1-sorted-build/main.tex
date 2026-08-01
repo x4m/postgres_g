@@ -1,15 +1,15 @@
 % P1 — Sorting-based construction of generalized search trees.
-% Самый готовый результат: материал целиком в upstream, эксперимент
-% воспроизводится на релизных версиях. См. thesis/plan/20-publications.md.
+% Закрывает положение П3. Материал целиком в upstream PostgreSQL (выпуски 14,
+% 15, 18), эксперимент воспроизводится на релизных версиях.
+% Статус разделов: 1--8 — черновик, 9 — ждёт измерений.
 
 \documentclass[11pt, a4paper]{article}
 
 \usepackage{fontspec}
-\usepackage{polyglossia}
-\setdefaultlanguage{english}
-\setotherlanguage{russian}
+\usepackage[english, russian]{babel}
+\selectlanguage{english}
 \setmainfont{Times New Roman}[Ligatures=TeX]
-\newfontfamily\cyrillicfont{Times New Roman}[Ligatures=TeX]
+\setmonofont{Menlo}[Scale=0.85]
 
 \usepackage{geometry}
 \geometry{a4paper, margin=25mm}
@@ -17,6 +17,8 @@
 \usepackage[hidelinks]{hyperref}
 
 \lstset{basicstyle=\ttfamily\small, breaklines=true, frame=single}
+\newcommand{\code}[1]{\texttt{#1}}
+\emergencystretch=1em  % длинные URL в списке литературы и \code{} в тексте
 
 \title{Sorting-based construction of generalized search trees}
 \author{Andrey Borodin \and Sergey Porshnev}
@@ -26,47 +28,434 @@
 \maketitle
 
 \begin{abstract}
-% 150--200 слов. Каркас:
-% Задача: построение обобщённого дерева поиска последовательной вставкой стоит
-% O(N log_f N) обращений к страницам и не использует того, что весь набор данных
-% известен заранее.
-% Подход: свести построение к сортировке по кривой, сохраняющей локальность, и
-% заполнять страницы снизу вверх; обобщить на произвольный класс операторов через
-% интерфейс поддержки сортировки.
-% Проблема: наивная сортированная сборка увеличивает перекрытие нелистовых
-% ключей, и выигрыш на построении оборачивается проигрышем на поиске.
-% Решение: <алгоритм из f1ea98a7975>.
-% Результат: <числа с прогонов>. Реализация принята в основную ветку PostgreSQL
-% и поставляется с версиями 14 и старше.
+A generalized search tree (GiST) abstracts the common part of balanced tree
+access methods and leaves the data-specific part to an operator class. This
+abstraction has a cost: because an operator class defines no order on keys, a
+generalized search tree could only be built by inserting entries one by one,
+which costs $O(N \log_f N)$ random page accesses and yields loosely packed
+pages. We show that index construction can be reduced to sorting for an
+arbitrary operator class, provided that the order is declared by the operator
+class itself rather than assumed by the tree. We further show that a
+straightforward sorted build trades construction time for query time: choosing
+page boundaries by page occupancy alone increases the overlap of non-leaf keys,
+and since overlap accumulates multiplicatively over tree levels, the resulting
+index answers queries slower than one built by insertion. We give an algorithm
+that removes this effect by selecting split points with the operator class's
+own split function over a four-page buffer. Both results are implemented in
+PostgreSQL and shipped in releases~14, 15 and~18; the sorted build is now the
+default strategy for the \code{btree\_gist} operator classes. We report
+construction time, index size, non-leaf key overlap and query time, and we
+state the conditions under which the method is not applicable.
 \end{abstract}
 
+\textbf{Keywords:} generalized search tree, GiST, index construction, bulk
+loading, space-filling curve, R-tree, PostgreSQL.
+
 \section{Introduction}
-% GiST как абстракция; кто и когда что сделал; почему построение индекса —
-% отдельная задача, а не частный случай вставки.
+
+Access methods are the part of a database system that decides how quickly data
+can be retrieved by a condition. For one-dimensional keys the B-tree
+\cite{bayer1971binary,lehman1981btree} is the universal answer. For
+multidimensional data no single structure dominates, and database systems
+instead provide a framework: the generalized search tree
+\cite{hellerstein1995generalized} implements the page layout, the descent, the
+split, the concurrency protocol \cite{kornacker1997concurrency} and the
+write-ahead logging, while the data-specific decisions are delegated to an
+\emph{operator class}. Substituting bounding rectangles into the operator class
+yields an R-tree \cite{guttman1984r}; substituting signatures yields a
+full-text index; substituting ranges yields a range index. The framework is
+what makes a database system extensible by users rather than only by its
+authors \cite{chilingarian2004postgresql,rogov2026}.
+
+The abstraction, however, deprives the tree of knowledge that is available for
+a B-tree. In particular, the operator class interface contains no ordering
+operation, and none of its operations induces one. Consequently a generalized
+search tree has traditionally been built the only way that requires no order:
+by inserting entries one at a time. This is expensive. Every insertion descends
+from the root to a leaf, so construction costs $O(N \log_f N)$ page accesses;
+the accesses are random, because the insertion order bears no relation to the
+physical placement of pages; and the pages end up filled to roughly 70\,\%,
+because they are produced by splits rather than by packing.
+
+The observation this paper builds on is that a \emph{total} order is not needed
+for construction. What is needed is an order that preserves locality: if
+objects that are close in the indexed space are close in the sequence, then
+filling pages consecutively produces compact keys. Which order has this
+property is known to the operator class, not to the tree. It is therefore
+sufficient to extend the operator class interface with an optional comparator
+and let the tree sort by it.
+
+Reducing construction to sorting is, by itself, a straightforward idea, and
+analogous techniques are known for R-trees
+\cite{roussopoulos1985direct,kamel1993hilbert,leutenegger1997str}. The
+substantive contribution of this paper is what happens next. A sorted build
+that chooses page boundaries by occupancy alone systematically increases the
+overlap of non-leaf keys. Since the cost of a search in a generalized search
+tree is governed by overlap, and overlap accumulates multiplicatively over
+levels, the index is built several times faster and then answers queries
+slower. This effect is the reason the technique is not simply transplanted from
+R-trees, and removing it is what makes sorted construction usable in a
+production database system.
+
+The contributions are:
+
+\begin{enumerate}
+\item a reduction of generalized search tree construction to sorting, in which
+      the locality-preserving order is declared by the operator class through
+      an optional support function, making the technique applicable to any
+      operator class rather than to one data type (Section~\ref{sec:build});
+\item an analysis of the non-leaf key overlap introduced by sorted
+      construction, and an algorithm that removes it by selecting split points
+      with the operator class's own split function over a buffer of several
+      pages (Section~\ref{sec:overlap});
+\item a discussion of the correctness condition of the method~--- consistency
+      of the comparator with the remaining operator class functions~--- based
+      on a case in which its violation went unnoticed through review and was
+      caught only by a build farm (Section~\ref{sec:correctness});
+\item an implementation in PostgreSQL, shipped in releases 14, 15 and 18, and
+      an experimental evaluation of construction time, index size, overlap and
+      query time (Sections~\ref{sec:impl} and~\ref{sec:eval}).
+\end{enumerate}
+
+\section{Background}
+\label{sec:background}
+
+A generalized search tree is a balanced tree whose node is a page. Each entry
+of an internal node is a pair (key, downlink); the key covers the keys of all
+entries in the referenced subtree. A search descends into every subtree whose
+key may contain an answer, so unlike in a B-tree several descent paths may be
+active at once.
+
+An operator class supplies the data-specific operations. In PostgreSQL these
+are \code{consistent} (may this subtree contain an answer?), \code{union} (a
+key covering a set of keys), \code{penalty} (the cost of extending a key by an
+entry), \code{picksplit} (partition an overflowing node into two), \code{same},
+the optional \code{compress}/\code{decompress}/\code{fetch}, and the optional
+\code{distance} for nearest-neighbour search. The first four determine the
+shape of the tree completely.
+
+Two properties of this interface matter here. First, it contains no ordering
+operation. Second, \code{picksplit} encodes the operator class's own notion of
+a good partition~--- the criterion its author considered right for the data
+type. We will use exactly this criterion in Section~\ref{sec:overlap} instead of
+inventing a new one.
+
+Concurrency follows Kornacker \cite{kornacker1997concurrency}: pages of a level
+are chained by right links, and a split is arranged so that a search arriving at
+a page that has been split can still reach the data by following the right
+link, without holding a lock on the parent.
 
 \section{Related work}
-% Сортированная сборка для R-деревьев (STR, Hilbert packing); почему перенос на
-% обобщённое дерево нетривиален: класс операторов не обязан задавать порядок.
 
-\section{Sorted build for a generalized search tree}
-\subsection{Locality-preserving order and the sortsupport interface}
-\subsection{Bottom-up page packing and right links}
-\subsection{Non-leaf key overlap and its compensation}
-% Ядро новизны.
+\emph{Packing R-trees.} Roussopoulos and Leifker \cite{roussopoulos1985direct}
+build a packed R-tree by sorting rectangles by a coordinate and filling nodes
+consecutively. Kamel and Faloutsos \cite{kamel1993hilbert} sort by the Hilbert
+value of the centre, obtaining better locality. Leutenegger et al.
+\cite{leutenegger1997str} propose sort-tile-recursive packing, which partitions
+the space by slabs. All three are formulated for rectangles and rely on
+properties of the geometric key; none applies to an operator class whose keys
+are, say, signatures or ranges.
+
+\emph{Split quality.} The R*-tree \cite{beckmann1990rstar} improves the shape of
+the tree by taking perimeter into account and by forced reinsertion; the
+RR*-tree \cite{beckmann2009rrstar} refines subtree choice on insertion. These
+works optimise the tree built by insertion, and their criteria are what our
+Section~\ref{sec:overlap} reuses rather than replaces. An attempt to improve the
+penalty function of a generalized search tree along these lines was made by the
+authors earlier \cite{borodin2017penalty}; it is not applicable in a production
+system because changing the penalty function changes the shape of indexes built
+by earlier versions, and a database system must keep existing indexes usable
+after an upgrade. Sorted construction is free of this constraint, because it
+affects only newly built indexes.
+
+\emph{Page-level optimisation.} A different way to speed up insertion-based
+construction is to make the individual page update cheaper
+\cite{borodin2017memory}. That approach and this one are complementary: the
+former improves the build that must proceed by insertion, the latter avoids
+insertion altogether.
+
+\emph{External-memory sorting.} The cost of the sorting step is that of
+external merge sort in the standard I/O model \cite{aggarwal1988io}.
+
+\section{Cost of index construction}
+\label{sec:cost}
+
+Let $N$ be the number of entries, $B$ the page size, $M$ the memory available
+for sorting, $f$ the node fan-out, $\varphi$ the page fill factor, and $c_r$ and
+$c_s$ the cost of a random and of a sequential page access respectively,
+$c_r \gg c_s$.
+
+Construction by insertion descends to a leaf for every entry and occasionally
+splits nodes:
+
+\begin{equation}
+\label{eq:ins}
+P_{\text{ins}} = N\left(\left\lceil\log_f \frac{N}{f}\right\rceil + 1 + \gamma\right) c_r ,
+\end{equation}
+
+where $\gamma$ is the average number of extra accesses caused by splits and by
+updates of parent keys. The accesses are random: the upper levels stay in the
+buffer cache, the leaf level does not.
+
+Construction by sorting costs an external sort followed by a single sequential
+write of the packed levels:
+
+\begin{equation}
+\label{eq:sort}
+P_{\text{sort}} = \frac{2N}{B}\log_{M/B}\frac{N}{B}\, c_s
+  + \frac{N}{f\varphi}\left(1 + \frac{1}{f} + \frac{1}{f^2} + \dots\right) c_s .
+\end{equation}
+
+Three sources of gain are visible in the comparison of \eqref{eq:ins} and
+\eqref{eq:sort}: random accesses are replaced by sequential ones, splits
+disappear, and $\varphi$ rises from the $\approx 0.7$ characteristic of
+split-produced pages to the configured fill factor. The third also reduces the
+index size, and hence the cost of every subsequent full scan of the index.
+
+The comparison is incomplete, however, because it accounts only for
+construction. The cost of a point query in a generalized search tree is
+
+\begin{equation}
+\label{eq:point}
+P_{\text{point}} = \sum_{l=0}^{H-1} \omega_l \, c_r ,
+\qquad
+\omega_l = \mathbb{E}\bigl|\{u \in U_l : \code{consistent}(key(u), Q)\}\bigr| ,
+\end{equation}
+
+where $\omega_l$ is the expected number of nodes of level $l$ whose keys match
+the query. For a tree without overlap $\omega_l = 1$ for all $l$. Since a node
+is visited only if its parent was, $\omega_l$ accumulates the overlap of all
+levels above: an increase of overlap at an upper level multiplies the cost at
+all levels below it. Section~\ref{sec:overlap} shows that this is precisely what
+a naive sorted build causes.
+
+\section{Sorted construction}
+\label{sec:build}
+
+\subsection{The sort support interface}
+
+We extend the operator class with an optional support function that returns a
+comparator over keys. If the function is present, the index is built as follows:
+
+\begin{enumerate}
+\item all values are converted to keys and sorted by the comparator using
+      external merge sort;
+\item leaf pages are filled consecutively up to the fill factor;
+\item for every completed page, an entry for the level above is formed with
+      \code{union} of its contents;
+\item the procedure repeats level by level until a single page~--- the root~---
+      remains.
+\end{enumerate}
+
+The order must be declared in the operator class and not in the parameters of
+the index. In our first version the comparator was passed as a relation option,
+which allowed any function with a matching signature to be supplied~--- that is,
+allowed a silently incorrect index to be built \cite{thread-fast-build}. Moving
+the declaration into the operator class makes the order part of the definition
+of the index type and allows it to be validated at index creation time.
+
+\subsection{A locality-preserving order}
+
+For a point type we use the Z-order, or Morton code \cite{morton1966,
+orenstein1984zorder}: coordinates are reinterpreted as unsigned integers and
+their bits are interleaved,
+
+\begin{equation}
+\label{eq:z}
+Z(x_1,\dots,x_D) = \sum_{j=0}^{w-1} \sum_{i=1}^{D} b_{i,j}\, 2^{\,jD+i-1},
+\end{equation}
+
+where $b_{i,j}$ is the $j$-th bit of the $i$-th coordinate. Points close in
+space receive close $Z$ values. The converse does not hold~--- there are pairs
+close in $Z$ and distant in space~--- but for construction this affects the
+quality of the tree, not its correctness.
+
+Two implementation details are worth recording. The bit pattern of an IEEE 754
+value read as an integer is order-preserving for non-negative values and
+reversed for negative ones; for the purpose of preserving locality this is
+sufficient, since the discontinuity occurs only at zero. Not-a-number values,
+in contrast, are unordered, and an arbitrary placement of them in the order is
+not neutral: it must agree with the behaviour of \code{union} and
+\code{consistent} for such values, which requires an explicit convention.
+
+\subsection{Bottom-up packing and right links}
+
+Constructing bottom-up, we know the contents of a page before writing it, so
+\code{union} is applied once per page rather than incrementally.
+
+There is no concurrency during construction: no search and no split can occur.
+Formally, therefore, the right links of Kornacker's protocol need not be set.
+We set them nevertheless. The completeness of the right-link chain at every
+level is a structural invariant that index verification tools check; if a sorted
+build left it unsatisfied, a verification tool would have to distinguish indexes
+by the way they were built. We state this as a design rule: an optimisation must
+not reduce the set of checkable properties of a structure.
+
+\section{Non-leaf key overlap}
+\label{sec:overlap}
+
+\subsection{The problem}
+
+The naive procedure of Section~\ref{sec:build} fills a page to the fill factor
+and starts a new one, that is, it chooses split points by a single criterion~---
+page occupancy. In one dimension this is optimal. In more than one it is not:
+the Z-order preserves locality only approximately, and a page boundary may fall
+inside a dense cluster in such a way that the keys of two neighbouring pages
+overlap substantially.
+
+By \eqref{eq:point} the effect is not local. Overlap introduced at a level
+multiplies the number of visited nodes at every level below, so the index is
+built several times faster, occupies less space, and answers queries more
+slowly than one built by insertion. Reporting only construction time~--- as
+comparisons of build methods commonly do~--- therefore hides the trade-off
+entirely.
+
+\subsection{Split selection by the operator class}
+
+Rather than inventing a new criterion for choosing split points, we use the one
+the operator class already provides. The construction of a level proceeds as
+follows:
+
+\begin{enumerate}
+\item accumulate entries of the level in a buffer of four pages;
+\item apply \code{picksplit} to the buffer, recursively, until every part fits
+      on a page;
+\item write the parts as pages of the level.
+\end{enumerate}
+
+The buffer size is a compromise. It must be large enough that the partition
+algorithm can choose a cut that does not coincide with a page boundary, and
+small enough that partitioning stays cheap. Four pages was chosen empirically;
+the choice is not critical, but it has a consequence that must be stated: a
+split algorithm of super-linear complexity degrades when handed four times as
+much data at once. For operator classes with such an algorithm we do not enable
+sorted construction; improving their \code{picksplit} is a prerequisite.
+
+Note that this uses \code{picksplit} in a mode it was not designed for~---
+partitioning a set larger than a page rather than an overflowing node~--- which
+is why the recursion in step~2 is necessary.
+
+\section{Correctness}
+\label{sec:correctness}
+
+The method is correct if and only if the comparator is consistent with the
+remaining functions of the operator class. Inconsistency does not produce an
+index that fails visibly: it produces an index that looks well-formed and loses
+part of the answers.
+
+This is not a theoretical concern. Our first attempt to extend sorted
+construction to the operator classes of the \code{btree\_gist} extension, which
+indexes scalar types with a generalized search tree, was reverted on the day it
+was committed. Two defects were involved: one in the regression test
+environment, and one substantive~--- the comparator for the bit-string type used
+a comparison function that does not agree with the semantics of the type. The
+work was resumed four years later, with an implementation written from scratch
+\cite{thread-btree-gist-sort}, and sorted construction is now the default
+strategy for these operator classes.
+
+The lesson generalises. Consistency of a comparator with \code{union} and
+\code{consistent} is a property of the operator class that cannot be
+established by testing the build: a wrong comparator yields a plausible index.
+It has to be checked as a structural invariant of the produced tree~--- namely,
+that every parent key covers the keys of its children. Verification of index
+invariants is therefore not an optional companion to this work but a
+precondition for trusting it.
 
 \section{Implementation}
-% Ссылки на коммиты: 16fa9b2b30a, 265ea567852, 6f0bc5e1daf, f1ea98a7975,
-% e4309f73f69. Отдельно — история отката d92b1cdbab4 и возврата: честный
-% рассказ о том, почему первая версия sortsupport для btree_gist была отозвана.
+\label{sec:impl}
+
+The method is implemented in PostgreSQL:
+
+\begin{itemize}
+\item sorted construction and the sort support interface of the operator class,
+      release~14 (commit \code{16fa9b2b30a}), with validation of the support
+      function (\code{6f0bc5e1daf}) and right links set during construction
+      (\code{265ea567852});
+\item split selection by \code{picksplit} over a four-page buffer, release~15
+      (commit \code{f1ea98a7975});
+\item sorted construction for the \code{btree\_gist} operator classes, made the
+      default, release~18 (commit \code{e4309f73f69}).
+\end{itemize}
+
+The discussion that led to the design, including the alternatives that were
+rejected, is archived \cite{thread-fast-build,thread-btree-gist-sort}. Being
+part of the standard distribution, the implementation is available to every
+user of the system without additional steps, and the experiments below are
+reproducible on public releases.
 
 \section{Evaluation}
-% Наборы данных, конфигурация, версии. Метрики: время построения, размер
-% индекса, время поиска, перекрытие нелистовых ключей.
+\label{sec:eval}
+
+\subsection{Methodology}
+
+Builds differ only by the change under study; the baseline is the immediately
+preceding commit. Each configuration is run at least five times; we report the
+median and the spread. Together with construction time we always report index
+size, query time and measured non-leaf overlap, since by \eqref{eq:point} the
+first metric can be improved at the expense of the third.
+
+% TODO: зафиксировать стенд (CPU, RAM, накопитель, ФС), версию и параметры
+% конфигурации; оформить прогоны скриптами и приложить их.
+
+\subsection{Datasets}
+
+Uniform and clustered points; geometric objects (boxes, polygons); date ranges;
+multidimensional cubes with $D$ from 2 to 32; integer arrays; scalar types via
+\code{btree\_gist}. Sizes range from fitting in the buffer cache to exceeding it
+by an order of magnitude.
+
+\subsection{Construction time and index size}
+
+% TODO: таблица: время построения и объём индекса для (а) вставки,
+% (б) наивной сортированной сборки, (в) сортированной сборки с picksplit.
+% Историческая точка отсчёта, послужившая мотивацией работы: 3 млн случайных
+% точек, 32,1 с вставкой против 6,1 с сортировкой (выпуск 13). Переснять.
+
+\subsection{Overlap and query time}
+
+% TODO: измеренное \omega_l по уровням для трёх вариантов построения; время
+% точечного и диапазонного запроса; проверка предсказания \eqref{eq:point}.
+% Это ключевая таблица статьи: она показывает, что (б) быстрее строится и
+% медленнее отвечает, а (в) сохраняет выигрыш без потери качества.
+
+\subsection{Dependence on dimensionality}
+
+% TODO: те же метрики при D = 2, 4, 8, 16, 32.
 
 \section{Limitations}
-% Типы и распределения, на которых сортированная сборка проигрывает.
+
+\begin{enumerate}
+\item The method requires a locality-preserving order. For operator classes
+      whose keys admit none, it is inapplicable, and no diagnostic short of
+      measuring query quality will say so.
+\item It requires a split algorithm that does not degrade on four pages of
+      input (Section~\ref{sec:overlap}).
+\item Correctness rests on the consistency of the comparator with the rest of
+      the operator class, which is the responsibility of the operator class
+      author and is not enforced by the framework
+      (Section~\ref{sec:correctness}).
+\item The gain in construction time does not transfer to incremental
+      maintenance: entries inserted after the build still go through the
+      insertion path.
+\end{enumerate}
 
 \section{Conclusion}
+
+Construction of a generalized search tree can be reduced to sorting for an
+arbitrary operator class, provided that the locality-preserving order is
+declared by the operator class rather than assumed by the tree. The reduction
+alone, however, is not a usable result: choosing page boundaries by occupancy
+increases non-leaf key overlap, and because overlap accumulates
+multiplicatively over levels, the faster-built index answers queries more
+slowly. Selecting split points with the operator class's own split function
+over a multi-page buffer removes this effect and preserves the gain. Both parts
+are implemented in PostgreSQL and shipped to its users.
+
+Two directions remain open. The sorting step parallelises naturally, and
+parallel construction of a generalized search tree has not been studied.
+Second, the correctness condition of Section~\ref{sec:correctness} calls for a
+verification procedure that checks the consistency of an operator class rather
+than of a particular index.
 
 \bibliographystyle{plain}
 \bibliography{../../common/refs}
