@@ -11,13 +11,13 @@ all: diss papers
 
 diss:
 	mkdir -p $(BUILD)/diss
-	$(TECTONIC) -X compile tex/diss/main.tex --outdir $(BUILD)/diss --keep-intermediates --synctex
+	$(TECTONIC) -X compile tex/diss/main.tex --outdir $(BUILD)/diss --keep-intermediates --keep-logs --synctex
 
 papers: $(PAPERS)
 
 $(PAPERS):
 	mkdir -p $(BUILD)/$(notdir $(patsubst %/,%,$(dir $@)))
-	$(TECTONIC) -X compile $@ --outdir $(BUILD)/$(notdir $(patsubst %/,%,$(dir $@))) --keep-intermediates --synctex
+	$(TECTONIC) -X compile $@ --outdir $(BUILD)/$(notdir $(patsubst %/,%,$(dir $@))) --keep-intermediates --keep-logs --synctex
 
 clean:
 	rm -rf $(BUILD)

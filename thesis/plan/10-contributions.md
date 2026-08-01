@@ -63,14 +63,31 @@ SELECT t.id, t.created_at::date, t.message_count, t.title
 | — | `9eb5607e699` Refactor checks for deleted GiST pages (2019-07) | в upstream |
 | — | `6655a7299d8` Use full 64-bit XID for deleted GiST page age (2019-07) | в upstream, PG 13 |
 | 38996 (2018-07) Legacy GiST invalid tuples | — | смежное |
-| 35648 (2016-11) GIN non-intrusive vacuum of posting tree | `218f51584d5` Reduce page locking in GIN vacuum (2017-03) + правки `fd83c83d094`, `c6ade7a8cd3`, `52ac6cd2d0c` (2018-12) | в upstream, PG 10 |
+| 35648 (2016-11) GIN non-intrusive vacuum of posting tree | `218f51584d5` Reduce page locking in GIN vacuum (2017-03) | **частично отменено** — см. ниже |
 | 253137 (2026-07) Delete GIN posting tree pages without excessive locking | — | открыт |
 | 50415 (2024-10, 36 писем) Using read_stream in index vacuum | `c5c239e26e3` btree, `69273b818b1` GiST, `e215166c9c8` SP-GiST (2025-03) | в upstream, PG 19 |
 | 52165 (2025-08) [WiP] B-tree page merge during vacuum | — | открыт |
 
-Статья JPCS 2018 «Improving generalized inverted index lock wait times» покрывает
-только GIN-часть. GiST VACUUM (82 письма, четыре коммита, переход на 64-битные
-XID) не опубликован — это P2.
+**Откат `218f51584d5`.** Коммит состоял из двух частей: (1) захватывать
+блокировку очистки только когда есть что удалять, (2) блокировать поддерево, а
+не всё дерево вхождений. Часть 2 отменена коммитом `fd83c83d094` «Fix deadlock
+in GIN vacuum introduced by 218f51584d5» (2018-12-13, бэкпорт во все
+поддерживаемые выпуски): при конкурентном расщеплении родителя вставка не
+удерживает закрепления всех страниц пути от корня к листу, откуда цикл ожидания
+со сборкой мусора; неинвазивного решения не нашли. Часть 1 сохранена и даёт
+основной практический эффект. Сопутствующие: `52ac6cd2d0c` (страницы могли
+переиспользоваться до обращения к ним сканированием, которое спускается не от
+корня; момент удаления записывается в `pd_prune_xid` из-за двоичной
+совместимости, бэкпорт до 9.4), `c6ade7a8cd3`, `e14641197a5`.
+
+Значение для диссертации: статья JPCS 2018 «Improving generalized inverted index
+lock wait times» описывала в том числе отменённую часть. Статья прошла
+рецензирование, код не прошёл эксплуатацию. Разбирать этот случай явно — §5.4
+диссертации и «Методология» введения; ссылаться на JPCS 2018 как на публикацию,
+раскрывающую положение П4, нельзя.
+
+GiST VACUUM (82 письма, четыре коммита, переход на 64-битные XID) не
+опубликован вовсе — это P2.
 
 ## 5. Предикатные блокировки и изоляция → глава 5, статья P5
 
