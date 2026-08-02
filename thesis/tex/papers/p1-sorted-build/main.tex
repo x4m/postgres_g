@@ -55,11 +55,14 @@ converges to a \emph{steady-state} overlap $\omega_\infty$~--- the expected
 number of nodes per level whose key matches a point query~--- reached one or
 two levels below the root and stable thereafter. Occupancy-based packing yields
 $\omega_\infty \approx 4$, so a query descends into four subtrees at each level
-instead of one; delegating the choice of split points back to the operator
-class yields $\omega_\infty \approx 1.3$. The penalty is therefore a constant
-factor at every step of the descent, and the index is built several times
-faster and then answers queries twice as expensively. We give the algorithm
-that removes the effect and characterise its cost.
+instead of one; insertion-based construction, the baseline it replaces, yields
+$\omega_\infty \approx 1.05$~--- essentially a single path. The penalty is
+therefore a constant factor at every step of the descent: the index is built
+6.8--8.0$\times$ faster and answers point queries 2.4--2.5$\times$ more
+expensively. We give an algorithm that delegates the choice of split points
+back to the operator class over a multi-page buffer; it removes 87--89\,\% of
+the penalty, bringing query cost within 18\,\% of insertion-based construction
+while retaining a 3.0--3.5$\times$ speedup of the build.
 
 The design is implemented in PostgreSQL, has shipped since release~14, and has
 been the default strategy for a family of operator classes since release~18. We
@@ -152,9 +155,11 @@ papers customarily report~--- hides this entirely.
       steady-state value $\omega_\infty$ within one or two levels of the root.
       We measure $\omega_\infty$ for both strategies, across data volume and
       degree of clustering (Section~\ref{sec:overlap}).
-\item We give an algorithm that removes the effect by delegating split point
-      selection back to the operator class over a buffer of $k$ pages, and
-      analyse the dependence on $k$ (Section~\ref{sec:overlap}).
+\item We give an algorithm that delegates split point selection back to the
+      operator class over a buffer of $k$ pages, removing 87--89\,\% of the
+      penalty, and analyse the dependence on $k$ (Section~\ref{sec:overlap}).
+      The residual is the price of choosing split points within a buffer rather
+      than globally, and we quantify it against the insertion-built baseline.
 \item We report five years of deployment: the design ships in PostgreSQL since
       release~14 and is the default for a family of operator classes since
       release~18. We include the one case in which the correctness condition of
