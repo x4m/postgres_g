@@ -5,9 +5,17 @@ TECTONIC ?= tectonic
 BUILD    ?= build
 PAPERS   := $(wildcard tex/papers/*/main*.tex)
 
-.PHONY: all diss papers clean $(PAPERS)
+.PHONY: all diss papers titlepages clean $(PAPERS)
 
-all: diss papers
+all: diss papers titlepages
+
+# Титульные страницы: системы подачи Elsevier принимают только doc и docx,
+# поэтому источник — HTML, а .docx получается конвертацией.
+titlepages:
+	@for f in tex/papers/*/title-page.html; do \
+	  [ -e "$$f" ] || continue; \
+	  textutil -convert docx -output "$${f%.html}.docx" "$$f" && echo "собрано $${f%.html}.docx"; \
+	done
 
 diss:
 	mkdir -p $(BUILD)/diss

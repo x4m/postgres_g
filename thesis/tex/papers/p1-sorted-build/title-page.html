@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<!--
+  Титульная страница для Information Systems. Система подачи принимает только
+  doc и docx, поэтому источник здесь, а .docx получается конвертацией:
+
+      textutil -convert docx -output title-page.docx title-page.html
+
+  Единственный источник намеренно: держать ещё и версию на LaTeX значило бы
+  рано или поздно править одну и забыть другую.
+
+  Рецензентам эта страница не отправляется — на ней всё, что раскрывает
+  авторство. Обезличенная рукопись — main.tex.
+-->
+<html>
+<head><meta charset="utf-8"><title>Title Page</title></head>
+<body style="font-family: 'Times New Roman', serif; font-size: 12pt;">
+
+<p style="text-align: center; font-size: 15pt;"><b>Bulk Loading in Extensible Index Frameworks</b></p>
+
+<p style="text-align: center; font-size: 13pt;">Andrey Borodin</p>
+
+<p style="text-align: center;">Yandex Cloud, Yekaterinburg, Russia</p>
+
+<p>&nbsp;</p>
+
+<p><b>Address for correspondence</b></p>
+
+<p>Andrey Borodin<br>
+Yandex Cloud<br>
+Yekaterinburg, Russia<br>
+E-mail: amborodin@acm.org</p>
+
+<p>&nbsp;</p>
+
+<p><b>Acknowledgements</b></p>
+
+<p>The work on non-leaf key overlap started as a distributed hackathon convened
+by Darafei Praliaskouski, who brought the problem &mdash; a spatial index that
+was built quickly and queried slowly &mdash; and gathered the participants.
+Aliaksandr Kalenik and Sergei Shoulbakov took part in it; many alternatives were
+tried before the one described in the paper was chosen, and the discarded ones
+informed the design as much as the accepted one. I thank Heikki Linnakangas,
+Thomas Munro, Pavel Borisov, Andres Freund, Alexander Korotkov and Bernd Helmle
+for review of the implementation, Bernd Helmle for the btree_gist work discussed
+in the section on deployment experience, and Sergey Porshnev for discussions of
+the cost model.</p>
+
+<p>&nbsp;</p>
+
+<p><b>Conflict of interest statement</b></p>
+
+<p>The author declares no conflict of interest. The author is employed by Yandex
+Cloud, which operates a managed database service based on PostgreSQL. The
+implementation described in the paper is part of PostgreSQL itself, is
+distributed under the PostgreSQL licence and is available to any user of the
+system; no proprietary product of the employer is evaluated or promoted in the
+paper.</p>
+
+<p>&nbsp;</p>
+
+<p><b>Declaration of generative AI and AI-assisted technologies</b></p>
+
+<p>Declared in the manuscript, in the section preceding the references, in
+accordance with the publisher&rsquo;s policy.</p>
+
+</body>
+</html>
