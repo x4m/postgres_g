@@ -1,44 +1,58 @@
-% P1 — целевая площадка PVLDB. План доработки: ../../plan/60-pvldb.md
-% Постановка задачи поднята на уровень фреймворка: не «быстрее строить
-% R-дерево», а «что фреймворк обязан затребовать от класса операторов, чтобы
-% массовая загрузка стала возможной и не ухудшала качество дерева».
+% P1 — оформление по шаблону PVLDB (acmart в конфигурации sigconf/nonacm).
+% Класс и стиль библиографии из https://github.com/cwida/pvldbstyle лежат рядом.
 %
-% Перед подачей: перевести на vldb.cls, ~12 страниц, сверить актуальные
-% правила тома (объём, анонимность, артефакты).
+% Целевая дорожка — industrial/applied: внедрённая в промышленную СУБД
+% реализация, пятилетняя эксплуатация, измеренные компромиссы и отменённый
+% результат отвечают её критериям. См. plan/60-pvldb.md.
+%
+% Перед подачей заполнить: том, год, ссылку на артефакты, аффилиации.
 
-\documentclass[11pt, a4paper]{article}
+\documentclass[sigconf, nonacm]{acmart}
 
-\usepackage{fontspec}
-\usepackage[english, russian]{babel}
-\selectlanguage{english}
-\setmainfont{Times New Roman}[Ligatures=TeX]
-\setmonofont{Menlo}[Scale=0.85]
+\newcommand\vldbdoi{XX.XX/XXX.XX}
+\newcommand\vldbpages{XXX-XXX}
+\newcommand\vldbvolume{XX}
+\newcommand\vldbissue{X}
+\newcommand\vldbyear{20XX}
+\newcommand\vldbauthors{\authors}
+\newcommand\vldbtitle{\shorttitle}
+% Артефакт: реализация входит в состав выпусков PostgreSQL 14, 15 и 18.
+\newcommand\vldbavailabilityurl{https://www.postgresql.org/docs/current/gist.html}
+\newcommand\vldbpagestyle{plain}
 
-\usepackage{geometry}
-\geometry{a4paper, margin=25mm}
-\usepackage{amsmath, amssymb, graphicx, booktabs, listings}
-\usepackage[hidelinks]{hyperref}
+\usepackage{booktabs}
+\usepackage{tikz}
+\usetikzlibrary{calc}
+\usepackage{pgfplots}
+\pgfplotsset{compat=1.18}
 
-\lstset{basicstyle=\ttfamily\small, breaklines=true, frame=single}
 \newcommand{\code}[1]{\texttt{#1}}
 \emergencystretch=1em
 
-\newtheorem{claim}{Claim}
-\newtheorem{definition}{Definition}
+\begin{document}
 
 \title{Bulk Loading in Extensible Index Frameworks}
-\author{Andrey Borodin \and Sergey Porshnev}
-\date{}
 
-\begin{document}
-\maketitle
+\author{Andrey Borodin}
+\affiliation{%
+  \institution{Ural Federal University}
+  \city{Yekaterinburg}
+  \country{Russia}}
+\email{amborodin@acm.org}
+
+\author{Sergey Porshnev}
+\affiliation{%
+  \institution{Ural Federal University}
+  \city{Yekaterinburg}
+  \country{Russia}}
+\email{s.v.porshnev@urfu.ru}
 
 \begin{abstract}
 Bulk loading a tree index by sorting the input and packing pages is a technique
 known since the 1980s, and packing algorithms for R-trees are textbook
 material. All of them, however, are formulated for a particular key type and
-rely on its geometric properties. Extensible index frameworks~--- of which the
-generalized search tree (GiST) is the most widely deployed instance~--- expose
+rely on its geometric properties. Extensible index frameworks---of which the
+generalized search tree (GiST) is the most widely deployed instance---expose
 no such properties: an operator class defines containment, union, penalty and
 split, and nothing else. Consequently, indexes built on these frameworks have
 been constructed by repeated insertion, at $O(N \log_f N)$ random page accesses
@@ -51,12 +65,12 @@ worse than one built by insertion. The first part is a single additional
 support function returning a comparator. The second is the substantive one: we
 show that packing pages by occupancy systematically inflates the overlap of
 non-leaf keys, and we characterise the inflation. Each partitioning strategy
-converges to a \emph{steady-state} overlap $\omega_\infty$~--- the expected
-number of nodes per level whose key matches a point query~--- reached one or
+converges to a \emph{steady-state} overlap $\omega_\infty$---the expected
+number of nodes per level whose key matches a point query---reached one or
 two levels below the root and stable thereafter. Occupancy-based packing yields
 $\omega_\infty \approx 4$, so a query descends into four subtrees at each level
 instead of one; insertion-based construction, the baseline it replaces, yields
-$\omega_\infty \approx 1.05$~--- essentially a single path. The penalty is
+$\omega_\infty \approx 1.05$---essentially a single path. The penalty is
 therefore a constant factor at every step of the descent: the index is built
 6.8--8.0$\times$ faster and answers point queries 2.4--2.5$\times$ more
 expensively. We give an algorithm that delegates the choice of split points
@@ -77,8 +91,35 @@ insertion produces the \emph{worst} tree of the three, which if confirmed makes
 sorted construction an improvement on both axes rather than a trade.
 \end{abstract}
 
-\textbf{PVLDB Reference Format:} % TODO по шаблону тома
-\textbf{PVLDB Artifact Availability:} % TODO — код в выпусках PostgreSQL 14/15/18
+\maketitle
+
+\pagestyle{\vldbpagestyle}
+\begingroup\small\noindent\raggedright\textbf{PVLDB Reference Format:}\\
+\vldbauthors. \vldbtitle. PVLDB, \vldbvolume(\vldbissue): \vldbpages, \vldbyear.\\
+\href{https://doi.org/\vldbdoi}{doi:\vldbdoi}
+\endgroup
+\begingroup
+\renewcommand\thefootnote{}\footnote{\noindent
+This work is licensed under the Creative Commons BY-NC-ND 4.0 International License.
+Visit \url{https://creativecommons.org/licenses/by-nc-nd/4.0/} to view a copy of
+this license. For any use beyond those covered by this license, obtain permission
+by emailing \href{mailto:info@vldb.org}{info@vldb.org}. Copyright is held by the
+owner/author(s). Publication rights licensed to the VLDB Endowment. \\
+\raggedright Proceedings of the VLDB Endowment, Vol.~\vldbvolume, No.~\vldbissue\
+ISSN 2150-8097.
+\href{https://doi.org/\vldbdoi}{doi:\vldbdoi} \\
+}\addtocounter{footnote}{-1}\endgroup
+
+\ifdefempty{\vldbavailabilityurl}{}{%
+\vspace{.3cm}
+\begingroup\small\noindent\raggedright\textbf{PVLDB Artifact Availability:}\\
+The implementation is part of PostgreSQL releases 14, 15 and 18; see
+\url{\vldbavailabilityurl}.
+\endgroup
+}
+
+
+
 
 \section{Introduction}
 
@@ -205,7 +246,7 @@ for the \code{btree\_gist} work of Section~\ref{sec:deployment}.
 % TODO: получить экспорт чата хакатона — оттуда раздел «отвергнутые
 % альтернативы», которого сейчас нет и который рецензенты ценят.
 
-\bibliographystyle{plain}
+\bibliographystyle{ACM-Reference-Format}
 \bibliography{../../common/refs}
 
 \end{document}

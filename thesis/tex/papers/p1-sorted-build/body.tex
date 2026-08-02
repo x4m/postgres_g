@@ -175,9 +175,12 @@ not reduce the set of checkable properties of a structure.
 \section{Non-leaf key overlap}
 \label{sec:overlap}
 
+\input{figures}
+
 \subsection{Why occupancy-based packing fails}
 
-The procedure of Section~\ref{sec:build} fills a page to the fill factor and
+Figure~\ref{fig:split} shows the mechanism. The procedure of
+Section~\ref{sec:build} fills a page to the fill factor and
 starts a new one, that is, chooses split points by a single criterion~---
 occupancy. In one dimension that criterion is optimal. In more than one it is
 not: an order preserves locality only approximately, and a page boundary falling
@@ -264,8 +267,8 @@ approximation.
 
 \subsection{Overlap does not compound with depth}
 
-Table~\ref{tab:levels} gives $\omega_l$ per level for ten million uniform
-points.
+Table~\ref{tab:levels} and Figure~\ref{fig:levels} give $\omega_l$ per level
+for ten million uniform points.
 
 \begin{table}[t]
 \centering
@@ -366,6 +369,8 @@ measures the presence of a sorting optimisation rather than a property of the
 curve.
 
 \subsection{Buffer size}
+
+Table~\ref{tab:bufsize} and Figure~\ref{fig:bufsize} give the dependence.
 
 \begin{table}[t]
 \centering

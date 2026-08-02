@@ -5,12 +5,21 @@
 
 | ID | Статья | Положение | Состояние |
 |----|--------|-----------|-----------|
-| p1-sorted-build | Bulk Loading in Extensible Index Frameworks | П3 | **текст написан целиком**, 11 стр.; нет рисунков, нужен vldb.cls |
+| p1-sorted-build | Bulk Loading in Extensible Index Frameworks | П3 | **готова к вычитке**: шаблон PVLDB (acmart sigconf/nonacm), 7 стр., 3 рисунка, 5 таблиц |
 | p2-gist-vacuum | Concurrent garbage collection in generalized search trees | П4 | каркас с содержанием разделов |
 | p7-cost-models | Модели стоимости доступа к многомерным данным (рус., ВАК) | П1 | каркас, формулы расставлены |
 
 Ещё не заведены: P3 (верификация, П5), P4 (ветвистость, П2), P5, P6, P8, P9 —
 см. `../../plan/20-publications.md`.
+
+## Шаблон PVLDB
+
+`acmart.cls` и `ACM-Reference-Format.bst` в каталоге p1 взяты из
+https://github.com/cwida/pvldbstyle и положены рядом со статьёй, чтобы сборка
+не зависела от внешней загрузки. Целевая дорожка — industrial/applied.
+
+Перед подачей заполнить в `main.tex`: том, выпуск, год, DOI, ссылку на
+артефакты, аффилиации; сверить актуальные правила тома (объём, анонимность).
 
 ## Правила
 
