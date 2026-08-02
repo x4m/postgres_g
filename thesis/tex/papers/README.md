@@ -5,12 +5,23 @@
 
 | ID | Статья | Положение | Состояние |
 |----|--------|-----------|-----------|
-| p1-sorted-build | Bulk Loading in Extensible Index Frameworks | П3 | **готова к вычитке**: шаблон PVLDB (acmart sigconf/nonacm), 7 стр., 3 рисунка, 5 таблиц |
+| p1-sorted-build | Bulk Loading in Extensible Index Frameworks | П3 | **готова к вычитке**. Две сборки из общего тела: `main-spe.tex` — журнальная, Software: Practice and Experience, 16 стр.; `main.tex` — конференционная, шаблон PVLDB, 8 стр. |
 | p2-gist-vacuum | Concurrent garbage collection in generalized search trees | П4 | каркас с содержанием разделов |
 | p7-cost-models | Модели стоимости доступа к многомерным данным (рус., ВАК) | П1 | каркас, формулы расставлены |
 
 Ещё не заведены: P3 (верификация, П5), P4 (ветвистость, П2), P5, P6, P8, P9 —
 см. `../../plan/20-publications.md`.
+
+## Две версии из одного тела
+
+`intro.tex`, `body.tex` и `figures.tex` общие. Различаются только заглавные
+файлы: `main-spe.tex` (журнал, одна колонка, free-format) и `main.tex`
+(конференция, acmart sigconf/nonacm). Правка содержания идёт в общие файлы и
+попадает в обе версии сразу.
+
+Требование SPE при подаче: PDF как «Main Document», исходники LaTeX отдельно
+как «Supplementary Material Not for Review». Свой шаблон Wiley рекомендует, но
+не требует; с сайта он отдаётся только через браузер.
 
 ## Шаблон PVLDB
 

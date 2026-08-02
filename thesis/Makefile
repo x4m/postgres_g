@@ -3,7 +3,7 @@
 
 TECTONIC ?= tectonic
 BUILD    ?= build
-PAPERS   := $(wildcard tex/papers/*/main.tex)
+PAPERS   := $(wildcard tex/papers/*/main*.tex)
 
 .PHONY: all diss papers clean $(PAPERS)
 

@@ -329,10 +329,36 @@ Both sorted variants produce a \emph{smaller} index than insertion~--- by 33 and
 consecutive packing fills them to the configured factor. The common expectation
 that better tree quality costs space does not hold here.
 
-Varying the degree of clustering (cluster sizes from $0.5f$ to $8f$, $N=10^6$)
-leaves the ratio between the two sorted variants in the range 2.1--2.8 with no
-systematic dependence on cluster size; we had expected a resonance with page
-capacity and did not find one.
+Table~\ref{tab:clustering} varies the degree of clustering: entries are drawn
+from $N/(cf)$ dense clusters of $cf$ points each, where $f$ is the measured leaf
+fan-out, so that $c$ is the size of a cluster in units of page capacity.
+
+\begin{table}[t]
+\centering
+\caption{Accesses per query by cluster size, $N = 10^6$}
+\label{tab:clustering}
+\begin{tabular}{lrrr}
+\toprule
+$c$ & occupancy & \code{picksplit} & ratio \\
+\midrule
+uniform & 9.92 & 4.69 & 2.12 \\
+0.5 & 9.65 & 3.48 & 2.77 \\
+1 & 8.19 & 3.22 & 2.54 \\
+2 & 7.78 & 2.88 & 2.70 \\
+4 & 6.33 & 2.97 & 2.13 \\
+8 & 6.36 & 2.52 & 2.52 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The ratio stays in the range 2.1--2.8 throughout. We had expected a resonance:
+the penalty should be largest when a cluster does not fit a whole number of
+pages, so that boundaries systematically fall inside clusters, and smallest when
+$c$ is integral. No such dependence appears. Clustered data does punish
+occupancy-based packing somewhat harder than uniform data (2.5--2.8 against
+2.12), which is consistent with the mechanism of Figure~\ref{fig:split}, but the
+effect is not a function of $c$ in the way the mechanism suggests. Both build
+time and index size are independent of $c$ to within one per cent.
 
 \subsection{Order and split points are separate levers}
 
@@ -465,11 +491,34 @@ interesting case.
 
 \subsection{Where the CPU goes}
 
-With the index resident in the buffer cache, a spatial join performing several
-hundred thousand descents spends 22.4\,\% of backend CPU in the loop over
-entries of a page, 14.1\,\% in the operator class predicate, 12.8\,\% in the
-buffer lookup table, 5.7\,\% in pinning buffers and 4.7\,\% in the function-call
-machinery that invokes the predicate.
+Table~\ref{tab:cpu} profiles a backend performing a spatial join of 200\,000
+outer rows against the index, some two million result rows, with index and table
+resident in the buffer cache so that no I/O is involved.
+
+\begin{table}[t]
+\centering
+\caption{Backend CPU during descent, self time}
+\label{tab:cpu}
+\begin{tabular}{rll}
+\toprule
+Share & Function & What it is \\
+\midrule
+22.4\,\% & \code{gistScanPage} & loop over entries of a page \\
+14.1\,\% & \code{gist\_point\_consistent} & the predicate itself \\
+12.8\,\% & \code{hash\_search} & buffer lookup table \\
+10.2\,\% & \code{heap\_page\_prune\_opt} & table side \\
+6.7\,\% & \code{MemoryContextReset} & \\
+5.7\,\% & \code{PinBuffer} & pinning pages \\
+5.4\,\% & \code{heap\_hot\_search\_buffer} & table side \\
+4.7\,\% & \code{FunctionCall5Coll} & invoking the predicate \\
+3.3\,\% & \code{gistcheckpage} & \\
+2.3\,\% & \code{gistdentryinit} & preparing an entry \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Work on entries of an index page accounts for 46.8\,\% in total, buffer handling
+for 18.4\,\% and the table side for 15.6\,\%.
 
 Two consequences. First, the mechanics of iterating over entries cost 1.6 times
 more than evaluating the predicate, so the promising direction for CPU work is
@@ -502,6 +551,49 @@ namely that every parent key covers the keys of its children. A framework that
 introduces a new support function is thereby obliged to introduce the check of
 the corresponding invariant as well; we did not do so at the time, and the
 omission cost four years.
+
+\section{Threats to validity}
+
+\paragraph{Reconstruction of internal keys.} Per-level overlap rests on keys
+recovered bottom-up rather than read from the page. The recovery is exact for a
+sorted build, where the stored key equals the union of the children's keys by
+construction, and it is exact for the insertion-built index only if no key has
+been left wider than that union. Deletions can leave such keys behind; our
+datasets are insert-only, so the concern does not arise here, but a measurement
+over a workload with deletions would need the keys read directly. That in turn
+requires fixing the decoding of internal keys in the page inspection extension,
+which currently interprets them with the tuple descriptor of the index rather
+than the storage type of the operator class and silently drops part of a key
+whenever the two differ.
+
+\paragraph{Single run per configuration.} Ratios proved far more stable than
+absolute values: three repetitions of the $10^6$ configurations varied by under
+3\,\% in build time and under 5\,\% in accesses per query, while an earlier
+measurement in which two jobs overlapped on the same machine gave build times
+differing by 20\,\% for the same configuration. All numbers reported here come
+from sequential runs; we nonetheless treat differences below roughly 10\,\% as
+not established.
+
+\paragraph{Window calibration on skewed data.} An early version of the real-data
+experiment fixed the query window by absolute size. Because node density in
+OpenStreetMap varies by orders of magnitude and probes are drawn from the data,
+the window returned 112 rows on average instead of the intended one, and the
+difference between construction methods shrank from a factor of two to 23\,\%.
+The reported measurements calibrate the window by the expected number of
+matching rows. Any comparison of index quality on skewed data is worthless
+without this calibration, which is easy to overlook.
+
+\paragraph{One operator class.} All quantitative results concern points, under
+either of two orders. The claim that the technique is framework-level rests on
+the interface argument and on the fact that a second order was added without
+touching the framework, not on measurements over several key types. Operator
+classes over signatures or ranges may behave differently, and we do not know
+whether they do.
+
+\paragraph{Comparison of curves by build time.} Invalid as measured: the
+experimental Hilbert comparator does not implement abbreviated keys while the
+built-in Z-order comparator does. Only the query-side comparison of curves is
+sound.
 
 \section{Limitations}
 
