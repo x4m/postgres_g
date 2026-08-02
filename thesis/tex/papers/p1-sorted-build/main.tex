@@ -35,17 +35,10 @@
 
 \author{Andrey Borodin}
 \affiliation{%
-  \institution{Ural Federal University}
+  \institution{Yandex Cloud}
   \city{Yekaterinburg}
   \country{Russia}}
 \email{amborodin@acm.org}
-
-\author{Sergey Porshnev}
-\affiliation{%
-  \institution{Ural Federal University}
-  \city{Yekaterinburg}
-  \country{Russia}}
-\email{s.v.porshnev@urfu.ru}
 
 \begin{abstract}
 Bulk loading a tree index by sorting the input and packing pages is a technique
@@ -235,14 +228,15 @@ distributed hackathon convened by Darafei Praliaskouski, who brought the
 problem~--- a spatial index that was built quickly and queried slowly~--- and
 gathered the participants. Aliaksandr Kalenik and Sergei Shoulbakov took part
 in it; many alternatives were tried before the one described here was chosen,
-and the discarded ones informed the design as much as the accepted one. We
-thank Heikki Linnakangas, Thomas Munro, Pavel Borisov, Andres Freund, Alexander
-Korotkov and Bernd Helmle for review of the implementation, and Bernd Helmle
-for the \code{btree\_gist} work of Section~\ref{sec:deployment}.
+and the discarded ones informed the design as much as the accepted one. I thank
+Heikki Linnakangas, Thomas Munro, Pavel Borisov, Andres Freund, Alexander
+Korotkov and Bernd Helmle for review of the implementation, Bernd Helmle for
+the \code{btree\_gist} work of Section~\ref{sec:deployment}, and Sergey
+Porshnev for discussions of the cost model.
 
-% Соавторство: авторами остаются Бородин и Поршнев, участники хакатона названы
-% здесь; для защиты вклад по этому разделу считается личным (применён патч
-% автора).
+% Соавторство: статья одноавторская. Для диссертации это удобнее всего —
+% личный вклад не требует отдельного обоснования. Участники хакатона и
+% рецензенты названы здесь.
 % TODO: получить экспорт чата хакатона — оттуда раздел «отвергнутые
 % альтернативы», которого сейчас нет и который рецензенты ценят.
 
