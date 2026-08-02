@@ -22,14 +22,20 @@ $PSQL -c "VACUUM ANALYZE pt" >/dev/null
 # Прогрев: загнать индекс и таблицу в буферный кэш.
 $PSQL -c "SELECT count(*) FROM pt WHERE p <@ box(point(0,0),point(1,1))" >/dev/null
 
-cat > /tmp/scanload.sql <<EOF
-\\set d 0.0005
+cat > /tmp/scanload.sql <<'EOF'
+-- Координаты подставляются константами, а не вызовом random() внутри запроса:
+-- volatile-функция в предикате мешает планировщику оценить селективность, и
+-- он уходит в последовательное сканирование — тогда профиль измеряет не то.
+\set xi random(0, 999999)
+\set yi random(0, 999999)
 SELECT count(*) FROM pt
- WHERE p <@ box(point(random()-:d, random()-:d), point(random()+:d, random()+:d));
+ WHERE p <@ box(point(:xi / 1000000.0 - 0.0005, :yi / 1000000.0 - 0.0005),
+                point(:xi / 1000000.0 + 0.0005, :yi / 1000000.0 + 0.0005));
 EOF
 
 # Фоновая нагрузка точечными запросами.
-"$HOME/bench-$NAME/bin/pgbench" -h /tmp -p $PORT -d postgres -n -f /tmp/scanload.sql \
+PGOPTIONS="-c enable_seqscan=off -c enable_bitmapscan=off" \
+    "$HOME/bench-$NAME/bin/pgbench" -h /tmp -p $PORT -d postgres -n -f /tmp/scanload.sql \
     -T $((SECS + 5)) -c 1 > /tmp/pgbench-$NAME.log 2>&1 &
 PGB=$!
 sleep 2
