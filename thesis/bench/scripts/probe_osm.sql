@@ -20,7 +20,8 @@ BEGIN
   SET LOCAL enable_seqscan = off;
   SET LOCAL enable_bitmapscan = off;
   FOR r IN EXECUTE format(
-      'SELECT (p)[0] AS x, (p)[1] AS y FROM %I TABLESAMPLE SYSTEM_ROWS(%s)', tbl, nprobes)
+      'SELECT (p)[0] AS x, (p)[1] AS y FROM %I TABLESAMPLE SYSTEM (0.01) LIMIT %s',
+      tbl, nprobes)
   LOOP
     EXECUTE format(
       'EXPLAIN (ANALYZE, BUFFERS, TIMING OFF, FORMAT JSON) '
