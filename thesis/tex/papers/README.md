@@ -5,7 +5,7 @@
 
 | ID | Статья | Положение | Состояние |
 |----|--------|-----------|-----------|
-| p1-sorted-build | Bulk Loading in Extensible Index Frameworks | П3 | **готова к вычитке**. Две сборки из общего тела: `main-spe.tex` — журнальная, Software: Practice and Experience, 16 стр.; `main.tex` — конференционная, шаблон PVLDB, 8 стр. |
+| p1-sorted-build | Bulk Loading in Extensible Index Frameworks | П3 | **готова к вычитке**. Две сборки из общего тела: `main-journal.tex` — журнальная, Information Systems, 21 стр.; `main.tex` — конференционная, шаблон PVLDB, 8 стр. |
 | p2-gist-vacuum | Concurrent garbage collection in generalized search trees | П4 | каркас с содержанием разделов |
 | p7-cost-models | Модели стоимости доступа к многомерным данным (рус., ВАК) | П1 | каркас, формулы расставлены |
 
@@ -15,13 +15,13 @@
 ## Две версии из одного тела
 
 `intro.tex`, `body.tex` и `figures.tex` общие. Различаются только заглавные
-файлы: `main-spe.tex` (журнал, одна колонка, free-format) и `main.tex`
+файлы: `main-journal.tex` (Information Systems, elsarticle) и `main.tex`
 (конференция, acmart sigconf/nonacm). Правка содержания идёт в общие файлы и
 попадает в обе версии сразу.
 
-Требование SPE при подаче: PDF как «Main Document», исходники LaTeX отдельно
-как «Supplementary Material Not for Review». Свой шаблон Wiley рекомендует, но
-не требует; с сайта он отдаётся только через браузер.
+Целевой журнал — Information Systems (Elsevier), `elsarticle`, с блоком
+highlights. SP&E отпал: у них самопроверка по списку литературы, а работ по
+индексным структурам СУБД в этом журнале нет. Разбор — `../../plan/80-venues.md`.
 
 ## Шаблон PVLDB
 
