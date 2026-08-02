@@ -81,8 +81,8 @@ insertion would have given.
 \paragraph{Split quality.} The R*-tree~\cite{beckmann1990rstar} improves the
 shape of the tree by accounting for perimeter and by forced reinsertion; the
 RR*-tree~\cite{beckmann2009rrstar} refines subtree choice on insertion. These
-optimise the tree built by insertion. An attempt by the present author to
-improve the penalty function of a generalized search tree along the same lines
+optimise the tree built by insertion. An attempt to improve the penalty
+function of a generalized search tree along the same lines
 \cite{borodin2017penalty} proved inapplicable in a production system: changing
 the penalty function changes the shape of indexes built by earlier versions, and
 a database system must keep existing indexes usable after an upgrade. Sorted
@@ -184,8 +184,8 @@ factor, forming an entry for the level above from \code{union} of each completed
 page, and repeating level by level until a single page remains.
 
 The order must be declared by the operator class and not passed as a parameter
-of the index. In our first version the comparator was supplied as a relation
-option, which allowed any function of matching signature to be named~--- that
+of the index. In an early version of the implementation the comparator was
+supplied as a relation option, which allowed any function of matching signature to be named~--- that
 is, allowed a silently incorrect index to be built \cite{thread-fast-build}.
 Moving the declaration into the operator class makes the order part of the
 definition of the index type and allows it to be validated at index creation.
@@ -441,8 +441,8 @@ An elaborate space-filling order therefore pays off only while the partitioning
 rule stays naive~--- a conclusion that matters to whoever writes an operator
 class, and one that would have been invisible on synthetic data alone.
 
-Build times for the Hilbert variant are not comparable with Z-order: our
-experimental comparator does not implement abbreviated keys, so the difference
+Build times for the Hilbert variant are not comparable with Z-order: the
+experimental comparator used here does not implement abbreviated keys, so the difference
 measures the presence of a sorting optimisation rather than a property of the
 curve.
 

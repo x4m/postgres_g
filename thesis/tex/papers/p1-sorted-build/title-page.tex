@@ -1,0 +1,87 @@
+% Титульная страница для Information Systems (Elsevier).
+% Рецензентам не отправляется, поэтому здесь всё, что раскрывает авторство:
+% имя, аффилиация, адрес для переписки, благодарности, заявление о конфликте
+% интересов. Обезличенная рукопись — main.tex.
+
+\documentclass[11pt, a4paper]{article}
+
+\usepackage{fontspec}
+\usepackage[english]{babel}
+\setmainfont{Times New Roman}[Ligatures=TeX]
+\setmonofont{Menlo}[Scale=0.85]
+
+\usepackage{geometry}
+\geometry{a4paper, left=30mm, right=30mm, top=25mm, bottom=25mm}
+\usepackage[hidelinks]{hyperref}
+
+\newcommand{\code}[1]{\texttt{#1}}
+\pagestyle{empty}
+
+\begin{document}
+
+\begin{center}
+{\Large\textbf{Bulk Loading in Extensible Index Frameworks}}
+
+\vspace{6mm}
+
+{\large Andrey Borodin}
+
+\vspace{2mm}
+
+Yandex Cloud, Yekaterinburg, Russia
+\end{center}
+
+\vspace{8mm}
+
+\noindent\textbf{Address for correspondence}
+
+\medskip
+
+\noindent Andrey Borodin\\
+Yandex Cloud\\
+Yekaterinburg, Russia\\
+E-mail: \href{mailto:amborodin@acm.org}{amborodin@acm.org}
+
+\vspace{8mm}
+
+\noindent\textbf{Acknowledgements}
+
+\medskip
+
+\noindent
+The work on non-leaf key overlap started as a distributed hackathon convened by
+Darafei Praliaskouski, who brought the problem---a spatial index that was built
+quickly and queried slowly---and gathered the participants. Aliaksandr Kalenik
+and Sergei Shoulbakov took part in it; many alternatives were tried before the
+one described in the paper was chosen, and the discarded ones informed the
+design as much as the accepted one. I thank Heikki Linnakangas, Thomas Munro,
+Pavel Borisov, Andres Freund, Alexander Korotkov and Bernd Helmle for review of
+the implementation, Bernd Helmle for the \code{btree\_gist} work discussed in
+the section on deployment experience, and Sergey Porshnev for discussions of the
+cost model.
+
+\vspace{8mm}
+
+\noindent\textbf{Conflict of interest statement}
+
+\medskip
+
+\noindent
+The author declares no conflict of interest. The author is employed by Yandex
+Cloud, which operates a managed database service based on PostgreSQL. The
+implementation described in the paper is part of PostgreSQL itself, is
+distributed under the PostgreSQL licence and is available to any user of the
+system; no proprietary product of the employer is evaluated or promoted in the
+paper.
+
+\vspace{8mm}
+
+\noindent\textbf{Declaration of generative AI and AI-assisted technologies}
+
+\medskip
+
+\noindent
+Declared in the manuscript, in the section preceding the references, in
+accordance with the publisher's policy.
+
+\end{document}

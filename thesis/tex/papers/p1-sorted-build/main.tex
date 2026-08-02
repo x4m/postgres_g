@@ -12,8 +12,10 @@
 % Тело, введение и рисунки общие с конференционной версией (main-pvldb.tex).
 % Различается только этот файл.
 %
-% Перед подачей: declaration of competing interest, data availability
-% statement, CRediT (для одного автора тривиально).
+% Рецензирование двойное слепое: рукопись обезличена, блок автора и
+% благодарности вынесены в title-page.tex, который рецензентам не отправляют.
+% Перед подачей: data availability statement, CRediT (для одного автора
+% тривиально).
 
 \documentclass[preprint, 11pt]{elsarticle}
 
@@ -40,10 +42,6 @@
 \begin{frontmatter}
 
 \title{Bulk Loading in Extensible Index Frameworks}
-
-\author[yc]{Andrey Borodin}
-\ead{amborodin@acm.org}
-\address[yc]{Yandex Cloud, Yekaterinburg, Russia}
 
 \begin{highlights}
 \item Bulk loading is posed at the level of an extensible index framework:
@@ -109,19 +107,6 @@ generalized search tree \sep space-filling curve \sep R-tree \sep PostgreSQL
 
 \input{intro}
 \input{body}
-
-\section*{Acknowledgements}
-
-The work on non-leaf key overlap (Section~\ref{sec:overlap}) started as a
-distributed hackathon convened by Darafei Praliaskouski, who brought the
-problem---a spatial index that was built quickly and queried slowly---and
-gathered the participants. Aliaksandr Kalenik and Sergei Shoulbakov took part in
-it; many alternatives were tried before the one described here was chosen, and
-the discarded ones informed the design as much as the accepted one. I thank
-Heikki Linnakangas, Thomas Munro, Pavel Borisov, Andres Freund, Alexander
-Korotkov and Bernd Helmle for review of the implementation, Bernd Helmle for the
-\code{btree\_gist} work of Section~\ref{sec:deployment}, and Sergey Porshnev for
-discussions of the cost model.
 
 % Требование Elsevier: заявление размещается в конце рукописи перед списком
 % литературы. Формулировки и разбор вариантов — ai-declaration.md.
