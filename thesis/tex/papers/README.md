@@ -5,7 +5,7 @@
 
 | ID | Статья | Положение | Состояние |
 |----|--------|-----------|-----------|
-| p1-sorted-build | Bulk Loading in Extensible Index Frameworks | П3 | **готова к вычитке**. Две сборки из общего тела: `main-journal.tex` — журнальная, Information Systems, 21 стр.; `main.tex` — конференционная, шаблон PVLDB, 8 стр. |
+| p1-sorted-build | Bulk Loading in Extensible Index Frameworks | П3 | **готова к вычитке**. `main.tex` — основная, Information Systems, 22 стр.; `main-pvldb.tex` — запасная, шаблон PVLDB, 9 стр. |
 | p2-gist-vacuum | Concurrent garbage collection in generalized search trees | П4 | каркас с содержанием разделов |
 | p7-cost-models | Модели стоимости доступа к многомерным данным (рус., ВАК) | П1 | каркас, формулы расставлены |
 
@@ -14,9 +14,12 @@
 
 ## Две версии из одного тела
 
+Основная — `main.tex`, то есть `main.pdf` всегда та версия, которую подаём.
+Запасная лежит под явным именем.
+
 `intro.tex`, `body.tex` и `figures.tex` общие. Различаются только заглавные
-файлы: `main-journal.tex` (Information Systems, elsarticle) и `main.tex`
-(конференция, acmart sigconf/nonacm). Правка содержания идёт в общие файлы и
+файлы: `main.tex` (основная: Information Systems, elsarticle) и `main-pvldb.tex`
+(запасная: конференция, acmart sigconf/nonacm). Правка содержания идёт в общие файлы и
 попадает в обе версии сразу.
 
 Целевой журнал — Information Systems (Elsevier), `elsarticle`, с блоком
