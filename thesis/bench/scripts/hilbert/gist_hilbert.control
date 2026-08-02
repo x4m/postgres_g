@@ -1,0 +1,4 @@
+comment = 'Hilbert-order sortsupport for GiST point opclass (benchmark only)'
+default_version = '1.0'
+module_pathname = '$libdir/gist_hilbert'
+relocatable = false

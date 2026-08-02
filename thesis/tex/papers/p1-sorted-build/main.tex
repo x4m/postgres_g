@@ -147,8 +147,17 @@ papers customarily report~--- hides this entirely.
       technique becomes available to an arbitrary operator class rather than to
       one key type (Section~\ref{sec:build}). Changing the space-filling order
       requires writing one function and touches neither the tree, nor logging,
-      nor concurrency; we demonstrate this by supplying Hilbert order as a
-      drop-in alternative to Z-order (Section~\ref{sec:eval}).
+      nor concurrency: we demonstrate this by supplying Hilbert order as a
+      drop-in alternative to Z-order, an operator class differing from the
+      built-in one in exactly one support function out of ten
+      (Section~\ref{sec:eval}).
+\item We show that the order and the choice of split points are two separate,
+      partially interchangeable levers, both of which live in the operator
+      class. A better curve recovers 44\,\% of the penalty of occupancy-based
+      packing; a better split rule recovers 53\,\%; together they bring query
+      cost within 4\,\% of insertion-based construction. Framework-level bulk
+      loading can therefore match the tree quality it replaces
+      (Section~\ref{sec:eval}).
 \item We characterise the overlap introduced by occupancy-based packing. It does
       not compound with depth, as one might expect from the fact that a node is
       visited only if its parent was; instead each strategy converges to a
@@ -269,6 +278,19 @@ papers customarily report~--- hides this entirely.
 \subsection{Baselines}
 % Вставка; наивная сортированная сборка (выпуск 14); сборка с picksplit
 % (выпуск 15+); Hilbert-порядок как замена Z-порядка.
+
+% Факторный план 2x2, обращений к странице индекса на точечный запрос,
+% 1 млн равномерных точек (bench/results/2026-08-02-hilbert.md):
+%
+%                     | Z-порядок | Гильберт
+%   по заполнению     |   9,96    |   5,57
+%   picksplit         |   4,66    |   4,11
+%   построение вставкой:  3,95
+%
+% Оба фактора значимы и частично взаимозаменяемы; вместе дают 4 % от планки.
+% ВАЖНО: время построения между кривыми сравнивать нельзя, пока для Гильберта
+% не реализованы сокращённые ключи (или пока они не отключены для Z-порядка).
+% Разница во времени — это наличие оптимизации сортировки, а не свойство кривой.
 
 \subsection{Construction time and index size}
 % Историческая точка отсчёта: 3 млн точек, 32,1 с против 6,1 с (выпуск 13).
