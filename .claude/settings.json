@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(pg_waldump *)",
+      "Bash($HOME/project/bin/pg_waldump *)",
+      "Bash(/Users/x4mmm/project/bin/pg_waldump *)",
+      "Bash(sample *)",
+      "Bash(pg_config *)",
+      "Bash(pkg-config *)",
+      "Bash(sysctl *)"
+    ]
+  }
+}

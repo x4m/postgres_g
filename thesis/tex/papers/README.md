@@ -5,7 +5,7 @@
 
 | ID | Статья | Положение | Состояние |
 |----|--------|-----------|-----------|
-| p1-sorted-build | Sorting-based construction of generalized search trees | П3 | **черновик целиком**, кроме измерений (§9) |
+| p1-sorted-build | Bulk Loading in Extensible Index Frameworks | П3 | **текст написан целиком**, 11 стр.; нет рисунков, нужен vldb.cls |
 | p2-gist-vacuum | Concurrent garbage collection in generalized search trees | П4 | каркас с содержанием разделов |
 | p7-cost-models | Модели стоимости доступа к многомерным данным (рус., ВАК) | П1 | каркас, формулы расставлены |
 

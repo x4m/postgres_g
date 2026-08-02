@@ -66,10 +66,15 @@ while retaining a 3.0--3.5$\times$ speedup of the build.
 
 The design is implemented in PostgreSQL, has shipped since release~14, and has
 been the default strategy for a family of operator classes since release~18. We
-evaluate it on \_\_ datasets and \_\_ operator classes, against insertion-based
-construction, naive sorted construction and Hilbert-order packing, and we
-report a five-year deployment history including the one case in which the
-correctness condition of the method was violated in production.
+evaluate it on uniform and clustered synthetic data and on 138 million
+OpenStreetMap coordinates, against insertion-based construction, occupancy-based
+sorted construction and Hilbert-order packing, and we report a five-year
+deployment history including the one case in which the correctness condition of
+the method was violated in production. Two findings were not anticipated: the
+order and the split rule interact asymmetrically, an elaborate space-filling
+curve helping only while the split rule is naive; and on the real dataset
+insertion produces the \emph{worst} tree of the three, which if confirmed makes
+sorted construction an improvement on both axes rather than a trade.
 \end{abstract}
 
 \textbf{PVLDB Reference Format:} % TODO по шаблону тома
@@ -180,189 +185,7 @@ papers customarily report~--- hides this entirely.
       (Section~\ref{sec:deployment}).
 \end{enumerate}
 
-\section{Background}
-\label{sec:background}
-
-% Обобщённое дерево поиска: узел = страница; ключ покрывает ключи поддерева;
-% поиск многопутевой. Класс операторов: consistent, union, penalty, picksplit,
-% same, необязательные compress/decompress/fetch, distance.
-% Два свойства, существенные для статьи: (1) порядка в интерфейсе нет;
-% (2) picksplit кодирует представление автора класса операторов о хорошем
-% разбиении — им мы и воспользуемся вместо изобретения нового критерия.
-% Конкурентность по Корнакеру: правые ссылки.
-
-\section{Related work}
-
-% Три группы, по каждой — почему неприменимо или чем отличается.
-% (а) Упаковка R-деревьев: Roussopoulos, Kamel–Faloutsos, STR. Сформулированы
-%     через координаты и площадь MBR; к классу операторов над сигнатурами или
-%     диапазонами неприменимы. Наш Hilbert-компаратор показывает, что они
-%     становятся частным случаем фреймворковой постановки.
-% (б) Качество разбиения: R*-дерево, RR*-дерево. Оптимизируют дерево,
-%     построенное вставкой; мы их критерий не заменяем, а переиспользуем.
-%     Наша более ранняя попытка изменить функцию штрафа [penalty] неприменима
-%     в промышленной системе: меняет форму уже построенных индексов.
-% (в) Удешевление самой вставки [memory ops] — ортогонально.
-% (г) Внешняя сортировка: модель Aggarwal–Vitter.
-
-\section{Cost model}
-\label{sec:cost}
-
-% Оставить, но каждую формулу связать с измеряемой величиной, иначе украшение.
-% Обозначения; P_ins; P_sort; P_point через omega_l; вывод: сравнивать методы
-% построения нужно по P_build + n * P_point, а не по P_build.
-
-\section{Sorted construction at framework level}
-\label{sec:build}
-
-\subsection{The support function}
-% Один компаратор. Почему объявлять его должен класс операторов, а не параметр
-% индекса: в первой редакции компаратор передавался параметром отношения, что
-% позволяло построить заведомо некорректный индекс [thread-fast-build].
-
-\subsection{Locality-preserving orders}
-% Z-порядок для точек: формула. Представление IEEE 754 как целого. NaN.
-% Ключевой тезис: Hilbert подставляется заменой одной функции.
-
-\subsection{Bottom-up packing and right links}
-% union один раз на страницу. Правые ссылки устанавливаются, хотя
-% конкурентности нет — ради сохранения проверяемых инвариантов.
-
-\section{Non-leaf key overlap}
-\label{sec:overlap}
-
-\subsection{Why occupancy-based packing fails}
-% Рисунок 1 — главный рисунок статьи: плотная область, рассечённая границей
-% страницы, против разбиения по picksplit.
-
-\subsection{Characterisation}
-% Определение качества порядка; утверждение о зависимости перекрытия от
-% рассогласования границ плотных областей с ёмкостью страницы;
-% предсказание, проверяемое экспериментом \ref{sec:eval-cluster}.
-
-\begin{definition}
-% Качество порядка: ожидаемый объём union для последовательности из f подряд
-% идущих элементов, нормированный на объём оптимального разбиения того же
-% размера.
-\end{definition}
-
-\begin{claim}
-% При разбиении по заполнению страницы перекрытие уровня ограничено снизу
-% величиной, зависящей от рассогласования границ страниц с границами плотных
-% областей; максимум достигается, когда размер плотной области не кратен
-% ёмкости страницы.
-\end{claim}
-
-\subsection{Delegating split selection to the operator class}
-% Алгоритм: буфер k страниц, рекурсивное применение picksplit, запись частей.
-% Выбор k — компромисс; зависимость качества и стоимости от k (эксперимент).
-% Ограничение: алгоритмы разбиения суперлинейной сложности деградируют на
-% буфере; для таких классов операторов метод не включается.
-
-\section{Implementation}
-\label{sec:impl}
-
-% Коммиты 16fa9b2b30a, 6f0bc5e1daf, 265ea567852 (выпуск 14); f1ea98a7975
-% (выпуск 15); e4309f73f69 (выпуск 18, способ по умолчанию).
-% Обсуждения архивированы [thread-fast-build, thread-btree-gist-sort].
-
-\section{Evaluation}
-\label{sec:eval}
-
-\subsection{Setup}
-% Стенд; почему первичная метрика — число обращений к страницам, а не время
-% (обоснование, а не оправдание): переносимость и прямое сопоставление с
-% моделью. См. plan/50-benchmarks.md.
-
-\subsection{Datasets and operator classes}
-% Реальные: OSM точки и полигоны, поездки такси, астрономический каталог.
-% Синтетические: управляемая кластеризация (\ref{sec:eval-cluster}), D = 2..32.
-% Классы операторов: point, box, polygon, range, btree_gist-скаляры.
-
-\subsection{Baselines}
-% Вставка; наивная сортированная сборка (выпуск 14); сборка с picksplit
-% (выпуск 15+); Hilbert-порядок как замена Z-порядка.
-
-% Факторный план 2x2, обращений к странице индекса на точечный запрос.
-%
-% 1 млн равномерных (bench/results/2026-08-02-hilbert.md):
-%                     | Z-порядок | Гильберт
-%   по заполнению     |   9,96    |   5,57
-%   picksplit         |   4,66    |   4,11
-%   построение вставкой:  3,95
-%
-% 138 млн точек OSM Netherlands, окно калибровано на 2,7 строки в ответе,
-% 5000 зондов (bench/results/2026-08-02-osm-clean.md):
-%                     | Z-порядок | Гильберт
-%   по заполнению     |  15,20    |  10,17
-%   picksplit         |   7,91    |   8,27
-%
-% Отношение naive/picksplit при Z-порядке: 2,17 на синтетике, 1,92 на OSM —
-% согласуется. Но взаимодействие факторов на реальных данных асимметрично:
-% кривая помогает только при наивном разбиении.
-%
-% ВАЖНО: время построения между кривыми сравнивать нельзя, пока для Гильберта
-% не реализованы сокращённые ключи (или пока они не отключены для Z-порядка).
-% Разница во времени — это наличие оптимизации сортировки, а не свойство кривой.
-
-\subsection{Construction time and index size}
-% Историческая точка отсчёта: 3 млн точек, 32,1 с против 6,1 с (выпуск 13).
-% Переснять.
-
-\subsection{Overlap and query performance}
-% omega_l по уровням для четырёх базовых методов; точечные, диапазонные, kNN.
-% Главная таблица: наивная сборка быстрее строится и медленнее отвечает.
-
-\subsection{Controlled clustering}
-\label{sec:eval-cluster}
-% Размер кластера c*f, c = 0.25 .. 8. Предсказание из \ref{sec:overlap}.
-% Самый ценный эксперимент статьи.
-
-\subsection{Sensitivity to buffer size}
-% k = 1, 2, 4, 8, 16.
-
-\subsection{Dimensionality}
-% D = 2, 4, 8, 16, 32.
-
-\subsection{Which operator classes admit a locality-preserving order}
-% Отрицательный результат — тоже результат: очерчивает границу применимости.
-
-\section{Deployment experience}
-\label{sec:deployment}
-
-% Пять лет в выпусках; с выпуска 18 — способ по умолчанию для btree_gist.
-% Что сломалось: первая попытка распространить метод на btree_gist отозвана в
-% день принятия; помимо ошибки в тестовом окружении, компаратор для битовой
-% строки использовал сравнение, не согласованное с семантикой типа. Возврат
-% состоялся четырьмя годами позже реализацией, написанной заново
-% [thread-btree-gist-sort].
-%
-% Вывод для проектирования фреймворка (это и есть содержание раздела, а не
-% рассказ о происшествии): согласованность компаратора с union и consistent —
-% свойство класса операторов, которое нельзя установить тестированием сборки,
-% поскольку несогласованный компаратор даёт правдоподобный индекс, теряющий
-% часть ответов. Оно проверяемо только как структурный инвариант построенного
-% дерева. Фреймворк, вводящий новую функцию поддержки, обязан вводить вместе с
-% ней и проверку соответствующего инварианта.
-% Держать в пределах половины страницы.
-
-\section{Limitations}
-
-% 1. Нужен порядок, сохраняющий локальность; для части классов операторов его
-%    нет, и диагностики короче измерения качества запросов не существует.
-% 2. Нужен алгоритм разбиения, не деградирующий на буфере в k страниц.
-% 3. Корректность держится на согласованности компаратора — ответственность
-%    автора класса операторов, фреймворком не обеспечивается.
-% 4. Выигрыш не переносится на последующее сопровождение: вставленные после
-%    построения элементы идут обычным путём.
-
-\section{Conclusion}
-
-% Массовая загрузка расширяемого индексного фреймворка сводится к сортировке
-% при одной дополнительной функции поддержки; но сведение само по себе
-% ухудшает дерево, и восстановление качества требует вернуть выбор точек
-% разбиения классу операторов. Перспективы: распараллеливание сортировки;
-% проверка согласованности класса операторов, а не отдельного индекса.
+\input{body}
 
 \section*{Acknowledgements}
 
