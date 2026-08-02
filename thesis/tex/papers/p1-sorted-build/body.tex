@@ -33,37 +33,89 @@ is given in \cite{rogov2026}.
 \section{Related work}
 \label{sec:related}
 
-\paragraph{Packing R-trees.} Roussopoulos and Leifker \cite{roussopoulos1985direct}
-build a packed R-tree by sorting rectangles on a coordinate and filling nodes
-consecutively. Kamel and Faloutsos \cite{kamel1993hilbert} sort on the Hilbert
-value of the centre, obtaining better locality. Leutenegger et al.
-\cite{leutenegger1997str} propose sort-tile-recursive packing, which partitions
-space into slabs. All three are formulated in terms of coordinates or of the
-area of a bounding rectangle. An operator class over signatures or over ranges
-provides neither, so none of the three transfers to the framework setting. Our
-contribution is not a better packing rule but the observation that the packing
-rule can be \emph{delegated}: the order to the operator class, the split points
-to \code{picksplit}.
+\paragraph{Sort-based packing of R-trees.} Roussopoulos and
+Leifker~\cite{roussopoulos1985direct} build a packed R-tree by sorting
+rectangles on a coordinate and filling nodes consecutively. Kamel and
+Faloutsos~\cite{kamel1993hilbert} sort on the Hilbert value of the centre,
+obtaining better locality. Leutenegger et al.~\cite{leutenegger1997str} propose
+sort-tile-recursive packing, which partitions space into slabs; Garc\'ia et
+al.~\cite{garcia1998greedy} choose the partition greedily; B\"ohm and
+Kriegel~\cite{bohm1999bulk} address the high-dimensional case. Achakeev et
+al.~\cite{achakeev2012sort} make the packing adaptive to an expected query
+profile and later parallelise it~\cite{achakeev2013parallel}; recent work
+learns the partitioning policy~\cite{qi2023platon}. All of this line is
+formulated in terms of coordinates, of the area of a bounding rectangle, or of
+a query profile over such objects. An operator class over signatures or over
+ranges provides none of these, so none of the algorithms transfers to the
+framework setting as stated.
 
-\paragraph{Split quality.} The R*-tree \cite{beckmann1990rstar} improves the
+\paragraph{Generic bulk loading.} The closest prior work is van den Bercken et
+al.~\cite{bercken1997generic}, who give a bulk loading algorithm explicitly
+called generic: it applies to a wide range of index structures, level by level,
+using Arge's buffer tree to batch insertions. Arge et
+al.~\cite{arge2002bulk} extend the approach from loading to bulk updates and
+queries, and the Priority R-tree~\cite{arge2004priority} attains worst-case
+optimal query bounds.
+
+The distinction from the present work is worth stating precisely, because the
+word ``generic'' is the same and the meaning is not. Buffer-tree loading is
+generic over structures that have an insertion algorithm: it batches insertions
+so that each of them is cheap in expectation, and it therefore requires no
+order on keys, which is exactly why it is applicable so widely. What it
+produces is the tree that insertion would have produced, at lower I/O cost:
+pages are filled by splits, and the shape is the shape insertion gives. Sorted
+packing requires more from the operator class---an order preserving
+locality---and gives more in return: pages are filled to the configured factor
+rather than by splitting, and the shape is determined by the order and by the
+choice of split points rather than by the history of insertions. The two are
+complementary, and neither dominates: buffer-tree loading is the method of
+choice when no locality-preserving order exists, which for some operator
+classes is the case.
+
+Our contribution is therefore not bulk loading that is generic in the sense of
+requiring nothing from the structure, but the identification of the minimal
+thing a framework must \emph{require} for the sorted variant to be available at
+all---and of what it must then do so that the result is not worse than what
+insertion would have given.
+
+\paragraph{Split quality.} The R*-tree~\cite{beckmann1990rstar} improves the
 shape of the tree by accounting for perimeter and by forced reinsertion; the
-RR*-tree \cite{beckmann2009rrstar} refines subtree choice on insertion. These
-optimise the tree built by insertion. An attempt by the present authors to
+RR*-tree~\cite{beckmann2009rrstar} refines subtree choice on insertion. These
+optimise the tree built by insertion. An attempt by the present author to
 improve the penalty function of a generalized search tree along the same lines
 \cite{borodin2017penalty} proved inapplicable in a production system: changing
 the penalty function changes the shape of indexes built by earlier versions, and
 a database system must keep existing indexes usable after an upgrade. Sorted
 construction is free of that constraint, because it affects only newly built
-indexes~--- a point worth recording, since it explains why the same idea
+indexes---a point worth recording, since it explains why the same idea
 succeeds in one form and fails in another.
+
+\paragraph{Extensible index frameworks.} The generalized search
+tree~\cite{hellerstein1995generalized} is the framework studied here;
+concurrency and recovery for it are due to Kornacker et
+al.~\cite{kornacker1997concurrency}. A parallel line covers space-partitioning
+structures: SP-GiST and its realization in
+PostgreSQL~\cite{eltabakh2006spgist} raise the same class of question---what
+the framework must ask of the extension---for a different family of trees. The
+extensible index machinery of PostgreSQL as it stands is documented
+in~\cite{rogov2026}.
+
+\paragraph{Surveys.} Gaede and G\"unther~\cite{gaede1998multidimensional} survey
+multidimensional access methods; Graefe~\cite{graefe2011modern,graefe2024more}
+surveys B-tree techniques, including bulk construction, in the one-dimensional
+setting where an order is given rather than requested. Comer's earlier
+survey~\cite{comer1979ubiquitous} and the original B-tree
+paper~\cite{bayer1972organization} fix the terminology we use for the
+one-dimensional case.
 
 \paragraph{Page-level optimisation.} An orthogonal way to speed up
 insertion-based construction is to make the individual page update cheaper
-\cite{borodin2017memory}. Intra-page indexing \cite{borodin2019intrapage}
-attacks the CPU cost of scanning a node. Both are complementary to this work.
+\cite{borodin2017memory}. Intra-page indexing~\cite{borodin2019intrapage}
+attacks the CPU cost of scanning a node; Section~\ref{sec:eval} shows why that
+cost matters. Both are complementary to this work.
 
 \paragraph{External-memory sorting.} The cost of the sorting step is that of
-external merge sort in the standard I/O model \cite{aggarwal1988io}.
+external merge sort in the standard I/O model~\cite{aggarwal1988io}.
 
 \section{Cost model}
 \label{sec:cost}

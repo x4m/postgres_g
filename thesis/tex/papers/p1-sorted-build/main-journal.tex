@@ -17,6 +17,12 @@
 
 \documentclass[preprint, 11pt]{elsarticle}
 
+% fontspec нужен ради кириллицы в списке литературы: часть источников —
+% русскоязычные (книга Рогова, собственные работы в изданиях ВАК).
+\usepackage{fontspec}
+\setmainfont{Times New Roman}[Ligatures=TeX]
+\setmonofont{Menlo}[Scale=0.85]
+
 \usepackage{amsmath, amssymb, graphicx, booktabs, array}
 \usepackage{tikz}
 \usetikzlibrary{calc}
