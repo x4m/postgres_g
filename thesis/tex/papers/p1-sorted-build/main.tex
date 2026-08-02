@@ -151,12 +151,16 @@ papers customarily report~--- hides this entirely.
       drop-in alternative to Z-order, an operator class differing from the
       built-in one in exactly one support function out of ten
       (Section~\ref{sec:eval}).
-\item We show that the order and the choice of split points are two separate,
-      partially interchangeable levers, both of which live in the operator
-      class. A better curve recovers 44\,\% of the penalty of occupancy-based
-      packing; a better split rule recovers 53\,\%; together they bring query
-      cost within 4\,\% of insertion-based construction. Framework-level bulk
-      loading can therefore match the tree quality it replaces
+\item We show that the order and the choice of split points are two separate
+      levers, both of which live in the operator class, and we measure their
+      interaction. On synthetic data they are partially interchangeable: a
+      better curve recovers 44\,\% of the penalty of occupancy-based packing, a
+      better split rule recovers 53\,\%, and together they bring query cost
+      within 4\,\% of insertion-based construction. On 138M real points the
+      relation is asymmetric: the curve recovers 33\,\% when split points are
+      chosen by occupancy and nothing at all when they are chosen by the
+      operator class. Investing in an elaborate space-filling order therefore
+      pays off only while the partitioning rule stays naive
       (Section~\ref{sec:eval}).
 \item We characterise the overlap introduced by occupancy-based packing. It does
       not compound with depth, as one might expect from the fact that a node is
@@ -279,15 +283,24 @@ papers customarily report~--- hides this entirely.
 % Вставка; наивная сортированная сборка (выпуск 14); сборка с picksplit
 % (выпуск 15+); Hilbert-порядок как замена Z-порядка.
 
-% Факторный план 2x2, обращений к странице индекса на точечный запрос,
-% 1 млн равномерных точек (bench/results/2026-08-02-hilbert.md):
+% Факторный план 2x2, обращений к странице индекса на точечный запрос.
 %
+% 1 млн равномерных (bench/results/2026-08-02-hilbert.md):
 %                     | Z-порядок | Гильберт
 %   по заполнению     |   9,96    |   5,57
 %   picksplit         |   4,66    |   4,11
 %   построение вставкой:  3,95
 %
-% Оба фактора значимы и частично взаимозаменяемы; вместе дают 4 % от планки.
+% 138 млн точек OSM Netherlands, окно калибровано на 2,7 строки в ответе,
+% 5000 зондов (bench/results/2026-08-02-osm-clean.md):
+%                     | Z-порядок | Гильберт
+%   по заполнению     |  15,20    |  10,17
+%   picksplit         |   7,91    |   8,27
+%
+% Отношение naive/picksplit при Z-порядке: 2,17 на синтетике, 1,92 на OSM —
+% согласуется. Но взаимодействие факторов на реальных данных асимметрично:
+% кривая помогает только при наивном разбиении.
+%
 % ВАЖНО: время построения между кривыми сравнивать нельзя, пока для Гильберта
 % не реализованы сокращённые ключи (или пока они не отключены для Z-порядка).
 % Разница во времени — это наличие оптимизации сортировки, а не свойство кривой.
