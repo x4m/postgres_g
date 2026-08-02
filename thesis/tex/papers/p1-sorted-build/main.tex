@@ -50,12 +50,16 @@ possible, and what it must do with the answer so that the resulting tree is no
 worse than one built by insertion. The first part is a single additional
 support function returning a comparator. The second is the substantive one: we
 show that packing pages by occupancy systematically inflates the overlap of
-non-leaf keys, that the inflation depends on how the boundaries of dense
-regions in the data align with page capacity, and that because overlap
-accumulates multiplicatively down the tree, the index is built several times
-faster and then answers queries more slowly. We give an algorithm that removes
-the effect by delegating split point selection back to the operator class over
-a multi-page buffer, and we characterise its cost.
+non-leaf keys, and we characterise the inflation. Each partitioning strategy
+converges to a \emph{steady-state} overlap $\omega_\infty$~--- the expected
+number of nodes per level whose key matches a point query~--- reached one or
+two levels below the root and stable thereafter. Occupancy-based packing yields
+$\omega_\infty \approx 4$, so a query descends into four subtrees at each level
+instead of one; delegating the choice of split points back to the operator
+class yields $\omega_\infty \approx 1.3$. The penalty is therefore a constant
+factor at every step of the descent, and the index is built several times
+faster and then answers queries twice as expensively. We give the algorithm
+that removes the effect and characterise its cost.
 
 The design is implemented in PostgreSQL, has shipped since release~14, and has
 been the default strategy for a family of operator classes since release~18. We
@@ -122,12 +126,15 @@ by a single criterion~--- occupancy. In one dimension that criterion is
 optimal. In more than one it is not: an order that preserves locality does so
 only approximately, and a page boundary that falls inside a dense region
 produces two neighbouring pages whose keys overlap substantially. Overlap
-determines the cost of search in a generalized tree, and since a node is
-visited only if its parent was, overlap introduced at one level multiplies the
-cost at every level below. The index is built several times faster, occupies
-less space, and answers queries more slowly. A comparison of construction
-methods by construction time~--- the comparison such papers customarily
-report~--- hides this entirely.
+determines the cost of search in a generalized tree: a query descends into
+every subtree whose key matches it. Measured per level, the overlap of an index
+built this way settles at about four~--- four subtrees entered at each level
+instead of one~--- and stays there as the tree grows deeper, whereas
+partitioning by the operator class settles at about $1.3$. The index is built
+several times faster, occupies less space, and answers point queries twice as
+expensively, consistently across an order of magnitude in data volume. A
+comparison of construction methods by construction time~--- the comparison such
+papers customarily report~--- hides this entirely.
 
 \paragraph{Contributions.}
 
@@ -139,10 +146,12 @@ report~--- hides this entirely.
       requires writing one function and touches neither the tree, nor logging,
       nor concurrency; we demonstrate this by supplying Hilbert order as a
       drop-in alternative to Z-order (Section~\ref{sec:eval}).
-\item We characterise the overlap introduced by occupancy-based packing as a
-      function of the alignment between dense regions in the data and page
-      capacity, and show experimentally where the effect is largest
-      (Section~\ref{sec:overlap}).
+\item We characterise the overlap introduced by occupancy-based packing. It does
+      not compound with depth, as one might expect from the fact that a node is
+      visited only if its parent was; instead each strategy converges to a
+      steady-state value $\omega_\infty$ within one or two levels of the root.
+      We measure $\omega_\infty$ for both strategies, across data volume and
+      degree of clustering (Section~\ref{sec:overlap}).
 \item We give an algorithm that removes the effect by delegating split point
       selection back to the operator class over a buffer of $k$ pages, and
       analyse the dependence on $k$ (Section~\ref{sec:overlap}).
