@@ -1,36 +1,84 @@
 \chapter{Перечень результатов, принятых в основную ветку PostgreSQL}
 \label{app:commits}
 
-% Таблица: идентификатор коммита, дата, заголовок, релиз, глава диссертации.
-% Источник — thesis/plan/10-contributions.md; таблицу генерировать оттуда,
-% чтобы она не расходилась с планом.
+Столбец <<Выпуск>> указывает первый выпуск \pg{}, в котором результат стал
+доступен пользователям. Пометка <<$\to$\,N>> означает, что изменение было
+дополнительно перенесено в поддерживаемые выпуски начиная с N-го, то есть
+доступно и в более старых версиях. Столбец <<Гл.>> отсылает к главе, в которой
+результат изложен.
 
-\begin{longtable}{lllp{5cm}c}
+Выпуски \pg{} появляются ежегодно; выпуск~10 вышел в 2017~году, выпуск~18~---
+в 2025~году, выпуск~19 находится в разработке.
+
+\begingroup
+\small
+\setlength{\tabcolsep}{4pt}
+\renewcommand{\arraystretch}{1.15}
+
+\begin{longtable}{@{}l l >{\raggedright\arraybackslash}p{78mm} c c@{}}
 \toprule
-Коммит & Дата & Заголовок & Релиз & Глава \\
+Коммит & Дата & Изменение & Выпуск & Гл. \\
+\midrule
+\endfirsthead
+\multicolumn{5}{@{}l}{\textit{Продолжение таблицы \thetable}} \\
+\toprule
+Коммит & Дата & Изменение & Выпуск & Гл. \\
 \midrule
 \endhead
-\code{b1328d78f88} & 2016-09-09 & Invent PageIndexTupleOverwrite & 10 & \ref{ch:fanout} \\
-\code{218f51584d5} & 2017-03-23 & Reduce page locking in GIN vacuum & 10 & \ref{ch:maintenance} \\
-\code{d3a4f89d8a3} & 2017-09-19 & Allow no-op GiST support functions to be omitted & 11 & \ref{ch:fanout} \\
-\code{de1d042f597} & 2017-11-20 & Index-only scans in cube and seg & 11 & \ref{ch:sota} \\
-\code{3ad55863e93} & 2018-03-27 & Add predicate locking for GiST & 11 & \ref{ch:maintenance} \\
-\code{0bef1c0678d} & 2018-05-04 & Re-think predicate locking on GIN indexes & 11 & \ref{ch:maintenance} \\
-\code{2a6368343ff} & 2018-09-19 & KNN searches in SP-GiST & 12 & \ref{ch:sota} \\
-\code{fe280694d0d} & 2019-03-05 & Scan GiST indexes in physical order during VACUUM & 12 & \ref{ch:maintenance} \\
-\code{f2e403803fe} & 2019-03-10 & INCLUDE attributes in GiST & 12 & \ref{ch:fanout} \\
-\code{7df159a620b} & 2019-03-22 & Delete empty pages during GiST VACUUM & 12 & \ref{ch:maintenance} \\
-\code{6655a7299d8} & 2019-07-24 & 64-bit XID for deleted GiST pages & 13 & \ref{ch:maintenance} \\
-\code{39132b784ae} & 2019-08-08 & amcheck: verify sibling links in all cases & 13 & \ref{ch:verification} \\
-\code{16fa9b2b30a} & 2020-09-17 & Build GiST index by sorting & 14 & \ref{ch:sorted-build} \\
-\code{265ea567852} & 2020-10-01 & Set right-links during sorted GiST build & 14 & \ref{ch:sorted-build} \\
-\code{09c1c6ab4bc} & 2021-04-05 & INCLUDE'd columns in SP-GiST & 14 & \ref{ch:fanout} \\
-\code{f1ea98a7975} & 2022-02-07 & Reduce non-leaf keys overlap in sorted GiST build & 15 & \ref{ch:sorted-build} \\
-\code{4ed8f0913bf} & 2023-11-29 & Index SLRUs by 64-bit integers & 17 & \ref{ch:maintenance} \\
-\code{14ffaece0fb} & 2025-03-29 & amcheck: gin\_index\_check() & 18 & \ref{ch:verification} \\
-\code{69273b818b1} & 2025-03-21 & Streaming read I/O in GiST vacuuming & 18 & \ref{ch:maintenance} \\
-\code{e4309f73f69} & 2025-04-03 & Sorted gist index builds in btree\_gist & 18 & \ref{ch:sorted-build} \\
+\midrule
+\multicolumn{5}{r@{}}{\textit{Продолжение на следующей странице}} \\
+\endfoot
 \bottomrule
-\end{longtable}
+\endlastfoot
 
-% TODO: дополнить до полного перечня, добавить столбец «публикация».
+\code{b1328d78f88} & 2016-09-09 & Перезапись элемента на странице без перемещения данных & 10 & \ref{ch:fanout} \\
+\code{218f51584d5} & 2017-03-23 & Снижение блокирования при сборке мусора в обратном индексе & 10 & \ref{ch:maintenance} \\
+\code{d3a4f89d8a3} & 2017-09-19 & Необязательные функции преобразования ключа & 11 & \ref{ch:fanout} \\
+\code{de1d042f597} & 2017-11-20 & Индексное сканирование без обращения к таблице для \code{cube} и \code{seg} & 11 & \ref{ch:sota} \\
+\code{3ad55863e93} & 2018-03-27 & Предикатные блокировки для обобщённого дерева поиска & 11 & \ref{ch:maintenance} \\
+\code{0bef1c0678d} & 2018-05-04 & Пересмотр предикатных блокировок обратного индекса & 11 & \ref{ch:maintenance} \\
+\code{f919c165ebd} & 2018-08-30 & Проверка предельной размерности во всех конструкторах \code{cube} & 12 & \ref{ch:sota} \\
+\code{2a6368343ff} & 2018-09-19 & Поиск ближайших соседей в дереве с разбиением пространства & 12 & \ref{ch:sota} \\
+\code{fd83c83d094} & 2018-12-13 & Устранение взаимной блокировки, внесённой \code{218f51584d5} & 12 $\to$ 10 & \ref{ch:maintenance} \\
+\code{52ac6cd2d0c} & 2018-12-13 & Запрет преждевременного переиспользования удалённых страниц & 12 $\to$ 9.4 & \ref{ch:maintenance} \\
+\code{c6ade7a8cd3} & 2018-12-13 & Устранение взаимной блокировки при воспроизведении журнала & 12 $\to$ 9.4 & \ref{ch:maintenance} \\
+\code{fe280694d0d} & 2019-03-05 & Обход в физическом порядке страниц при сборке мусора & 12 & \ref{ch:maintenance} \\
+\code{f2e403803fe} & 2019-03-10 & Покрывающие атрибуты в обобщённом дереве поиска & 12 & \ref{ch:fanout} \\
+\code{7df159a620b} & 2019-03-22 & Удаление опустевших страниц при сборке мусора & 12 & \ref{ch:maintenance} \\
+\code{9eb5607e699} & 2019-07-24 & Уточнение проверок удалённых страниц & 13 $\to$ 12 & \ref{ch:maintenance} \\
+\code{6655a7299d8} & 2019-07-24 & Полный 64-разрядный идентификатор транзакции для удалённой страницы & 13 $\to$ 12 & \ref{ch:maintenance} \\
+\code{6754fe65a4c} & 2019-08-12 & Пропуск нежурналируемых отношений при проверке на реплике & 13 $\to$ 10 & \ref{ch:verification} \\
+\code{e5d8f359610} & 2019-09-08 & Обработка Inf и NaN в очереди приоритетов поиска соседей & 13 $\to$ все & \ref{ch:fanout} \\
+\code{39132b784ae} & 2020-08-08 & Проверка соседних ссылок со сцеплением блокировок & 14 & \ref{ch:verification} \\
+\code{16fa9b2b30a} & 2020-09-17 & Построение обобщённого дерева поиска сортировкой & 14 & \ref{ch:sorted-build} \\
+\code{265ea567852} & 2020-10-01 & Установка правых ссылок при сортированном построении & 14 & \ref{ch:sorted-build} \\
+\code{6f0bc5e1daf} & 2020-10-30 & Проверка функции поддержки сортировки при создании индекса & 14 & \ref{ch:sorted-build} \\
+\code{756ab29124d} & 2021-01-13 & Средства инспекции страниц обобщённого дерева поиска & 14 & \ref{ch:evaluation} \\
+\code{09c1c6ab4bc} & 2021-04-05 & Покрывающие атрибуты в дереве с разбиением пространства & 14 & \ref{ch:fanout} \\
+\code{3cd9c3b9219} & 2021-10-23 & Учёт подготовленных транзакций при конкурентном создании индекса & 15 $\to$ 9.6 & \ref{ch:maintenance} \\
+\code{f1ea98a7975} & 2022-02-07 & Снижение перекрытия нелистовых ключей при сортированном построении & 15 & \ref{ch:sorted-build} \\
+\code{4ed8f0913bf} & 2023-11-29 & 64-разрядная адресация служебных журналов транзакций & 17 & \ref{ch:maintenance} \\
+\code{b1fe8efdf17} & 2024-03-23 & Нормализация индексных кортежей при проверке & 17 $\to$ все & \ref{ch:verification} \\
+\code{ab65dfb0fb2} & 2024-03-23 & Поддержка разных размеров заголовка при нормализации & 17 $\to$ все & \ref{ch:verification} \\
+\code{53d3daa491b} & 2025-02-18 & Специализация сортировки целочисленных массивов & 18 & \ref{ch:sorted-build} \\
+\code{c5c239e26e3} & 2025-03-21 & Упреждающее чтение при сборке мусора в B-дереве & 18 & \ref{ch:maintenance} \\
+\code{69273b818b1} & 2025-03-21 & Упреждающее чтение при сборке мусора в обобщённом дереве поиска & 18 & \ref{ch:maintenance} \\
+\code{e215166c9c8} & 2025-03-21 & Упреждающее чтение при сборке мусора в дереве с разбиением пространства & 18 & \ref{ch:maintenance} \\
+\code{d70b17636dd} & 2025-03-29 & Выделение общих процедур проверки в отдельный модуль & 18 & \ref{ch:verification} \\
+\code{14ffaece0fb} & 2025-03-29 & Проверка структурных инвариантов обратного индекса & 18 & \ref{ch:verification} \\
+\code{e4309f73f69} & 2025-04-03 & Сортированное построение для классов операторов \code{btree\_gist} & 18 & \ref{ch:sorted-build} \\
+\code{8ec97e78a77} & 2025-09-08 & Коды ошибок при обнаружении повреждения данных & 19 & \ref{ch:verification} \\
+
+\end{longtable}
+\endgroup
+
+\medskip
+
+Итого 37 изменений в выпусках 10--19; часть из них дополнительно перенесена в
+выпуски вплоть до~9.4. Каждому изменению соответствует публично
+архивированное обсуждение, ссылки на которое приведены в списке использованных
+источников.
+
+% Таблица получена запросом к репозиторию:
+%   git tag --contains <коммит> | grep -E '^REL_[0-9]+_0$' | sort -n | head -1
+% Пометка «→ N» — из строки Backpatch в сообщении коммита.
