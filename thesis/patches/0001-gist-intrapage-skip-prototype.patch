@@ -1,0 +1,365 @@
+diff --git a/src/backend/access/gist/gistget.c b/src/backend/access/gist/gistget.c
+index 387d9972345..12916856b8e 100644
+--- a/src/backend/access/gist/gistget.c
++++ b/src/backend/access/gist/gistget.c
+@@ -17,6 +17,8 @@
+ #include "access/genam.h"
+ #include "access/gist_private.h"
+ #include "access/relscan.h"
++#include "utils/hsearch.h"
++#include "utils/memutils.h"
+ #include "lib/pairingheap.h"
+ #include "miscadmin.h"
+ #include "pgstat.h"
+@@ -302,6 +304,236 @@ gistindex_keytest(IndexScanDesc scan,
+ 	return true;
+ }
+ 
++
++/*
++ * Внутристраничная структура пропуска.
++ *
++ * Просмотр узла стоит O(f) вызовов consistent, и по профилю на эту работу
++ * уходит около половины процессорного времени спуска. Здесь элементы
++ * внутренней страницы группируются, для группы считается union её ключей, и
++ * consistent сначала вызывается для ключа группы: ложный ответ пропускает всю
++ * группу.
++ *
++ * Корректность следует из инварианта GiST: ключ, покрывающий ключи группы,
++ * ведёт себя как ключ внутреннего узла, а consistent для внутреннего ключа не
++ * возвращает ложь, если хоть один элемент поддерева подходит. Поэтому пропуск
++ * по ложному ответу не теряет результатов.
++ *
++ * Структура не хранится на странице: формат индексного кортежа, журнал и
++ * восстановление не затрагиваются. Актуальность проверяется по LSN страницы.
++ */
++
++bool		gist_page_skip = false;
++int			gist_page_skip_threshold = 3;
++
++/* минимальное число элементов, при котором структура имеет смысл */
++#define GIST_SKIP_MIN_ITEMS		32
++/* потолок числа страниц в кэше; при переполнении кэш сбрасывается целиком */
++#define GIST_SKIP_MAX_PAGES		8192
++
++typedef struct GistSkipKey
++{
++	RelFileLocator locator;
++	BlockNumber blkno;
++} GistSkipKey;
++
++typedef struct GistSkipGroup
++{
++	OffsetNumber first;
++	OffsetNumber last;
++	IndexTuple	key;			/* union ключей группы */
++} GistSkipGroup;
++
++typedef struct GistSkipEntry
++{
++	GistSkipKey key;			/* должен идти первым: ключ хеш-таблицы */
++	XLogRecPtr	lsn;			/* LSN страницы на момент построения */
++	int			visits;			/* сколько раз страница просматривалась */
++	int			ngroups;
++	GistSkipGroup *groups;
++	MemoryContext cxt;			/* контекст групп, NULL если не построены */
++} GistSkipEntry;
++
++static HTAB *gist_skip_cache = NULL;
++static MemoryContext gist_skip_cxt = NULL;
++
++void
++gist_page_skip_reset(void)
++{
++	if (gist_skip_cache)
++	{
++		hash_destroy(gist_skip_cache);
++		gist_skip_cache = NULL;
++	}
++	if (gist_skip_cxt)
++	{
++		MemoryContextDelete(gist_skip_cxt);
++		gist_skip_cxt = NULL;
++	}
++}
++
++static void
++gist_skip_init(void)
++{
++	HASHCTL		ctl;
++
++	gist_skip_cxt = AllocSetContextCreate(TopMemoryContext,
++										  "GiST page skip cache",
++										  ALLOCSET_DEFAULT_SIZES);
++	ctl.keysize = sizeof(GistSkipKey);
++	ctl.entrysize = sizeof(GistSkipEntry);
++	ctl.hcxt = gist_skip_cxt;
++	gist_skip_cache = hash_create("GiST page skip", 256, &ctl,
++								  HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
++}
++
++/*
++ * Построить группы для внутренней страницы. Размер группы берётся около
++ * sqrt(f): он минимизирует f/g + g, то есть сумму проверок групп и проверок
++ * элементов совпавшей группы.
++ */
++static void
++gist_skip_build(GistSkipEntry *entry, Relation r, Page page,
++				GISTSTATE *giststate)
++{
++	OffsetNumber maxoff = PageGetMaxOffsetNumber(page);
++	int			gsize;
++	int			ngroups;
++	MemoryContext oldcxt;
++	IndexTuple *itvec;
++	int			i;
++
++	if (maxoff < GIST_SKIP_MIN_ITEMS)
++		return;
++
++	gsize = (int) ceil(sqrt((double) maxoff));
++	if (gsize < 2)
++		return;
++	ngroups = (maxoff + gsize - 1) / gsize;
++
++	entry->cxt = AllocSetContextCreate(gist_skip_cxt,
++									   "GiST page skip entry",
++									   ALLOCSET_SMALL_SIZES);
++	oldcxt = MemoryContextSwitchTo(entry->cxt);
++	entry->groups = palloc0(sizeof(GistSkipGroup) * ngroups);
++	itvec = palloc(sizeof(IndexTuple) * gsize);
++
++	for (i = 0; i < ngroups; i++)
++	{
++		OffsetNumber first = FirstOffsetNumber + i * gsize;
++		OffsetNumber last = first + gsize - 1;
++		int			len = 0;
++		OffsetNumber o;
++		Datum		attr[INDEX_MAX_KEYS];
++		bool		isnull[INDEX_MAX_KEYS];
++
++		if (last > maxoff)
++			last = maxoff;
++
++		for (o = first; o <= last; o++)
++		{
++			ItemId		iid = PageGetItemId(page, o);
++
++			if (!ItemIdIsUsed(iid))
++				continue;
++			itvec[len++] = (IndexTuple) PageGetItem(page, iid);
++		}
++
++		entry->groups[i].first = first;
++		entry->groups[i].last = last;
++
++		if (len == 0)
++		{
++			entry->groups[i].key = NULL;
++			continue;
++		}
++
++		/*
++		 * Недействительные кортежи, оставшиеся от версий до 9.1, означают
++		 * «спускаться всегда». Группу с таким кортежем не сворачиваем.
++		 */
++		{
++			bool		invalid = false;
++			int			k;
++
++			for (k = 0; k < len; k++)
++				if (GistTupleIsInvalid(itvec[k]))
++					invalid = true;
++			if (invalid)
++			{
++				entry->groups[i].key = NULL;
++				continue;
++			}
++		}
++
++		gistMakeUnionItVec(giststate, itvec, len, attr, isnull);
++		entry->groups[i].key = gistFormTuple(giststate, r, attr, isnull, false);
++	}
++
++	entry->ngroups = ngroups;
++	MemoryContextSwitchTo(oldcxt);
++}
++
++/*
++ * Вернуть структуру пропуска для страницы, построив её при необходимости.
++ * NULL означает «просматривать страницу как обычно».
++ */
++static GistSkipEntry *
++gist_skip_lookup(Relation r, Buffer buffer, Page page, GISTSTATE *giststate)
++{
++	GistSkipKey key;
++	GistSkipEntry *entry;
++	bool		found;
++	XLogRecPtr	lsn;
++
++	if (!gist_page_skip || GistPageIsLeaf(page))
++		return NULL;
++
++	if (gist_skip_cache == NULL)
++		gist_skip_init();
++	else if (hash_get_num_entries(gist_skip_cache) > GIST_SKIP_MAX_PAGES)
++	{
++		/* грубое вытеснение: для прототипа достаточно */
++		gist_page_skip_reset();
++		gist_skip_init();
++	}
++
++	memset(&key, 0, sizeof(key));
++	key.locator = r->rd_locator;
++	key.blkno = BufferGetBlockNumber(buffer);
++
++	entry = (GistSkipEntry *) hash_search(gist_skip_cache, &key,
++										  HASH_ENTER, &found);
++	lsn = BufferGetLSNAtomic(buffer);
++
++	if (!found)
++	{
++		entry->lsn = lsn;
++		entry->visits = 0;
++		entry->ngroups = 0;
++		entry->groups = NULL;
++		entry->cxt = NULL;
++	}
++	else if (entry->lsn != lsn)
++	{
++		/* страница изменилась: построенное больше не годится */
++		if (entry->cxt)
++			MemoryContextDelete(entry->cxt);
++		entry->lsn = lsn;
++		entry->visits = 0;
++		entry->ngroups = 0;
++		entry->groups = NULL;
++		entry->cxt = NULL;
++	}
++
++	entry->visits++;
++
++	if (entry->cxt == NULL && entry->visits >= gist_page_skip_threshold)
++		gist_skip_build(entry, r, page, giststate);
++
++	return (entry->ngroups > 0) ? entry : NULL;
++}
++
+ /*
+  * Scan all items on the GiST index page identified by *pageItem, and insert
+  * them into the queue (or directly to output areas)
+@@ -337,6 +569,8 @@ gistScanPage(IndexScanDesc scan, GISTSearchItem *pageItem,
+ 	OffsetNumber maxoff;
+ 	OffsetNumber i;
+ 	MemoryContext oldcxt;
++	GistSkipEntry *skip;
++	int			skip_grp = 0;
+ 
+ 	Assert(!GISTSearchItemIsHeap(*pageItem));
+ 
+@@ -410,9 +644,43 @@ gistScanPage(IndexScanDesc scan, GISTSearchItem *pageItem,
+ 	 * check all tuples on page
+ 	 */
+ 	maxoff = PageGetMaxOffsetNumber(page);
++
++	/*
++	 * Структура пропуска строится только для внутренних страниц и только для
++	 * сканов без упорядочивания: ключ группы дал бы бессмысленное расстояние.
++	 */
++	skip = (scan->numberOfOrderBys == 0)
++		? gist_skip_lookup(r, buffer, page, giststate) : NULL;
++
+ 	for (i = FirstOffsetNumber; i <= maxoff; i = OffsetNumberNext(i))
+ 	{
+ 		ItemId		iid = PageGetItemId(page, i);
++
++		/* если началась группа, проверить её ключ и, возможно, пропустить */
++		while (skip && skip_grp < skip->ngroups &&
++			   i > skip->groups[skip_grp].last)
++			skip_grp++;
++		if (skip && skip_grp < skip->ngroups &&
++			i == skip->groups[skip_grp].first &&
++			skip->groups[skip_grp].key != NULL)
++		{
++			bool		gmatch;
++			bool		grecheck;
++			bool		grecheck_d;
++
++			oldcxt = MemoryContextSwitchTo(so->giststate->tempCxt);
++			gmatch = gistindex_keytest(scan, skip->groups[skip_grp].key,
++									   page, i, &grecheck, &grecheck_d);
++			MemoryContextSwitchTo(oldcxt);
++			MemoryContextReset(so->giststate->tempCxt);
++
++			if (!gmatch)
++			{
++				i = skip->groups[skip_grp].last;
++				skip_grp++;
++				continue;
++			}
++		}
+ 		IndexTuple	it;
+ 		bool		match;
+ 		bool		recheck;
+diff --git a/src/backend/utils/misc/guc_tables.c b/src/backend/utils/misc/guc_tables.c
+index d14b1678e7f..70d5a509a76 100644
+--- a/src/backend/utils/misc/guc_tables.c
++++ b/src/backend/utils/misc/guc_tables.c
+@@ -31,6 +31,7 @@
+ 
+ #include "access/commit_ts.h"
+ #include "access/gin.h"
++#include "access/gist_private.h"
+ #include "access/slru.h"
+ #include "access/toast_compression.h"
+ #include "access/twophase.h"
+@@ -2143,6 +2144,17 @@ struct config_bool ConfigureNamesBool[] =
+ 		NULL, NULL, NULL
+ 	},
+ 
++	{
++		{"gist_page_skip", PGC_USERSET, QUERY_TUNING_METHOD,
++			gettext_noop("Enables intra-page skipping in GiST scans."),
++			gettext_noop("Groups entries of internal pages and tests the group key "
++						 "before testing entries.")
++		},
++		&gist_page_skip,
++		false,
++		NULL, NULL, NULL
++	},
++
+ 	/* End-of-list marker */
+ 	{
+ 		{NULL, 0, 0, NULL, NULL}, NULL, false, NULL, NULL, NULL
+@@ -3860,6 +3872,16 @@ struct config_int ConfigureNamesInt[] =
+ 		NULL, NULL, NULL
+ 	},
+ 
++	{
++		{"gist_page_skip_threshold", PGC_USERSET, QUERY_TUNING_METHOD,
++			gettext_noop("Number of visits before a GiST page skip structure is built."),
++			NULL
++		},
++		&gist_page_skip_threshold,
++		3, 1, 1000,
++		NULL, NULL, NULL
++	},
++
+ 	/* End-of-list marker */
+ 	{
+ 		{NULL, 0, 0, NULL, NULL}, NULL, 0, 0, 0, NULL, NULL, NULL
+diff --git a/src/include/access/gist_private.h b/src/include/access/gist_private.h
+index 39404ec7cdb..2c3283d4773 100644
+--- a/src/include/access/gist_private.h
++++ b/src/include/access/gist_private.h
+@@ -459,6 +459,10 @@ extern XLogRecPtr gistXLogSplit(bool page_is_leaf,
+ 
+ extern XLogRecPtr gistXLogAssignLSN(void);
+ 
++/* gistget.c */
++extern PGDLLIMPORT bool gist_page_skip;
++extern PGDLLIMPORT int gist_page_skip_threshold;
++extern void gist_page_skip_reset(void);
+ /* gistget.c */
+ extern bool gistgettuple(IndexScanDesc scan, ScanDirection dir);
+ extern int64 gistgetbitmap(IndexScanDesc scan, TIDBitmap *tbm);
