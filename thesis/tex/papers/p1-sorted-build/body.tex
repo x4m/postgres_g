@@ -412,6 +412,55 @@ occupancy-based packing somewhat harder than uniform data (2.5--2.8 against
 effect is not a function of $c$ in the way the mechanism suggests. Both build
 time and index size are independent of $c$ to within one per cent.
 
+\subsection{Is it the split rule, or merely the page count?}
+\label{sec:eval-control}
+
+In every measurement above, query cost falls as the number of index pages rises,
+which admits a rival explanation: perhaps the benefit comes not from where the
+split points are placed but from the tree being less bushy, with fewer entries
+per page to examine. The classical estimate for a search tree in which all
+children of a visited node must be examined puts the optimal branching factor at
+about $e$, which makes the rival explanation plausible a~priori. It also has a
+cheap remedy that would make this paper unnecessary: lower the fill factor.
+
+Table~\ref{tab:control} tests it. Data and probes are generated from a fixed
+seed, so both builds see the same ten million points and the same two thousand
+queries.
+
+\begin{table}[t]
+\centering
+\caption{Occupancy packing at reduced fill factor against \code{picksplit}, $N=10^7$}
+\label{tab:control}
+\begin{tabular}{llrr}
+\toprule
+Split rule & fill factor & pages & accesses/query \\
+\midrule
+\code{picksplit} & default & 81\,326 & \textbf{6.86} \\
+occupancy & default & 60\,608 & 12.67 \\
+occupancy & 80 & 68\,496 & 13.15 \\
+occupancy & 70 & 78\,127 & 13.95 \\
+occupancy & \textbf{65} & \textbf{84\,036} & \textbf{13.64} \\
+occupancy & 60 & 91\,746 & 13.72 \\
+occupancy & 50 & 109\,892 & 14.49 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+At an essentially equal page count---84\,036 against 81\,326---occupancy packing
+costs 13.64 accesses per query against 6.86, twice as many. Lowering the fill
+factor does not help at all; it mildly hurts, the cost drifting from 12.67 to
+14.49 as the index grows by 80\,\%. The rival explanation is refuted: what the
+operator class contributes is the placement of the boundaries, not the number of
+them.
+
+Two further remarks. First, the branching-factor argument holds only under
+unbounded memory: a page is the unit of exchange with the buffer cache, and a
+less bushy tree occupies more pages, fits it worse, and loses on data that does
+not fit in memory---which on the real dataset of Section~\ref{sec:eval-real} is
+the operating regime. Second, \code{picksplit}-based construction produced
+81\,326 pages at both the default fill factor and at~65, that is, it does not
+honour the parameter; we return to this in Section~\ref{sec:deployment}.
+
 \subsection{Order and split points are separate levers}
 
 Table~\ref{tab:factorial} crosses the two.
