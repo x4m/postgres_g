@@ -83,8 +83,8 @@ $node2->poll_query_until('postgres', "SELECT pg_is_in_recovery() = 'f';");
 # timeline 1. We do a CHECKPOINT here to make sure that the summarizer tries
 # to progress.
 $node2->safe_psql('postgres', <<EOM);
-SELECT pg_switch_wal();
 CHECKPOINT;
+SELECT pg_switch_wal();
 EOM
 
 # Wait until replay has reached TLI 2 on node3, and then start the WAL
