@@ -51,6 +51,7 @@ static void gistvacuum_delete_empty_pages(IndexVacuumInfo *info,
 static bool gistdeletepage(IndexVacuumInfo *info, IndexBulkDeleteResult *stats,
 						   Buffer parentBuffer, OffsetNumber downlink,
 						   Buffer leafBuffer);
+static void gistvacuumstripmetadata(Relation rel, Buffer buffer);
 
 /*
  * VACUUM bulkdelete stage: remove index entries.
@@ -555,6 +556,8 @@ gistvacuum_delete_empty_pages(IndexVacuumInfo *info, GistVacState *vstate)
 			IndexTuple	idxtuple = (IndexTuple) PageGetItem(page, iid);
 			BlockNumber leafblk;
 
+			if (GistTupleIsSkip(idxtuple))
+				continue;
 			leafblk = ItemPointerGetBlockNumber(&(idxtuple->t_tid));
 			if (intset_is_member(vstate->empty_leaf_set, leafblk))
 			{
@@ -670,8 +673,32 @@ gistdeletepage(IndexVacuumInfo *info, IndexBulkDeleteResult *stats,
 		return false;
 	}
 
-	if (PageGetMaxOffsetNumber(parentPage) < downlink
-		|| PageGetMaxOffsetNumber(parentPage) <= FirstOffsetNumber)
+	/*
+	 * Removing a group member would invalidate its skip count.  Strip all
+	 * derived metadata in a separate WAL-logged update before deleting the
+	 * real downlink.  A later insertion or split can build it again.
+	 */
+	gistvacuumstripmetadata(info->index, parentBuffer);
+	parentPage = BufferGetPage(parentBuffer);
+
+	/* Re-find the downlink, because removing skip tuples changed offsets. */
+	downlink = InvalidOffsetNumber;
+	for (OffsetNumber off = FirstOffsetNumber;
+		 off <= PageGetMaxOffsetNumber(parentPage);
+		 off = OffsetNumberNext(off))
+	{
+		iid = PageGetItemId(parentPage, off);
+		idxtuple = (IndexTuple) PageGetItem(parentPage, iid);
+		if (BufferGetBlockNumber(leafBuffer) ==
+			ItemPointerGetBlockNumber(&(idxtuple->t_tid)))
+		{
+			downlink = off;
+			break;
+		}
+	}
+
+	if (!OffsetNumberIsValid(downlink) ||
+		PageGetMaxOffsetNumber(parentPage) <= FirstOffsetNumber)
 		return false;
 
 	iid = PageGetItemId(parentPage, downlink);
@@ -714,4 +741,42 @@ gistdeletepage(IndexVacuumInfo *info, IndexBulkDeleteResult *stats,
 	END_CRIT_SECTION();
 
 	return true;
+}
+
+/* Remove optional intrapage-index tuples from an internal page. */
+static void
+gistvacuumstripmetadata(Relation rel, Buffer buffer)
+{
+	Page		page = BufferGetPage(buffer);
+	OffsetNumber todelete[MaxOffsetNumber];
+	int			ntodelete = 0;
+
+	Assert(!GistPageIsLeaf(page));
+
+	for (OffsetNumber off = FirstOffsetNumber;
+		 off <= PageGetMaxOffsetNumber(page); off = OffsetNumberNext(off))
+	{
+		IndexTuple	itup = (IndexTuple) PageGetItem(page,
+													PageGetItemId(page, off));
+
+		if (GistTupleIsSkip(itup))
+			todelete[ntodelete++] = off;
+	}
+
+	if (ntodelete == 0)
+		return;
+
+	START_CRIT_SECTION();
+	MarkBufferDirty(buffer);
+	PageIndexMultiDelete(page, todelete, ntodelete);
+	if (RelationNeedsWAL(rel))
+	{
+		XLogRecPtr	recptr = gistXLogUpdate(buffer, todelete, ntodelete,
+											NULL, 0, InvalidBuffer);
+
+		PageSetLSN(page, recptr);
+	}
+	else
+		PageSetLSN(page, XLogGetFakeLSN(rel));
+	END_CRIT_SECTION();
 }
