@@ -413,13 +413,72 @@ the residual increment is small rather than zero. The claim we make is
 correspondingly narrow~--- unbounded growth is replaced by slow growth, not
 eliminated.
 
-% TODO: остальные измерения
-% 3. Упреждающее чтение: пара версий вокруг 69273b818b1, холодный страничный
-%    кэш, таблица прогревается до замера — иначе просмотр таблицы размывает
-%    эффект, как это вышло с порядком обхода. Скрипт run_vacuum_stream.sh,
-%    сборки stream-before/stream-after готовы.
-% 4. Блокировки обратного индекса: время ожидания, 218f51584d5^ против
-%    218f51584d5 и против fd83c83d094.
+\subsection{Lock waits in the inverted index}
+\label{sec:eval-gin}
+
+Section~\ref{sec:revert} makes a claim we had never measured: that the surviving
+half of the reverted change carries most of its practical benefit. Two more pairs
+of builds settle it. The first brackets \code{218f51584d5}, which introduced both
+modifications; the second brackets \code{fd83c83d094}, which removed the second.
+
+Ten million rows share one key, so there is a single large posting tree. The
+probe is an \emph{insertion} of a row with that key: it walks one root-to-leaf
+path, costs 7~ms, and contends for exactly the lock at issue. One writer, not a
+hundred~--- the quantity of interest is how long maintenance holds the lock, not
+how clients compete among themselves. It is also what the production workload
+was doing. Two cases: nothing to delete (0.1\% of rows removed at scattered
+positions, no page empties) and something to delete (a contiguous half of the
+table removed, so whole pages empty, entries being ordered by row pointer).
+
+\begin{table}[t]
+\centering
+\caption{Insertion delay beyond its unloaded cost of 7~ms, medians of four runs}
+\label{tab:ginlocks}
+\begin{tabular}{lrr}
+\toprule
+ & nothing to delete & something to delete \\
+\midrule
+before \code{218f51584d5} & 0.244~s & 0.382~s \\
+after \code{218f51584d5} & 0.011~s & 0.007~s \\
+\midrule
+before revert (both) & 0.006~s & 0.008~s \\
+after revert \code{fd83c83d094} & 0.005~s & 0.024~s \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The first row is the pathology. An insertion that costs 7~ms waited a quarter of
+a second \emph{when there was nothing to delete at all}~--- thirty-five times its
+own duration, spent waiting for a pass that had no work to do. That is the
+unconditional cleanup lock taken at the start of the descent and held throughout
+it. Within its pair the change is worth 21$\times$ when there is nothing to
+delete and 55$\times$ when there is.
+
+The lower half answers the question this section was written for. Removing the
+subtree locking costs nothing in the case where there is nothing to delete
+(0.006 against 0.005, within run-to-run spread) and a factor of three in the case
+where there is (0.008 against 0.024). Since most maintenance passes have nothing
+to delete, the surviving modification retains essentially all of the benefit in
+the common case and 16$\times$ of the original 55$\times$ in the uncommon one. The
+claim of Section~\ref{sec:revert} is therefore not a consolation offered after a
+retraction; it is quantitatively the larger part of what was proposed.
+
+Comparing across the pairs needs care, since eighteen months of unrelated
+development separate them. The configurations do overlap, however: the builds
+after \code{218f51584d5} and before \code{fd83c83d094} both contain the two
+modifications, and they agree within spread (0.011 against 0.006, and 0.007
+against 0.008). That overlap is what licenses composing the two results.
+
+We did not measure the throughput benefit of the subtree locking on its own. It
+was reverted, and quantifying an advantage no user can obtain would misrepresent
+what the work delivered; what matters about that modification is the deadlock,
+which is a question of correctness rather than of performance.
+
+% TODO: упреждающее чтение — пара версий вокруг 69273b818b1, холодный
+% страничный кэш, таблица прогревается до замера. Скрипт run_vacuum_stream.sh,
+% сборки stream-before/stream-after готовы; шесть прогонов дали 52,5 с с обеих
+% сторон, см. §\ref{sec:eval}. Отдельного раздела не заводим, пока нет случая,
+% в котором эффект виден.
 
 
 \section{Deployment experience}
