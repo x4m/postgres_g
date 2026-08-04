@@ -266,40 +266,83 @@ by definition not known ahead of time.
 
 \subsection{Traversal order}
 
-The pair of builds differs by exactly one commit. Ten million points, every
-fifth row deleted, index of about 90\,800 pages, buffer cache deliberately set
-to 256~MB so that the index does not fit: with a cache that holds the index,
-traversal order cannot matter. Each measurement starts from a fresh copy of an
-unchanged master table.
+The pair of builds differs by exactly one commit. Five million points, every
+fifth row deleted, index of about 45\,400 pages, \code{shared\_buffers} of
+128~MB. Before each measurement the operating system's page cache is dropped and
+the table is then warmed by a scan, so that the only cold pages are index pages;
+otherwise the heap scan, which both versions perform identically, dilutes the
+effect.
+
+The count of index page reads is unaffected by anything below and is the
+cleanest statement of what the change does: 90\,900 against 45\,400, a ratio of
+2.00 in every run, on an index of 45\,400 pages. Depth-first traversal reads
+every page twice, physical order reads it once.
+
+Elapsed time is a different quantity, and the difference matters. That counter
+records misses against \code{shared\_buffers}, not reads from storage: the
+second read of a page under logical traversal is usually served by the operating
+system's page cache. The two orders therefore issue roughly the same number of
+requests to the device. What differs is the \emph{sequence} of those requests,
+and whether the sequence can be exploited depends on readahead.
 
 \begin{table}[t]
 \centering
-\caption{Logical against physical traversal order}
-\label{tab:traversal}
-\begin{tabular}{lrrr}
+\caption{Index cleanup time against readahead. Medians of three runs.}
+\label{tab:readahead}
+\begin{tabular}{rrrr}
 \toprule
-traversal & VACUUM, s & index pages read & index pages \\
+\code{read\_ahead\_kb} & logical, s & physical, s & speedup \\
 \midrule
-logical & 12.1 / 11.8 / 12.6 & 180\,020 / 179\,772 / 180\,028 & 90\,827 \\
-physical & 11.8 / 11.7 & 90\,045 / 90\,013 & 90\,870 \\
+0 & 57.8 & 52.8 & 1.09 \\
+128 (default) & 20.9 & 6.1 & 3.43 \\
+4096 & 16.7 & 6.2 & 2.69 \\
 \bottomrule
 \end{tabular}
 \end{table}
 
-Physical order halves the number of index page reads, exactly and
-reproducibly: depth-first traversal returns to pages it has already read, and
-with a cache of 32\,768 pages against an index of 90\,800 those pages are gone
-by the time it does. The ratio is 2.00 in every run.
+Table~\ref{tab:readahead} isolates the mechanism. With readahead disabled the
+advantage almost vanishes~--- 1.09~--- even though the buffer-miss counts still
+differ by a factor of two. Both versions then issue one synchronous read per
+page, a page costs the same whichever order it is fetched in, and physical order
+has nothing to win with. Switch readahead on and sequential access collapses
+45\,400 reads of 8~KB into some 2\,800 reads of 128~KB, while the scattered
+accesses of logical order benefit little and often read pages that are never
+used. This is precisely the $c_r$ against $c_s$ distinction
+of~\eqref{eq:vac-logical} and~\eqref{eq:vac-phys}, exhibited by varying one
+knob.
 
-End-to-end time does not change. The reason is that this workload is dominated
-by the heap scan, which both versions perform identically; the saving falls
-entirely on the index half of the work. We report it as such rather than as a
-speedup of VACUUM, which it is not: whether it shows up in wall-clock time
-depends on what fraction of the cleanup is index work.
+Two smaller observations. Physical order is reproducible to 0.2~s
+(6.1 / 6.1 / 6.1) while logical order is not (29.6 / 20.2 / 20.9); the spread of
+the latter comes from how its requests happen to fall. And a very large
+readahead helps logical order rather than physical: at 4096~KB the former
+improves from 20.9 to 16.7 while the latter stays at 6.2, already limited by
+bandwidth (355~MB in 6.1~s, about 58~MB/s). The measured speedup at 4096~KB is
+thus formally smaller than at the default.
 
-This is also why the primary quantity in this paper is the number of index page
-reads and not elapsed time. The former isolates the change; the latter mixes it
-with work the change does not touch.
+\paragraph{Independent corroboration.} The storage used here is a network-backed
+virtual disk, which is the least favourable case for this change. Reporting on
+the commit within a fortnight of it landing, Janes~\cite{janes2019gistvacuum}
+measured a fiftyfold reduction in maintenance time on a rotating disk, and
+thirtyfold on a laptop SSD, threefold on an AWS GP2 volume; he described it as
+going ``from unusably unresponsive to merely sluggish''. Our 3.43 on a network
+volume sits with his 3 on a network volume. The whole span from 1.09 to 50 is
+governed by the single ratio $c_r/c_s$: large for a disk with a moving head,
+moderate for a local SSD, small for a network volume, and equal to one when
+readahead is switched off. We regard the agreement of an independently obtained
+factor of 3 with our own as better evidence for the model than either number
+alone.
+
+\begin{sloppypar}
+We should also record what we could not reproduce. Streaming reads
+(Section~\ref{sec:prefetch}) made no measurable difference on this hardware:
+six runs of the pair bracketing \code{69273b818b1} gave a median of 52.5~s on
+both sides. At the default readahead setting the kernel is already fetching
+sixteen pages ahead of a sequential scan, which is the same work by another
+route.
+The mechanism should pay where readahead cannot be relied on, notably for the
+$\beta$ pages, whose sequence readahead cannot guess; but we have not measured
+a case where it does, and we do not claim one.
+\end{sloppypar}
 
 \subsection{Page reuse}
 
