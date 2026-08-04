@@ -445,8 +445,9 @@ Garbage collection in a generalized search tree is harder than in a B-tree for
 reasons that are structural rather than incidental: no order to walk in, no
 parent known at the child, no local recomputation of a parent key. Physical-order
 traversal answers the first, at the cost of a second pass and of revisiting pages
-that concurrent insertions moved behind the sweep; it halves index page reads in
-the measured case. Two-pass deletion with coupled locks answers the second and
+that concurrent insertions moved behind the sweep; it halves index page reads,
+and its effect on time spans a factor of 1.09 to 50 according to one parameter
+of the storage, which we exhibit by varying readahead on a single device. Two-pass deletion with coupled locks answers the second and
 turns unbounded index growth into slow growth. Stating the reuse predicate over a
 non-wrapping counter answers a third problem that is not about trees at all, and
 whose failure mode~--- reclamation silently ceasing after long uptime~--- is

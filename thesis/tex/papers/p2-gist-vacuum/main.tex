@@ -48,8 +48,11 @@ region of the space while deleting from an old one grew its index without bound.
 
 We report four results and their implementation in PostgreSQL. A maintenance
 pass that traverses pages in physical rather than logical order, together with
-the treatment of entries that concurrent insertions move behind the sweep;
-measured, it halves the number of index page reads, exactly and reproducibly. A
+the treatment of entries that concurrent insertions move behind the sweep; it
+halves the number of index page reads exactly and reproducibly, and cuts index
+cleanup time by 3.43 on a network-backed volume~--- an advantage we show to be
+created entirely by readahead, and which an independent report on a rotating
+disk put at fifty. A
 two-pass algorithm that unlinks and reclaims emptied pages, whose correctness
 rests on the order of two operations under coupled locks. The safety condition
 for reusing a reclaimed page, expressed over a non-wrapping transaction counter,
