@@ -301,10 +301,60 @@ This is also why the primary quantity in this paper is the number of index page
 reads and not elapsed time. The former isolates the change; the latter mixes it
 with work the change does not touch.
 
+\subsection{Page reuse}
+
+The second pair of builds brackets \code{7df159a620b}. Its parent already
+traverses in physical order, so the pair isolates reclamation alone. The
+workload is the one the change was written for: a window three rounds wide
+slides along one axis, each round inserting 200\,000 rows into a fresh region,
+deleting everything that has left the window, and then running the maintenance
+pass. From round three on, the number of live rows is constant at 600\,000; the
+number of rows ever inserted is not.
+
+\begin{figure}[t]
+\centering
+\begin{tikzpicture}
+\begin{axis}[
+  width=0.82\linewidth, height=5.4cm,
+  xlabel={round}, ylabel={index pages},
+  xmin=0, xmax=31, ymin=0,
+  legend pos=north west, legend cell align=left,
+  grid=major, grid style={gray!20},
+  scaled y ticks=false, yticklabel style={/pgf/number format/1000 sep=\,},
+]
+\addplot[thick, mark=none] coordinates {(1,1651) (2,3268) (3,4916) (4,6563) (5,8201) (6,9845) (7,11491) (8,13146) (9,14781) (10,16405) (11,18040) (12,19679) (13,21306) (14,22952) (15,24601) (16,26228) (17,27874) (18,29508) (19,31149) (20,32769) (21,34394) (22,36033) (23,37663) (24,39298) (25,40934) (26,42574) (27,44213) (28,45847) (29,47485) (30,49122)};
+\addlegendentry{without reclamation}
+\addplot[thick, dashed, mark=none] coordinates {(1,1640) (2,3286) (3,4918) (4,6568) (5,8205) (6,8248) (7,8262) (8,8293) (9,8329) (10,8348) (11,8388) (12,8407) (13,8440) (14,8462) (15,8492) (16,8513) (17,8554) (18,8586) (19,8616) (20,8670) (21,8702) (22,8728) (23,8753) (24,8808) (25,8817) (26,8868) (27,8908) (28,8959) (29,8974) (30,9017)};
+\addlegendentry{with reclamation}
+\end{axis}
+\end{tikzpicture}
+\caption{Index size under a sliding window. The number of live rows is constant
+from round three.}
+\label{fig:reuse}
+\end{figure}
+
+Figure~\ref{fig:reuse} is the whole argument. Without reclamation the index
+grows linearly while the live data does not: 1\,637 pages per round, the median
+increment over rounds 6--30, and it does not stop. The only remedy available to
+an operator was to rebuild the index. With reclamation the curve flattens from
+round six, the increment falling to 32 pages per round~--- a factor of 51. By
+round thirty the two indexes are 49\,122 and 9\,017 pages, a factor of 5.45, and
+that factor keeps growing because one curve is linear and the other is nearly
+flat.
+
+The plateau is not at the ideal value. A freshly built index over 600\,000 rows
+occupies 4\,916 pages (round three), while the steady state is 9\,017, a factor
+of 1.83. That gap is the price of the incompleteness noted in
+Section~\ref{sec:deletion}: internal pages and last children are not deleted, so
+the residual increment is small rather than zero. The claim we make is
+correspondingly narrow~--- unbounded growth is replaced by slow growth, not
+eliminated.
+
 % TODO: остальные измерения
-% 2. Возврат страниц: 7df159a620b^ против 7df159a620b на нагрузке «вставка в
-%    новую область, удаление из старой». Динамика объёма индекса во времени.
-% 3. Упреждающее чтение: выпуск 17 против 18 за пределами буферного кэша.
+% 3. Упреждающее чтение: пара версий вокруг 69273b818b1, холодный страничный
+%    кэш, таблица прогревается до замера — иначе просмотр таблицы размывает
+%    эффект, как это вышло с порядком обхода. Скрипт run_vacuum_stream.sh,
+%    сборки stream-before/stream-after готовы.
 % 4. Блокировки обратного индекса: время ожидания, 218f51584d5^ против
 %    218f51584d5 и против fd83c83d094.
 

@@ -1,12 +1,17 @@
 #!/bin/bash
-# Третья сборка для измерения возврата страниц: 7df159a620b («Delete pages
-# during GiST VACUUM», выпуск 12) и её родитель. Родитель уже содержит
+# Третья сборка для измерения возврата страниц: 7df159a620b («Delete empty
+# pages during GiST VACUUM», выпуск 12) и её родитель. Родитель уже содержит
 # физический обход, так что пара изолирует именно возврат страниц.
+#
+# Взят не сам 7df159a620b, а d1b9ee4e440 — исправление к нему, вышедшее на
+# следующий день: во втором проходе использовался указатель IndexVacuumInfo,
+# уже недействительный к фазе очистки. На нашей нагрузке 7df159a620b падает по
+# SIGSEGV на первой же сборке мусора, которой есть что удалять.
 set -e
 export LANG=C LC_ALL=C
 
 cd "$HOME/pgsrc"
-for spec in "reuse-before:7df159a620b^" "reuse-after:7df159a620b"; do
+for spec in "reuse-before:7df159a620b^" "reuse-after:d1b9ee4e440"; do
   name=${spec%%:*}
   commit=${spec##*:}
   if [ -x "$HOME/bench-$name/bin/postgres" ]; then
