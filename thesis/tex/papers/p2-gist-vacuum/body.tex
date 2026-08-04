@@ -244,6 +244,26 @@ observe~--- of which the wraparound of Section~\ref{sec:xid} is the cleanest
 example~--- should be checked as structural invariants of the data, which is a
 different discipline from testing behaviour.
 
+\paragraph{The retry, and why it is not a result here.} The problem left open by
+the revert~--- reclaiming posting tree pages without locking the whole tree~---
+stayed open for eight years. We have recently proposed a full deletion protocol
+for it~\cite{thread-gin-posting-delete}, and what makes the attempt possible is
+not a better argument but better checking. Two things exist now that did not
+exist in 2018: an invariant checker for this index type, and injection points
+that suspend execution at a chosen place in the code. Together they permit
+isolation tests in which maintenance is paused mid-sweep while searches and
+insertions proceed into the same tree and the structure is then verified, and
+tests that provoke the deadlock directly~--- each side of the would-be wait
+cycle is suspended at its maximal lock footprint and the other side is driven
+into it. A regression in the locking protocol makes those tests hang.
+
+We report this and claim nothing from it. The protocol has been neither reviewed
+nor deployed, and by the argument of this very section that means it is not
+established. Presenting it as a result would repeat the 2018 error inside the
+paper that analyses the 2018 error. What it does show is that the conclusion
+above is actionable: the reason the problem became approachable again is
+precisely that the missing checks were built.
+
 \section{Prefetching during maintenance}
 \label{sec:prefetch}
 

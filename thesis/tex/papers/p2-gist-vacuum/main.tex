@@ -1,6 +1,11 @@
 % P2 — Concurrent garbage collection in generalized search trees.
 % Закрывает положение П4. Материал: выпуски 12, 13, 18.
-% Целевые издания: Journal of Systems and Software, Information Systems, SEIM.
+% Целевое издание: Journal of Systems and Software (Elsevier), Q1.
+% Почему не Information Systems, куда подана P1: во-первых, разбор отката —
+% жанр программной инженерии, в индексной статье он читается как отступление;
+% во-вторых, две одновременные подачи в один журнал связывают риск.
+% Аннотация выстроена под JSS: сначала эксплуатация и отменённый результат,
+% затем алгоритмы как то, что придаёт им вес.
 %
 % В статью обязательно включается разбор случая JPCS 2018 (раздел
 % «Lock granularity, and a result that did not survive»). Это то, ради чего
@@ -36,35 +41,34 @@
 \maketitle
 
 \begin{abstract}
-Deleting rows from a table does not free the space their entries occupy in an
-index. Reclaiming it is the job of a concurrent maintenance pass, and for a
-generalized search tree that pass is harder to write than for a B-tree: the key
-type admits no order, so there is no natural sequence in which to walk the
-structure; the descent is multi-path, so a page does not know its parent; and a
-parent key cannot be recomputed locally. Until recently the most widely deployed
-implementation of such a framework did not reclaim pages at all~--- an emptied
-page stayed in the index permanently, and a workload that inserts into a new
-region of the space while deleting from an old one grew its index without bound.
+This paper reports eight years of building, shipping and operating concurrent
+garbage collection for an extensible index framework, and one case in which that
+went wrong in an instructive way. A lock-granularity algorithm of ours was
+published, peer-reviewed, committed, deployed to production, and then reverted
+across every supported release after a report from the field: the algorithm was
+correct in its own terms, but it assumed something about the rest of the system
+that did not hold, and no reviewer of the paper was in a position to know that.
+We use the case to argue that peer review of a concurrent algorithm establishes
+less than it appears to, and that the gap is closed not by more tests but by
+invariants checked over the structure itself.
 
-We report four results and their implementation in PostgreSQL. A maintenance
-pass that traverses pages in physical rather than logical order, together with
-the treatment of entries that concurrent insertions move behind the sweep; it
-halves the number of index page reads exactly and reproducibly, and cuts index
-cleanup time by 3.43 on a network-backed volume~--- an advantage we show to be
-created entirely by readahead, and which an independent report on a rotating
-disk put at fifty. A
-two-pass algorithm that unlinks and reclaims emptied pages, whose correctness
-rests on the order of two operations under coupled locks. The safety condition
-for reusing a reclaimed page, expressed over a non-wrapping transaction counter,
-and its failure mode when expressed over a wrapping one~--- not corruption, but
-reclamation silently ceasing after long uptime. And, at some length, a negative
-result: a lock-granularity algorithm from this same line of work that was
-published, peer-reviewed, committed, deployed, and then reverted after a report
-from production, because a premise it made about the rest of the system did not
-hold. The first three have been in released versions for five years; we use the
-fourth to argue that peer review of a concurrent algorithm establishes less than
-it appears to, and that the gap is best closed by structural invariants rather
-than by more tests.
+The substrate for that argument is a body of work in PostgreSQL's generalized
+search trees, released and in production since version~12. Maintenance that
+traverses index pages in physical rather than logical order, with the treatment
+of entries that concurrent insertions move behind the sweep: it halves index page
+reads exactly, and cuts index cleanup time by 3.43 on a network-backed volume~---
+an advantage we show experimentally to be created entirely by operating system
+readahead, and which an independent report on a rotating disk put at fifty. A
+two-pass algorithm that unlinks and reclaims emptied pages, turning unbounded
+index growth under a sliding-window workload into growth 51 times slower; its
+correctness rests on the order of two operations under coupled locks. And a
+safety condition for page reuse whose failure mode, when expressed over a
+wrapping counter, is not corruption but reclamation silently ceasing after long
+uptime~--- a defect that no test of bounded duration can find, and that took
+months of operation to surface.
+
+Every defect discussed here was found by operation and none by a test. We report
+what that exposure found, what it did not, and what we now do differently.
 \end{abstract}
 
 \input{body}
