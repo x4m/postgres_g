@@ -45,106 +45,221 @@ establish.
 \section{Background}
 \label{sec:background}
 
-% Обобщённое дерево поиска, схема Корнакера, правые ссылки и номера
-% последовательности узлов. Многоверсионность: удалённая запись остаётся, пока
-% её может увидеть открытое сканирование. Понятие «страница больше не видна ни
-% одному сканированию» и почему оно нетривиально при многопутевом спуске.
+A generalized search tree~\cite{hellerstein1995generalized} is a balanced tree
+whose node occupies one page. An entry of an internal node is a pair (key,
+downlink), and the key covers the keys of every entry in the subtree below it.
+A search descends into every subtree whose key may contain an answer, so several
+descent paths may be active at once. The key type and the operations over it are
+supplied by an operator class; the tree itself knows nothing about them, and in
+particular knows no order on keys.
+
+Concurrency follows Kornacker et al.~\cite{kornacker1997concurrency}: pages of a
+level are chained by right links, and a split is arranged so that a search that
+arrives at a page after it has been split still reaches the data by following
+the right link. Nothing in that scheme requires holding a lock on the parent,
+which is what makes the descent cheap and, as Section~\ref{sec:revert} will
+show, what makes reasoning about a concurrent sweep of the same tree delicate.
+
+Deletion is not immediate. Under multiversion concurrency control a deleted row
+remains until no open snapshot can see it, and the index entry pointing at it
+remains with it. Maintenance therefore runs asynchronously, finds entries whose
+rows are gone, removes them, and~--- this is the part that a B-tree already had
+and a generalized search tree did not~--- notices pages that have become empty
+and returns them for reuse.
+
+The predicate that governs reuse is ``no scan can still reach this page''.
+In a B-tree this is answerable because a scan holds a position in a known order.
+Here the descent is multi-path: a scan may hold a reference to a page it has not
+yet visited, obtained on a path the sweep never observes. Section~\ref{sec:xid}
+is about stating that predicate in a form that does not decay with uptime.
 
 \section{Traversal in physical order}
 \label{sec:physical}
 
-% Логический обход даёт произвольное чтение: P = (L+I) c_r.
-% Физический: P = (L+I) c_s + beta c_r, где beta — страницы, перечитанные из-за
-% конкурентных вставок, переместивших необработанные элементы на уже пройденные
-% страницы.
-% Затруднение: при физическом обходе неизвестен родитель, а он нужен, чтобы
-% удалить нисходящую ссылку. Отсюда два прохода (раздел \ref{sec:deletion}).
-% Коммит fe280694d0d, выпуск 12.
+The original sweep walked the tree depth-first. Logical order bears no relation
+to where pages sit in the file, so the walk reads at random:
+%
+\begin{equation}\label{eq:vac-logical}
+  P_{\mathrm{log}} = (L + I)\,c_r ,
+\end{equation}
+%
+with $L$ leaf and $I$ internal pages and $c_r$ the cost of a random read. Worse,
+$L+I$ understates it whenever the buffer cache is smaller than the index: a
+depth-first walk revisits internal pages, and the revisit is a fresh read if the
+page has been evicted meanwhile. Section~\ref{sec:eval} measures exactly this
+and finds every page read twice.
+
+Sweeping in increasing page number instead, as a B-tree does, makes the reads
+sequential:
+%
+\begin{equation}\label{eq:vac-phys}
+  P_{\mathrm{phys}} = (L + I)\,c_s + \beta\,c_r ,
+\end{equation}
+%
+where $c_s < c_r$ is the cost of a sequential read and $\beta$ counts pages that
+must be read again. The second term is the price of doing this concurrently. A
+concurrent insertion that splits a node moves entries to a new page, and the new
+page may have a lower number than the sweep's current position; an entry that
+the sweep has not yet examined can thus end up behind it. The sweep records such
+pages and revisits them, and since their numbers are not known in advance those
+reads are random.
+
+Physical order costs something else, which is the subject of the next section:
+on reaching a page the algorithm no longer knows its parent. It needs the parent
+to remove a downlink. A single pass can no longer both find empty pages and
+unlink them, so the algorithm splits in two.
+
+Implemented in \code{fe280694d0d}, released in PostgreSQL~12.
 
 \section{Deleting and reusing pages}
 \label{sec:deletion}
 
-% До этой работы обобщённое дерево поиска не переиспользовало страницы вовсе:
-% опустевшая страница оставалась навсегда. При нагрузке «вставка в новую
-% область, удаление из старой» индекс рос неограниченно.
-%
-% Двухпроходный алгоритм: (1) физический обход, сбор номеров опустевших листьев
-% и внутренних страниц; (2) обход внутренних, удаление нисходящих ссылок,
-% пометка страниц удалёнными.
-%
-% Порядок операций внутри второго прохода — условие корректности: сначала
-% удаляется ссылка из родителя, затем страница помечается удалённой, блокировки
-% сцепляются. Обратный порядок допускал бы вставку в удаляемую страницу.
-%
-% Ограничение: внутренние страницы не удаляются, последний потомок не удаляется
-% никогда, как и в B-дереве. Рост замедляется на порядок, но не прекращается.
-% Коммиты 7df159a620b, 9eb5607e699, выпуск 12.
+Before this work the implementation did not reuse pages at all. A page that had
+lost its last entry stayed in the index for the life of the index. For a
+workload whose insertions and deletions fall in the same region of the space
+this is invisible, because the empty pages are refilled by ordinary splits. For
+a workload that inserts into a new region and deletes from an old one~--- which
+is what any key with a time component does~--- the index grows without bound,
+and the only remedy available to an operator was to rebuild it.
+
+The algorithm has two passes. The first is the physical sweep of
+Section~\ref{sec:physical}: it removes entries pointing at deleted rows and,
+along the way, records the numbers of leaf pages that have become empty and the
+numbers of all internal pages. The second pass visits the recorded internal
+pages, looks for downlinks to the recorded empty pages, removes those downlinks,
+marks the pages deleted and hands them to the free space map.
+
+Within the second pass the order of the two operations is a correctness
+condition. The downlink is removed from the parent first, then the child is
+marked deleted, and the locks are coupled: the parent's lock is held until the
+child is marked. A concurrent descent therefore never sees a downlink to a page
+that is already marked deleted. The reverse order admits the obvious failure~---
+a descent that read the downlink before the mark, and inserts into a page that
+is being taken away.
+
+The reclamation is deliberately incomplete. Internal pages are never deleted,
+and the last child of an internal page is never deleted, exactly as in a
+B-tree~\cite{graefe2011modern}: deleting either would require merging, which
+would have to be made safe against the multi-path descent. The unbounded growth
+above therefore becomes bounded growth an order of magnitude slower rather than
+no growth at all. We report this as a limitation, not as a solved problem.
+
+Implemented in \code{7df159a620b}; the checks were factored out in
+\code{9eb5607e699}. Both released in PostgreSQL~12.
 
 \section{When is it safe to reuse a page}
 \label{sec:xid}
 
-% Сканирование, начатое до удаления, может обратиться к странице позже.
-% Условие: «страница удалена раньше, чем начались все ныне активные
-% транзакции».
+Marking a page deleted does not make it available. A scan that started before
+the deletion may hold a reference to the page and follow it afterwards; if the
+page has been refilled by then, the scan reads unrelated data. Reuse is
+therefore allowed only once every transaction that could have started such a
+scan has finished. The implementation records the moment of deletion in the page
+and tests
 %
-% При 32-разрядном счётчике условие теряет смысл при зацикливании: достаточно
-% старая страница снова выглядит недавно удалённой. Отказ не наступает — просто
-% прекращается возврат страниц в оборот, и обнаруживается это спустя месяцы.
+\begin{equation}\label{eq:reuse}
+  \mathit{xid}_{\mathrm{deleted}} < \min \{\, \mathit{xid} : \text{transaction is active} \,\} .
+\end{equation}
 %
-% Общая формулировка: условия безопасности, выражаемые через монотонный
-% счётчик, должны формулироваться в терминах счётчика, не подверженного
-% зацикливанию, иначе корректность зависит от длительности эксплуатации.
-% Коммит 6655a7299d8, выпуск 13, перенесено в 12.
-% Смежное: 4ed8f0913bf, 64-разрядная адресация служебных журналов.
+The condition is correct. Its \emph{expression} was not. The moment was stored
+as a 32-bit transaction identifier, and that counter wraps. After wraparound a
+sufficiently old page again looks recently deleted, \eqref{eq:reuse} is false
+for it, and the page is never reused.
+
+The failure mode deserves a sentence of its own, because it is the reason the
+defect survived. Nothing breaks. No query returns a wrong answer, no assertion
+fires, no test fails. Reclamation simply stops, and the index resumes the
+unbounded growth that Section~\ref{sec:deletion} was written to prevent~--- on a
+system that has been up long enough, which is to say on exactly the systems
+where it matters. The observable symptom is a size trend measured in months.
+
+The fix is to store the full 64-bit identifier, which does not wrap:
+\code{6655a7299d8}, released in PostgreSQL~13 and back-patched to~12. The same
+reasoning was later applied to the addressing of the transaction status logs
+themselves (\code{4ed8f0913bf}).
+
+Stated generally: a safety condition of the form ``event $A$ preceded every
+currently live $B$'', expressed over a monotone counter, must be expressed over
+a counter that does not wrap. Otherwise the condition holds for a while and then
+quietly stops holding, and correctness becomes a function of uptime~--- a
+dependency that no test of bounded duration can detect.
 
 \section{Lock granularity, and a result that did not survive}
 \label{sec:revert}
 
-% Ключевой раздел. Изложение по порядку:
-%
-% 1. Задача: сборка мусора в дереве вхождений обратного индекса захватывала
-%    исключительную блокировку корня на всё время обработки. Для частого ключа
-%    дерево велико, и блокировка останавливает все обращения к этому ключу.
-%
-% 2. Предложено два изменения: (а) захватывать блокировку только когда
-%    действительно есть что удалять; (б) блокировать поддерево, а не всё дерево.
-%    Коммит 218f51584d5, выпуск 10. Опубликовано [borodin2018gin].
-%
-% 3. Через полтора года: сообщение об ошибке из эксплуатации
-%    [bug-gin-lwlock-2018] — соединения зависают на LWLock buffer_content.
-%    Диагноз: при конкурентном расщеплении родителя вставка не удерживает
-%    закреплений всех страниц пути корень—лист, откуда цикл ожидания со
-%    сборкой мусора.
-%
-% 4. Неинвазивного решения не нашли. Часть (б) отменена коммитом fd83c83d094 с
-%    переносом во все поддерживаемые выпуски. Часть (а) сохранена и даёт
-%    основной практический эффект: в большинстве проходов удалять нечего.
-%
-% 5. Сопутствующее: 52ac6cd2d0c — с версии 9.4 сканирование спускается не от
-%    корня, поэтому приём «переход вправо держит две страницы» перестал быть
-%    достаточным, и страница могла быть переиспользована до обращения к ней.
-%    Момент удаления записан в pd_prune_xid, поскольку формат служебной области
-%    страницы менять нельзя из соображений двоичной совместимости.
-%
-% 6. Вывод, ради которого раздел и написан: рецензирование статьи проверяет
-%    рассуждение при заявленных предпосылках. Предпосылки конкурентного
-%    алгоритма относятся не к нему, а к остальной части системы — здесь к
-%    протоколу закреплений при вставке, — и их нарушение обнаруживается только
-%    эксплуатацией на разнообразных нагрузках. Отсюда два практических
-%    следствия: (1) публикация о конкурентном алгоритме должна называть
-%    предпосылки в проверяемой форме; (2) свойства, не проверяемые
-%    функциональным тестом, должны проверяться инвариантами структуры.
+The remaining sections of this paper report algorithms that are in production.
+This one reports an algorithm that was in production and was taken out. We
+include it because the way it failed says something the successful cases cannot.
+
+\paragraph{The problem.} A generalized inverted index stores, for each key, the
+list of rows containing it; when the list grows large it becomes a posting tree.
+Maintenance of a posting tree took an exclusive lock on its root for the whole
+of the pass. For a frequent key the posting tree is large, the pass is long, and
+every access to that key waits on it.
+
+\paragraph{The change.} Two modifications were proposed. First, take the
+exclusive lock only when a page has actually been found to delete, rather than
+before starting. Second, lock the subtree containing the page to be deleted
+rather than the whole posting tree. Both were committed as \code{218f51584d5},
+released in PostgreSQL~10, and described in~\cite{borodin2018gin}.
+
+\paragraph{The report.} Eighteen months later, a report from
+production~\cite{bug-gin-lwlock-2018}: connections hanging on a buffer content
+lock. The diagnosis is the second modification. An insertion descending the
+posting tree does not, in general, hold pins on every page of the path from the
+root to its target leaf: a concurrent split of a parent breaks that property.
+Maintenance taking locks within a subtree and an insertion advancing through the
+tree can therefore form a wait cycle.
+
+\paragraph{The outcome.} No non-invasive fix was found. Restoring the missing
+invariant means changing the pinning protocol of insertion, which is not a
+change one back-patches. The second modification was reverted in
+\code{fd83c83d094} and the revert was back-patched to every supported release.
+The first modification stands, and it carries most of the practical benefit
+anyway, since in the majority of passes there is nothing to delete.
+
+A related defect was fixed at the same time. Since version~9.4 a scan may enter
+a posting tree other than at its root, so the argument ``the page is safe
+because a right-link step pins two pages at once'' stopped being sufficient, and
+a deleted page could be reused before a scan reached it. The fix is the same
+predicate as \eqref{eq:reuse}; the deletion moment had to be recorded in a
+header field unused by index pages, because the layout of the page's special
+area cannot be changed without breaking on-disk compatibility
+(\code{52ac6cd2d0c}, back-patched to~9.4). Two further deadlocks in the same
+code were fixed later still (\code{c6ade7a8cd3}, \code{e14641197a5}).
+
+\paragraph{What follows.} Peer review of~\cite{borodin2018gin} confirmed the
+reasoning, and the reasoning was not wrong. What was wrong was a premise, and
+the premise was not about the algorithm: it was about the rest of the system~---
+what pins an insertion holds while descending. A concurrent algorithm is stated
+against an environment, its correctness is relative to that environment's
+invariants, and those invariants live in code the author of the algorithm did
+not write and the reviewer did not read.
+
+We draw two practical conclusions, and we hold to both in the rest of this work.
+A publication about a concurrent algorithm should state the invariants it
+assumes of its environment in checkable form, so that the assumption can be
+tested rather than believed. And properties that no functional test can
+observe~--- of which the wraparound of Section~\ref{sec:xid} is the cleanest
+example~--- should be checked as structural invariants of the data, which is a
+different discipline from testing behaviour.
 
 \section{Prefetching during maintenance}
 \label{sec:prefetch}
 
-% Выигрыш физического порядка пропорционален разности стоимостей произвольного
-% и последовательного чтения. На современных накопителях эта разность
-% сокращается, но появляется другой источник: зная последовательность страниц
-% заранее, можно выдавать несколько запросов чтения одновременно.
-% Коммиты c5c239e26e3, 69273b818b1, e215166c9c8, выпуск 18.
-% Страницы, требующие повторной обработки (beta), читаются обычным образом:
-% их последовательность заранее неизвестна.
+By \eqref{eq:vac-phys} the benefit of physical order is proportional to
+$c_r - c_s$, and on current storage that difference is shrinking. It does not
+follow that physical order stops paying: knowing the sequence of pages in
+advance permits issuing several reads at once, which trades the shrinking
+difference for depth of the request queue. Latency is hidden by concurrency
+rather than by locality, and the prerequisite is the same~--- knowing what to
+read next.
+
+The sweep was rewritten onto the streaming read interface in three access
+methods: \code{c5c239e26e3} for the B-tree, \code{69273b818b1} here, and
+\code{e215166c9c8} for the space-partitioned tree, all in PostgreSQL~18.
+The pages of the $\beta$ term are read the ordinary way, since their sequence is
+by definition not known ahead of time.
 
 \section{Evaluation}
 \label{sec:eval}
@@ -197,20 +312,56 @@ with work the change does not touch.
 \section{Deployment experience}
 \label{sec:deployment}
 
-% Пять лет в выпусках 12–19. Что подтвердилось эксплуатацией и что она выявила:
-% три исправления взаимных блокировок после первой редакции изменения
-% гранулярности (fd83c83d094, c6ade7a8cd3, e14641197a5) — все обнаружены
-% сообщениями об ошибках, ни одно тестом.
-%
-% Это и есть содержание раздела: перечислить, что было найдено эксплуатацией и
-% чего не нашло бы тестирование.
+The algorithms of Sections~\ref{sec:physical}--\ref{sec:xid} have been in
+released versions since PostgreSQL~12, that is for five years and across seven
+major releases, on an installed base we cannot count but which is large. It is
+worth recording what that exposure found, because it is the empirical content of
+the methodological claim in Section~\ref{sec:revert}.
+
+Every defect discussed in this paper was found by operation and none by a test.
+The 32-bit wraparound of Section~\ref{sec:xid} required a system old enough for
+the counter to wrap. The deadlock of Section~\ref{sec:revert} required a
+concurrent split at a particular moment, and it took eighteen months of
+deployment to occur; two further deadlocks in the same code
+(\code{c6ade7a8cd3}, \code{e14641197a5}) took longer still. None of these is a
+gap in test coverage in the sense that writing one more test case would have
+closed it: they are properties whose violation is not a wrong answer at a
+reproducible input, but a schedule that does not arise unless the workload is
+diverse enough and the uptime long enough.
+
+The traversal and deletion algorithms themselves have not been the subject of a
+correctness report in five years. We claim no more from that than it supports:
+absence of reports over a long exposure is the strongest evidence available for
+a concurrent algorithm, and it is still not a proof.
 
 \section{Limitations}
 
-% Возврат страниц не полон: внутренние страницы и последний потомок не
-% удаляются. Выигрыш физического обхода зависит от носителя. Двухпроходный
-% алгоритм требует памяти под карту опустевших страниц; при её нехватке нужен
-% запасной путь. Блокировка поддерева при действующем протоколе закреплений
-% некорректна и требует его пересмотра — задача открыта.
+Reclamation is partial: internal pages and last children are never deleted
+(Section~\ref{sec:deletion}), so a hostile insert/delete pattern still grows the
+index, slowly. The benefit of physical order depends on the storage and on the
+ratio of index work to heap work in the pass; Section~\ref{sec:eval} shows a
+case where it is 2.00 in page reads and zero in elapsed time. The two-pass
+algorithm needs memory proportional to the number of emptied pages, and a
+fallback when that memory is not available. And locking a subtree rather than a
+whole posting tree remains incorrect under the current pinning protocol; making
+it correct requires revising that protocol, which we leave open.
 
 \section{Conclusion}
+
+Garbage collection in a generalized search tree is harder than in a B-tree for
+reasons that are structural rather than incidental: no order to walk in, no
+parent known at the child, no local recomputation of a parent key. Physical-order
+traversal answers the first, at the cost of a second pass and of revisiting pages
+that concurrent insertions moved behind the sweep; it halves index page reads in
+the measured case. Two-pass deletion with coupled locks answers the second and
+turns unbounded index growth into slow growth. Stating the reuse predicate over a
+non-wrapping counter answers a third problem that is not about trees at all, and
+whose failure mode~--- reclamation silently ceasing after long uptime~--- is
+characteristic of safety conditions expressed over wrapping counters.
+
+The fourth result is negative, and we have given it a section rather than a
+footnote. An algorithm can be correct in its own terms, reviewed, published,
+committed, and still wrong, because its premises belong to a system its author
+does not fully control. What that argues for is not less review but a different
+kind of checking alongside it: invariants over the structure, verifiable in
+production, on properties that no functional test observes.
