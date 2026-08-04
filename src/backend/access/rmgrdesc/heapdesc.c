@@ -14,6 +14,7 @@
  */
 #include "postgres.h"
 
+#include "access/heapam_hint.h"
 #include "access/heapam_xlog.h"
 #include "access/rmgrdesc_utils.h"
 #include "access/visibilitymapdefs.h"
@@ -349,6 +350,17 @@ heap2_desc(StringInfo buf, XLogReaderState *record)
 			}
 		}
 	}
+	else if (info == XLOG_HEAP2_HINT_BITS)
+	{
+		if (XLogRecHasBlockData(record, 0))
+		{
+			Size		datalen;
+			xl_heap_hint *xlrec = (xl_heap_hint *)
+				XLogRecGetBlockData(record, 0, &datalen);
+
+			appendStringInfo(buf, "ntuples: %u", xlrec->ntuples);
+		}
+	}
 	else if (info == XLOG_HEAP2_MULTI_INSERT)
 	{
 		xl_heap_multi_insert *xlrec = (xl_heap_multi_insert *) rec;
@@ -453,6 +465,9 @@ heap2_identify(uint8 info)
 			break;
 		case XLOG_HEAP2_PRUNE_VACUUM_CLEANUP:
 			id = "PRUNE_VACUUM_CLEANUP";
+			break;
+		case XLOG_HEAP2_HINT_BITS:
+			id = "HINT_BITS";
 			break;
 		case XLOG_HEAP2_MULTI_INSERT:
 			id = "MULTI_INSERT";

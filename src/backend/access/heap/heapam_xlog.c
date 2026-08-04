@@ -16,6 +16,7 @@
 
 #include "access/bufmask.h"
 #include "access/heapam.h"
+#include "access/heapam_hint.h"
 #include "access/visibilitymap.h"
 #include "access/xlog.h"
 #include "access/xlogutils.h"
@@ -1320,6 +1321,9 @@ heap2_redo(XLogReaderState *record)
 		case XLOG_HEAP2_PRUNE_VACUUM_SCAN:
 		case XLOG_HEAP2_PRUNE_VACUUM_CLEANUP:
 			heap_xlog_prune_freeze(record);
+			break;
+		case XLOG_HEAP2_HINT_BITS:
+			heap_hint_redo(record);
 			break;
 		case XLOG_HEAP2_MULTI_INSERT:
 			heap_xlog_multi_insert(record);
