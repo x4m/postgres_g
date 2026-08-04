@@ -75,8 +75,48 @@ what that exposure found, what it did not, and what we now do differently.
 
 \section*{Acknowledgements}
 
-% TODO: назвать по именам людей из тредов — рецензентов и соавторов кода.
-% Источник: plan/10-contributions.md.
+% Составлено по трейлерам коммитов (Author / Reviewed-by / Reported-by) и по
+% составу тредов, а не по памяти. Проверить написание имени К. Кузнецова: в
+% архиве оно стоит кириллицей, здесь дана обычная транслитерация.
+
+The work reported here was done in public, and most of it was done with people
+who owe the author nothing.
+
+Heikki Linnakangas reviewed and committed the whole of the maintenance work for
+generalized search trees~--- physical-order traversal, page deletion, the
+refactoring of the deleted-page checks and the move to 64-bit identifiers~---
+over a review that ran, with interruptions, from 2017 to 2019, and rewrote
+parts of it for the better. The line of work itself begins earlier, with
+Konstantin Kuznetsov, whose 2015 proposal for a new maintenance pass is where
+these patches started.
+
+Jeff Janes tested the result far past what was asked of him, including
+crash-recovery testing with simulated torn pages under high concurrency, and
+measured the effect on hardware the author did not have; the figures in
+Section~\ref{sec:eval} attributed to him come from that testing, and they remain
+the only evidence in this paper for the behaviour on a rotating disk. Michael
+Paquier, Thomas Munro, Dmitry Dolgov, David Steele, Michail Nikolaev, Robert
+Haas and Peter Geoghegan reviewed the patches or shepherded them through
+commitfests. Amit Kapila and Dilip Kumar found and fixed a memory leak in the
+committed version and went on to improve the deletion pass further.
+
+For the inverted-index work: Teodor Sigaev reviewed and committed the original
+change, with review from Jeff Davis. Chen Huajun reported the resulting deadlock
+from production~--- the report that Section~\ref{sec:revert} is built on, and
+without which the defect would have gone unnoticed for longer than it did.
+Alexander Korotkov wrote the revert and the two later deadlock fixes, and did so
+without the author's role in causing the problem being made an issue of; Peter
+Geoghegan contributed to the analysis and reviewed the last of them.
+
+Melanie Plageman reviewed and committed the streaming-read patches for all three
+access methods, with additional review from Junwang Zhao and Kirill Reshke. The
+64-bit addressing of the transaction status logs, referred to in
+Section~\ref{sec:xid}, is the work of Maxim Orlov, Aleksander Alekseev,
+Alexander Korotkov, Teodor Sigaev, Nikita Glukhov, Pavel Borisov and Yura
+Sokolov.
+
+Responsibility for what is wrong here, including the algorithm that had to be
+reverted, is the author's alone.
 
 \bibliographystyle{plain}
 \bibliography{../../common/refs}
