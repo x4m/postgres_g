@@ -1,0 +1,187 @@
+\section{Introduction}
+
+An index does not release space when rows are deleted from the table it
+indexes. Reclaiming that space is the job of a separate maintenance process,
+which must find the entries pointing at deleted rows, remove them, notice pages
+that have become empty and return those pages to use~--- concurrently with the
+ordinary workload, without blocking it.
+
+For a B-tree this is well-trodden ground~\cite{graefe2011modern}. For a
+generalized search tree~\cite{hellerstein1995generalized} it is harder in three
+specific ways, and each of them was, until recently, unsolved in the most
+widely deployed implementation. There is no order on keys, so the structure
+offers no natural sequence in which to walk it. The descent is multi-path, so
+the parent of a page is not known when the page is reached other than by
+descending to it. And the key of a parent cannot be recomputed locally, so
+removing an entry is not a local operation.
+
+This paper reports the algorithms that address these points, their
+implementation in PostgreSQL, and five years of their operation. It also
+reports, at some length, a case in which an algorithm from this same line of
+work was published, reviewed, committed, and then reverted after a bug report
+from production. That case is not an aside: it is the reason the paper ends
+with a claim about what peer review of a concurrent algorithm can and cannot
+establish.
+
+\paragraph{Contributions.}
+
+\begin{enumerate}
+\item Garbage collection that traverses index pages in physical rather than
+      logical order, and the treatment of entries that concurrent insertions
+      move behind the sweep (Section~\ref{sec:physical}).
+\item A two-pass algorithm that deletes emptied pages and returns them to the
+      free space map, with the lock coupling that makes it safe against
+      concurrent descent (Section~\ref{sec:deletion}).
+\item The safety condition for reusing a deleted page, expressed over full
+      64-bit transaction identifiers rather than wrapping 32-bit ones, and the
+      failure mode that the wrapping version exhibits~--- not corruption, but
+      the silent cessation of page reuse after long operation
+      (Section~\ref{sec:xid}).
+\item An account of the reverted lock-granularity change: what was published,
+      what production reported, why no non-invasive fix was found, and what
+      follows for how such work should be validated (Section~\ref{sec:revert}).
+\end{enumerate}
+
+\section{Background}
+\label{sec:background}
+
+% Обобщённое дерево поиска, схема Корнакера, правые ссылки и номера
+% последовательности узлов. Многоверсионность: удалённая запись остаётся, пока
+% её может увидеть открытое сканирование. Понятие «страница больше не видна ни
+% одному сканированию» и почему оно нетривиально при многопутевом спуске.
+
+\section{Traversal in physical order}
+\label{sec:physical}
+
+% Логический обход даёт произвольное чтение: P = (L+I) c_r.
+% Физический: P = (L+I) c_s + beta c_r, где beta — страницы, перечитанные из-за
+% конкурентных вставок, переместивших необработанные элементы на уже пройденные
+% страницы.
+% Затруднение: при физическом обходе неизвестен родитель, а он нужен, чтобы
+% удалить нисходящую ссылку. Отсюда два прохода (раздел \ref{sec:deletion}).
+% Коммит fe280694d0d, выпуск 12.
+
+\section{Deleting and reusing pages}
+\label{sec:deletion}
+
+% До этой работы обобщённое дерево поиска не переиспользовало страницы вовсе:
+% опустевшая страница оставалась навсегда. При нагрузке «вставка в новую
+% область, удаление из старой» индекс рос неограниченно.
+%
+% Двухпроходный алгоритм: (1) физический обход, сбор номеров опустевших листьев
+% и внутренних страниц; (2) обход внутренних, удаление нисходящих ссылок,
+% пометка страниц удалёнными.
+%
+% Порядок операций внутри второго прохода — условие корректности: сначала
+% удаляется ссылка из родителя, затем страница помечается удалённой, блокировки
+% сцепляются. Обратный порядок допускал бы вставку в удаляемую страницу.
+%
+% Ограничение: внутренние страницы не удаляются, последний потомок не удаляется
+% никогда, как и в B-дереве. Рост замедляется на порядок, но не прекращается.
+% Коммиты 7df159a620b, 9eb5607e699, выпуск 12.
+
+\section{When is it safe to reuse a page}
+\label{sec:xid}
+
+% Сканирование, начатое до удаления, может обратиться к странице позже.
+% Условие: «страница удалена раньше, чем начались все ныне активные
+% транзакции».
+%
+% При 32-разрядном счётчике условие теряет смысл при зацикливании: достаточно
+% старая страница снова выглядит недавно удалённой. Отказ не наступает — просто
+% прекращается возврат страниц в оборот, и обнаруживается это спустя месяцы.
+%
+% Общая формулировка: условия безопасности, выражаемые через монотонный
+% счётчик, должны формулироваться в терминах счётчика, не подверженного
+% зацикливанию, иначе корректность зависит от длительности эксплуатации.
+% Коммит 6655a7299d8, выпуск 13, перенесено в 12.
+% Смежное: 4ed8f0913bf, 64-разрядная адресация служебных журналов.
+
+\section{Lock granularity, and a result that did not survive}
+\label{sec:revert}
+
+% Ключевой раздел. Изложение по порядку:
+%
+% 1. Задача: сборка мусора в дереве вхождений обратного индекса захватывала
+%    исключительную блокировку корня на всё время обработки. Для частого ключа
+%    дерево велико, и блокировка останавливает все обращения к этому ключу.
+%
+% 2. Предложено два изменения: (а) захватывать блокировку только когда
+%    действительно есть что удалять; (б) блокировать поддерево, а не всё дерево.
+%    Коммит 218f51584d5, выпуск 10. Опубликовано [borodin2018gin].
+%
+% 3. Через полтора года: сообщение об ошибке из эксплуатации
+%    [bug-gin-lwlock-2018] — соединения зависают на LWLock buffer_content.
+%    Диагноз: при конкурентном расщеплении родителя вставка не удерживает
+%    закреплений всех страниц пути корень—лист, откуда цикл ожидания со
+%    сборкой мусора.
+%
+% 4. Неинвазивного решения не нашли. Часть (б) отменена коммитом fd83c83d094 с
+%    переносом во все поддерживаемые выпуски. Часть (а) сохранена и даёт
+%    основной практический эффект: в большинстве проходов удалять нечего.
+%
+% 5. Сопутствующее: 52ac6cd2d0c — с версии 9.4 сканирование спускается не от
+%    корня, поэтому приём «переход вправо держит две страницы» перестал быть
+%    достаточным, и страница могла быть переиспользована до обращения к ней.
+%    Момент удаления записан в pd_prune_xid, поскольку формат служебной области
+%    страницы менять нельзя из соображений двоичной совместимости.
+%
+% 6. Вывод, ради которого раздел и написан: рецензирование статьи проверяет
+%    рассуждение при заявленных предпосылках. Предпосылки конкурентного
+%    алгоритма относятся не к нему, а к остальной части системы — здесь к
+%    протоколу закреплений при вставке, — и их нарушение обнаруживается только
+%    эксплуатацией на разнообразных нагрузках. Отсюда два практических
+%    следствия: (1) публикация о конкурентном алгоритме должна называть
+%    предпосылки в проверяемой форме; (2) свойства, не проверяемые
+%    функциональным тестом, должны проверяться инвариантами структуры.
+
+\section{Prefetching during maintenance}
+\label{sec:prefetch}
+
+% Выигрыш физического порядка пропорционален разности стоимостей произвольного
+% и последовательного чтения. На современных накопителях эта разность
+% сокращается, но появляется другой источник: зная последовательность страниц
+% заранее, можно выдавать несколько запросов чтения одновременно.
+% Коммиты c5c239e26e3, 69273b818b1, e215166c9c8, выпуск 18.
+% Страницы, требующие повторной обработки (beta), читаются обычным образом:
+% их последовательность заранее неизвестна.
+
+\section{Evaluation}
+\label{sec:eval}
+
+% TODO. План измерений — bench/scripts, методика — как в P1: сравниваются
+% сборки, различающиеся ровно одним коммитом; первичная величина — счётчики,
+% а не времена; данные и запросы фиксируются зерном.
+%
+% 1. Обход: fe280694d0d^ против fe280694d0d. Время сборки мусора и
+%    последовательность номеров читаемых страниц. Отношение c_r/c_s на
+%    виртуальном диске определяется гипервизором, поэтому время приводится с
+%    характеристиками носителя, а основная величина — доля последовательных
+%    переходов в последовательности обращений.
+% 2. Возврат страниц: 7df159a620b^ против 7df159a620b на нагрузке «вставка в
+%    новую область, удаление из старой». Динамика объёма индекса во времени.
+% 3. Упреждающее чтение: выпуск 17 против 18 на данных, не помещающихся в
+%    буферный кэш.
+% 4. Блокировки обратного индекса: время ожидания при сборке мусора,
+%    218f51584d5^ против 218f51584d5 и против fd83c83d094.
+
+\section{Deployment experience}
+\label{sec:deployment}
+
+% Пять лет в выпусках 12–19. Что подтвердилось эксплуатацией и что она выявила:
+% три исправления взаимных блокировок после первой редакции изменения
+% гранулярности (fd83c83d094, c6ade7a8cd3, e14641197a5) — все обнаружены
+% сообщениями об ошибках, ни одно тестом.
+%
+% Это и есть содержание раздела: перечислить, что было найдено эксплуатацией и
+% чего не нашло бы тестирование.
+
+\section{Limitations}
+
+% Возврат страниц не полон: внутренние страницы и последний потомок не
+% удаляются. Выигрыш физического обхода зависит от носителя. Двухпроходный
+% алгоритм требует памяти под карту опустевших страниц; при её нехватке нужен
+% запасной путь. Блокировка поддерева при действующем протоколе закреплений
+% некорректна и требует его пересмотра — задача открыта.
+
+\section{Conclusion}
