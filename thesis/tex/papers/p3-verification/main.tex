@@ -1,0 +1,81 @@
+% P3 — Structural verification of index invariants.
+% Закрывает положение П5. Материал: главы 6 диссертации, выпуски 13, 18, 19.
+%
+% Целевое издание: ещё не выбрано. Кандидаты — Труды ИСП РАН (ВАК К1, русский
+% или английский, тематика «инструменты и методы») либо Information Systems.
+% Решать после того, как станет ясна судьба P1 и P2.
+%
+% Связка с P2: там показано, что рецензирование конкурентного алгоритма не
+% проверяет предпосылок, которые он делает об остальной системе, и сделан вывод
+% в пользу проверки инвариантов структуры. P3 — конструктивная половина того же
+% аргумента: как такие инварианты сформулировать и как их проверять на
+% действующей системе.
+
+\documentclass[11pt, a4paper]{article}
+
+\usepackage{fontspec}
+\usepackage[english, russian]{babel}
+\selectlanguage{english}
+\setmainfont{Times New Roman}[Ligatures=TeX]
+\setmonofont{Menlo}[Scale=0.85]
+
+\usepackage{geometry}
+\geometry{a4paper, margin=25mm}
+\usepackage{amsmath, amssymb, graphicx, booktabs}
+\usepackage[hidelinks]{hyperref}
+\newcommand{\code}[1]{\texttt{#1}}
+\emergencystretch=1em
+
+\title{Structural verification of index invariants in a running database}
+\author{Andrey Borodin}
+\date{}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+A defect in an index access method does not announce itself. The index does not
+fail; it begins to answer incompletely, and a query whose answer exists in the
+table does not find it. The application keeps working, and the discrepancy
+surfaces at an arbitrary later time, when the cause can no longer be
+reconstructed. Three defects of exactly this kind are recounted here from our own
+work on PostgreSQL: an inconsistent comparator in sorted index construction, the
+premature return of deleted pages to circulation, and prepared transactions
+overlooked when building an index concurrently. None of them is detectable by
+functional testing, because every individual operation returns a correct result;
+what fails is a property of the structure as a whole.
+
+We report the structural invariants of the generalized search tree and the
+generalized inverted index, stated in terms of the operator class interface so
+that they hold for any key type, and a verification procedure for them that is
+usable in production: on a live system, without exclusive access to the index,
+with memory bounded by the width of one tree level, and on a physical replica so
+that the load falls somewhere other than on the system serving users. We
+describe the two techniques that make this possible~--- a level-order traversal
+that carries parent keys downward through intermediate storage, and sibling-link
+verification with lock coupling in a single direction~--- and the normalization
+of index tuples without which comparing a tuple against a freshly built one
+compares representations rather than values.
+
+We also report that the checker itself needed checking. Four defects have been
+found in it since release, and three of them were not false alarms but the
+opposite: guards written so that the check behind them almost never ran, so that
+the tool reported success on indexes it had not examined. That is the failure
+mode it exists to detect, reappearing one level up, and it is the harder of the
+two to notice, because nobody investigates a clean bill of health.
+\end{abstract}
+
+\input{body}
+
+\section*{Acknowledgements}
+
+% TODO по итогам написания: назвать по трейлерам коммитов и по составу тредов.
+% Заведомо: П. Гейган (amcheck для B-дерева, с которого всё началось),
+% А. Коротков, А. Мухин, К. Решке, Japin Li, Р. Хапов, Miłosz Bieniek,
+% P. A. Jungwirth, Н. Самохвалов — тред «amcheck: support for GiST».
+% Проверить по git log, кто коммитил 14ffaece0fb, d70b17636dd, 39132b784ae.
+
+\bibliographystyle{plain}
+\bibliography{../../common/refs}
+
+\end{document}
