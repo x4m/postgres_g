@@ -7,6 +7,10 @@
 # смотреть /tmp/make-*.log.
 set -e
 export LANG=C LC_ALL=C
+. "$HOME/benchlock.sh"
+
+bench_lock
+bench_preflight
 
 cd "$HOME/pgsrc"
 for spec in "vac-before:fe280694d0d^" "vac-after:fe280694d0d"; do
@@ -18,14 +22,14 @@ for spec in "vac-before:fe280694d0d^" "vac-after:fe280694d0d"; do
   fi
   git checkout -qf "$commit"
   git clean -qfdx
-  if ! ./configure --prefix="$HOME/bench-$name" \
+  if ! ./configure 9>&- --prefix="$HOME/bench-$name" \
         --without-readline --without-zlib \
         CFLAGS="-O2 -Wno-error" > "/tmp/conf-$name.log" 2>&1; then
     echo "$name: configure не прошёл"
     tail -5 "/tmp/conf-$name.log"
     exit 1
   fi
-  if ! make -s -j"$(nproc)" > "/tmp/make-$name.log" 2>&1; then
+  if ! make -s -j"$(nproc)" 9>&- > "/tmp/make-$name.log" 2>&1; then
     echo "$name: сборка не прошла"
     grep -iE "error" "/tmp/make-$name.log" | head -8
     exit 1
@@ -34,3 +38,5 @@ for spec in "vac-before:fe280694d0d^" "vac-after:fe280694d0d"; do
   echo "$name: собран"
 done
 echo DONE
+
+bench_postflight

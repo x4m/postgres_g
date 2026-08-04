@@ -12,6 +12,7 @@
 #     версий, размывает эффект (как это вышло в run_vacuum_order.sh).
 set -e
 export LANG=C LC_ALL=C
+. "$HOME/benchlock.sh"
 
 N=${N:-20000000}
 DELFRAC=${DELFRAC:-5}
@@ -20,12 +21,12 @@ REP=${REP:-3}
 PORT=5462
 D=/mnt/nvme/data/stream
 
-q() { local n="$1"; shift; "$HOME/bench-$n/bin/psql" -h /tmp -p $PORT -d postgres -X -q -t -A "$@"; }
-stop()  { "$HOME/bench-$1/bin/pg_ctl" -D "$D" -w stop >/dev/null 2>&1 || true; }
-start() { "$HOME/bench-$1/bin/pg_ctl" -D "$D" -l "$D/pg.log" -w start >/dev/null; }
+q() { local n="$1"; shift; "$HOME/bench-$n/bin/psql" 9>&- -h /tmp -p $PORT -d postgres -X -q -t -A "$@"; }
+stop()  { "$HOME/bench-$1/bin/pg_ctl" 9>&- 9>&- -D "$D" -w stop >/dev/null 2>&1 || true; }
+start() { "$HOME/bench-$1/bin/pg_ctl" 9>&- 9>&- -D "$D" -l "$D/pg.log" -w start >/dev/null; }
 
 if [ ! -d "$D" ]; then
-  "$HOME/bench-stream-before/bin/initdb" -D "$D" --locale=C --encoding=UTF8 >/dev/null 2>&1
+  "$HOME/bench-stream-before/bin/initdb" 9>&- 9>&- -D "$D" --locale=C --encoding=UTF8 >/dev/null 2>&1
   {
     echo "port = $PORT"; echo "shared_buffers = $SHB"; echo "maintenance_work_mem = 1GB"
     echo "max_wal_size = 32GB"; echo "autovacuum = off"
@@ -40,6 +41,9 @@ if [ "$(q stream-before -c "select count(*) from pg_class where relname='st0'")"
       CREATE TABLE st0 AS SELECT point(random(), random()) AS p, i FROM generate_series(1,$N) i" >/dev/null
   q stream-before -c "VACUUM ANALYZE st0" >/dev/null
 fi
+
+bench_lock
+bench_preflight
 
 printf 'прогон|версия|сборка мусора, с|прочитано страниц индекса|страниц индекса\n'
 for i in $(seq 1 $REP); do
@@ -66,3 +70,5 @@ for i in $(seq 1 $REP); do
       "$((B1 - B0))" "$(q "$v" -c "select pg_relation_size('sti')/8192")"
   done
 done
+
+bench_postflight

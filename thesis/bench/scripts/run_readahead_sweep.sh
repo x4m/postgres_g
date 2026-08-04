@@ -18,6 +18,7 @@
 # дешёвом SSD и 3-кратный на сетевом томе.
 set -e
 export LANG=C LC_ALL=C
+. "$HOME/benchlock.sh"
 
 N=${N:-5000000}
 DELFRAC=${DELFRAC:-5}
@@ -28,15 +29,15 @@ DEV=${DEV:-vdb}
 PORT=5463
 D=/mnt/nvme/data/rasweep
 
-q() { local n="$1"; shift; "$HOME/bench-$n/bin/psql" -h /tmp -p $PORT -d postgres -X -q -t -A "$@"; }
-stop()  { "$HOME/bench-$1/bin/pg_ctl" -D "$D" -w stop >/dev/null 2>&1 || true; }
-start() { "$HOME/bench-$1/bin/pg_ctl" -D "$D" -l "$D/pg.log" -w start >/dev/null; }
+q() { local n="$1"; shift; "$HOME/bench-$n/bin/psql" 9>&- -h /tmp -p $PORT -d postgres -X -q -t -A "$@"; }
+stop()  { "$HOME/bench-$1/bin/pg_ctl" 9>&- 9>&- -D "$D" -w stop >/dev/null 2>&1 || true; }
+start() { "$HOME/bench-$1/bin/pg_ctl" 9>&- 9>&- -D "$D" -l "$D/pg.log" -w start >/dev/null; }
 setra() { sudo -n sh -c "echo $1 > /sys/block/$DEV/queue/read_ahead_kb"; }
 
 trap 'setra 128' EXIT   # вернуть исходное значение при любом выходе
 
 if [ ! -d "$D" ]; then
-  "$HOME/bench-vac-before/bin/initdb" -D "$D" --locale=C --encoding=UTF8 >/dev/null 2>&1
+  "$HOME/bench-vac-before/bin/initdb" 9>&- 9>&- -D "$D" --locale=C --encoding=UTF8 >/dev/null 2>&1
   {
     echo "port = $PORT"; echo "shared_buffers = $SHB"; echo "maintenance_work_mem = 512MB"
     echo "max_wal_size = 16GB"; echo "autovacuum = off"
@@ -50,6 +51,9 @@ if [ "$(q vac-before -c "select count(*) from pg_class where relname='rt0'")" = 
       CREATE TABLE rt0 AS SELECT point(random(), random()) AS p, i FROM generate_series(1,$N) i" >/dev/null
   q vac-before -c "VACUUM ANALYZE rt0" >/dev/null
 fi
+
+bench_lock
+bench_preflight
 
 printf 'read_ahead_kb|прогон|обход|сборка мусора, с|прочитано страниц индекса\n'
 for ra in $RAS; do
@@ -79,3 +83,5 @@ for ra in $RAS; do
     done
   done
 done
+
+bench_postflight

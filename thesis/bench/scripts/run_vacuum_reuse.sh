@@ -11,6 +11,7 @@
 # изолирует именно возврат страниц.
 set -e
 export LANG=C LC_ALL=C
+. "$HOME/benchlock.sh"
 
 M=${M:-200000}     # строк за раунд
 R=${R:-12}         # раундов
@@ -19,18 +20,21 @@ SHB=${SHB:-1GB}
 PORT=5461
 D=/mnt/nvme/data/reuse
 
-q() { local n="$1"; shift; "$HOME/bench-$n/bin/psql" -h /tmp -p $PORT -d postgres -X -q -t -A "$@"; }
-start() { "$HOME/bench-$1/bin/pg_ctl" -D "$D" -w stop >/dev/null 2>&1 || true
-          "$HOME/bench-$1/bin/pg_ctl" -D "$D" -l "$D/pg.log" -w start >/dev/null; }
+q() { local n="$1"; shift; "$HOME/bench-$n/bin/psql" 9>&- -h /tmp -p $PORT -d postgres -X -q -t -A "$@"; }
+start() { "$HOME/bench-$1/bin/pg_ctl" 9>&- 9>&- -D "$D" -w stop >/dev/null 2>&1 || true
+          "$HOME/bench-$1/bin/pg_ctl" 9>&- 9>&- -D "$D" -l "$D/pg.log" -w start >/dev/null; }
 
 if [ ! -d "$D" ]; then
-  "$HOME/bench-reuse-before/bin/initdb" -D "$D" --locale=C --encoding=UTF8 >/dev/null 2>&1
+  "$HOME/bench-reuse-before/bin/initdb" 9>&- 9>&- -D "$D" --locale=C --encoding=UTF8 >/dev/null 2>&1
   {
     echo "port = $PORT"; echo "shared_buffers = $SHB"; echo "maintenance_work_mem = 1GB"
     echo "max_wal_size = 16GB"; echo "autovacuum = off"
     echo "listen_addresses = ''"; echo "unix_socket_directories = '/tmp'"
   } >> "$D/postgresql.conf"
 fi
+
+bench_lock
+bench_preflight
 
 printf 'версия|раунд|живых строк|страниц индекса|страниц таблицы\n'
 for v in reuse-before reuse-after; do
@@ -52,3 +56,5 @@ for v in reuse-before reuse-after; do
       "$(q "$v" -c "SELECT pg_relation_size('rt')/8192")"
   done
 done
+
+bench_postflight
