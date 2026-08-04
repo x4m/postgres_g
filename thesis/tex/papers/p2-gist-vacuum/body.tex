@@ -149,21 +149,50 @@ establish.
 \section{Evaluation}
 \label{sec:eval}
 
-% TODO. План измерений — bench/scripts, методика — как в P1: сравниваются
-% сборки, различающиеся ровно одним коммитом; первичная величина — счётчики,
-% а не времена; данные и запросы фиксируются зерном.
-%
-% 1. Обход: fe280694d0d^ против fe280694d0d. Время сборки мусора и
-%    последовательность номеров читаемых страниц. Отношение c_r/c_s на
-%    виртуальном диске определяется гипервизором, поэтому время приводится с
-%    характеристиками носителя, а основная величина — доля последовательных
-%    переходов в последовательности обращений.
+\subsection{Traversal order}
+
+The pair of builds differs by exactly one commit. Ten million points, every
+fifth row deleted, index of about 90\,800 pages, buffer cache deliberately set
+to 256~MB so that the index does not fit: with a cache that holds the index,
+traversal order cannot matter. Each measurement starts from a fresh copy of an
+unchanged master table.
+
+\begin{table}[t]
+\centering
+\caption{Logical against physical traversal order}
+\label{tab:traversal}
+\begin{tabular}{lrrr}
+\toprule
+traversal & VACUUM, s & index pages read & index pages \\
+\midrule
+logical & 12.1 / 11.8 / 12.6 & 180\,020 / 179\,772 / 180\,028 & 90\,827 \\
+physical & 11.8 / 11.7 & 90\,045 / 90\,013 & 90\,870 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Physical order halves the number of index page reads, exactly and
+reproducibly: depth-first traversal returns to pages it has already read, and
+with a cache of 32\,768 pages against an index of 90\,800 those pages are gone
+by the time it does. The ratio is 2.00 in every run.
+
+End-to-end time does not change. The reason is that this workload is dominated
+by the heap scan, which both versions perform identically; the saving falls
+entirely on the index half of the work. We report it as such rather than as a
+speedup of VACUUM, which it is not: whether it shows up in wall-clock time
+depends on what fraction of the cleanup is index work.
+
+This is also why the primary quantity in this paper is the number of index page
+reads and not elapsed time. The former isolates the change; the latter mixes it
+with work the change does not touch.
+
+% TODO: остальные измерения
 % 2. Возврат страниц: 7df159a620b^ против 7df159a620b на нагрузке «вставка в
 %    новую область, удаление из старой». Динамика объёма индекса во времени.
-% 3. Упреждающее чтение: выпуск 17 против 18 на данных, не помещающихся в
-%    буферный кэш.
-% 4. Блокировки обратного индекса: время ожидания при сборке мусора,
-%    218f51584d5^ против 218f51584d5 и против fd83c83d094.
+% 3. Упреждающее чтение: выпуск 17 против 18 за пределами буферного кэша.
+% 4. Блокировки обратного индекса: время ожидания, 218f51584d5^ против
+%    218f51584d5 и против fd83c83d094.
+
 
 \section{Deployment experience}
 \label{sec:deployment}
