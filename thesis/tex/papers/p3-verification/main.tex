@@ -57,12 +57,16 @@ verification with lock coupling in a single direction~--- and the normalization
 of index tuples without which comparing a tuple against a freshly built one
 compares representations rather than values.
 
-We also report that the checker itself needed checking. Four defects have been
-found in it since release, and three of them were not false alarms but the
-opposite: guards written so that the check behind them almost never ran, so that
-the tool reported success on indexes it had not examined. That is the failure
-mode it exists to detect, reappearing one level up, and it is the harder of the
-two to notice, because nobody investigates a clean bill of health.
+We also report that the checker itself needed checking, and that the shape of its
+defects follows from its design contract. Since the first version, amcheck has
+forbidden false positives absolutely, conceding in exchange that it cannot prove
+the absence of corruption. That trade is right, but it spends the whole error
+budget on silence: where a check cannot be certain it declines, and a declined
+check produces no signal. Three of the four defects found in the first year were
+guards written so that the check behind them almost never ran~--- success
+reported on indexes never examined. Silent incompleteness is the property the
+tool exists to detect, and it is the property it exhibited. The remedy is not to
+loosen the contract but to measure coverage directly.
 \end{abstract}
 
 \input{body}
