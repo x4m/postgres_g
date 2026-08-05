@@ -172,6 +172,29 @@ construction methods is $P_{\text{build}} + n P_{\text{point}}$ for the expected
 number $n$ of queries over the lifetime of the index~--- not $P_{\text{build}}$
 alone, which is what such comparisons customarily report.
 
+\paragraph{Relation to earlier cost models.} Modelling the cost of a query over
+a multidimensional index by the expected number of nodes whose key intersects
+the query is due to Theodoridis and Sellis~\cite{theodoridis1996model}, who
+derived it for the R-tree from the data distribution and the properties of the
+partitioning, and whose treatment underlies the analyses collected
+in~\cite{manolopoulos2006rtrees}. Our~\eqref{eq:omega} is that quantity stated
+in terms of the operator class interface rather than of rectangles, which is
+what makes it applicable to a framework where the key type is not known in
+advance; and our contribution is not the definition but the observation that the
+quantity is constant across levels rather than compounding, which is what turns
+a per-level model into the single factor of~\eqref{eq:steady}. Cost models of
+this family have been applied by the author to aggregate queries in analytical
+workloads~\cite{borodin2011estimation} and to the behaviour of such indexes at
+high dimensionality~\cite{borodin2016highd}.
+
+The processor term is deliberately absent from~\eqref{eq:steady}. Within a
+visited node the search examines all $f$ entries, so a full accounting adds
+$\sum_l \omega_l f c_c$ for a per-entry comparison cost $c_c$; this term does not
+depend on the construction method and therefore cancels in the comparisons of
+Section~\ref{sec:eval}. It is not negligible in absolute terms, and
+Section~\ref{sec:cpu-dividend} reports a direct measurement of what removing part
+of it is worth.
+
 \section{Sorted construction at framework level}
 \label{sec:build}
 
@@ -644,6 +667,98 @@ buffer lookup and pinning together account for 18.4\,\% and are proportional to
 the number of pages visited, that is to $\omega_\infty$: the contribution of
 this paper, argued so far in terms of I/O, yields a comparable saving in CPU on
 data that fits in memory.
+
+\subsection{The processor term, measured directly}
+\label{sec:cpu-dividend}
+
+The profile says that iterating over entries dominates, which makes the term
+$\sum_l \omega_l f c_c$ of Section~\ref{sec:cost} the interesting one. It can be
+measured rather than argued about, by changing $f c_c$ and holding everything
+else fixed.
+
+We do so with a prototype that adds an in-page structure over the entries of a
+node, so that a descent examines a subset of them instead of all $f$. The
+construction algorithm, the tree shape and the page contents are otherwise
+unchanged. The measurement compares two binaries, three runs each with the
+configurations interleaved, on 5 million uniform points.
+
+\begin{table}[t]
+\centering
+\caption{Effect of examining fewer entries per node. Medians of three
+interleaved runs.}
+\label{tab:cpudividend}
+\begin{tabular}{lrrr}
+\toprule
+ & baseline & in-page index & ratio \\
+\midrule
+join by index, 200\,000 outer rows & 3.05~s & 2.16~s & 1.41 \\
+same, insertion-built index & 2.70~s & 2.02~s & 1.34 \\
+5000 point queries & 0.246~s & 0.218~s & 1.13 \\
+index pages & 40\,594 & 40\,614 & $+0.05\,\%$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The index is the same size to within 0.05\,\%, and the number of pages a query
+visits is therefore unchanged: the entire difference is processor time inside
+visited nodes. A join by index runs 1.41 times faster with an identical access
+pattern.
+
+Two things follow for this paper. The processor term is real and, on
+memory-resident data, of the same order as the I/O term the paper is otherwise
+about. And it is orthogonal to construction: the same 1.34--1.41 appears on an
+index built by insertion, so this is not an artefact of sorted packing. We
+report it as a measurement of the model rather than as a contribution~--- the
+prototype is not part of the shipped implementation, and its own trade-offs are
+outside the scope of this paper.
+
+\section{Alternatives considered and rejected}
+\label{sec:rejected}
+
+The published record of a change in an open-source system shows the decision
+that was taken and not the ones that were not. Since the alternatives are the
+part a reader is most likely to wonder about, we set them out. The design
+described in Section~\ref{sec:build} was chosen over three others in a working
+group during December 2021 and January 2022.
+
+\paragraph{Where the problem came from.} Not from analysis. Sorted construction
+had already shipped when Paul Ramsey measured a self-join on PostGIS against an
+index built the new way and found it twice as slow as before, posting pictures
+of the two trees to the postgis-devel list in November 2021. Darafei
+Praliaskouski convened a working group on 16~December 2021; Aliaksandr Kalenik
+and Sergei Shoulbakov took part. The overlap analysis of Section~\ref{sec:cost}
+was written to explain a complaint that already existed.
+
+\paragraph{Ordering leaf entries by row pointer.} A separate proposal ordered the
+entries within a leaf page by the physical position of the row they reference, so
+that the table would be read in increasing block order. It was implemented and
+measured, and the effect was not distinguishable from noise: 5.65 against 5.70
+seconds on geometry data, with the difference in both directions across runs, and
+within 100~ms on a deliberately shuffled table. The reason is that the first half
+of a self-join already traverses the table in disk order, so there is little left
+to gain. We mention it because it is the intuitive optimisation, and it does not
+work.
+
+\paragraph{Choosing split points by penalty instead of \code{picksplit}.} The
+competing proposal for Section~\ref{sec:overlap} was to fill a page to half
+capacity and then, for each further entry, ask the operator class for the
+\code{penalty} of adding it and start a new page as soon as the penalty turns
+positive. This was implemented, and it is cheaper in processor time than calling
+\code{picksplit} over a buffer. It was not adopted. The argument against it is
+not performance but provenance: \code{picksplit} is where the author of an
+operator class has already expressed what a good partition of that key type is,
+whereas a penalty threshold is a criterion invented by us and imposed on every
+key type. Section~\ref{sec:eval} shows the adopted rule costs 87\,\% more build
+time than naive packing; the rejected one would have cost less. We consider
+reusing the operator class author's own notion of quality worth that, and record
+the trade so that a reader who disagrees can see exactly what was traded.
+
+\paragraph{A free-space budget carried up the tree.} A further proposal treated
+the fill factor as a property of the index rather than of a page: on flushing a
+page, the deviation from the configured fill would be carried upward, so that
+under-filling a leaf permits over-filling its parent, keeping total free space
+constant but placing it where it does more good. This was neither implemented nor
+refuted. We record it as an open direction.
 
 \section{Deployment experience}
 \label{sec:deployment}
