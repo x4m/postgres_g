@@ -345,14 +345,76 @@ an offset from an assumption. Only the right-link row here satisfies both. That
 is one solid finding out of six attempts, and the discipline that reduced the
 other five is the same discipline this paper recommends applying to indexes.
 
-% TODO, когда освободится машина:
-% 1. Накладные расходы: время и число прочитанных страниц относительно размера
-%    индекса, холодный и тёплый кэш. Первичная величина — страницы.
-% 2. Расход памяти при обходе по уровням против обхода сверху вниз — прямая
-%    проверка утверждения §\ref{sec:parent}.
-% 3. Проверка на реплике против основной системы: влияние на задержку
+\subsection{Cost of the check}
+
+Two claims of Section~\ref{sec:parent} are measurable directly: that level-order
+traversal reads each page about once, and that memory is bounded by the width of
+one level rather than by the size of the index.
+
+The first holds exactly. The ratio of pages read to pages in the index is
+\textbf{1.00} in every configuration measured~--- 1\,134 of 1\,135, 2\,848 of
+2\,849, 10\,770 of 10\,771, the difference being the metapage. The quantity is
+deterministic and independent of cache size and warming.
+
+Elapsed time follows from that: 0.5, 1.3 and 4.9~seconds for the three sizes on a
+cold cache, and 0.0, 0.0 and 0.1~seconds warm. The check is I/O bound and costs
+one sequential pass; on a warm index it is close to free. This is what makes the
+practical argument of Section~\ref{sec:replica} work~--- verification cheap
+enough to run continuously rather than during an incident.
+
+\subsection{A claim that one version would have refuted}
+
+The memory claim produced the most instructive result in this paper, and it is
+not the one we set out to obtain.
+
+Measured on the current release, peak resident memory of the checking backend
+grew linearly with the index: 25.4, 33.8 and 74.6~MB as the index grew by a
+factor of 9.5. The buffer cache was 32~MB, so touched shared buffers cannot
+account for it. The reading was plain: memory is \emph{not} bounded by level
+width, and Section~\ref{sec:parent} is wrong.
+
+It is not wrong. A pair of builds bracketing a single commit~---
+\code{1f8ab91c11e}, ``amcheck: Fix memory leak with \code{gin\_index\_check()}''
+\cite{thread-gin-amcheck-leak}~--- separates the algorithm from the build.
+
+\begin{table}[t]
+\centering
+\caption{Peak resident memory of the checking backend, 32~MB buffer cache}
+\label{tab:memory}
+\begin{tabular}{rrr}
+\toprule
+index pages & before the fix & after the fix \\
+\midrule
+1\,135 & 20.1~MB & 14.4~MB \\
+2\,849 & 28.5~MB & 14.3~MB \\
+10\,771 & 69.8~MB & \textbf{20.0~MB} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+After the fix, memory is essentially flat across a ninefold growth of the index,
+which is the claim of Section~\ref{sec:parent}. Before it, memory grows with the
+index, which is the leak: the commit message records that a tuple pointer was
+overwritten on every iteration, ``leaking memory for every tuple processed on
+entry tree pages, the larger the worse''. Our measurement reproduces that
+independently and puts a number on it~--- 70~MB against 20~MB at five million
+rows.
+
+The methodological point is worth more than the numbers. A measurement on a
+single version would have refuted a true claim, because that version contained a
+defect. No amount of care within one build separates ``this is how the algorithm
+behaves'' from ``this is how this build behaves''; only a pair differing by one
+commit does. That is the same argument this paper makes about checking indexes,
+turned on the act of measuring: the silence of a check proves nothing, and
+neither does a single reading.
+
+% TODO, когда дойдут руки:
+% 1. Проверка на реплике против основной системы: влияние на задержку
 %    пользовательской нагрузки.
-% 4. Ключ родителя — после разбора формата кортежа внутренней страницы словаря.
+% 2. Ключ родителя — после разбора формата кортежа внутренней страницы словаря
+%    (см. §\ref{sec:eval}, строка признана недостоверной).
+% 3. Чистое измерение собственной памяти через pg_backend_memory_contexts
+%    вместо показаний ядра.
 
 \section{Limitations}
 
