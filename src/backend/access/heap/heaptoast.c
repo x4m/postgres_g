@@ -740,28 +740,47 @@ heap_fetch_toast_slice(Relation toastrel, Oid valueid, int32 attrsize,
 		/*
 		 * Some checks on the data we've found
 		 */
+
 		if (curchunk != expectedchunk)
+		{
+			if (flags & TOAST_MISSING_OK)
+				goto toast_broken_missing_ok;
+
 			ereport(ERROR,
 					(errcode(ERRCODE_DATA_CORRUPTED),
 					 errmsg_internal("unexpected chunk number %d (expected %d) for toast value %u in %s",
 									 curchunk, expectedchunk, valueid,
 									 RelationGetRelationName(toastrel))));
+		}
+
 		if (curchunk > endchunk)
+		{
+			if (flags & TOAST_MISSING_OK)
+				goto toast_broken_missing_ok;
+
 			ereport(ERROR,
 					(errcode(ERRCODE_DATA_CORRUPTED),
 					 errmsg_internal("unexpected chunk number %d (out of range %d..%d) for toast value %u in %s",
 									 curchunk,
 									 startchunk, endchunk, valueid,
 									 RelationGetRelationName(toastrel))));
+		}
+
 		expected_size = curchunk < totalchunks - 1 ? TOAST_MAX_CHUNK_SIZE
 			: attrsize - ((totalchunks - 1) * TOAST_MAX_CHUNK_SIZE);
+
 		if (chunksize != expected_size)
+		{
+			if (flags & TOAST_MISSING_OK)
+				goto toast_broken_missing_ok;
+
 			ereport(ERROR,
 					(errcode(ERRCODE_DATA_CORRUPTED),
 					 errmsg_internal("unexpected chunk size %d (expected %d) in chunk %d of %d for toast value %u in %s",
 									 chunksize, expected_size,
 									 curchunk, totalchunks, valueid,
 									 RelationGetRelationName(toastrel))));
+		}
 
 		/*
 		 * Copy the data into proper place in our result
@@ -787,11 +806,8 @@ heap_fetch_toast_slice(Relation toastrel, Oid valueid, int32 attrsize,
 	if (expectedchunk != (endchunk + 1))
 	{
 		if (flags & TOAST_MISSING_OK)
-		{
-			systable_endscan_ordered(toastscan);
-			toast_close_indexes(toastidxs, num_indexes, AccessShareLock);
-			return false;
-		}
+			goto toast_broken_missing_ok;
+
 		ereport(ERROR,
 				(errcode(ERRCODE_DATA_CORRUPTED),
 				 errmsg_internal("missing chunk number %d for toast value %u in %s",
@@ -804,4 +820,10 @@ heap_fetch_toast_slice(Relation toastrel, Oid valueid, int32 attrsize,
 	toast_close_indexes(toastidxs, num_indexes, AccessShareLock);
 
 	return true;
+
+toast_broken_missing_ok:
+	/* End scan and close indexes. */
+	systable_endscan_ordered(toastscan);
+	toast_close_indexes(toastidxs, num_indexes, AccessShareLock);
+	return false;
 }

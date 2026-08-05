@@ -112,7 +112,7 @@ $toast = setup_table('rewrite_test');
 create_missing_toast_state('rewrite_test', $toast);
 
 ($ret, $stdout, $stderr) = $node->psql('db_target',
-	'CREATE INDEX rewrite_test_data_idx ON rewrite_test (data)');
+	'CREATE INDEX rewrite_test_data_idx ON rewrite_test ((rewrite_test IS NOT NULL))');
 is($ret, 0, "CREATE INDEX succeeds without missing-chunk error");
 unlike($stderr, qr/missing chunk/, "CREATE INDEX: no missing-chunk error");
 

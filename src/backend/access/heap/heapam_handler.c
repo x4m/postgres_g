@@ -927,14 +927,14 @@ heapam_relation_copy_for_cluster(Relation OldHeap, Relation NewHeap,
 											  values, isnull, rwstate,
 											  recently_dead ? TOAST_MISSING_OK : 0))
 				{
+					Assert(recently_dead);
 					/*
 					 * Missing TOAST chunks for a recently-dead tuple. Treat
 					 * it as dead.
 					 */
 					*tups_vacuumed += 1;
 					*num_tuples -= 1;
-					if (recently_dead)
-						*tups_recently_dead -= 1;
+					*tups_recently_dead -= 1;
 					continue;
 				}
 			}
@@ -1226,7 +1226,7 @@ heapam_index_build_range_scan(Relation heapRelation,
 	BlockNumber previous_blkno = InvalidBlockNumber;
 	BlockNumber root_blkno = InvalidBlockNumber;
 	OffsetNumber root_offsets[MaxHeapTuplesPerPage];
-	Bitmapset  *index_attrs = NULL;
+	Bitmapset  *detoast_index_attrs = NULL;
 
 	/*
 	 * sanity checks
@@ -1332,11 +1332,60 @@ heapam_index_build_range_scan(Relation heapRelation,
 		int			attnum = indexInfo->ii_IndexAttrNumbers[i];
 
 		if (attnum != 0)
-			index_attrs = bms_add_member(index_attrs,
+			detoast_index_attrs = bms_add_member(detoast_index_attrs,
 										 attnum - FirstLowInvalidHeapAttributeNumber);
 	}
-	pull_varattnos((Node *) indexInfo->ii_Expressions, 1, &index_attrs);
-	pull_varattnos((Node *) indexInfo->ii_Predicate, 1, &index_attrs);
+	pull_varattnos((Node *) indexInfo->ii_Expressions, 1, &detoast_index_attrs);
+	pull_varattnos((Node *) indexInfo->ii_Predicate, 1, &detoast_index_attrs);
+
+	/*
+	 * Post-process the attribute bitmap.
+	 *
+	 * We remove all non-varlena attributes (we don't need to check them
+	 * during detoasting), and add all varlena attributes if the index
+	 * contains a whole-row expression.
+	 */
+	if (bms_is_member(-FirstLowInvalidHeapAttributeNumber, detoast_index_attrs))
+	{
+		TupleDesc desc = RelationGetDescr(heapRelation);
+
+		for (AttrNumber i = RelationGetNumberOfAttributes(heapRelation); i > 0; i--)
+		{
+			AttrNumber	offset = i - FirstLowInvalidHeapAttributeNumber;
+			CompactAttribute *att = TupleDescCompactAttr(desc, i - 1);
+
+			/*
+			 * If the attribute is varlena, add it to the map, else remove
+			 * the attribute.
+			 * We work backwards to avoid reallocations.
+			 */
+			if (att->attlen == -1)
+				detoast_index_attrs = bms_add_member(detoast_index_attrs, offset);
+			else
+				detoast_index_attrs = bms_del_member(detoast_index_attrs, offset);
+		}
+
+		detoast_index_attrs = bms_del_member(detoast_index_attrs, -FirstLowInvalidHeapAttributeNumber);
+	}
+	else
+	{
+		TupleDesc desc = RelationGetDescr(heapRelation);
+
+		for (AttrNumber i = RelationGetNumberOfAttributes(heapRelation); i > 0; i--)
+		{
+			AttrNumber	offset = i - FirstLowInvalidHeapAttributeNumber;
+			CompactAttribute *att = TupleDescCompactAttr(desc, i - 1);
+
+			/*
+			 * If the attribute is not varlena, remove the attribute from
+			 * tracking.
+			 *
+			 * We work backwards to avoid reallocations.
+			 */
+			if (att->attlen != -1)
+				detoast_index_attrs = bms_del_member(detoast_index_attrs, offset);
+		}
+	}
 
 	/* Publish number of blocks to scan */
 	if (progress)
@@ -1375,6 +1424,7 @@ heapam_index_build_range_scan(Relation heapRelation,
 	while ((heapTuple = heap_getnext(scan, ForwardScanDirection)) != NULL)
 	{
 		bool		tupleIsAlive;
+		Bitmapset  *detoasted_attrs = NULL;
 
 		CHECK_FOR_INTERRUPTS();
 
@@ -1676,36 +1726,36 @@ heapam_index_build_range_scan(Relation heapRelation,
 		/* Set up for predicate or expression evaluation */
 		ExecStoreBufferHeapTuple(heapTuple, slot, hscan->rs_cbuf);
 
-		/*
-		 * In a partial index, discard tuples that don't satisfy the
-		 * predicate.
-		 */
-		if (predicate != NULL)
-		{
-			if (!ExecQual(predicate, econtext))
-				continue;
-		}
-
 		/* For RECENTLY_DEAD tuples, pre-detoast external TOAST values. */
-		if (!tupleIsAlive)
+		if (!tupleIsAlive && !bms_is_empty(detoast_index_attrs))
 		{
 			bool		skip = false;
 			int			attno;
 
-			slot_getallattrs(slot);
+			/*
+			 * Only get the attributes up to the last attribute we want to
+			 * detoast.
+			 */
+			attno = bms_prev_member(detoast_index_attrs, -1);
+			slot_getsomeattrs(slot, attno + FirstLowInvalidHeapAttributeNumber);
+
+			/*
+			 * Iterate over the attributes which are now in tts_isnull/
+			 * tts_values slots, and detoast them where needed.
+			 */
 			attno = -1;
-			while ((attno = bms_next_member(index_attrs, attno)) >= 0)
+			while ((attno = bms_next_member(detoast_index_attrs, attno)) >= 0)
 			{
 				int			attnum = attno + FirstLowInvalidHeapAttributeNumber;
-				Form_pg_attribute att;
 
 				if (attnum <= 0)
 					continue;	/* system column */
-				att = TupleDescAttr(RelationGetDescr(heapRelation), attnum - 1);
-				if (att->attlen != -1 || att->attisdropped)
-					continue;
+
+				Assert(TupleDescCompactAttr(RelationGetDescr(heapRelation), attnum - 1)->attlen == -1);
+
 				if (slot->tts_isnull[attnum - 1])
 					continue;
+
 				if (VARATT_IS_EXTERNAL_ONDISK(DatumGetPointer(slot->tts_values[attnum - 1])))
 				{
 					varlena    *detoasted;
@@ -1717,10 +1767,37 @@ heapam_index_build_range_scan(Relation heapRelation,
 						skip = true;
 						break;
 					}
+
 					slot->tts_values[attnum - 1] = PointerGetDatum(detoasted);
+
+					detoasted_attrs = bms_add_member(detoasted_attrs, attnum);
 				}
 			}
+
 			if (skip)
+			{
+				attno = -1;
+
+				/* cleanup any pre-detoasted values */
+				while ((attno = bms_next_member(detoasted_attrs, attno)) != -2)
+				{
+					Assert(attno > 0);
+					pfree(DatumGetPointer(slot->tts_values[attno - 1]));
+				}
+
+				/* final cleanup of this iteration's memory */
+				bms_free(detoasted_attrs);
+				continue;
+			}
+		}
+
+		/*
+		 * In a partial index, discard tuples that don't satisfy the
+		 * predicate.
+		 */
+		if (predicate != NULL)
+		{
+			if (!ExecQual(predicate, econtext))
 				continue;
 		}
 
@@ -1786,6 +1863,20 @@ heapam_index_build_range_scan(Relation heapRelation,
 			/* Call the AM's callback routine to process the tuple */
 			callback(indexRelation, &heapTuple->t_self, values, isnull,
 					 tupleIsAlive, callback_state);
+		}
+
+		if (!bms_is_empty(detoasted_attrs))
+		{
+			int		attno = -1;
+
+			while ((attno = bms_next_member(detoasted_attrs, attno)) != -2)
+			{
+				Assert(attno > 0);
+				pfree(DatumGetPointer(slot->tts_values[attno - 1]));
+			}
+
+			bms_free(detoasted_attrs);
+			detoasted_attrs = NULL;
 		}
 	}
 

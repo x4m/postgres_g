@@ -146,7 +146,7 @@ toast_tuple_init(ToastTupleContext *ttc, uint32 flags)
 				{
 					new_value = detoast_external_attr_extended(new_value);
 					if (new_value == NULL)
-						return false;
+						goto broken_toast_missing_ok;
 				}
 				else if (att->attstorage == TYPSTORAGE_PLAIN)
 					new_value = detoast_attr(new_value);
@@ -172,6 +172,17 @@ toast_tuple_init(ToastTupleContext *ttc, uint32 flags)
 	}
 
 	return true;
+
+broken_toast_missing_ok:
+	for (; i > 0; i--)
+	{
+		if (ttc->ttc_attr[i].tai_colflags & TOASTCOL_NEEDS_FREE)
+		{
+			pfree(DatumGetPointer(ttc->ttc_values[i]));
+			ttc->ttc_attr[i].tai_colflags &= ~TOASTCOL_NEEDS_FREE;
+		}
+	}
+	return false;
 }
 
 /*
