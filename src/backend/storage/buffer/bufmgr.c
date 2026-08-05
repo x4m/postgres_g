@@ -2441,16 +2441,21 @@ retry:
 	oldFlags = buf_state & BUF_FLAG_MASK;
 	ClearBufferTag(&buf->tag);
 
-	UnlockBufHdrExt(buf, buf_state,
-					0,
-					BUF_FLAG_MASK | BUF_USAGECOUNT_MASK,
-					0);
-
 	/*
 	 * Remove the buffer from the lookup hashtable, if it was in there.
 	 */
 	if (oldFlags & BM_TAG_VALID)
 		BufTableDelete(&oldTag, oldHash);
+
+	/*
+	 * Keep the header locked until its fixed entry slot has been removed.
+	 * Otherwise a concurrent GetVictimBuffer() could reuse the same slot
+	 * before BufTableDelete() examines it.
+	 */
+	UnlockBufHdrExt(buf, buf_state,
+					0,
+					BUF_FLAG_MASK | BUF_USAGECOUNT_MASK,
+					0);
 
 	/*
 	 * Done with mapping lock.
