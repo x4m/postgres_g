@@ -1014,6 +1014,60 @@ _bt_relandgetbuf(Relation rel, Buffer obuf, BlockNumber blkno, int access)
 	return buf;
 }
 
+/* Number of recent downlink targets remembered by each backend. */
+#define BT_RECENT_BUFFER_SLOTS 4096
+
+typedef struct BTRecentBuffer
+{
+	uint32		signature;
+	Buffer		buffer;
+}			BTRecentBuffer;
+
+static BTRecentBuffer bt_recent_buffers[BT_RECENT_BUFFER_SLOTS];
+
+/*
+ * Release a B-tree buffer and read a downlink target, using a backend-local
+ * hint about the target's position in the shared buffer pool.  The hint is
+ * not trusted: ReadRecentBufferForRelation() pins the candidate and verifies
+ * its complete buffer tag before returning it.
+ */
+Buffer
+_bt_relandgetbuf_cached(Relation rel, Buffer obuf, BlockNumber blkno, int access)
+{
+	RelFileLocator rlocator = rel->rd_locator;
+	uint32		hash;
+	uint32		slot;
+	BTRecentBuffer *recent;
+	Buffer		candidate;
+	Buffer		buf;
+
+	Assert(BlockNumberIsValid(blkno));
+
+	hash = rlocator.spcOid;
+	hash = hash * 31 + rlocator.dbOid;
+	hash = hash * 31 + rlocator.relNumber;
+	hash = hash * 31 + blkno;
+	slot = hash & (BT_RECENT_BUFFER_SLOTS - 1);
+	recent = &bt_recent_buffers[slot];
+	candidate = recent->signature == hash ? recent->buffer : InvalidBuffer;
+
+	if (BufferIsValid(obuf))
+		_bt_relbuf(rel, obuf);
+
+	if (BufferIsValid(candidate) &&
+		ReadRecentBufferForRelation(rel, MAIN_FORKNUM, blkno, candidate))
+		buf = candidate;
+	else
+		buf = ReadBuffer(rel, blkno);
+
+	recent->signature = hash;
+	recent->buffer = buf;
+	_bt_lockbuf(rel, buf, access);
+	_bt_checkpage(rel, buf);
+
+	return buf;
+}
+
 /*
  *	_bt_relbuf() -- release a locked buffer.
  *

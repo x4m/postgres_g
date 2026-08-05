@@ -653,6 +653,9 @@ static pg_always_inline void TrackBufferHit(IOObject io_object,
 											IOContext io_context,
 											Relation rel, char persistence, SMgrRelation smgr,
 											ForkNumber forknum, BlockNumber blocknum);
+static bool ReadRecentBufferInternal(Relation relation,
+									 RelFileLocator rlocator, ForkNumber forkNum,
+									 BlockNumber blockNum, Buffer recent_buffer);
 static Buffer GetVictimBuffer(BufferAccessStrategy strategy, IOContext io_context);
 static void FlushUnlockedBuffer(BufferDesc *buf, SMgrRelation reln,
 								IOObject io_object, IOContext io_context);
@@ -818,6 +821,26 @@ bool
 ReadRecentBuffer(RelFileLocator rlocator, ForkNumber forkNum, BlockNumber blockNum,
 				 Buffer recent_buffer)
 {
+	return ReadRecentBufferInternal(NULL, rlocator, forkNum, blockNum,
+									recent_buffer);
+}
+
+/*
+ * Like ReadRecentBuffer(), but account for a normal relation buffer access.
+ */
+bool
+ReadRecentBufferForRelation(Relation relation, ForkNumber forkNum,
+							BlockNumber blockNum, Buffer recent_buffer)
+{
+	return ReadRecentBufferInternal(relation, relation->rd_locator, forkNum,
+									blockNum, recent_buffer);
+}
+
+static bool
+ReadRecentBufferInternal(Relation relation, RelFileLocator rlocator,
+						 ForkNumber forkNum, BlockNumber blockNum,
+						 Buffer recent_buffer)
+{
 	BufferDesc *bufHdr;
 	BufferTag	tag;
 	uint64		buf_state;
@@ -840,9 +863,14 @@ ReadRecentBuffer(RelFileLocator rlocator, ForkNumber forkNum, BlockNumber blockN
 		{
 			PinLocalBuffer(bufHdr, true);
 
-			pgBufferUsage.local_blks_hit++;
+			if (relation)
+				TrackBufferHit(IOOBJECT_RELATION, IOCONTEXT_NORMAL,
+							   relation, RELPERSISTENCE_TEMP,
+							   RelationGetSmgr(relation), forkNum, blockNum);
+			else
+				pgBufferUsage.local_blks_hit++;
 
-			return true;
+			goto found;
 		}
 	}
 	else
@@ -861,14 +889,25 @@ ReadRecentBuffer(RelFileLocator rlocator, ForkNumber forkNum, BlockNumber blockN
 		{
 			if (BufferTagsEqual(&tag, &bufHdr->tag))
 			{
-				pgBufferUsage.shared_blks_hit++;
-				return true;
+				if (relation)
+					TrackBufferHit(IOOBJECT_RELATION, IOCONTEXT_NORMAL,
+								   relation, relation->rd_rel->relpersistence,
+								   RelationGetSmgr(relation), forkNum, blockNum);
+				else
+					pgBufferUsage.shared_blks_hit++;
+
+				goto found;
 			}
 			UnpinBuffer(bufHdr);
 		}
 	}
 
 	return false;
+
+found:
+	if (relation)
+		pgstat_count_buffer_read(relation);
+	return true;
 }
 
 /*

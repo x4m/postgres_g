@@ -182,7 +182,7 @@ _bt_search(Relation rel, Relation heaprel, BTScanInsert key, Buffer *bufP,
 			page_access = BT_WRITE;
 
 		/* drop the read lock on the page, then acquire one on its child */
-		*bufP = _bt_relandgetbuf(rel, *bufP, child, page_access);
+		*bufP = _bt_relandgetbuf_cached(rel, *bufP, child, page_access);
 
 		/* okay, all set to move down a level */
 	}
@@ -2183,7 +2183,7 @@ _bt_get_endpoint(Relation rel, uint32 level, bool rightmost)
 		itup = (IndexTuple) PageGetItem(page, PageGetItemId(page, offnum));
 		blkno = BTreeTupleGetDownLink(itup);
 
-		buf = _bt_relandgetbuf(rel, buf, blkno, BT_READ);
+		buf = _bt_relandgetbuf_cached(rel, buf, blkno, BT_READ);
 		page = BufferGetPage(buf);
 		opaque = BTPageGetOpaque(page);
 	}
