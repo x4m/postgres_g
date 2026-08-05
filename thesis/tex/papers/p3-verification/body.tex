@@ -279,18 +279,80 @@ obviously too slow for something held to that standard.
 \section{Evaluation}
 \label{sec:eval}
 
-% TODO. Машина сейчас занята другим агентом; измерения отложены.
-% План:
-% 1. Накладные расходы проверки: время и число прочитанных страниц относительно
-%    размера индекса, для gist_index_check и gin_index_check, при холодном и
-%    тёплом кэше. Первичная величина — страницы, время вторично (урок P2).
+\subsection{Measuring coverage by deliberate corruption}
+
+Section~\ref{sec:checker} argued that the contract forbidding false positives
+spends the whole error budget on silence, and that a declined check produces no
+signal. The instrument that follows is a corruption matrix: violate one invariant
+at a time and require that the corresponding check fire.
+
+The index is a generalized inverted index over 200\,000 rows of integer arrays.
+Page checksums are disabled deliberately~--- otherwise the corruption is caught
+by the checksum layer rather than by an invariant check, whereas a defect
+originating inside the database would leave the checksum consistent. Before each
+case the index file is restored from a pristine copy, exactly one field is
+altered at the byte level, and \code{gin\_index\_check()} is run.
+
+\begin{table}[t]
+\centering
+\caption{Coverage matrix. ``Visited'' records whether a control corruption on the
+same page fires, proving the checker reads it.}
+\label{tab:coverage}
+\begin{tabular}{llcc}
+\toprule
+invariant violated & page & visited & detected \\
+\midrule
+tuple order within an entry page & 30 & --- & yes \\
+\code{pd\_lower} consistency (control) & 30 & --- & yes \\
+\code{maxoff} against \code{pd\_lower} & 2 & --- & yes \\
+right-link chain completeness & 30 & yes & \textbf{no} \\
+deleted page unreachable & 3 & no & inconclusive \\
+parent key consistency & 438 & yes & unreliable \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\paragraph{One firm gap.} The right link of an entry-tree leaf was replaced by a
+non-existent block number and the checker stayed silent. This is not the weak
+claim that the page goes unread: on \emph{the same page}, corrupting tuple order
+and corrupting \code{pd\_lower} are both caught. The page is read, its contents
+are parsed, and the right link is not examined. Invariant~3 of
+Section~\ref{sec:invariants} is unverified for this index type.
+
+\paragraph{Two claims the controls withdrew.} We record these because they are
+the method working, not the method failing.
+
+Marking a posting tree page deleted while a downlink to it survives produces no
+complaint~--- but neither does the control corruption on that same page, so we
+have no evidence the page is examined at all, and silence cannot be attributed to
+a missing check. Reported as inconclusive rather than as a gap.
+
+For parent key consistency, the first attempt raised the key of the first tuple
+on an internal page; the order check fired, so two invariants had been violated
+at once and the detection could not be attributed. The second attempt used the
+last tuple to preserve order, and the checker was silent~--- which looked like a
+second gap. The third attempt, lowering the key so as to break coverage rather
+than widen it, revealed that the ``last'' tuple carried key 93 where its
+predecessor carried 19\,937. The offsets were not addressing what we assumed, so
+the second attempt had not corrupted a parent key either, and the row is
+unreliable rather than a gap.
+
+\paragraph{What this costs the method.} To assert that an invariant is unchecked,
+silence is not enough. Two things must be shown: that the page is visited, which
+a control corruption on the same page establishes; and that what was corrupted is
+what was named, which requires parsing the on-page format rather than computing
+an offset from an assumption. Only the right-link row here satisfies both. That
+is one solid finding out of six attempts, and the discipline that reduced the
+other five is the same discipline this paper recommends applying to indexes.
+
+% TODO, когда освободится машина:
+% 1. Накладные расходы: время и число прочитанных страниц относительно размера
+%    индекса, холодный и тёплый кэш. Первичная величина — страницы.
 % 2. Расход памяти при обходе по уровням против обхода сверху вниз — прямая
-%    проверка утверждения §\ref{sec:parent} об ограничении шириной уровня.
-% 3. Доля обнаруживаемых повреждений на наборе искусственно повреждённых
-%    индексов: порча ключа родителя, правой ссылки, отметки удаления, порядка
-%    элементов. По инварианту на каждый вид порчи — какой из них срабатывает.
-% 4. Проверка на реплике против проверки на основной системе: влияние на
-%    задержку пользовательской нагрузки.
+%    проверка утверждения §\ref{sec:parent}.
+% 3. Проверка на реплике против основной системы: влияние на задержку
+%    пользовательской нагрузки.
+% 4. Ключ родителя — после разбора формата кортежа внутренней страницы словаря.
 
 \section{Limitations}
 
