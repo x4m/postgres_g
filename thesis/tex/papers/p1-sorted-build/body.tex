@@ -349,6 +349,7 @@ is bounded by the number of nodes. This is the empirical content of
 as the tree grows deeper.
 
 \subsection{Uniform data}
+\label{sec:eval-uniform}
 
 \begin{table}[t]
 \centering
@@ -369,9 +370,9 @@ $10^7$ & sorted, \code{picksplit} & 19.80 & 81\,277 & 6.10 \\
 \end{tabular}
 \end{table}
 
-Relative to insertion, occupancy-based packing builds 6.8 and 8.0 times faster
+Relative to insertion, occupancy-based packing builds 6.8 and 7.1 times faster
 and makes queries 2.53 and 2.36 times more expensive.
-\code{picksplit}-based partitioning builds 3.0 and 3.5 times faster and stays
+\code{picksplit}-based partitioning builds 3.0 and 3.8 times faster and stays
 within 17 and 18\,\% of insertion on query cost: it removes 89 and 87\,\% of the
 penalty. The residual is the price of choosing split points within a buffer
 rather than globally over a level.
@@ -475,8 +476,8 @@ Table~\ref{tab:factorial} crosses the two.
 \cmidrule(lr){2-3}\cmidrule(lr){4-5}
 Split rule & Z-order & Hilbert & Z-order & Hilbert \\
 \midrule
-occupancy & 10.01 & 5.57 & 15.20 & 10.17 \\
-\code{picksplit} & 4.62 & 4.11 & 7.91 & 8.27 \\
+occupancy & 10.01 & 5.57 & 15.30 & 10.17 \\
+\code{picksplit} & 4.62 & 4.11 & 8.30 & 8.27 \\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -496,6 +497,7 @@ measures the presence of a sorting optimisation rather than a property of the
 curve.
 
 \subsection{Buffer size}
+\label{sec:eval-buffer}
 
 Table~\ref{tab:bufsize} and Figure~\ref{fig:bufsize} give the dependence.
 
@@ -507,11 +509,11 @@ Table~\ref{tab:bufsize} and Figure~\ref{fig:bufsize} give the dependence.
 \toprule
 $k$ & build, s & pages & accesses/query \\
 \midrule
-1 & 10.25 & 54\,351 & 12.65 \\
-2 & 14.44 & 81\,593 & 10.62 \\
-4 & 20.36 & 81\,287 & 6.37 \\
-8 & 19.92 & 81\,682 & 5.59 \\
-16 & 23.58 & 81\,650 & 5.30 \\
+1 & 8.89 & 54\,351 & 12.65 \\
+2 & 13.05 & 81\,593 & 10.62 \\
+4 & 15.71 & 81\,287 & 6.37 \\
+8 & 19.99 & 81\,682 & 5.59 \\
+16 & 23.35 & 81\,650 & 5.30 \\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -519,9 +521,12 @@ $k$ & build, s & pages & accesses/query \\
 $k=1$ reproduces occupancy-based packing, as it must: there is nothing to choose
 within a single page. The parameter is thus continuous between the two
 strategies rather than a switch between them. The value shipped in PostgreSQL,
-$k=4$, is conservative: $k=8$ improves query cost by 12\,\% at no cost in build
-time, and $k=16$ by 17\,\% for 16\,\% more build time. Index size is independent
-of $k$ from $k=2$ on. Returns diminish sharply after $k=4$, which is consistent
+$k=4$, sits close to the knee: $k=8$ improves query cost by 12\,\% for 27\,\%
+more build time, and $k=16$ by 17\,\% for 49\,\% more. Every step is a trade
+rather than a free improvement, which is visible only in medians of repeated
+runs: single build times at this scale vary by tens of percent
+(Section~\ref{sec:threats}). Index size is independent of $k$ from $k=2$ on. Returns diminish sharply after $k=4$,
+which is consistent
 with the role of the buffer: it exists so that a cut need not coincide with a
 page boundary, and by $k=8$ there is enough freedom for that.
 
@@ -545,16 +550,16 @@ point query, the second as a deliberately non-selective one.
 \toprule
 construction & build, s & pages & selective & non-selective \\
 \midrule
-insertion & 1\,134.3 & 1\,285\,510 & 23.66 & 40.95 \\
-sorted, occupancy & 313.6 & 836\,842 & 15.20 & 61.01 \\
-sorted, \code{picksplit} & 388.5 & 1\,128\,374 & 7.91 & 48.23 \\
+insertion & 1\,160.3 & 1\,285\,510 & 16.73 & 40.95 \\
+sorted, occupancy & 322.7 & 836\,842 & 15.30 & 61.01 \\
+sorted, \code{picksplit} & 396.3 & 1\,128\,374 & 8.30 & 48.23 \\
 \bottomrule
 \end{tabular}
 \end{table}
 
 Three observations.
 
-The ratio between the two sorted variants, 1.92, agrees with the 2.0--2.2
+The ratio between the two sorted variants, 1.84, agrees with the 2.0--2.2
 measured on uniform data: the central result transfers to real data unchanged.
 
 On non-selective queries the ratio falls to 1.26. When a query returns hundreds
@@ -564,18 +569,28 @@ matters for selective queries and is nearly irrelevant for scanning large
 regions.
 
 The cost of good partitioning falls with scale but does not vanish:
-\code{picksplit} costs 130\,\% more than occupancy-based packing at $10^7$ and
-24\,\% more at $1.38\times10^8$, as I/O takes over an increasing share of build
+\code{picksplit} costs 87\,\% more than occupancy-based packing at $10^7$ and
+23\,\% more at $1.38\times10^8$, as I/O takes over an increasing share of build
 time.
 
 \subsection{An unexpected result}
 \label{sec:eval-surprise}
 
-On this dataset \emph{insertion produces the worst tree of the three}: 23.66
-accesses per selective query against 15.20 and 7.91, while taking three times as
-long to build as \code{picksplit} and producing the largest index. On uniform
-data the ordering was the opposite, with insertion nearly optimal
+On this dataset \emph{insertion is no better than occupancy-based packing}:
+16.73 accesses per selective query against 15.30, while taking three times as
+long to build as \code{picksplit} and producing the largest index. Against
+\code{picksplit}, at 8.30, it is twice as expensive. On uniform data the
+ordering was the opposite, with insertion nearly optimal
 (Table~\ref{tab:levels}).
+
+The margin over occupancy-based packing is 9\,\%, and we are deliberately
+exact about how little that carries. It is close to the threshold below which we
+treat differences as not established, and it is sensitive to the choice of
+probes: measured against independently drawn probe sets rather than the single
+fixed set used here, the same comparison ranges over a factor of two
+(Section~\ref{sec:threats}). What survives is not a magnitude but a reversal~---
+on skewed data the method with global information is at least as good as local
+insertion, whereas on uniform data insertion wins comfortably.
 
 The plausible explanation is that on strongly skewed data the decisions taken
 during insertion~--- subtree choice and node split~--- are local, and their
@@ -585,7 +600,8 @@ has global information and is free of it. On uniform data there is nothing to
 accumulate, which is why the effect does not appear there.
 
 We report this as an observation requiring confirmation rather than as a
-result: it rests on a single dataset and a single run. If it holds, it changes
+result: it rests on a single dataset, and its magnitude already shrank once
+under a more careful measurement. If it holds, it changes
 the standing of sorted construction from a trade of quality for speed into an
 improvement on both axes for skewed data~--- that is, for the practically
 interesting case.
@@ -654,6 +670,7 @@ the corresponding invariant as well; we did not do so at the time, and the
 omission cost four years.
 
 \section{Threats to validity}
+\label{sec:threats}
 
 \paragraph{Reconstruction of internal keys.} Per-level overlap rests on keys
 recovered bottom-up rather than read from the page. The recovery is exact for a
@@ -667,13 +684,26 @@ which currently interprets them with the tuple descriptor of the index rather
 than the storage type of the operator class and silently drops part of a key
 whenever the two differ.
 
-\paragraph{Single run per configuration.} Ratios proved far more stable than
-absolute values: three repetitions of the $10^6$ configurations varied by under
-3\,\% in build time and under 5\,\% in accesses per query, while an earlier
-measurement in which two jobs overlapped on the same machine gave build times
-differing by 20\,\% for the same configuration. All numbers reported here come
-from sequential runs; we nonetheless treat differences below roughly 10\,\% as
-not established.
+\paragraph{Counters and times are not equally trustworthy.} The two must be
+reported separately, and conflating them is easy. Accesses
+per query, measured with both the data and the probe set fixed by seed, are
+deterministic: they repeat to within a fraction of a percent, and every
+page-access figure in Sections~\ref{sec:eval-uniform}--\ref{sec:eval-buffer}
+carries that guarantee. Build times do not. Repeating the $10^7$ configurations
+three times gave 6.78, 8.46 and 8.63~seconds for one and the same
+configuration~--- a spread of 27\,\%. All times reported here are medians of
+three sequential runs; we treat time differences below roughly 30\,\% as not
+established, and ratios of times only when they exceed that.
+
+\paragraph{Access counts depend on the choice of probes, and more so than times
+depend on the machine.} On skewed data this is the larger threat of the two, and
+it is not visible from a single run because the counter is perfectly repeatable
+for a given probe set. One configuration on the OSM data gave 23.66 and 16.83
+accesses per query for two independently drawn sets of 5000 probes. All real-data
+figures reported here use one fixed set of 20\,000 probes, generated once and
+shared by every index compared. Fixing the data by seed is not enough~--- the
+queries must be fixed too, and on skewed data this matters more than anything
+about the machine.
 
 \paragraph{Window calibration on skewed data.} An early version of the real-data
 experiment fixed the query window by absolute size. Because node density in
