@@ -62,12 +62,14 @@ readahead, and which an independent report on a rotating disk put at fifty. A
 two-pass algorithm that unlinks and reclaims emptied pages, turning unbounded
 index growth under a sliding-window workload into growth 51 times slower; its
 correctness rests on the order of two operations under coupled locks. And a
-safety condition for page reuse whose failure mode, when expressed over a
-wrapping counter, is not corruption but reclamation silently ceasing after long
-uptime~--- a defect that no test of bounded duration can find, and that took
-months of operation to surface.
+defect we identified in the safety condition for page reuse: expressed over a wrapping
+counter it silently stops holding, so reclamation ceases after long uptime with
+no observable failure. We found it by reading the condition while building an
+invariant checker, not by testing; the fix was implemented by another
+contributor.
 
-Every defect discussed here was found by operation and none by a test. We report
+Every defect discussed here was found by operation or by reading the code, and
+none by a test. We report
 what that exposure found, what it did not, and what we now do differently.
 \end{abstract}
 
@@ -85,8 +87,9 @@ who owe the author nothing.
 Heikki Linnakangas reviewed and committed the whole of the maintenance work for
 generalized search trees~--- physical-order traversal, page deletion, the
 refactoring of the deleted-page checks and the move to 64-bit identifiers~---
-over a review that ran, with interruptions, from 2017 to 2019, and rewrote
-parts of it for the better. The line of work itself begins earlier, with
+over a review that ran, with interruptions, from 2017 to 2019, rewrote parts of
+it for the better, and implemented the 64-bit fix of Section~\ref{sec:xid} after
+we reported the defect. The line of work itself begins earlier, with
 Konstantin Kuznetsov, whose 2015 proposal for a new maintenance pass is where
 these patches started.
 

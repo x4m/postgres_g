@@ -32,11 +32,12 @@ establish.
 \item A two-pass algorithm that deletes emptied pages and returns them to the
       free space map, with the lock coupling that makes it safe against
       concurrent descent (Section~\ref{sec:deletion}).
-\item The safety condition for reusing a deleted page, expressed over full
-      64-bit transaction identifiers rather than wrapping 32-bit ones, and the
-      failure mode that the wrapping version exhibits~--- not corruption, but
-      the silent cessation of page reuse after long operation
-      (Section~\ref{sec:xid}).
+\item The identification of a defect in the safety condition for reusing a
+      deleted page: expressed over a wrapping 32-bit counter it silently stops
+      holding, and reclamation ceases after long operation with no failure
+      observable anywhere. We found this while building an invariant checker for
+      the structure, not by testing it; the fix was implemented by another
+      contributor (Section~\ref{sec:xid}).
 \item An account of the reverted lock-granularity change: what was published,
       what production reported, why no non-invasive fix was found, and what
       follows for how such work should be validated (Section~\ref{sec:revert}).
@@ -173,10 +174,21 @@ unbounded growth that Section~\ref{sec:deletion} was written to prevent~--- on a
 system that has been up long enough, which is to say on exactly the systems
 where it matters. The observable symptom is a size trend measured in months.
 
-The fix is to store the full 64-bit identifier, which does not wrap:
-\code{6655a7299d8}, released in PostgreSQL~13 and back-patched to~12. The same
-reasoning was later applied to the addressing of the transaction status logs
-themselves (\code{4ed8f0913bf}).
+We found this in March 2019 while writing an invariant checker for this
+structure, by reading the recycling predicate rather than by observing a
+failure~--- there was nothing to observe. Our proposal at the time was to clear
+the recorded identifier before returning the page to the free space map; Heikki
+Linnakangas implemented a better fix, storing the full 64-bit identifier, which
+does not wrap at all: \code{6655a7299d8}, released in PostgreSQL~13 and
+back-patched to~12. The same reasoning was later applied by others to the
+addressing of the transaction status logs themselves (\code{4ed8f0913bf}).
+
+The manner of discovery is not incidental to this paper. A condition that
+silently stops holding produces no symptom a test can assert on, and the only
+reason anyone read that line was that a checker was being written against the
+structure's invariants. That is the argument of our companion work on
+verification, reached here from the opposite direction: the checker had not yet
+found anything, and building it had already found something.
 
 Stated generally: a safety condition of the form ``event $A$ preceded every
 currently live $B$'', expressed over a monotone counter, must be expressed over
@@ -490,7 +502,8 @@ major releases, on an installed base we cannot count but which is large. It is
 worth recording what that exposure found, because it is the empirical content of
 the methodological claim in Section~\ref{sec:revert}.
 
-Every defect discussed in this paper was found by operation and none by a test.
+Every defect discussed in this paper was found by operation or by reading the
+code, and none by a test.
 The 32-bit wraparound of Section~\ref{sec:xid} required a system old enough for
 the counter to wrap. The deadlock of Section~\ref{sec:revert} required a
 concurrent split at a particular moment, and it took eighteen months of
