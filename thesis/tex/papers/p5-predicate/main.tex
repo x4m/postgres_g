@@ -1,0 +1,59 @@
+% P5 — Predicate locking in extensible index structures.
+% Усиливает П4. Материал: §5.6 диссертации, выпуск 11.
+%
+% Целевое издание не выбрано. Кандидаты: SEIM (короткая форма, англ.),
+% Труды ИСП РАН, Information Systems. Решать после P4.
+
+\documentclass[11pt, a4paper]{article}
+\usepackage{fontspec}
+\usepackage[english, russian]{babel}
+\selectlanguage{english}
+\setmainfont{Times New Roman}[Ligatures=TeX]
+\setmonofont{Menlo}[Scale=0.85]
+\usepackage{geometry}
+\geometry{a4paper, margin=25mm}
+\usepackage{amsmath, amssymb, graphicx, booktabs}
+\usepackage[hidelinks]{hyperref}
+\newcommand{\code}[1]{\texttt{#1}}
+\emergencystretch=1em
+
+\title{Predicate locking granularity in extensible index structures}
+\author{Andrey Borodin}
+\date{}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+Serializable snapshot isolation detects a write that would have changed the
+answer of a read that already happened. To do so it needs the reader to record
+what it read, as a predicate rather than as a set of rows, and the writer to
+check whether its new value falls under any recorded predicate. Where an access
+method offers no support for this, the predicate degenerates to the whole
+relation and every insertion conflicts with every scan.
+
+We report predicate locking at page granularity for the generalized search tree,
+and the argument that makes page granularity correct there: the key of a page
+covers every entry on it, so a value that would be placed on a page necessarily
+falls inside the region a scan of that page examined. The same reasoning fails
+for the generalized inverted index, whose scans do not read a contiguous region
+of a key space, and we describe the two ways it failed in practice~--- a scan
+that found no match recorded nothing, although the point of a predicate lock is
+to lock the gap; and enabling deferred insertion while a transaction was running
+allowed later insertions to bypass locks already taken. The corrected principle
+is stated in the description of the structure rather than only in code, so that
+subsequent changes can be checked against it, and we argue that this is the
+minimum a concurrency-control decision has to leave behind if it is to survive
+maintenance.
+\end{abstract}
+
+\input{body}
+
+\section*{Acknowledgements}
+
+% TODO: по трейлерам 3ad55863e93, 0bef1c0678d и по составу тредов;
+% заведомо Т. Сигаев (коммиты), А. Фройнд (сообщение о замедлении тестов).
+
+\bibliographystyle{plain}
+\bibliography{../../common/refs}
+\end{document}

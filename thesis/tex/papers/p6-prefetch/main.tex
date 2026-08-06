@@ -1,0 +1,72 @@
+% P6 — Streaming reads in index maintenance.
+% Усиливает П4. Материал: §5.8 диссертации, выпуск 18.
+%
+% Целевое издание: рус. ВАК (план) либо SEIM. Решать после P4 и P5.
+%
+% ВАЖНО про содержание. Измерения показали, что на нашем оборудовании
+% потокового чтения не видно: шесть прогонов дали 52,5 с с обеих сторон, потому
+% что ядро операционной системы и без того читает на 16 страниц вперёд при
+% последовательном просмотре. Статья поэтому НЕ про ускорение. Она про то, при
+% каких условиях механизм даёт выигрыш и почему в типичной настройке его нет, —
+% и про то, что упреждающее чтение операционной системы делает бо́льшую часть
+% работы бесплатно, а прикладной механизм нужен там, где на него полагаться
+% нельзя. Отрицательный результат подан как результат.
+
+\documentclass[11pt, a4paper]{article}
+\usepackage{fontspec}
+\usepackage[english, russian]{babel}
+\selectlanguage{english}
+\setmainfont{Times New Roman}[Ligatures=TeX]
+\setmonofont{Menlo}[Scale=0.85]
+\usepackage{geometry}
+\geometry{a4paper, margin=25mm}
+\usepackage{amsmath, amssymb, graphicx, booktabs}
+\usepackage[hidelinks]{hyperref}
+\newcommand{\code}[1]{\texttt{#1}}
+\emergencystretch=1em
+
+\title{When does application-level prefetching pay?\\
+A negative result from index maintenance}
+\author{Andrey Borodin}
+\date{}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+Index maintenance reads every page of an index. Once the order of those reads is
+known in advance~--- which is what traversing in physical rather than logical
+order provides~--- the reads can be issued several at a time instead of one after
+another, hiding device latency behind request concurrency. We implemented this
+for three access methods in PostgreSQL~18 using the streaming read interface.
+
+This paper reports that on ordinary hardware and default settings the change
+makes no measurable difference, and explains why: the operating system already
+reads ahead of a sequential scan by sixteen pages, performing the same work by a
+different route. Six runs of a pair of builds differing by exactly the commit in
+question give a median of 52.5~seconds on both sides. We then show where the
+benefit does exist, by removing the operating system's contribution: with
+readahead disabled, physical-order traversal loses almost all of its advantage
+over logical order (a factor of 1.09 instead of 3.43), which locates precisely
+the work that readahead was doing and that an application-level mechanism must
+do when readahead cannot be relied upon.
+
+The practical conclusion is narrower than the one usually drawn from such work,
+and we think more useful: application-level prefetching of a known page sequence
+is not an optimisation of the common case but insurance against configurations
+where kernel readahead is absent, defeated, or wrong~--- direct I/O, unusual
+storage stacks, and the pages whose order cannot be predicted. We report the
+measurement that failed to show a gain rather than the workload that would have.
+\end{abstract}
+
+\input{body}
+
+\section*{Acknowledgements}
+
+% TODO: М. Плейджмен (рецензирование и принятие всех трёх коммитов),
+% Джунванг Чжао и Кирилл Решке (рецензирование c5c239e26e3),
+% Т. Вондра и А. Фройнд (интерфейс потокового чтения).
+
+\bibliographystyle{plain}
+\bibliography{../../common/refs}
+\end{document}

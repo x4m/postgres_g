@@ -235,23 +235,78 @@ the same entries.
 \section{Evaluation}
 \label{sec:eval}
 
-% TODO — план измерений; сборки парные, различающиеся ровно одним коммитом,
-% первичные величины — счётчики, времена медианами трёх прогонов с чередованием
-% конфигураций.
-%
-% 1. Необязательные функции преобразования (d3a4f89d8a3^ / d3a4f89d8a3):
-%    время точечного запроса и время построения для класса операторов с
-%    тождественными compress/decompress. Ожидание: эффект в c_c, то есть виден
-%    на запросах по индексу, целиком помещающемуся в память, и растёт с
-%    ветвистостью. Проверить также, что сканирование без обращения к таблице
-%    стало возможно без fetch.
-% 2. Покрывающие атрибуты (f2e403803fe^ / f2e403803fe): ветвистость внутренних
-%    уровней, высота, объём индекса и время запроса для трёх вариантов —
-%    столбец в ключе, столбец покрывающий, столбца нет вовсе. Главная величина —
-%    высота и ветвистость внутренних узлов: именно на них строится довод.
-% 3. Перезапись элемента на месте (b1328d78f88^ / b1328d78f88): время вставки
-%    отсортированных и случайных данных, объём индекса. Перепроверка чисел
-%    2017 года на актуальном выпуске (заявлено ~3x и ~15%).
+\subsection{Covering attributes}
+
+One million points with an additional integer column, 2000 range queries,
+PostgreSQL~18.4.
+
+\begin{table}[t]
+\centering
+\caption{Three ways to make a column available to a query}
+\label{tab:include}
+\begin{tabular}{lrrrr}
+\toprule
+column is & index pages & internal fan-out & accesses/query \\
+\midrule
+absent & 8\,160 & 122.6 & 4.19 \\
+covering & 9\,622 & 123.9 & 4.46 \\
+in the key & \multicolumn{3}{c}{\emph{index cannot be created}} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The third row is the more direct confirmation of the argument in
+Section~\ref{sec:include}, and it is categorical rather than quantitative:
+\code{CREATE INDEX \dots{} USING gist(p, i)} fails, because no generalized search
+tree operator class exists for the integer type. Putting the column in the key is
+not an inferior option here; it is not an option, unless an extension supplying
+such a class is installed first. This is the case we claimed distinguishes this
+feature from its B-tree namesake, and it is the ordinary case for a spatial index
+that must also return an identifier.
+
+The quantitative claim holds as well: internal fan-out is unchanged, 122.6
+against 123.9, a difference within rounding. The covering attribute enlarges the
+index by 18\,\% and raises accesses per query by 6\,\%, and does so entirely at
+the leaf level; the length of a descent is unaffected, which is what
+Section~\ref{sec:include} predicted from~\eqref{eq:fanout}.
+
+What is missing from this table is the cost of the alternative when it is
+possible. With an extension providing an integer operator class the index in the
+key can be built, and the fan-out penalty at internal levels can be measured
+rather than merely predicted. We have not done so.
+
+\subsection{Two measurements that did not come out}
+
+We report these because omitting them would misrepresent the state of the
+evidence.
+
+\paragraph{Optional support functions.} The claim of
+Section~\ref{sec:optional} is a capability, not a speed: an operator class
+omitting the conversion functions should be usable, and should support
+index-only scans without a fetch function. Our test created such a class on
+builds either side of the change and found it accepted by both, which means the
+test did not exercise the check it was aimed at rather than that the change did
+nothing. The proper test builds an index with such a class and inspects whether
+an index-only plan is chosen. The capability claim in
+Section~\ref{sec:optional} therefore rests on the code and the documentation, not
+on a measurement of ours.
+
+\paragraph{In-place overwrite.} Measured on one million points, three runs, the
+change is not distinguishable on sorted insertion (9.72--9.76~seconds on both
+sides) and worth about 1.3\,\% on random insertion, with the index marginally
+larger rather than smaller. The previously published
+figures~\cite{borodin2017memory} for this change were about threefold on sorted
+data and about 15\,\% on random, with a smaller index.
+
+We do not conclude that those figures were wrong, because a simpler explanation
+is available and we have not excluded it. A \code{point} key occupies 16~bytes,
+so overwriting one moves almost nothing, whereas the benefit is proportional to
+the volume of data shifted; and at 9.7~microseconds per row the measurement is
+dominated by write-ahead logging and by the table, not by index page layout. The
+measurement that would settle it uses a large key type and separates index
+insertion from logging. Until it is done, the claim in
+Section~\ref{sec:overwrite} should be read as it is stated there~--- as prior
+published work, on a release of that era, not re-established here.
 
 \section{Limitations}
 
