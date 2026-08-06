@@ -61,9 +61,12 @@
 #include "common/int.h"
 #include "utils/builtins.h"
 #include "utils/fmgrprotos.h"
+#include "utils/pg_locale.h"
 #include "utils/rel.h"
 #include "utils/skipsupport.h"
 #include "utils/sortsupport.h"
+#include "utils/uuid.h"
+#include "utils/varlena.h"
 
 #ifdef STRESS_SORT_INT_MIN
 #define A_LESS_THAN_B		INT_MIN
@@ -216,6 +219,9 @@ btint4tuplevalue(IndexTuple itup, int32 *value)
 	return true;
 }
 
+static inline void btbinsearch_heaptid(BTScanInsert key, IndexTuple itup,
+									   int32 *result);
+
 static inline bool
 btint4pagevalue(Page page, OffsetNumber offnum, int32 *value)
 {
@@ -235,7 +241,6 @@ btint4pagecmp(Relation rel, BTScanInsert key, Page page, OffsetNumber offnum,
 	int32		value;
 	ItemId		itemid = PageGetItemId(page, offnum);
 	IndexTuple	itup;
-	ItemPointer heapTid;
 	Datum		datum;
 	bool		isnull;
 
@@ -259,29 +264,7 @@ btint4pagecmp(Relation rel, BTScanInsert key, Page page, OffsetNumber offnum,
 	if (*result != 0)
 		return true;
 
-	heapTid = BTreeTupleGetHeapTID(itup);
-	if (key->scantid == NULL)
-	{
-		if (!key->backward && heapTid == NULL && key->heapkeyspace)
-			*result = 1;
-		return true;
-	}
-
-	if (heapTid == NULL)
-	{
-		*result = 1;
-		return true;
-	}
-
-	*result = ItemPointerCompare(key->scantid, heapTid);
-	if (*result > 0 && BTreeTupleIsPosting(itup))
-	{
-		*result = ItemPointerCompare(key->scantid,
-									 BTreeTupleGetMaxHeapTID(itup));
-		if (*result <= 0)
-			*result = 0;
-	}
-
+	btbinsearch_heaptid(key, itup, result);
 	return true;
 }
 
@@ -412,6 +395,367 @@ btint4binsearchsupport(PG_FUNCTION_ARGS)
 
 	support->compare_tuple = btint4pagecmp;
 	support->binary_search = btint4binsearch;
+	PG_RETURN_VOID();
+}
+
+/* Compare the heap TID part after a specialized key comparison found equality. */
+static inline void
+btbinsearch_heaptid(BTScanInsert key, IndexTuple itup, int32 *result)
+{
+	ItemPointer heapTid = BTreeTupleGetHeapTID(itup);
+
+	if (key->scantid == NULL)
+	{
+		if (!key->backward && heapTid == NULL && key->heapkeyspace)
+			*result = 1;
+		else
+			*result = 0;
+		return;
+	}
+
+	if (heapTid == NULL)
+	{
+		*result = 1;
+		return;
+	}
+
+	*result = ItemPointerCompare(key->scantid, heapTid);
+	if (*result > 0 && BTreeTupleIsPosting(itup))
+	{
+		*result = ItemPointerCompare(key->scantid,
+									 BTreeTupleGetMaxHeapTID(itup));
+		if (*result <= 0)
+			*result = 0;
+	}
+}
+
+static inline bool
+bttextpagevalue(Relation rel, Page page, OffsetNumber offnum,
+				const char **data, int *len, IndexTuple *itupout)
+{
+	IndexTuple	itup;
+	Datum		datum;
+	bool		isnull;
+	text	   *value;
+
+	itup = (IndexTuple) PageGetItem(page, PageGetItemId(page, offnum));
+	datum = index_getattr(itup, 1, RelationGetDescr(rel), &isnull);
+	if (isnull || VARATT_IS_EXTENDED(DatumGetPointer(datum)))
+		return false;
+
+	value = DatumGetTextPP(datum);
+	*data = VARDATA_ANY(value);
+	*len = VARSIZE_ANY_EXHDR(value);
+	*itupout = itup;
+	return true;
+}
+
+static bool
+bttextpagecmp(Relation rel, BTScanInsert key, Page page, OffsetNumber offnum,
+			  int32 *result)
+{
+	ScanKey		skey = key->scankeys;
+	text	   *search;
+	const char *value;
+	int			valuelen;
+	IndexTuple	itup;
+
+	if (VARATT_IS_EXTENDED(DatumGetPointer(skey->sk_argument)) ||
+		!bttextpagevalue(rel, page, offnum, &value, &valuelen, &itup))
+		return false;
+
+	search = DatumGetTextPP(skey->sk_argument);
+	if (skey->sk_flags & SK_BT_DESC)
+		*result = varstr_cmp(value, valuelen,
+							 VARDATA_ANY(search), VARSIZE_ANY_EXHDR(search),
+							 skey->sk_collation);
+	else
+		*result = varstr_cmp(VARDATA_ANY(search), VARSIZE_ANY_EXHDR(search),
+							 value, valuelen, skey->sk_collation);
+
+	if (*result == 0)
+		btbinsearch_heaptid(key, itup, result);
+	return true;
+}
+
+static uint64
+btbyteskey(const unsigned char *data, int len, int common)
+{
+	uint64		result = 0;
+	int			nbytes = Min(len - common, 8);
+
+	if (nbytes == 0)
+		return 0;
+	for (int i = 0; i < nbytes; i++)
+		result = (result << 8) | data[common + i];
+	return result << ((8 - nbytes) * 8);
+}
+
+static bool
+btinterpolatebytes(const unsigned char *lowdata, int lowlen,
+				   const unsigned char *highdata, int highlen,
+				   const unsigned char *searchdata, int searchlen,
+				   bool desc, OffsetNumber low, OffsetNumber high,
+				   OffsetNumber *probe)
+{
+	int			common = 0;
+	int			minlen = Min(lowlen, highlen);
+	uint64		lowkey;
+	uint64		highkey;
+	uint64		searchkey;
+	uint64		span;
+	uint64		delta;
+	OffsetNumber width = high - low - 1;
+
+	while (common < minlen && lowdata[common] == highdata[common])
+		common++;
+	if (common == minlen || searchlen < common ||
+		memcmp(lowdata, searchdata, common) != 0)
+		return false;
+
+	lowkey = btbyteskey(lowdata, lowlen, common);
+	highkey = btbyteskey(highdata, highlen, common);
+	searchkey = btbyteskey(searchdata, searchlen, common);
+	span = desc ? lowkey - highkey : highkey - lowkey;
+	delta = desc ? lowkey - searchkey : searchkey - lowkey;
+	if (span == 0 || delta > span)
+		return false;
+
+	*probe = low + (OffsetNumber) (((long double) delta * width) / span);
+	return true;
+}
+
+static bool
+bttextbinsearch(Relation rel, BTScanInsert key, Page page,
+				OffsetNumber low, OffsetNumber high, int32 cmpval,
+				OffsetNumber *resultoff, OffsetNumber *strictresult)
+{
+	OffsetNumber stricthigh = high;
+
+	if (strictresult == NULL && high - low >= 32 &&
+		pg_newlocale_from_collation(key->scankeys->sk_collation)->collate_is_c)
+	{
+		const char *lowdata;
+		const char *highdata;
+		const unsigned char *searchdata;
+		int			lowlen;
+		int			highlen;
+		int			searchlen;
+		IndexTuple	itup;
+		text	   *search;
+		OffsetNumber probe;
+
+		if (!VARATT_IS_EXTENDED(DatumGetPointer(key->scankeys->sk_argument)) &&
+			bttextpagevalue(rel, page, low, &lowdata, &lowlen, &itup) &&
+			bttextpagevalue(rel, page, high - 1, &highdata, &highlen, &itup))
+		{
+			search = DatumGetTextPP(key->scankeys->sk_argument);
+			searchdata = (const unsigned char *) VARDATA_ANY(search);
+			searchlen = VARSIZE_ANY_EXHDR(search);
+			if (btinterpolatebytes((const unsigned char *) lowdata, lowlen,
+								   (const unsigned char *) highdata, highlen,
+								   searchdata, searchlen,
+								   key->scankeys->sk_flags & SK_BT_DESC,
+								   low, high, &probe))
+			{
+				OffsetNumber neighbor;
+				int32		result;
+				bool		advance;
+				bool		neighbor_advance;
+
+				if (!bttextpagecmp(rel, key, page, probe, &result))
+					return false;
+				advance = result >= cmpval;
+				if ((advance && OffsetNumberNext(probe) == high) ||
+					(!advance && probe == low))
+				{
+					*resultoff = advance ? high : low;
+					return true;
+				}
+				neighbor = advance ? OffsetNumberNext(probe) :
+					OffsetNumberPrev(probe);
+				if (!bttextpagecmp(rel, key, page, neighbor, &result))
+					return false;
+				neighbor_advance = result >= cmpval;
+				if (advance != neighbor_advance)
+				{
+					*resultoff = advance ? neighbor : probe;
+					return true;
+				}
+				if (advance)
+					low = OffsetNumberNext(neighbor);
+				else
+					high = probe;
+			}
+		}
+	}
+
+	while (high > low)
+	{
+		OffsetNumber mid = low + ((high - low) / 2);
+		int32		result;
+		bool		advance;
+
+		if (!bttextpagecmp(rel, key, page, mid, &result))
+			return false;
+		if (strictresult != NULL && unlikely(result == 0 && key->scantid != NULL))
+			return false;
+		advance = result >= cmpval;
+		if (advance)
+			low = mid + 1;
+		else
+		{
+			high = mid;
+			if (strictresult != NULL && result != 0)
+				stricthigh = high;
+		}
+	}
+
+	*resultoff = low;
+	if (strictresult != NULL)
+		*strictresult = stricthigh;
+	return true;
+}
+
+Datum
+bttextbinsearchsupport(PG_FUNCTION_ARGS)
+{
+	BTBinSearchSupportData *support =
+		(BTBinSearchSupportData *) PG_GETARG_POINTER(0);
+
+	support->compare_tuple = bttextpagecmp;
+	support->binary_search = bttextbinsearch;
+	PG_RETURN_VOID();
+}
+
+static inline bool
+btuuidpagevalue(Relation rel, Page page, OffsetNumber offnum,
+				const pg_uuid_t **value, IndexTuple *itupout)
+{
+	IndexTuple	itup;
+	Datum		datum;
+	bool		isnull;
+
+	itup = (IndexTuple) PageGetItem(page, PageGetItemId(page, offnum));
+	datum = index_getattr(itup, 1, RelationGetDescr(rel), &isnull);
+	if (isnull)
+		return false;
+
+	*value = DatumGetUUIDP(datum);
+	*itupout = itup;
+	return true;
+}
+
+static bool
+btuuidpagecmp(Relation rel, BTScanInsert key, Page page, OffsetNumber offnum,
+			  int32 *result)
+{
+	const pg_uuid_t *search = DatumGetUUIDP(key->scankeys->sk_argument);
+	const pg_uuid_t *value;
+	IndexTuple	itup;
+
+	if (!btuuidpagevalue(rel, page, offnum, &value, &itup))
+		return false;
+
+	if (key->scankeys->sk_flags & SK_BT_DESC)
+		*result = memcmp(value->data, search->data, UUID_LEN);
+	else
+		*result = memcmp(search->data, value->data, UUID_LEN);
+
+	if (*result == 0)
+		btbinsearch_heaptid(key, itup, result);
+	return true;
+}
+
+static bool
+btuuidbinsearch(Relation rel, BTScanInsert key, Page page,
+				OffsetNumber low, OffsetNumber high, int32 cmpval,
+				OffsetNumber *resultoff, OffsetNumber *strictresult)
+{
+	OffsetNumber stricthigh = high;
+
+	if (strictresult == NULL && high - low >= 32)
+	{
+		const pg_uuid_t *lowvalue;
+		const pg_uuid_t *highvalue;
+		const pg_uuid_t *search = DatumGetUUIDP(key->scankeys->sk_argument);
+		IndexTuple	itup;
+		OffsetNumber probe;
+
+		if (btuuidpagevalue(rel, page, low, &lowvalue, &itup) &&
+			btuuidpagevalue(rel, page, high - 1, &highvalue, &itup) &&
+			btinterpolatebytes(lowvalue->data, UUID_LEN,
+							   highvalue->data, UUID_LEN,
+							   search->data, UUID_LEN,
+							   key->scankeys->sk_flags & SK_BT_DESC,
+							   low, high, &probe))
+		{
+			OffsetNumber neighbor;
+			int32		result;
+			bool		advance;
+			bool		neighbor_advance;
+
+			if (!btuuidpagecmp(rel, key, page, probe, &result))
+				return false;
+			advance = result >= cmpval;
+			if ((advance && OffsetNumberNext(probe) == high) ||
+				(!advance && probe == low))
+			{
+				*resultoff = advance ? high : low;
+				return true;
+			}
+			neighbor = advance ? OffsetNumberNext(probe) :
+				OffsetNumberPrev(probe);
+			if (!btuuidpagecmp(rel, key, page, neighbor, &result))
+				return false;
+			neighbor_advance = result >= cmpval;
+			if (advance != neighbor_advance)
+			{
+				*resultoff = advance ? neighbor : probe;
+				return true;
+			}
+			if (advance)
+				low = OffsetNumberNext(neighbor);
+			else
+				high = probe;
+		}
+	}
+
+	while (high > low)
+	{
+		OffsetNumber mid = low + ((high - low) / 2);
+		int32		result;
+		bool		advance;
+
+		if (!btuuidpagecmp(rel, key, page, mid, &result))
+			return false;
+		if (strictresult != NULL && unlikely(result == 0 && key->scantid != NULL))
+			return false;
+		advance = result >= cmpval;
+		if (advance)
+			low = mid + 1;
+		else
+		{
+			high = mid;
+			if (strictresult != NULL && result != 0)
+				stricthigh = high;
+		}
+	}
+
+	*resultoff = low;
+	if (strictresult != NULL)
+		*strictresult = stricthigh;
+	return true;
+}
+
+Datum
+btuuidbinsearchsupport(PG_FUNCTION_ARGS)
+{
+	BTBinSearchSupportData *support =
+		(BTBinSearchSupportData *) PG_GETARG_POINTER(0);
+
+	support->compare_tuple = btuuidpagecmp;
+	support->binary_search = btuuidbinsearch;
 	PG_RETURN_VOID();
 }
 

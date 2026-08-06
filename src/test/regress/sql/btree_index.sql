@@ -638,3 +638,133 @@ RESET enable_seqscan;
 RESET enable_bitmapscan;
 DROP TABLE btree_binsearch_fast, btree_binsearch_control;
 DROP OPERATOR FAMILY btree_no_binsearch_family USING btree;
+
+-- Exercise text and UUID page search support against generic opclasses.
+CREATE OPERATOR FAMILY btree_no_text_binsearch_family USING btree;
+CREATE OPERATOR CLASS btree_no_text_binsearch_ops
+FOR TYPE text USING btree FAMILY btree_no_text_binsearch_family AS
+  OPERATOR 1 < (text, text),
+  OPERATOR 2 <= (text, text),
+  OPERATOR 3 = (text, text),
+  OPERATOR 4 >= (text, text),
+  OPERATOR 5 > (text, text),
+  FUNCTION 1 bttextcmp(text, text);
+
+CREATE TABLE btree_text_binsearch_fast (k text COLLATE "C", v int4);
+CREATE TABLE btree_text_binsearch_control (k text COLLATE "C", v int4);
+INSERT INTO btree_text_binsearch_fast
+SELECT CASE WHEN g % 211 = 0 THEN NULL
+            WHEN g % 101 = 0 THEN repeat('x', 1000) || lpad((g % 17)::text, 2, '0')
+            ELSE 'common-prefix-' || lpad((g % 5000)::text, 8, '0') END,
+       g
+FROM generate_series(1, 20000) g;
+INSERT INTO btree_text_binsearch_control SELECT * FROM btree_text_binsearch_fast;
+CREATE INDEX btree_text_binsearch_fast_idx ON btree_text_binsearch_fast (k);
+CREATE INDEX btree_text_binsearch_control_idx ON btree_text_binsearch_control
+  (k btree_no_text_binsearch_ops);
+
+INSERT INTO btree_text_binsearch_fast
+SELECT 'common-prefix-' || lpad((g * 100000)::text, 8, '0'), -g
+FROM generate_series(1, 100) g;
+INSERT INTO btree_text_binsearch_control
+SELECT 'common-prefix-' || lpad((g * 100000)::text, 8, '0'), -g
+FROM generate_series(1, 100) g;
+
+WITH q(k) AS (VALUES ('common-prefix-00000000'),
+                     ('common-prefix-00001234'),
+                     ('common-prefix-99999999'),
+                     ('missing'),
+                     (repeat('x', 1000) || '05'))
+SELECT bool_and(
+  ARRAY(SELECT v FROM btree_text_binsearch_fast f
+        WHERE f.k = q.k ORDER BY v) =
+  ARRAY(SELECT v FROM btree_text_binsearch_control c
+        WHERE c.k = q.k ORDER BY v) AND
+  ARRAY(SELECT v FROM btree_text_binsearch_fast f
+        WHERE f.k >= q.k ORDER BY k, v LIMIT 10) =
+  ARRAY(SELECT v FROM btree_text_binsearch_control c
+        WHERE c.k >= q.k ORDER BY k, v LIMIT 10) AND
+  ARRAY(SELECT v FROM btree_text_binsearch_fast f
+        WHERE f.k > q.k ORDER BY k, v LIMIT 10) =
+  ARRAY(SELECT v FROM btree_text_binsearch_control c
+        WHERE c.k > q.k ORDER BY k, v LIMIT 10) AND
+  ARRAY(SELECT v FROM btree_text_binsearch_fast f
+        WHERE f.k <= q.k ORDER BY k DESC, v LIMIT 10) =
+  ARRAY(SELECT v FROM btree_text_binsearch_control c
+        WHERE c.k <= q.k ORDER BY k DESC, v LIMIT 10) AND
+  ARRAY(SELECT v FROM btree_text_binsearch_fast f
+        WHERE f.k < q.k ORDER BY k DESC, v LIMIT 10) =
+  ARRAY(SELECT v FROM btree_text_binsearch_control c
+        WHERE c.k < q.k ORDER BY k DESC, v LIMIT 10))
+FROM q;
+
+DROP INDEX btree_text_binsearch_fast_idx, btree_text_binsearch_control_idx;
+CREATE INDEX btree_text_binsearch_fast_idx ON btree_text_binsearch_fast
+  (k DESC NULLS FIRST);
+CREATE INDEX btree_text_binsearch_control_idx ON btree_text_binsearch_control
+  (k btree_no_text_binsearch_ops DESC NULLS FIRST);
+SELECT ARRAY(SELECT k FROM btree_text_binsearch_fast ORDER BY k DESC NULLS FIRST, v) =
+       ARRAY(SELECT k FROM btree_text_binsearch_control ORDER BY k DESC NULLS FIRST, v);
+
+CREATE OPERATOR FAMILY btree_no_uuid_binsearch_family USING btree;
+CREATE OPERATOR CLASS btree_no_uuid_binsearch_ops
+FOR TYPE uuid USING btree FAMILY btree_no_uuid_binsearch_family AS
+  OPERATOR 1 < (uuid, uuid),
+  OPERATOR 2 <= (uuid, uuid),
+  OPERATOR 3 = (uuid, uuid),
+  OPERATOR 4 >= (uuid, uuid),
+  OPERATOR 5 > (uuid, uuid),
+  FUNCTION 1 uuid_cmp(uuid, uuid);
+
+CREATE TABLE btree_uuid_binsearch_fast (k uuid, v int4);
+CREATE TABLE btree_uuid_binsearch_control (k uuid, v int4);
+INSERT INTO btree_uuid_binsearch_fast
+SELECT CASE WHEN g % 211 = 0 THEN NULL
+            WHEN g % 2 = 0 THEN md5((g % 5000)::text)::uuid
+            ELSE lpad(to_hex(g % 5000), 32, '0')::uuid END,
+       g
+FROM generate_series(1, 20000) g;
+INSERT INTO btree_uuid_binsearch_control SELECT * FROM btree_uuid_binsearch_fast;
+CREATE INDEX btree_uuid_binsearch_fast_idx ON btree_uuid_binsearch_fast (k);
+CREATE INDEX btree_uuid_binsearch_control_idx ON btree_uuid_binsearch_control
+  (k btree_no_uuid_binsearch_ops);
+
+WITH q(k) AS (VALUES ('00000000-0000-0000-0000-000000000000'::uuid),
+                     ('00000000-0000-0000-0000-0000000004d2'::uuid),
+                     (md5('1234')::uuid),
+                     ('ffffffff-ffff-ffff-ffff-ffffffffffff'::uuid))
+SELECT bool_and(
+  ARRAY(SELECT v FROM btree_uuid_binsearch_fast f
+        WHERE f.k = q.k ORDER BY v) =
+  ARRAY(SELECT v FROM btree_uuid_binsearch_control c
+        WHERE c.k = q.k ORDER BY v) AND
+  ARRAY(SELECT v FROM btree_uuid_binsearch_fast f
+        WHERE f.k >= q.k ORDER BY k, v LIMIT 10) =
+  ARRAY(SELECT v FROM btree_uuid_binsearch_control c
+        WHERE c.k >= q.k ORDER BY k, v LIMIT 10) AND
+  ARRAY(SELECT v FROM btree_uuid_binsearch_fast f
+        WHERE f.k > q.k ORDER BY k, v LIMIT 10) =
+  ARRAY(SELECT v FROM btree_uuid_binsearch_control c
+        WHERE c.k > q.k ORDER BY k, v LIMIT 10) AND
+  ARRAY(SELECT v FROM btree_uuid_binsearch_fast f
+        WHERE f.k <= q.k ORDER BY k DESC, v LIMIT 10) =
+  ARRAY(SELECT v FROM btree_uuid_binsearch_control c
+        WHERE c.k <= q.k ORDER BY k DESC, v LIMIT 10) AND
+  ARRAY(SELECT v FROM btree_uuid_binsearch_fast f
+        WHERE f.k < q.k ORDER BY k DESC, v LIMIT 10) =
+  ARRAY(SELECT v FROM btree_uuid_binsearch_control c
+        WHERE c.k < q.k ORDER BY k DESC, v LIMIT 10))
+FROM q;
+
+DROP INDEX btree_uuid_binsearch_fast_idx, btree_uuid_binsearch_control_idx;
+CREATE INDEX btree_uuid_binsearch_fast_idx ON btree_uuid_binsearch_fast
+  (k DESC NULLS FIRST);
+CREATE INDEX btree_uuid_binsearch_control_idx ON btree_uuid_binsearch_control
+  (k btree_no_uuid_binsearch_ops DESC NULLS FIRST);
+SELECT ARRAY(SELECT k FROM btree_uuid_binsearch_fast ORDER BY k DESC NULLS FIRST, v) =
+       ARRAY(SELECT k FROM btree_uuid_binsearch_control ORDER BY k DESC NULLS FIRST, v);
+
+DROP TABLE btree_text_binsearch_fast, btree_text_binsearch_control,
+  btree_uuid_binsearch_fast, btree_uuid_binsearch_control;
+DROP OPERATOR FAMILY btree_no_text_binsearch_family USING btree;
+DROP OPERATOR FAMILY btree_no_uuid_binsearch_family USING btree;

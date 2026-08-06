@@ -5386,16 +5386,17 @@ Number                | 3
 Function              | in_range(time without time zone,time without time zone,interval,boolean,boolean)
 
 \dAp * pg_catalog.uuid_ops
-                            List of support functions of operator families
-  AM   | Operator family | Registered left type | Registered right type | Number |      Function      
--------+-----------------+----------------------+-----------------------+--------+--------------------
+                              List of support functions of operator families
+  AM   | Operator family | Registered left type | Registered right type | Number |        Function        
+-------+-----------------+----------------------+-----------------------+--------+------------------------
  btree | uuid_ops        | uuid                 | uuid                  |      1 | uuid_cmp
  btree | uuid_ops        | uuid                 | uuid                  |      2 | uuid_sortsupport
  btree | uuid_ops        | uuid                 | uuid                  |      4 | btequalimage
  btree | uuid_ops        | uuid                 | uuid                  |      6 | uuid_skipsupport
+ btree | uuid_ops        | uuid                 | uuid                  |      7 | btuuidbinsearchsupport
  hash  | uuid_ops        | uuid                 | uuid                  |      1 | uuid_hash
  hash  | uuid_ops        | uuid                 | uuid                  |      2 | uuid_hash_extended
-(6 rows)
+(7 rows)
 
 -- check \dconfig
 set work_mem = 10240;
