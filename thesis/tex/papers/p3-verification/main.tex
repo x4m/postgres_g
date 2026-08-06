@@ -73,11 +73,36 @@ loosen the contract but to measure coverage directly.
 
 \section*{Acknowledgements}
 
-% TODO по итогам написания: назвать по трейлерам коммитов и по составу тредов.
-% Заведомо: П. Гейган (amcheck для B-дерева, с которого всё началось),
-% А. Коротков, А. Мухин, К. Решке, Japin Li, Р. Хапов, Miłosz Bieniek,
-% P. A. Jungwirth, Н. Самохвалов — тред «amcheck: support for GiST».
-% Проверить по git log, кто коммитил 14ffaece0fb, d70b17636dd, 39132b784ae.
+% Составлено по трейлерам коммитов (Author / Reviewed-by / Reported-by) и по
+% составу тредов, а не по памяти.
+
+The premise of this work is not ours. Peter Geoghegan built the invariant
+checker for the B-tree and established, from its first version, the rule that
+governs everything here: a report of corruption must never be false. He also
+committed the sibling-link and replica work of Sections~\ref{sec:siblings}
+and~\ref{sec:replica}, which was written jointly with him.
+
+Verification of the inverted index was written with Grigory Kryachko and Heikki
+Linnakangas and committed by Tomas Vondra, who also committed the three
+corrections discussed in Section~\ref{sec:checker}. Those corrections were found
+and written by Arseniy Mukhin, who has done more than anyone to establish what
+that checker actually checks; the memory leak of Section~\ref{sec:eval} was
+reported by him and fixed by Kirill Reshke, with review by Ewan Young, and
+committed by Michael Paquier.
+
+Alexander Korotkov committed the normalization work and reviewed most of it;
+the handling of differing header sizes is Michael Zhilin's, and the defect in
+our own normalization was reported by Andres Freund. Álvaro Herrera committed
+the recovery fix, which is Mihail Nikalayeu's work. Alexander Lakhin and Jian He
+reviewed the normalization series. The error codes that make corruption
+machine-readable are Melanie Plageman's, reviewed by Robert Haas.
+
+Support for the generalized search tree remains in review, and we thank those
+carrying it there: Arseniy Mukhin, Kirill Reshke, Japin Li, Roman Khapov,
+Miłosz Bieniek, Paul A. Jungwirth and Nikolay Samokhvalov. José Villanova,
+Aleksander Alekseev and Nikolay Samokhvalov reviewed the module refactoring.
+
+Errors that remain are the author's.
 
 \bibliographystyle{plain}
 \bibliography{../../common/refs}

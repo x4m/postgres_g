@@ -70,8 +70,20 @@ after log replay, which matters to tooling that compares pages byte for byte.
 
 \section*{Acknowledgements}
 
-% TODO: по трейлерам коммитов d3a4f89d8a3, f2e403803fe, 09c1c6ab4bc,
-% b1328d78f88, e5d8f359610 и по составу тредов.
+% Составлено по трейлерам коммитов, а не по памяти.
+
+Tom Lane committed the optional support functions of Section~\ref{sec:optional},
+reviewed by Dmitriy Sarafannikov, and the in-place overwrite of
+Section~\ref{sec:overwrite}, reviewed by Anastasia Lubennikova; in both cases he
+reworked the patch materially before committing it. Alexander Korotkov committed
+the covering attributes of Section~\ref{sec:include}. The corresponding support
+in the space-partitioned tree is Pavel Borisov's work, reviewed by Anastasia
+Lubennikova and by the author.
+
+The compatibility consequence of Section~\ref{sec:bytes} was raised during
+review rather than found afterwards, which is the reason it is documented at all.
+
+Errors that remain are the author's.
 
 \bibliographystyle{plain}
 \bibliography{../../common/refs}

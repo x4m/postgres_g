@@ -71,8 +71,24 @@ appears not to have been addressed since.
 
 \section*{Acknowledgements}
 
-% TODO: по трейлерам 3ad55863e93, 0bef1c0678d и по составу тредов;
-% заведомо Т. Сигаев (коммиты), А. Фройнд (сообщение о замедлении тестов).
+% Составлено по трейлерам коммитов и по составу тредов. Порядок здесь обратный
+% обычному: первым назван исполнитель работы, а не руководитель.
+
+The implementation this paper reports is Shubham Barai's, carried out as a
+Google Summer of Code project in 2017. Kevin Grittner, whose work serializable
+snapshot isolation in this system rests on, engaged with the proposal from its
+first week and set the terms in which the covering argument of
+Section~\ref{sec:gist} is stated. Teodor Sigaev committed both the original
+mechanism and its GIN counterpart; Alexander Korotkov reviewed throughout and
+made the editorial changes that went in with the commit. Heikki Linnakangas
+identified the unsoundness of the transplanted analogy and wrote the revision
+described in Section~\ref{sec:gin}.
+
+Andres Freund reported the cost the mechanism imposes on instrumented test runs,
+which is how we know what it costs at all. Michael Paquier and Andrew Dunstan
+took part in resolving it.
+
+Errors that remain are the author's.
 
 \bibliographystyle{plain}
 \bibliography{../../common/refs}

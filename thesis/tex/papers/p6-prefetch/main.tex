@@ -63,9 +63,19 @@ measurement that failed to show a gain rather than the workload that would have.
 
 \section*{Acknowledgements}
 
-% TODO: М. Плейджмен (рецензирование и принятие всех трёх коммитов),
-% Джунванг Чжао и Кирилл Решке (рецензирование c5c239e26e3),
-% Т. Вондра и А. Фройнд (интерфейс потокового чтения).
+% Составлено по трейлерам коммитов.
+
+Melanie Plageman reviewed and committed the three patches this paper reports,
+for the B-tree, the generalized search tree and the space-partitioned tree, and
+the error-code work that made their effects observable. Junwang Zhao and Kirill
+Reshke reviewed the first of them.
+
+The streaming read interface these patches use is not ours; it is the work of
+Thomas Munro, Andres Freund and others, and this paper is in part a report on
+what happens when an existing facility is applied to a case that turns out not to
+need it.
+
+Errors that remain are the author's.
 
 \bibliographystyle{plain}
 \bibliography{../../common/refs}
