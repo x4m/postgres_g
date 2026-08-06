@@ -154,8 +154,9 @@ operations that produced it, not on the value. A checker comparing bytes reports
 differences that are not differences.
 
 The fix is to normalize both tuples to a canonical representation before
-comparing: \code{b1fe8efdf17} for uncompressed variable-length data, and
-\code{ab65dfb0fb2} for the differing header sizes of short variable-length data.
+comparing: \code{b1fe8efdf17} for uncompressed variable-length data, and, by
+Michael Zhilin, \code{ab65dfb0fb2} for the differing header sizes of short
+variable-length data.
 
 The sequel belongs in this paper rather than in a footnote. The normalization
 itself then turned out to use the wrong accessor for the size of a
@@ -189,19 +190,22 @@ is at fault.
 
 A report of corruption is only useful to an operator if a program can act on it.
 Distinguishing corruption by the text of an error message is not something one
-can build automation on. Corruption reports were therefore given error codes of
-their own (\code{8ec97e78a77}), so that tooling can recognize the condition and,
-for instance, take a node out of service without a human reading a log.
+can build automation on. Corruption reports were therefore given error codes of their own, in work by
+Melanie Plageman (\code{8ec97e78a77}), so that tooling can recognize the
+condition and, for instance, take a node out of service without a human reading
+a log.
 
-This is the smallest change discussed in this paper and, measured by what it
-enables, not the least useful: it is what turns verification from a thing a
-person runs during an incident into a thing a system runs continuously.
+This is not our change, and we include it because the discipline this paper
+argues for is incomplete without it: an invariant checked but reported only in
+prose is checked for a human, and the case for continuous verification rests on
+a machine being able to act on the answer.
 
 \section{The checker needed checking}
 \label{sec:checker}
 
-Verification of the inverted index shipped in PostgreSQL~18
-(\code{14ffaece0fb}, with common routines factored out in \code{d70b17636dd}).
+Verification of the inverted index shipped in PostgreSQL~18~--- \code{14ffaece0fb},
+written with Grigory Kryachko and Heikki Linnakangas, with the common routines
+factored out separately in \code{d70b17636dd}.
 Since then four defects have been fixed in it: posting tree checks
 (\code{0cf205e122a}), the parent key check (\code{cdd1a431f21}), the ordering of
 entry-tree items (\code{0b54b392334}), and a memory leak in the parent key

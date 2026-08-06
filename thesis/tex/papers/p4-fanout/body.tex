@@ -167,8 +167,10 @@ levels is then given by~\eqref{eq:fanout} with $k$ over the key attributes alone
 and at the leaf level with $k + k_{\mathrm{inc}}$. Since height depends on
 internal fan-out, covering attributes do not increase it.
 
-Implemented in \code{f2e403803fe}, released in PostgreSQL~12; the corresponding
-change for the space-partitioned tree is \code{09c1c6ab4bc}, released in~14.
+Implemented in \code{f2e403803fe}, released in PostgreSQL~12. The corresponding
+change for the space-partitioned tree~--- \code{09c1c6ab4bc}, released in~14~---
+is the work of Pavel Borisov, and we mention it because it shows the argument
+transferring to a second structure, not because it is ours.
 
 \subsection{How this differs from the B-tree case}
 
