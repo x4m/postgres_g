@@ -235,10 +235,39 @@ the same entries.
 \section{Evaluation}
 \label{sec:eval}
 
+\subsection{Optional support functions: a capability, not a speed}
+
+The claim of Section~\ref{sec:optional} is binary, and so is its test. We define
+an operator class for \code{box}~--- a type whose stored representation is its
+input representation~--- omitting both the conversion function and the fetch
+function, and try to use it.
+
+\begin{center}
+\begin{tabular}{ll}
+\toprule
+build & outcome \\
+\midrule
+before \code{d3a4f89d8a3} & index cannot be built: \emph{missing support function 3} \\
+after & index builds; index-only scan is available \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Both halves of the claim are established by the same experiment. The class
+becomes usable, and the query is answered from the index alone although no fetch
+function was supplied~--- which is the capability that the absence of a
+conversion function is what tells the core about.
+
+We deliberately report no timing here. The author of the change stated at the
+time that the speed benefit is small and that the point is the reduction of
+obligatory boilerplate, and we have no reason to dress that up.
+
 \subsection{Covering attributes}
 
 One million points with an additional integer column, 2000 range queries,
-PostgreSQL~18.4.
+PostgreSQL~18.4, with the extension that supplies a generalized search tree
+operator class for integers installed~--- without it the third row below is not
+merely worse but impossible.
 
 \begin{table}[t]
 \centering
@@ -246,67 +275,66 @@ PostgreSQL~18.4.
 \label{tab:include}
 \begin{tabular}{lrrrr}
 \toprule
-column is & index pages & internal fan-out & accesses/query \\
+column is & index pages & internal pages & internal fan-out & accesses/query \\
 \midrule
-absent & 8\,160 & 122.6 & 4.19 \\
-covering & 9\,622 & 123.9 & 4.46 \\
-in the key & \multicolumn{3}{c}{\emph{index cannot be created}} \\
+absent & 8\,160 & 66 & 122.6 & 4.19 \\
+covering & 9\,622 & 77 & 123.9 & 4.46 \\
+in the key & 9\,638 & 93 & 102.6 & 4.61 \\
 \bottomrule
 \end{tabular}
 \end{table}
 
-The third row is the more direct confirmation of the argument in
-Section~\ref{sec:include}, and it is categorical rather than quantitative:
-\code{CREATE INDEX \dots{} USING gist(p, i)} fails, because no generalized search
-tree operator class exists for the integer type. Putting the column in the key is
-not an inferior option here; it is not an option, unless an extension supplying
-such a class is installed first. This is the case we claimed distinguishes this
-feature from its B-tree namesake, and it is the ordinary case for a spatial index
-that must also return an identifier.
+The prediction of Section~\ref{sec:include} is confirmed in exactly the quantity
+it was made about. A covering attribute leaves internal fan-out untouched, 122.6
+against 123.9; putting the same column in the key lowers it to 102.6, a loss of
+16\,\%, and raises the number of internal pages from 77 to 93. The leaf level is
+identical in the two cases~--- 9\,544 pages either way~--- so the whole
+difference falls on the navigational part of the tree, which is what
+\eqref{eq:fanout} says it should.
 
-The quantitative claim holds as well: internal fan-out is unchanged, 122.6
-against 123.9, a difference within rounding. The covering attribute enlarges the
-index by 18\,\% and raises accesses per query by 6\,\%, and does so entirely at
-the leaf level; the length of a descent is unaffected, which is what
-Section~\ref{sec:include} predicted from~\eqref{eq:fanout}.
+It is worth stating the categorical part before the numbers, because it is the
+stronger claim. Without a third-party extension the index with the column in the
+key cannot be created at all: the core supplies no operator class for the integer
+type. The naive route is not an inferior option in general; it is unavailable
+unless someone has separately supplied the missing class.
 
-What is missing from this table is the cost of the alternative when it is
-possible. With an extension providing an integer operator class the index in the
-key can be built, and the fan-out penalty at internal levels can be measured
-rather than merely predicted. We have not done so.
+\subsection{In-place overwrite: the effect is real and smaller than published}
 
-\subsection{Two measurements that did not come out}
+Measured first on \code{point} keys, this change made no difference at all. That
+is consistent with its mechanism~--- a 16-byte entry has almost nothing to move
+when overwritten~--- so we repeated it with \code{cube} keys of dimension 16,
+that is 256 bytes.
 
-We report these because omitting them would misrepresent the state of the
-evidence.
+\begin{table}[t]
+\centering
+\caption{Insertion time, 500\,000 rows, medians of three runs}
+\label{tab:overwrite}
+\begin{tabular}{llrr}
+\toprule
+key & build & sorted input, s & random input, s \\
+\midrule
+\code{point}, 16~B & before & 9.73 & 7.15 \\
+ & after & 9.74 & 7.06 \\
+\code{cube}, 256~B & before & 29.96 & 18.87 \\
+ & after & \textbf{27.17} & 19.26 \\
+\bottomrule
+\end{tabular}
+\end{table}
 
-\paragraph{Optional support functions.} The claim of
-Section~\ref{sec:optional} is a capability, not a speed: an operator class
-omitting the conversion functions should be usable, and should support
-index-only scans without a fetch function. Our test created such a class on
-builds either side of the change and found it accepted by both, which means the
-test did not exercise the check it was aimed at rather than that the change did
-nothing. The proper test builds an index with such a class and inspects whether
-an index-only plan is chosen. The capability claim in
-Section~\ref{sec:optional} therefore rests on the code and the documentation, not
-on a measurement of ours.
+With a large key the effect appears and is reproducible: 1.10 on sorted input,
+with runs within 0.05~seconds of each other. On random input there is no
+difference at any key size, which matches the mechanism: sorted insertion widens
+a parent key at nearly every step, random insertion much more rarely.
 
-\paragraph{In-place overwrite.} Measured on one million points, three runs, the
-change is not distinguishable on sorted insertion (9.72--9.76~seconds on both
-sides) and worth about 1.3\,\% on random insertion, with the index marginally
-larger rather than smaller. The previously published
-figures~\cite{borodin2017memory} for this change were about threefold on sorted
-data and about 15\,\% on random, with a smaller index.
-
-We do not conclude that those figures were wrong, because a simpler explanation
-is available and we have not excluded it. A \code{point} key occupies 16~bytes,
-so overwriting one moves almost nothing, whereas the benefit is proportional to
-the volume of data shifted; and at 9.7~microseconds per row the measurement is
-dominated by write-ahead logging and by the table, not by index page layout. The
-measurement that would settle it uses a large key type and separates index
-insertion from logging. Until it is done, the claim in
-Section~\ref{sec:overwrite} should be read as it is stated there~--- as prior
-published work, on a release of that era, not re-established here.
+The previously published figures for this change~\cite{borodin2017memory} are
+about threefold on sorted input and a smaller index. We measure 10\,\% and an
+index 2\,\% larger. The gap is too wide to attribute to conditions, and we have
+not identified its cause; the 2017 measurement may have used a different
+workload, a different operator class, or a build with assertions enabled. We
+therefore report what we measured, and treat the earlier figures as belonging to
+their own setting rather than as re-established here. The direction of the
+mechanism~--- benefit proportional to the volume of data moved, hence to key
+size~--- is confirmed.
 
 \section{Limitations}
 
