@@ -1,8 +1,19 @@
-% P5 — Predicate locking in extensible index structures.
-% Усиливает П4. Материал: §5.6 диссертации, выпуск 11.
+% P5 — Predicate locking in an extensible index framework.
+% Усиливает П4. Материал: §5.6 диссертации, выпуск 11, тред GSoC 2017.
 %
-% Целевое издание не выбрано. Кандидаты: SEIM (короткая форма, англ.),
-% Труды ИСП РАН, Information Systems. Решать после P4.
+% ВАЖНО ПРО АВТОРСТВО, из-за чего статья переписана 2026-08-06.
+% Реализация предикатных блокировок для GiST (3ad55863e93) — работа
+% Ш. Бараи в рамках GSoC 2017, где А. Бородин был научным руководителем
+% проекта. Пересмотр для GIN (0bef1c0678d) — работа Х. Линнакангаса, к которой
+% А. Бородин отношения не имеет. Первая редакция статьи говорила «we report
+% predicate locking at page granularity», то есть присваивала чужой результат.
+%
+% Собственный вклад, подтверждаемый архивом: постановка двух вопросов,
+% определивших устройство (письмо 01.06.2017), и требование к проверяемости
+% изоляционных тестов — что они должны падать при отсутствии проверяемого
+% (письмо 16.08.2017). Плюс открытый вопрос, ставший в 2019 году настоящим.
+%
+% Жанр — отчёт о руководстве и разбор, а не заявка на приоритет.
 
 \documentclass[11pt, a4paper]{article}
 \usepackage{fontspec}
@@ -17,7 +28,8 @@
 \newcommand{\code}[1]{\texttt{#1}}
 \emergencystretch=1em
 
-\title{Predicate locking granularity in extensible index structures}
+\title{Predicate locking in an extensible index framework:\\
+a supervised implementation and a question deferred}
 \author{Andrey Borodin}
 \date{}
 
@@ -25,26 +37,34 @@
 \maketitle
 
 \begin{abstract}
-Serializable snapshot isolation detects a write that would have changed the
-answer of a read that already happened. To do so it needs the reader to record
-what it read, as a predicate rather than as a set of rows, and the writer to
-check whether its new value falls under any recorded predicate. Where an access
-method offers no support for this, the predicate degenerates to the whole
-relation and every insertion conflicts with every scan.
+Serializable snapshot isolation must detect a write that would have changed the
+answer of a read that already happened. The reader therefore records what it
+read as a predicate rather than as a set of rows, and the writer checks whether
+its new value falls under any recorded predicate. Where an access method offers
+no support, the predicate degenerates to the whole relation and every insertion
+conflicts with every scan.
 
-We report predicate locking at page granularity for the generalized search tree,
-and the argument that makes page granularity correct there: the key of a page
-covers every entry on it, so a value that would be placed on a page necessarily
-falls inside the region a scan of that page examined. The same reasoning fails
-for the generalized inverted index, whose scans do not read a contiguous region
-of a key space, and we describe the two ways it failed in practice~--- a scan
-that found no match recorded nothing, although the point of a predicate lock is
-to lock the gap; and enabling deferred insertion while a transaction was running
-allowed later insertions to bypass locks already taken. The corrected principle
-is stated in the description of the structure rather than only in code, so that
-subsequent changes can be checked against it, and we argue that this is the
-minimum a concurrency-control decision has to leave behind if it is to survive
-maintenance.
+This paper is an account of adding such support to an extensible index
+framework, of what the framework's structure contributes to the argument, and of
+one question that was asked at the time, judged hypothetical, and turned out
+seven years later not to be. The implementation for the generalized search tree
+was carried out by Shubham Barai as a Google Summer of Code project under the
+present author's supervision, and the subsequent revision for the generalized
+inverted index by Heikki Linnakangas; the author's role was design review and
+the verification requirements described below, and the paper is written as an
+account rather than as a claim of priority.
+
+We set out the covering argument that makes page granularity correct for a
+generalized search tree, and why the same granularity, transplanted to the
+inverted index, was not sound and had to be revised. We describe the requirement
+imposed on the project's isolation tests~--- that each must fail if the access
+method does not implement predicate locking at all~--- and argue that this is the
+minimum standard for a test of a concurrency-control feature, since a test that
+passes either way measures nothing. And we return to a question raised in review
+in 2017: whether garbage collection may erase a page holding a predicate lock.
+It was correctly set aside then, because the structure did not delete pages. It
+began deleting them in 2019, in work by the present author, and the interaction
+appears not to have been addressed since.
 \end{abstract}
 
 \input{body}

@@ -1,191 +1,232 @@
 \section{Introduction}
 
-Serializable snapshot isolation~\cite{ports2012ssi} achieves serializability
-without read locks by detecting, at commit time, the dependency patterns that
-could produce a non-serializable schedule. One of the dependencies it must see is
-between a transaction that read a range of values and a transaction that inserted
-a value into that range~--- the phantom. The reader did not see the new row, and
-nothing in its read set records that it \emph{would} have seen it, because the
-row did not exist.
+Serializable snapshot isolation~\cite{ports2012ssi} avoids read locks by
+detecting, at commit time, the dependency patterns that could yield a
+non-serializable schedule. One dependency it must see is between a transaction
+that read a range of values and a transaction that inserted a value into that
+range. The reader did not see the new row, and nothing in its read set records
+that it \emph{would} have seen it, because the row did not exist. The mechanism
+is a predicate lock: the reader registers the region it examined, the writer
+checks whether its value falls inside any registered region.
 
-The mechanism is a predicate lock: the reader registers the region it examined,
-the writer checks whether its new value falls inside any registered region. What
-makes this cheap or expensive is granularity. An access method that offers no
-support forces the region to be the entire relation, and then every insertion
-conflicts with every scan, which turns serializable isolation from a correctness
-guarantee into an availability problem.
+Granularity decides whether this is affordable. With no support from the access
+method the region is the whole relation, and every insertion conflicts with every
+scan, which converts serializable isolation from a correctness guarantee into an
+availability problem. For a B-tree the granularity question answers itself: a
+scan reads a contiguous interval of a total order, and the interval is the
+predicate. For an extensible framework there is no order, the core does not know
+what a key means, and what a scan examined has no description outside the
+structure.
 
-For a B-tree the granularity question has an obvious answer, because a scan reads
-a contiguous interval of a total order and the interval is exactly the predicate.
-For an extensible index framework there is no order, the key type is not known to
-the core, and what a scan examined has no description outside the structure
-itself. This paper is about what granularity is available in that setting, and
-about a case where the natural answer for one structure was carried over to
-another where its justification did not hold.
+\paragraph{What this paper is, and whose work it reports.} The implementation of
+predicate locking for PostgreSQL's generalized search tree was carried out by
+Shubham Barai as a Google Summer of Code project in 2017, under the present
+author's supervision; it was committed in 2018 with editorial changes by Teodor
+Sigaev and Alexander Korotkov. The subsequent revision of the corresponding
+mechanism for the generalized inverted index was carried out by Heikki
+Linnakangas. This paper is an account of that work and of the reasoning around
+it, not a claim of priority over it. The author's own contributions are the
+design questions of Section~\ref{sec:questions}, the verification requirement of
+Section~\ref{sec:tests}, and the observation of Section~\ref{sec:deferred},
+which is a defect rather than a feature.
 
 \paragraph{Contributions.}
 
 \begin{enumerate}
-\item Page-granularity predicate locking for the generalized search tree, with
-      the covering argument that establishes its correctness
-      (Section~\ref{sec:gist}).
-\item An account of two defects in the corresponding mechanism for the
-      generalized inverted index, and the revised principle
-      (Section~\ref{sec:gin}).
-\item The observation that a concurrency-control decision must be recorded in
-      the description of the structure and not only in code, with the reason
-      (Section~\ref{sec:writing-it-down}).
+\item The covering argument that makes page granularity correct for a
+      generalized search tree, and the reason it does not transfer to the
+      inverted index (Sections~\ref{sec:gist} and~\ref{sec:gin}).
+\item A verification requirement for concurrency-control features: each
+      isolation test must be shown to fail when the feature is absent
+      (Section~\ref{sec:tests}).
+\item A question raised in review in 2017 and correctly deferred on a premise
+      about the rest of the system; that premise was removed in 2019, and the
+      interaction appears still to be unhandled (Section~\ref{sec:deferred}).
 \end{enumerate}
 
-\section{Page granularity for the generalized search tree}
+\section{Why page granularity is sound here}
 \label{sec:gist}
 
-A scan of a generalized search tree visits a set of pages, and on each page it
-evaluates \code{consistent} against every entry. What did it read? Not the
-entries it returned, and not the entries it examined: it read the \emph{region}
-described by the keys of the pages it visited, because had a matching entry been
-present anywhere in that region, the scan would have found it.
+A scan of a generalized search tree visits a set of pages and evaluates
+\code{consistent} against every entry of each. What did it read? Not the entries
+it returned, and not the entries it examined, but the \emph{region} described by
+the keys of the pages it visited: had a matching entry been anywhere in that
+region, the scan would have found it.
 
-That observation gives the granularity. A scan takes a predicate lock on every
-page it examines; an insertion checks for a lock on the page where its entry will
-be placed. The rule is correct because of a property the structure maintains
-anyway: the key of a page covers every entry on the page. Hence if a new value
-would be placed on a given page, it falls within that page's key, that is within
-a region the scan of that page examined. There is no way for an insertion to
-land on a page and yet be outside what a scan of that page would have covered.
+That gives the granularity. A scan takes a predicate lock on every page it
+examines; an insertion checks for a lock on the page where its entry will be
+placed. The rule is correct because of a property the structure maintains for
+other reasons: the key of a page covers every entry on it. If a new value would be
+placed on a page, it falls within that page's key, hence within a region the scan
+of that page examined. No insertion can land on a page and yet be outside what a
+scan of that page covered.
 
-Two implementation subtleties are worth recording because both are easy to get
-wrong in the direction of false conflicts or missed ones. The check must not fire
-during index construction, where entries are placed without any concurrent reader
-having a stake in them. And splitting a node inserts a downlink into the parent,
-which is an insertion into a page but not an insertion of user data; treating it
-as the latter produces conflicts that correspond to nothing in the user's
-schedule.
+The argument is worth stating in this form because it identifies exactly what the
+framework contributes. Nothing here depends on what a key means; it depends only
+on the covering invariant, which every operator class must maintain for search to
+work at all. The granularity is therefore available for key types written after
+the mechanism was.
 
 Implemented in \code{3ad55863e93}, released in PostgreSQL~11.
 
-\section{Where the argument does not carry over}
+\section{Two questions asked in review}
+\label{sec:questions}
+
+Supervision of an implementation consists largely of asking what happens in cases
+the implementer has not reached yet. Two such questions shaped this one, and both
+concern the boundary between the mechanism and the rest of the structure.
+
+\paragraph{Unfinished splits.} An insertion may encounter a node whose split has
+begun but whose downlink has not yet been inserted into the parent. Completing
+that split is an insertion into a page, but it is not an insertion of user data:
+treating it as one produces conflicts corresponding to nothing in anybody's
+schedule. The check must distinguish them. The same applies to index
+construction, where entries are placed before any reader has a stake in them.
+
+\paragraph{Garbage collection.} Can the maintenance pass erase a page that holds
+a predicate lock? At the time the answer was that it could not, because this
+structure never deleted pages, and the question was recorded as a matter of
+future compatibility. Section~\ref{sec:deferred} returns to it.
+
+\section{Where the analogy failed}
 \label{sec:gin}
 
 The inverted index stores, for each key, the list of rows containing it: an entry
-tree over keys, whose leaves hold either an inline posting list or the root of a
-posting tree. Page granularity was implemented for it by analogy. The analogy is
-where the trouble started, because the covering argument of
-Section~\ref{sec:gist} does not hold: a page of the entry tree is not a region of
-a space that an insertion must fall into, and a scan of this structure does not
-examine a contiguous region at all.
+tree over keys whose leaves hold either an inline posting list or the root of a
+posting tree. Page granularity was implemented for it by analogy with the
+above. The analogy is precisely where the trouble lay, because the covering
+argument of Section~\ref{sec:gist} does not hold: a page of the entry tree is not
+a region of a space into which an insertion must fall, and a scan of this
+structure does not examine a contiguous region at all.
 
-Two defects followed, and they have opposite shapes.
+Two defects followed, of opposite shapes. A scan that found no matching entry
+recorded no predicate lock~--- the natural reading of ``lock what you read'',
+and wrong, because the purpose of a predicate lock is to lock the \emph{gap}: a
+query asking for a key that does not exist has read exactly the fact that it does
+not exist. And enabling the index's deferred-insertion mode while transactions
+were running allowed subsequent insertions to bypass locks already taken on entry
+tree pages, so a configuration change silently weakened isolation for
+transactions already in progress.
 
-\paragraph{A scan that finds nothing must still lock something.} A scan that
-found no matching entry recorded no predicate lock. This is the natural reading
-of ``lock what you read'' and it is wrong, because the purpose of a predicate
-lock is to lock the \emph{gap}. A query asking for a key that does not exist has
-read exactly the fact that it does not exist, and an insertion creating it must
-conflict. Recording nothing means the phantom is invisible.
+The revision, by Heikki Linnakangas (\code{0bef1c0678d}, PostgreSQL~11), makes a
+scan always lock the metapage~--- representing the reading of the pending list
+whether or not one exists, which is what makes the mode change harmless~--- and
+always lock the entry tree page it consulted, including when it found nothing.
+In the other direction it removes locking that was excessive: every element of a
+posting tree belongs to one key value, so locking that tree's root suffices.
 
-\paragraph{Turning on deferred insertion mid-flight bypasses existing locks.} The
-index supports a pending list into which insertions may be deposited and applied
-later. If that mode is enabled while transactions are running, subsequent
-insertions go to the pending list and no longer conflict with locks that were
-already taken on entry tree pages~--- the locks describe a structure the
-insertion no longer touches. A configuration change thus silently weakens
-isolation for transactions already in progress.
+A cost of the mechanism surfaced later in an unexpected place: the additional
+locking slowed the isolation test suite enough under instrumentation to be worth
+reporting~\cite{thread-predicate-gin-valgrind}. Correctness machinery is paid for
+on every scan, not only on the schedules it exists to catch.
 
-\paragraph{The revised principle.} A scan always locks the metapage, and this
-lock represents the reading of the pending list whether or not one currently
-exists~--- which is what makes the mode change harmless. And a scan always locks
-the entry tree page it consulted, including when it found no match, which is what
-makes gaps visible. In the other direction, locking was found to be excessive
-and was reduced: every element of a posting tree belongs to a single key value,
-so locking the root of that tree is sufficient and locking its pages
-individually gains nothing.
+\section{A test that cannot fail measures nothing}
+\label{sec:tests}
 
-Implemented in \code{0bef1c0678d}, released in PostgreSQL~11. A cost of the
-mechanism showed up later in an unexpected place: the additional locking slowed
-the isolation test suite enough under instrumentation to be worth
-reporting~\cite{thread-predicate-gin-valgrind}, which is a reminder that
-correctness machinery is paid for on every scan, not only on the schedules it
-exists to catch.
+The requirement imposed on this work, and the part of it we would most like to
+see adopted elsewhere, concerns the tests rather than the code. For every patch
+in the series the following was checked: that the patch adds isolation tests, and
+that \emph{those tests fail if the access method does not implement predicate
+locking at all}.
 
-\section{Writing the principle down where it can be checked}
-\label{sec:writing-it-down}
+The second half is the one usually omitted. An isolation test for a
+concurrency-control feature typically asserts that a particular interleaving
+produces a serialization failure. If the feature is absent, predicate locks
+degenerate to relation granularity, and the interleaving produces a serialization
+failure anyway~--- for the wrong reason. The test passes in both worlds and
+therefore distinguishes nothing. Only by running it against a build without the
+feature, and requiring it to fail there, does one learn that the test is
+sensitive to what it claims to test.
 
-The revision above was recorded in the prose description of the structure that
-accompanies the source, not only in the code implementing it. We consider this
-part of the result rather than a matter of documentation hygiene, for a reason
-specific to concurrency control.
+This is the same discipline we have argued for elsewhere in the verification of
+structural invariants, where the analogous question is whether a check actually
+executes rather than whether it passes. The general form: a test is evidence only
+to the extent that some reachable state makes it fail, and establishing that
+requires constructing the state, not reasoning about it.
 
-A rule such as ``a scan always locks the metapage, and this represents reading
-the pending list whether or not one exists'' is not visible in the code that
-implements it. What the code shows is a lock being taken at a particular line;
-why it is taken there, and what would break if it were taken elsewhere or made
-conditional, is nowhere in the text. A later change that makes the lock
-conditional~--- for instance because profiling shows the pending list is usually
-absent~--- looks locally like a valid optimisation, passes every functional test,
-and reintroduces exactly the defect described above. The decision has to be
-written where the person making that later change will encounter it.
+\section{The question that stopped being hypothetical}
+\label{sec:deferred}
 
-This generalizes past predicate locking, and it is the same argument we have made
-elsewhere about verifying structural invariants: properties that no functional
-test observes must be recorded in a form that can be checked by something other
-than running the code. An invariant checker is one such form. A stated principle
-in the description of the structure is a weaker one, since it is checked by a
-human reader rather than by a program, but it is much cheaper and it is available
-for properties that no program can practically check.
+In June 2017, reviewing the first version of the patch, the author asked whether
+garbage collection could erase a page holding a predicate lock, and observed that
+the question was then only a matter of future compatibility, since the structure
+never deleted pages.
+
+It began deleting them in 2019, in work by the same author, released in
+PostgreSQL~12. The maintenance pass now removes an emptied leaf: it marks the page
+deleted and removes the downlink from its parent in the same critical section.
+The page's block is not recycled until every scan that might have seen the
+downlink has finished, which protects a scan from reading unrelated data. It does
+not, however, do anything with predicate locks.
+
+The consequence appears to be a lost conflict rather than a spurious one. A scan
+holds a predicate lock on page $P$. The entries of $P$ are deleted by other
+transactions and the page is removed from the tree. A later insertion of a value
+in the region that $P$'s key covered descends to some other page $Q$, and the
+conflict check consults the locks of $Q$. The lock on $P$ is never consulted
+again, although the scan did examine that region. By comparison, the B-tree
+transfers locks from a deleted page to its right sibling for exactly this reason;
+the generalized search tree transfers locks on a split and not on a deletion,
+which is a difference of one year rather than of design.
+
+We state this as an observation from code inspection, corroborated by the author
+of the deletion code, and not as a measured defect: a reproducing schedule is
+under construction at the time of writing, and until one exists the finding is
+not established. We report it here because the shape of it is the subject of this
+paper. The 2017 answer was correct, and it was correct \emph{relative to a
+premise about the rest of the system}. Nobody revisited the premise when it
+changed, least of all the person who changed it.
 
 \section{Evaluation}
-\label{sec:eval}
 
-% TODO. План измерений; сборки парные, различающиеся ровно одним коммитом.
+% TODO. Измерения ставить после воспроизведения дефекта §\ref{sec:deferred}.
 %
-% 1. Ложные конфликты: доля транзакций, откатываемых из-за сериализационного
-%    конфликта, при страничной гранулярности против блокировки отношения
+% 1. Ложные конфликты: доля транзакций, откатываемых по сериализационному
+%    конфликту, при страничной гранулярности против блокировки отношения
 %    целиком (3ad55863e93^ / 3ad55863e93). Нагрузка — чтение диапазона плюс
 %    вставка в непересекающийся диапазон: при верной гранулярности конфликтов
 %    быть не должно вовсе, при блокировке отношения — должны быть все.
-%    Величина двоичная и потому малошумная.
+%    Величина двоичная и потому малошумная. Сборки pl-before/pl-after готовы.
 % 2. Цена механизма: пропускная способность при SERIALIZABLE против
-%    REPEATABLE READ на нагрузке без конфликтов, до и после изменения.
-%    Это та величина, о которой сообщалось в треде о замедлении тестов.
-% 3. Обратный индекс: воспроизведение обоих дефектов изоляционными тестами до
-%    0bef1c0678d и их отсутствие после. Первичный результат здесь двоичный —
-%    обнаруживается аномалия или нет, — а не числовой.
+%    REPEATABLE READ на нагрузке без конфликтов, до и после изменения. Это та
+%    величина, о которой сообщалось в треде о замедлении тестов.
+% 3. Проверка §\ref{sec:tests} на самих себе: прогнать штатные изоляционные
+%    тесты predicate-gist.spec на сборке без поддержки и убедиться, что они
+%    падают. Если какой-то не падает — он ничего не проверяет, и это
+%    самостоятельный результат.
 
 \section{Limitations}
 
-Page granularity is coarser than the predicate a query actually describes, and
-on a page holding entries spread over a wide region it will report conflicts that
-a finer mechanism would not. We have not characterized how often that happens on
-real workloads; the argument for page granularity is that it is sound and
-cheaply computable from what the structure already maintains, not that it is
-tight.
+Page granularity is coarser than the predicate a query describes, and on a page
+whose entries span a wide region it reports conflicts a finer mechanism would
+not. We have not characterized how often this happens on real workloads; the
+argument is that the granularity is sound and computable from what the structure
+already maintains, not that it is tight.
 
-The correctness argument of Section~\ref{sec:gist} depends on the covering
-property of keys, and therefore on the operator class maintaining it. An operator
-class whose \code{union} does not produce a covering key would break predicate
-locking along with search itself, so this is not an additional assumption; but it
-is worth naming, since it is the point at which the framework trusts code it did
-not write.
+The correctness argument depends on the covering property of keys and therefore
+on the operator class maintaining it. An operator class whose \code{union} does
+not produce a covering key breaks search before it breaks predicate locking, so
+this is not an extra assumption, but it is the point at which the framework
+trusts code it did not write.
 
-Section~\ref{sec:gin} reports defects found in production and by review rather
-than a systematic search. We do not claim the revised principle is complete, and
-the history of this particular mechanism does not encourage the claim.
+Section~\ref{sec:gin} reports defects found by review and by operation rather
+than by systematic search, and Section~\ref{sec:deferred} reports one found by
+reading code seven years after the question that should have prompted the
+reading. Neither history suggests the mechanism has been exhaustively examined.
 
 \section{Conclusion}
 
-Predicate locking is the point where an access method has to describe what a
-query read, rather than what it returned, and the two differ exactly by the rows
-that do not exist. For a structure with a covering invariant the description is
-available for free: the key of a page is a sound over-approximation of what a
-scan of that page examined, so page granularity is both correct and cheap.
+Predicate locking is where an access method must describe what a query read
+rather than what it returned, and the two differ by the rows that do not exist.
+For a structure with a covering invariant the description is free: the key of a
+page soundly over-approximates what a scan of that page examined. That is what
+made the mechanism possible for a framework whose key types are not known in
+advance, and it is a property the framework maintains for other reasons.
 
-The instructive part is the failure of the analogy. The same granularity was
-applied to a structure without that invariant, and produced a mechanism that
-looked equivalent and was not: it recorded nothing when a scan found nothing, and
-it could be bypassed by a configuration change. Neither defect is visible in a
-test that runs a workload and checks its answers, because both concern schedules
-that the test does not generate. What they have in common with the rest of our
-work on this framework is the form of the eventual remedy: state the property, in
-a place where a later change will be checked against it, rather than trusting
-that the code will keep saying what it currently says.
+Two things generalize past the mechanism. A test of a concurrency-control feature
+is evidence only if it has been shown to fail without the feature; otherwise it
+records that the schedule was legal, which it was in both worlds. And an answer
+of the form ``this cannot happen, because that never occurs'' is a statement
+about the rest of the system with a date on it. The 2017 answer here was right
+when given, and stopped being right two years later, at the hands of the person
+who gave it.
