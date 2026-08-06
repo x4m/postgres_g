@@ -1,0 +1,79 @@
+% P4 — Increasing fan-out of generalized search trees.
+% Закрывает положение П2. Материал: глава 3 диссертации, выпуски 10, 11, 12, 14.
+%
+% Целевое издание: Труды ИСП РАН (ВАК К1, принимает английский, тематика
+% «инструменты и методы разработки»). Довод за: P1 подана в Information
+% Systems, P2 пойдёт в Journal of Systems and Software, P7 — в
+% «Программирование»; разносить площадки полезнее, чем складывать в одну.
+%
+% Что здесь ново, а что нет. Новы §3.1 (необязательные функции преобразования)
+% и §3.2 (покрывающие атрибуты) — оба приняты в основную ветку и нигде не
+% опубликованы. Перезапись элемента на месте опубликована в BDAS 2017, функция
+% штрафа — в ICBDA 2017; они приводятся как известное, со ссылками, ради
+% полноты картины, а не как вклад.
+
+\documentclass[11pt, a4paper]{article}
+
+\usepackage{fontspec}
+\usepackage[english, russian]{babel}
+\selectlanguage{english}
+\setmainfont{Times New Roman}[Ligatures=TeX]
+\setmonofont{Menlo}[Scale=0.85]
+
+\usepackage{geometry}
+\geometry{a4paper, margin=25mm}
+\usepackage{amsmath, amssymb, graphicx, booktabs}
+\usepackage[hidelinks]{hyperref}
+\newcommand{\code}[1]{\texttt{#1}}
+\emergencystretch=1em
+
+\title{Fan-out as a design variable in an extensible index framework}
+\author{Andrey Borodin}
+\date{}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+The height of a tree index and the cost of every descent through it are governed
+by node fan-out, and fan-out is governed by how many bytes an entry occupies.
+In an extensible framework, where the key type and its operations are supplied
+from outside the core, several bytes per entry are spent on nothing: on
+representations that duplicate the indexed value, on attributes that navigation
+never consults, and on rewriting entries that have not moved. This paper reports
+three changes that recover them, their implementation in PostgreSQL, and what
+they cost.
+
+The first is an interface result rather than an algorithmic one. The framework
+required every operator class to supply a pair of functions converting between
+the indexed value and its stored form, even when the two coincide and the
+functions were identities. Making them optional removes the identity call
+performed once per entry of every visited node; more usefully, it turns the
+\emph{absence} of a function into information the core can act on. Knowing that
+the stored form is the original value, the core can answer a query from the
+index alone, without a further function that previously had to be supplied for
+exactly this purpose. The second separates key attributes from covering
+attributes, so that columns needed only in the answer are stored in leaves and
+never widen the keys that determine fan-out at every internal level; unlike the
+corresponding B-tree feature, the motivating case here is a column whose type has
+no operator class at all. The third replaces deletion-and-reinsertion of an entry
+by overwriting it in place, which for the common case of a key widened during
+descent moves no data at all.
+
+All three have been in released versions since PostgreSQL~10--14. We report the
+fan-out model they act on, the measurements, and one consequence that surfaced
+during review: an optimisation of page layout changes the bytes a page contains
+after log replay, which matters to tooling that compares pages byte for byte.
+\end{abstract}
+
+\input{body}
+
+\section*{Acknowledgements}
+
+% TODO: по трейлерам коммитов d3a4f89d8a3, f2e403803fe, 09c1c6ab4bc,
+% b1328d78f88, e5d8f359610 и по составу тредов.
+
+\bibliographystyle{plain}
+\bibliography{../../common/refs}
+
+\end{document}

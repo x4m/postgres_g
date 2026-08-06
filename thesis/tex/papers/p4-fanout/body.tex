@@ -1,0 +1,285 @@
+\section{Introduction}
+
+A tree index answers a query by descending from the root, and the cost of that
+descent has two parts: the number of nodes visited, and the work done inside
+each. Both are governed by fan-out. Fan-out sets the height of the tree, so it
+sets how many nodes a descent visits; and it sets how many entries a visited node
+contains, so it sets the work done there.
+
+Fan-out, in turn, is arithmetic on bytes:
+%
+\begin{equation}
+\label{eq:fanout}
+f = \left\lfloor \frac{B - h}{k + p + \sigma} \right\rfloor ,
+\end{equation}
+%
+for page size $B$, page header $h$, key size $k$, downlink size $p$ and
+per-entry overhead $\sigma$. Every byte an entry does not need is paid for at
+every level of every descent, for the life of the index.
+
+In an \emph{extensible} framework the accounting is worse than in a
+purpose-built index, because the core does not know what a key means and must
+therefore be conservative about it. This paper is about three places where that
+conservatism cost bytes or cycles for nothing, in a generalized search
+tree~\cite{hellerstein1995generalized} as implemented in PostgreSQL.
+
+The first is not an algorithm but an interface. The framework obliged every
+operator class to supply two functions converting between the indexed value and
+its stored representation, even when the two coincide and both functions were
+identities. Making them optional removes an identity call performed once per
+entry of every visited node. The more interesting consequence is that the
+absence of a function becomes information: if no conversion is supplied, the core
+knows the stored form \emph{is} the original value, and can answer a query from
+the index alone~--- something that previously required supplying yet another
+function.
+
+The second separates the attributes a query needs to \emph{answer} from those it
+needs to \emph{navigate}. Storing the former only in leaves keeps them out of the
+keys that set fan-out at every internal level.
+
+The third concerns entries that are modified rather than added. A descent widens
+the keys on its path; the original implementation performed each widening as a
+deletion followed by an append, moving the data of the page and destroying the
+correspondence between entry order and physical order.
+
+\paragraph{Contributions.}
+
+\begin{enumerate}
+\item Optional support functions for key conversion, and the reading of their
+      absence as a statement about the stored representation, which yields
+      index-only scans without an additional function
+      (Section~\ref{sec:optional}).
+\item Covering attributes for a framework in which the covered column may have
+      no operator class of its own, with the fan-out argument that distinguishes
+      this case from the corresponding B-tree feature (Section~\ref{sec:include}).
+\item In-place overwriting of an entry, which for the common case of a key
+      widened during descent moves no data (Section~\ref{sec:overwrite}), and an
+      account of the compatibility consequence it surfaced
+      (Section~\ref{sec:bytes}).
+\end{enumerate}
+
+\section{Background}
+\label{sec:background}
+
+A generalized search tree is a balanced tree whose node occupies one page and
+whose entries pair a key with a downlink, the key covering everything in the
+subtree below. The key type and its operations belong to an operator class
+supplied outside the core: \code{consistent} decides whether a subtree may hold
+an answer, \code{union} produces a key covering a set of keys, \code{penalty}
+prices the widening of a key, \code{picksplit} partitions an overflowing node.
+Substituting bounding rectangles yields an R-tree, signatures a full-text index,
+ranges a range index.
+
+Two further functions concern representation rather than search.
+\code{compress} converted an indexed value into the form stored in the tree,
+\code{decompress} converted it back. The intent was to store something smaller
+than the value~--- a bounding rectangle in place of a polygon. A third,
+\code{fetch}, reconstructs the original value from the stored form and exists so
+that a query can be answered without visiting the table.
+
+Height follows from fan-out as $H \approx \log_f N$, so~\eqref{eq:fanout} enters
+the cost of a point query as
+$\sum_l \omega_l (c_r + f c_c)$~--- a page access per visited node plus a
+per-entry cost inside it. Fan-out therefore acts in two directions at once: it
+reduces the number of nodes visited and increases the work in each. The changes
+below all move $k$ or $\sigma$, that is the denominator of~\eqref{eq:fanout}.
+
+\section{The absence of a function as information}
+\label{sec:optional}
+
+\subsection{The problem}
+
+For a substantial share of operator classes no conversion is wanted: the stored
+representation is the indexed value. The framework nevertheless required both
+functions, so such classes defined identities. Beyond the redundant code this had
+two effects.
+
+The core could not tell whether the stored form equalled the original value.
+Lacking that knowledge it could not answer a query from the index alone, and an
+operator class wanting index-only scans had to supply \code{fetch}~--- a third
+function, whose body for these classes is again an identity.
+
+And the identity \code{decompress} was called for every entry of every scanned
+page, that is $O(f)$ times per visited node. In terms of
+Section~\ref{sec:background} this is a contribution to $c_c$, the per-entry cost,
+which by~\eqref{eq:fanout} grows as fan-out improves. An identity function call
+is cheap; multiplied by fan-out and by tree height and by every query, it is not
+free, and it is pure overhead.
+
+\subsection{The change}
+
+Both functions were made optional, and their absence given meaning. When no
+\code{compress} is defined, the core knows the stored representation is the
+indexed value itself, and therefore
+
+\begin{itemize}
+\item answers queries from the index alone without requiring \code{fetch}; and
+\item performs no conversion when scanning a node.
+\end{itemize}
+
+Implemented in \code{d3a4f89d8a3}, released in PostgreSQL~11.
+
+\subsection{Why this is worth reporting as a result}
+
+The performance part is a small constant. The part we consider more useful is the
+interface part, and it generalizes past this framework.
+
+An extensible system defines what an extension must provide. The obligation is
+usually read as a floor: here is the minimum you must implement. But every
+mandatory element also destroys information, because a requirement satisfied by
+everyone distinguishes nobody. When identity conversions are mandatory, the class
+that needs no conversion is indistinguishable from the class that needs one, and
+the core must assume the harder case for all. Making the element optional
+restores the distinction and lets the core specialize.
+
+This is why the change removes an obligation and \emph{adds} a capability at the
+same time, which is otherwise a surprising combination. The cost of a mandatory
+interface element is not only the effort of implementing it; it is the loss of
+whatever could have been inferred from choosing not to.
+
+There is a practical corollary for extensibility, which is the property this
+framework exists to provide. The barrier to writing a new operator class is set
+by the volume of obligatory scaffolding, and two of the required functions here
+were scaffolding for the majority of classes.
+
+\section{Covering attributes}
+\label{sec:include}
+
+\subsection{The problem}
+
+A query can be answered from the index alone when every column it needs is in the
+index. The naive route is to add the columns to the key. For a generalized search
+tree this fails twice.
+
+First, a key attribute needs an operator class for its type, and the column one
+wants in the answer may have none~--- there is no meaningful notion of a
+bounding key for it, and no reason there should be. Second, and quantitatively,
+a key attribute widens $k$ at \emph{every} level. By~\eqref{eq:fanout} this
+lowers fan-out at every internal level, and hence raises $H$; a column that
+navigation never consults would make every descent longer.
+
+\subsection{The change}
+
+Index attributes were divided into key and covering. Covering attributes are
+stored only in leaf pages, take no part in navigation, do not enter the keys of
+internal nodes, and require no operator class for their type. Fan-out at internal
+levels is then given by~\eqref{eq:fanout} with $k$ over the key attributes alone,
+and at the leaf level with $k + k_{\mathrm{inc}}$. Since height depends on
+internal fan-out, covering attributes do not increase it.
+
+Implemented in \code{f2e403803fe}, released in PostgreSQL~12; the corresponding
+change for the space-partitioned tree is \code{09c1c6ab4bc}, released in~14.
+
+\subsection{How this differs from the B-tree case}
+
+The feature has a B-tree namesake and a different motivation. There, covering
+attributes serve mainly to place a uniqueness constraint on part of an index's
+attributes while keeping other columns available in the index; the type of a
+covered column is not the difficulty, since a B-tree operator class exists for
+essentially every scalar type one would index.
+
+Here the primary case is the column whose type has \emph{no} generalized search
+tree operator class, and could not sensibly have one. A spatial index on a
+geometry column that must also return a name or an identifier is not an exotic
+requirement, and before this change it forced a visit to the table for every
+matching row. The two features share a syntax and solve different problems, which
+is worth stating because the shared name invites the assumption that the
+reasoning transfers.
+
+\section{Modifying an entry in place}
+\label{sec:overwrite}
+
+Insertion widens keys along its path: the parent key must cover the newly
+inserted entry. Each widening modifies an entry already on a page.
+
+The original implementation performed the modification as a deletion followed by
+an append. Entries are stored compactly, so deletion moves all data below the
+removed entry, and the modified entry lands at the end of the page. The second
+effect is the less obvious one: entry order and physical order stop
+corresponding, which costs processor cache locality on every subsequent scan of
+that page~--- again a contribution to $c_c$.
+
+The change introduces overwriting in place. When the new entry has the size of
+the old one, which is the typical case for a widened key, no data moves at all;
+when the sizes differ, only the difference moves. Entry order is preserved.
+
+Implemented in \code{b1328d78f88}, released in PostgreSQL~10. This result was
+published previously~\cite{borodin2017memory}, with measurements against
+release~10 showing insertion of sorted data about three times faster and about
+15\,\% on random data, alongside a smaller index; we restate it here for
+completeness of the fan-out picture rather than as a contribution of this paper,
+and Section~\ref{sec:eval} re-measures it on a current release.
+
+\section{A page-layout change is a compatibility change}
+\label{sec:bytes}
+
+One consequence surfaced during review and deserves its own section, because it
+is not specific to this optimisation.
+
+After the change, replaying the write-ahead log produces a page whose bytes
+differ from those produced before, although the page is logically equivalent:
+the same entries, in the same order, at different offsets. Nothing in the
+database's own operation depends on the difference. But tools that verify replay
+by comparing a replica's page against the primary's byte for byte do depend on
+it, and such tools are how one gains confidence that replay is correct.
+
+The general form: an optimisation of page layout is a change to an interface that
+is not written down anywhere. The set of byte-level representations a page may
+legitimately have is a contract with everything outside the database that reads
+pages, and it has no declaration to consult. We note it here as a hazard for
+anyone proposing a similar change, and as an argument for the structural
+verification approach we develop elsewhere: comparing pages byte for byte is a
+brittle proxy for the property actually wanted, which is that the two pages carry
+the same entries.
+
+\section{Evaluation}
+\label{sec:eval}
+
+% TODO — план измерений; сборки парные, различающиеся ровно одним коммитом,
+% первичные величины — счётчики, времена медианами трёх прогонов с чередованием
+% конфигураций.
+%
+% 1. Необязательные функции преобразования (d3a4f89d8a3^ / d3a4f89d8a3):
+%    время точечного запроса и время построения для класса операторов с
+%    тождественными compress/decompress. Ожидание: эффект в c_c, то есть виден
+%    на запросах по индексу, целиком помещающемуся в память, и растёт с
+%    ветвистостью. Проверить также, что сканирование без обращения к таблице
+%    стало возможно без fetch.
+% 2. Покрывающие атрибуты (f2e403803fe^ / f2e403803fe): ветвистость внутренних
+%    уровней, высота, объём индекса и время запроса для трёх вариантов —
+%    столбец в ключе, столбец покрывающий, столбца нет вовсе. Главная величина —
+%    высота и ветвистость внутренних узлов: именно на них строится довод.
+% 3. Перезапись элемента на месте (b1328d78f88^ / b1328d78f88): время вставки
+%    отсортированных и случайных данных, объём индекса. Перепроверка чисел
+%    2017 года на актуальном выпуске (заявлено ~3x и ~15%).
+
+\section{Limitations}
+
+The three changes act on different terms and are not interchangeable: the first
+and third reduce $c_c$, the second protects $k$ at internal levels, and none of
+them affects the overlap of keys, which for a multidimensional index dominates
+the cost of a selective query. Fan-out is a lever with a limit: raising it
+reduces the number of nodes visited but increases the work inside each, so a
+larger page is not uniformly better, and past some point only an in-page
+structure that avoids examining all $f$ entries can help further.
+
+The interface argument of Section~\ref{sec:optional} rests on one framework and
+one pair of functions. We believe it generalizes~--- a mandatory element that
+everyone satisfies identically carries no information~--- but we have one
+instance of it, not a survey.
+
+\section{Conclusion}
+
+Fan-out is usually treated as a property of the data: keys are the size they are.
+In an extensible framework a noticeable part of it is instead a property of the
+interface between the core and the code that supplies key semantics, and can be
+recovered by changing that interface rather than the data.
+
+Of the three changes reported here, the one we would highlight is the smallest in
+its performance effect. Making two support functions optional removes an
+obligation from every operator class author and simultaneously grants the core a
+capability it did not have, because a requirement that everyone satisfies
+identically conveys nothing, and dropping it lets the core learn something from
+the choice not to implement. That reading~--- optionality as a channel of
+information rather than as a convenience~--- seems to us the transferable part of
+this work.
