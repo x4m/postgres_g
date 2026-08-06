@@ -14,12 +14,17 @@ set -e
 export LANG=C LC_ALL=C
 . "$HOME/benchlock.sh"
 
+# Замок берётся ДО любой работы: initdb, создание данных и сборка — это уже
+# нагрузка на машину, и делать их вне замка значит мешать другому агенту.
+bench_lock
+bench_preflight
+
 N=${N:-20000000}
 DELFRAC=${DELFRAC:-5}
 SHB=${SHB:-256MB}
 REP=${REP:-3}
-PORT=5462
-D=/mnt/nvme/data/stream
+PORT=${PORT:-5462}
+D=${D:-/mnt/nvme/data/stream}
 
 q() { local n="$1"; shift; "$HOME/bench-$n/bin/psql" 9>&- -h /tmp -p $PORT -d postgres -X -q -t -A "$@"; }
 stop()  { "$HOME/bench-$1/bin/pg_ctl" 9>&- 9>&- -D "$D" -w stop >/dev/null 2>&1 || true; }
@@ -31,6 +36,11 @@ if [ ! -d "$D" ]; then
     echo "port = $PORT"; echo "shared_buffers = $SHB"; echo "maintenance_work_mem = 1GB"
     echo "max_wal_size = 32GB"; echo "autovacuum = off"
     echo "effective_io_concurrency = 16"
+    # EXTRA позволяет задать настройки, ради которых прогон и делается:
+    # прежде всего debug_io_direct='data', отключающий страничный кэш
+    # операционной системы вместе с её упреждающим чтением. Именно в этом
+    # случае прикладной механизм потокового чтения должен себя показать.
+    [ -n "${EXTRA:-}" ] && echo "$EXTRA"
     echo "listen_addresses = ''"; echo "unix_socket_directories = '/tmp'"
   } >> "$D/postgresql.conf"
 fi
@@ -42,8 +52,6 @@ if [ "$(q stream-before -c "select count(*) from pg_class where relname='st0'")"
   q stream-before -c "VACUUM ANALYZE st0" >/dev/null
 fi
 
-bench_lock
-bench_preflight
 
 printf 'прогон|версия|сборка мусора, с|прочитано страниц индекса|страниц индекса\n'
 for i in $(seq 1 $REP); do

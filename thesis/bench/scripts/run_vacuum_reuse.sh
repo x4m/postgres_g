@@ -13,6 +13,11 @@ set -e
 export LANG=C LC_ALL=C
 . "$HOME/benchlock.sh"
 
+# Замок берётся ДО любой работы: initdb, создание данных и сборка — это уже
+# нагрузка на машину, и делать их вне замка значит мешать другому агенту.
+bench_lock
+bench_preflight
+
 M=${M:-200000}     # строк за раунд
 R=${R:-12}         # раундов
 WIN=${WIN:-3}      # ширина окна в раундах
@@ -33,8 +38,6 @@ if [ ! -d "$D" ]; then
   } >> "$D/postgresql.conf"
 fi
 
-bench_lock
-bench_preflight
 
 printf 'версия|раунд|живых строк|страниц индекса|страниц таблицы\n'
 for v in reuse-before reuse-after; do

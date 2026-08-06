@@ -23,14 +23,17 @@ set -e
 export LANG=C LC_ALL=C
 . "$HOME/benchlock.sh"
 
+# Замок берётся ДО любой работы: initdb, создание данных и сборка — это уже
+# нагрузка на машину, и делать их вне замка значит мешать другому агенту.
+bench_lock
+bench_preflight
+
 LOCK=/tmp/build-gin.lock
 if ! mkdir "$LOCK" 2>/dev/null; then
   echo "сборка уже идёт ($LOCK); выход"; exit 1
 fi
 trap 'rmdir "$LOCK" 2>/dev/null || true' EXIT
 
-bench_lock
-bench_preflight
 
 cd "$HOME/pgsrc"
 for spec in "gin-a0:218f51584d5^" "gin-a1:218f51584d5" \

@@ -23,6 +23,11 @@ set -e
 export LANG=C LC_ALL=C
 . "$HOME/benchlock.sh"
 
+# Замок берётся ДО любой работы: initdb, создание данных и сборка — это уже
+# нагрузка на машину, и делать их вне замка значит мешать другому агенту.
+bench_lock
+bench_preflight
+
 N=${N:-500000}
 REP=${REP:-3}
 PGSYS=/usr/lib/postgresql/18/bin
@@ -39,8 +44,6 @@ up() { local bin="$1"
   "$bin/pg_ctl" 9>&- -D "$D" -l "$D/pg.log" -w start >/dev/null; }
 down() { "$1/pg_ctl" 9>&- -D "$D" -w stop >/dev/null 2>&1 || true; }
 
-bench_lock
-bench_preflight
 
 echo "### M1': класс операторов для box без compress и без fetch"
 for v in opt-before opt-after; do

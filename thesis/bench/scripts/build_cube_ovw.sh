@@ -6,7 +6,11 @@
 set -e
 export LANG=C LC_ALL=C
 . "$HOME/benchlock.sh"
+
+# Замок берётся ДО любой работы: initdb, создание данных и сборка — это уже
+# нагрузка на машину, и делать их вне замка значит мешать другому агенту.
 bench_lock
+bench_preflight
 cd "$HOME/pgsrc"
 for spec in "ovw-before:b1328d78f88^" "ovw-after:b1328d78f88"; do
   name=${spec%%:*}; commit=${spec##*:}

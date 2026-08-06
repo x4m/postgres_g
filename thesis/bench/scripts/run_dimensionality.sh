@@ -33,6 +33,11 @@ set -e
 export LANG=C LC_ALL=C
 . "$HOME/benchlock.sh"
 
+# Замок берётся ДО любой работы: initdb, создание данных и сборка — это уже
+# нагрузка на машину, и делать их вне замка значит мешать другому агенту.
+bench_lock
+bench_preflight
+
 N=${N:-500000}
 PROBES=${PROBES:-2000}
 DIMS=${DIMS:-"2 3 4 6 8 12 16 24 32"}
@@ -42,8 +47,6 @@ PGBIN=/usr/lib/postgresql/18/bin
 
 q() { "$PGBIN/psql" 9>&- -h /tmp -p $PORT -d postgres -X -q -t -A "$@"; }
 
-bench_lock
-bench_preflight
 
 if [ ! -d "$D" ]; then
   "$PGBIN/initdb" 9>&- -D "$D" --locale=C --encoding=UTF8 >/dev/null 2>&1

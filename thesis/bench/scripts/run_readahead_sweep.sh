@@ -20,6 +20,11 @@ set -e
 export LANG=C LC_ALL=C
 . "$HOME/benchlock.sh"
 
+# Замок берётся ДО любой работы: initdb, создание данных и сборка — это уже
+# нагрузка на машину, и делать их вне замка значит мешать другому агенту.
+bench_lock
+bench_preflight
+
 N=${N:-5000000}
 DELFRAC=${DELFRAC:-5}
 SHB=${SHB:-128MB}
@@ -52,8 +57,6 @@ if [ "$(q vac-before -c "select count(*) from pg_class where relname='rt0'")" = 
   q vac-before -c "VACUUM ANALYZE rt0" >/dev/null
 fi
 
-bench_lock
-bench_preflight
 
 printf 'read_ahead_kb|прогон|обход|сборка мусора, с|прочитано страниц индекса\n'
 for ra in $RAS; do

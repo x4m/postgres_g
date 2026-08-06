@@ -47,6 +47,11 @@ set -e
 export LANG=C LC_ALL=C
 . "$HOME/benchlock.sh"
 
+# Замок берётся ДО любой работы: initdb, создание данных и сборка — это уже
+# нагрузка на машину, и делать их вне замка значит мешать другому агенту.
+bench_lock
+bench_preflight
+
 N=${N:-3000000}
 PORT=5464
 D=/mnt/nvme/data/ginlock
@@ -89,8 +94,6 @@ init_for() {
   q "$v" -c "VACUUM ANALYZE gt" >/dev/null
 }
 
-bench_lock
-bench_preflight
 
 printf 'версия|случай|базовая вставка, с|макс. вставка при сборке, с|блокировка, с|сборка мусора, с|страниц индекса\n'
 for v in $V0 $V1; do

@@ -9,9 +9,13 @@ set -e
 export LANG=C LC_ALL=C
 . "$HOME/benchlock.sh"
 
+# Замок берётся ДО любой работы: initdb, создание данных и сборка — это уже
+# нагрузка на машину, и делать их вне замка значит мешать другому агенту.
+bench_lock
+bench_preflight
+
 PORT=5471
 D=/mnt/nvme/data/m1
-bench_lock
 
 for v in opt-before opt-after; do
   BIN="$HOME/bench-$v/bin"

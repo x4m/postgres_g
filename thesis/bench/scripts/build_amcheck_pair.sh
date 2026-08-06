@@ -13,7 +13,11 @@ set -e
 export LANG=C LC_ALL=C
 . "$HOME/benchlock.sh"
 
+# Замок берётся ДО любой работы: initdb, создание данных и сборка — это уже
+# нагрузка на машину, и делать их вне замка значит мешать другому агенту.
 bench_lock
+bench_preflight
+
 cd "$HOME/pgsrc"
 git fetch -q origin 2>/dev/null || true
 for spec in "leak-before:1f8ab91c11e^" "leak-after:1f8ab91c11e"; do
