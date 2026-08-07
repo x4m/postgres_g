@@ -1,0 +1,11 @@
+Document vacuum delay points called with interrupts held
+
+vacuum_delay_point() cannot process pending interrupts when interrupts are
+held.  Some call sites are reached while a buffer content lock is held, but
+that constraint is not apparent at the call itself.
+
+Mark the three such call sites observed by the regression and isolation test
+suites with a common, grep-friendly comment.  Describe the lock responsible
+at each site.  This changes no behavior.
+
+Discussion: https://postgr.es/m/CAA3qoJkBf6H7KukXTWFWCYnf_GHf354kOdWATCfoK%3D-bgdwTJw%40mail.gmail.com

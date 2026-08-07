@@ -1,0 +1,12 @@
+Add specialized B-tree page searches for text and UUID
+
+Text and UUID index lookups still pay the generic fmgr and tuple
+comparison overhead that the page search support facility is intended to
+avoid.  Their byte representations also provide useful information about
+the likely position of a key within a page.
+
+Add page comparison and search callbacks for the text and UUID operator
+classes.  Estimate positions from the first differing byte window shared
+by the page bounds, which handles long common prefixes and time-ordered
+UUIDs.  Use interpolation for text only with C collation; other collations
+retain the specialized binary search.

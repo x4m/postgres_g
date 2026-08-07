@@ -1,0 +1,38 @@
+Current hackers thread:
+https://www.postgresql.org/message-id/CANBEAPFq3YAOydjUS3xwcUG9L6e3WE5Z4nGPk_Q3RsjSFWTJNA%40mail.gmail.com
+
+Salma's merge-patch-v1.2 branch:
+https://github.com/salmaaliia/postgres/tree/merge-patch-v1.2
+
+Core nbtree commit in merge-patch-v1.2:
+https://github.com/salmaaliia/postgres/commit/a697547cfe4e4e703a88a1df7d5a09f6f5b35f58
+
+nbtmerge.c:
+https://github.com/salmaaliia/postgres/blob/merge-patch-v1.2/src/backend/access/nbtree/nbtmerge.c
+
+Scan recovery in nbtsearch.c:
+https://github.com/salmaaliia/postgres/blob/merge-patch-v1.2/src/backend/access/nbtree/nbtsearch.c
+
+Page and scan-local representation in nbtree.h:
+https://github.com/salmaaliia/postgres/blob/merge-patch-v1.2/src/include/access/nbtree.h
+
+VACUUM merge-group cleanup in nbtree.c:
+https://github.com/salmaaliia/postgres/blob/merge-patch-v1.2/src/backend/access/nbtree/nbtree.c
+
+pageinspect prototype interface:
+https://github.com/salmaaliia/postgres/blob/merge-patch-v1.2/contrib/pageinspect/btreefuncs.c
+
+amcheck changes:
+https://github.com/salmaaliia/postgres/blob/merge-patch-v1.2/contrib/amcheck/verify_nbtree.c
+
+Old hackers thread, "B-tree page merge during vacuum":
+https://www.postgresql.org/message-id/CCD000DB-67CB-4D64-A912-B7514D546058%40yandex-team.ru
+
+Old v2 patch containing 008_btree_merge_scan_correctness.pl:
+https://www.postgresql.org/message-id/attachment/180834/v2-0001-btree-Add-page-merge-during-vacuum-to-reduce-inde.patch
+
+Peter's "Add test coverage for nbtree backwards scans" commit:
+https://github.com/postgres/postgres/commit/e395fbd32a07557de4ac98088928c1749d4845d8
+
+Peter's isolation spec at that commit:
+https://github.com/postgres/postgres/blob/e395fbd32a07557de4ac98088928c1749d4845d8/src/test/modules/nbtree/specs/backwards-scan-concurrent-splits.spec

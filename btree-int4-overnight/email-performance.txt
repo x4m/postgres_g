@@ -1,0 +1,48 @@
+Subject: Re: [PATCH] Support specialized B-tree page searches
+
+Нi hackers,
+
+I ran a broader set of benchmarks to look for both favorable and
+unfavorable cases.  I compared master , the first patch with specialized
+int4 binary search, and the full patch set.
+
+These are median throughput changes from seven interleaved runs of one
+million server-side index lookups:
+
+                            specialized/master  full/specialized  full/master
+
+  dense hits                       +8%                 +34%           +46%
+  dense misses                    +12%                 +32%           +47%
+  uniform random hits              +8%                 +25%           +35%
+  clustered hits                   +9%                  +5%           +14%
+  deduplicated duplicates          +3%                  +3%            +6%
+  misses in large gaps             +7%                  +1%            +7%
+  misses outside the range       +6..11%                -2%          +4..9%
+
+Thus, specialization itself seems robust.  Interpolation provides a
+large additional gain for approximately linear page contents, degrades
+gracefully for clustered keys and duplicates, and costs about 2% over
+specialized binary search for probes outside the indexed range.
+
+Regular pgbench point lookups gained about 2.5-3%, where executor and
+client overhead dilute the page-search improvement.  One case, duplicate
+lookups with 16 clients, regressed by about 1.3%, I'm investigating this.
+
+The insertion test also improved by about 6% with the first patch and
+10% with the full patch set.  Interpolation is not used for insertion
+bounds, however, and the second patch also refactors fixed-width tuple
+extraction.  I will move that refactoring into the first patch and
+repeat the focused insertion and adverse-case measurements. The gain
+there is not from the interpolation.
+
+I also tried the same approach for text and UUID.  Apart from about 1.3%
+for densely packed UUID values, I found no convincing improvement, so I
+do not plan to include those opclasses in the patch set.
+
+Do these results make the opclass support procedure and the separate
+interpolation callback look like a reasonable direction?  In
+particular, is the distribution-dependent tradeoff acceptable when the
+opclass retains the ability to fall back to binary search?
+
+
+Best regards, Andrey Borodin.

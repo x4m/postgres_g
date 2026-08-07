@@ -1,0 +1,74 @@
+From c0e41688d228a439d49b7c75ed7db45f2c35e7b6 Mon Sep 17 00:00:00 2001
+From: Peter Geoghegan <pg@bowt.ie>
+Date: Sat, 1 Aug 2026 23:47:53 +0500
+Subject: [PATCH v2 1/2] Add regression test for multirange GiST contained-by
+ scans
+
+A GiST leaf key for a multirange is its union range, with any gaps
+flattened away.  Testing that lossy representation as if it were the
+original multirange can discard a matching row before the heap recheck.
+
+Add a query whose sequential and index scans disagree.  Keep the
+expected output correct so that the test fails until the bug is fixed.
+
+Discussion: https://postgr.es/m/CAH2-Wzm1GpQ9qixP=Xs2TYdfnLM88OZ=yUFHNuajS_W7U90-tQ@mail.gmail.com
+
+Co-authored-by: Claude Opus 5 (1M context) <noreply@anthropic.com>
+---
+ src/test/regress/expected/multirangetypes.out | 12 ++++++++++++
+ src/test/regress/sql/multirangetypes.sql      |  2 ++
+ 2 files changed, 14 insertions(+)
+
+diff --git a/src/test/regress/expected/multirangetypes.out b/src/test/regress/expected/multirangetypes.out
+index d47ce4b6d6a..f6b1158ac41 100644
+--- a/src/test/regress/expected/multirangetypes.out
++++ b/src/test/regress/expected/multirangetypes.out
+@@ -2610,6 +2610,12 @@ select count(*) from test_multirange_gist where mr <@ '{(10,30),(40,60),(70,90)}
+    500
+ (1 row)
+ 
++select count(*) from test_multirange_gist where mr <@ '{[1,11),[21,31),[41,51)}'::int4multirange;
++ count 
++-------
++   501
++(1 row)
++
+ select count(*) from test_multirange_gist where mr << int4multirange(int4range(100,200), int4range(400,500));
+  count 
+ -------
+@@ -2842,6 +2848,12 @@ select count(*) from test_multirange_gist where mr <@ '{(10,30),(40,60),(70,90)}
+    500
+ (1 row)
+ 
++select count(*) from test_multirange_gist where mr <@ '{[1,11),[21,31),[41,51)}'::int4multirange;
++ count 
++-------
++   501
++(1 row)
++
+ select count(*) from test_multirange_gist where mr << int4multirange(int4range(100,200), int4range(400,500));
+  count 
+ -------
+diff --git a/src/test/regress/sql/multirangetypes.sql b/src/test/regress/sql/multirangetypes.sql
+index cf0fff6fddd..5ed7f9cbd9f 100644
+--- a/src/test/regress/sql/multirangetypes.sql
++++ b/src/test/regress/sql/multirangetypes.sql
+@@ -505,6 +505,7 @@ select count(*) from test_multirange_gist where mr @> '{}'::int4multirange;
+ select count(*) from test_multirange_gist where mr @> int4multirange(int4range(10,20), int4range(30,40));
+ select count(*) from test_multirange_gist where mr && '{(10,20),(30,40),(50,60)}'::int4multirange;
+ select count(*) from test_multirange_gist where mr <@ '{(10,30),(40,60),(70,90)}'::int4multirange;
++select count(*) from test_multirange_gist where mr <@ '{[1,11),[21,31),[41,51)}'::int4multirange;
+ select count(*) from test_multirange_gist where mr << int4multirange(int4range(100,200), int4range(400,500));
+ select count(*) from test_multirange_gist where mr >> int4multirange(int4range(100,200), int4range(400,500));
+ select count(*) from test_multirange_gist where mr &< int4multirange(int4range(100,200), int4range(400,500));
+@@ -550,6 +551,7 @@ select count(*) from test_multirange_gist where mr @> '{}'::int4multirange;
+ select count(*) from test_multirange_gist where mr @> int4multirange(int4range(10,20), int4range(30,40));
+ select count(*) from test_multirange_gist where mr && '{(10,20),(30,40),(50,60)}'::int4multirange;
+ select count(*) from test_multirange_gist where mr <@ '{(10,30),(40,60),(70,90)}'::int4multirange;
++select count(*) from test_multirange_gist where mr <@ '{[1,11),[21,31),[41,51)}'::int4multirange;
+ select count(*) from test_multirange_gist where mr << int4multirange(int4range(100,200), int4range(400,500));
+ select count(*) from test_multirange_gist where mr >> int4multirange(int4range(100,200), int4range(400,500));
+ select count(*) from test_multirange_gist where mr &< int4multirange(int4range(100,200), int4range(400,500));
+-- 
+2.50.1 (Apple Git-155)
+

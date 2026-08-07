@@ -1,0 +1,1380 @@
+From 9b20b20ae569778231e7640e05b10d28251d09ae Mon Sep 17 00:00:00 2001
+From: Michael Paquier <michael@paquier.xyz>
+Date: Thu, 9 Jul 2026 11:46:21 +0900
+Subject: [PATCH v5 1/2] Fix "missing chunk" errors during heap rewrites and
+ index builds
+
+Blah, blah.
+
+This problem has been reported recently by Alexander for REPACK, but it
+is a much older issue (tested down to 9.5 for curiosity's sake, but I
+suspect that it is much older than that).
+
+XXX: This patch includes both TAP and isolation tests.  We should remove
+one pattern at the end.
+
+Reported-by: Alexander Lakhin <exclusion@gmail.com>
+Discussion: https://postgr.es/m/18351-f6e06364b3a2e669@postgresql.org
+Discussion: https://postgr.es/m/19519-fe02d8ff679d834d@postgresql.org
+---
+ contrib/dblink/.gitignore                     |   2 +
+ contrib/dblink/Makefile                       |   2 +
+ .../dblink/expected/rewrite_stale_xmin.out    | 237 ++++++++++++++++++
+ contrib/dblink/meson.build                    |   5 +
+ contrib/dblink/specs/rewrite_stale_xmin.spec  | 137 ++++++++++
+ src/backend/access/common/detoast.c           |  42 +++-
+ src/backend/access/heap/heapam.c              |   4 +-
+ src/backend/access/heap/heapam_handler.c      | 148 ++++++++++-
+ src/backend/access/heap/heaptoast.c           |  28 ++-
+ src/backend/access/heap/rewriteheap.c         |  31 ++-
+ src/backend/access/table/toast_helper.c       |  19 +-
+ src/include/access/detoast.h                  |   9 +
+ src/include/access/heaptoast.h                |  18 +-
+ src/include/access/rewriteheap.h              |   6 +-
+ src/include/access/tableam.h                  |  26 +-
+ src/include/access/toast_helper.h             |  10 +-
+ src/test/recovery/meson.build                 |   1 +
+ src/test/recovery/t/055_rewrite_stale_xmin.pl | 124 +++++++++
+ 18 files changed, 794 insertions(+), 55 deletions(-)
+ create mode 100644 contrib/dblink/expected/rewrite_stale_xmin.out
+ create mode 100644 contrib/dblink/specs/rewrite_stale_xmin.spec
+ create mode 100644 src/test/recovery/t/055_rewrite_stale_xmin.pl
+
+diff --git a/contrib/dblink/.gitignore b/contrib/dblink/.gitignore
+index 5dcb3ff9723..33bc8d8ffeb 100644
+--- a/contrib/dblink/.gitignore
++++ b/contrib/dblink/.gitignore
+@@ -2,3 +2,5 @@
+ /log/
+ /results/
+ /tmp_check/
++/output_iso/
++/tmp_check_iso/
+diff --git a/contrib/dblink/Makefile b/contrib/dblink/Makefile
+index fde0b49ddbb..a0ba4128081 100644
+--- a/contrib/dblink/Makefile
++++ b/contrib/dblink/Makefile
+@@ -13,6 +13,8 @@ PGFILEDESC = "dblink - connect to other PostgreSQL databases"
+ 
+ REGRESS = dblink
+ REGRESS_OPTS = --dlpath=$(top_builddir)/src/test/regress
++ISOLATION = rewrite_stale_xmin
++ISOLATION_OPTS = --load-extension=dblink
+ TAP_TESTS = 1
+ 
+ ifdef USE_PGXS
+diff --git a/contrib/dblink/expected/rewrite_stale_xmin.out b/contrib/dblink/expected/rewrite_stale_xmin.out
+new file mode 100644
+index 00000000000..2e5a7940ea2
+--- /dev/null
++++ b/contrib/dblink/expected/rewrite_stale_xmin.out
+@@ -0,0 +1,237 @@
++Parsed test spec with 3 sessions
++
++starting permutation: s1_hold_xmin s2_begin s3_delete s3_vacuum_main_only s2_commit s3_vacuum_toast s3_cluster s1_release
++step s1_hold_xmin: 
++    SELECT dblink_connect('holder',
++        'dbname=regress_other_db port=' || current_setting('port'));
++    SELECT dblink_exec('holder', 'BEGIN');
++    SELECT dblink_exec('holder', 'CREATE TEMP TABLE xid_holder(x int)');
++
++dblink_connect
++--------------
++OK            
++(1 row)
++
++dblink_exec
++-----------
++BEGIN      
++(1 row)
++
++dblink_exec 
++------------
++CREATE TABLE
++(1 row)
++
++step s2_begin: 
++    BEGIN ISOLATION LEVEL REPEATABLE READ;
++    SELECT 1;
++
++?column?
++--------
++       1
++(1 row)
++
++step s3_delete: 
++    DELETE FROM rewrite_test WHERE id = 1;
++
++step s3_vacuum_main_only: 
++    VACUUM (PROCESS_TOAST false) rewrite_test;
++
++step s2_commit: COMMIT;
++step s3_vacuum_toast: 
++    VACUUM pg_toast.rewrite_test_toast;
++
++step s3_cluster: 
++    CLUSTER rewrite_test USING rewrite_test_pkey;
++
++step s1_release: 
++    SELECT dblink_exec('holder', 'COMMIT');
++    SELECT dblink_disconnect('holder');
++
++dblink_exec
++-----------
++COMMIT     
++(1 row)
++
++dblink_disconnect
++-----------------
++OK               
++(1 row)
++
++
++starting permutation: s1_hold_xmin s2_begin s3_delete s3_vacuum_main_only s2_commit s3_vacuum_toast s3_vacuum_full s1_release
++step s1_hold_xmin: 
++    SELECT dblink_connect('holder',
++        'dbname=regress_other_db port=' || current_setting('port'));
++    SELECT dblink_exec('holder', 'BEGIN');
++    SELECT dblink_exec('holder', 'CREATE TEMP TABLE xid_holder(x int)');
++
++dblink_connect
++--------------
++OK            
++(1 row)
++
++dblink_exec
++-----------
++BEGIN      
++(1 row)
++
++dblink_exec 
++------------
++CREATE TABLE
++(1 row)
++
++step s2_begin: 
++    BEGIN ISOLATION LEVEL REPEATABLE READ;
++    SELECT 1;
++
++?column?
++--------
++       1
++(1 row)
++
++step s3_delete: 
++    DELETE FROM rewrite_test WHERE id = 1;
++
++step s3_vacuum_main_only: 
++    VACUUM (PROCESS_TOAST false) rewrite_test;
++
++step s2_commit: COMMIT;
++step s3_vacuum_toast: 
++    VACUUM pg_toast.rewrite_test_toast;
++
++step s3_vacuum_full: 
++    VACUUM FULL rewrite_test;
++
++step s1_release: 
++    SELECT dblink_exec('holder', 'COMMIT');
++    SELECT dblink_disconnect('holder');
++
++dblink_exec
++-----------
++COMMIT     
++(1 row)
++
++dblink_disconnect
++-----------------
++OK               
++(1 row)
++
++
++starting permutation: s1_hold_xmin s2_begin s3_delete s3_vacuum_main_only s2_commit s3_vacuum_toast s3_repack s1_release
++step s1_hold_xmin: 
++    SELECT dblink_connect('holder',
++        'dbname=regress_other_db port=' || current_setting('port'));
++    SELECT dblink_exec('holder', 'BEGIN');
++    SELECT dblink_exec('holder', 'CREATE TEMP TABLE xid_holder(x int)');
++
++dblink_connect
++--------------
++OK            
++(1 row)
++
++dblink_exec
++-----------
++BEGIN      
++(1 row)
++
++dblink_exec 
++------------
++CREATE TABLE
++(1 row)
++
++step s2_begin: 
++    BEGIN ISOLATION LEVEL REPEATABLE READ;
++    SELECT 1;
++
++?column?
++--------
++       1
++(1 row)
++
++step s3_delete: 
++    DELETE FROM rewrite_test WHERE id = 1;
++
++step s3_vacuum_main_only: 
++    VACUUM (PROCESS_TOAST false) rewrite_test;
++
++step s2_commit: COMMIT;
++step s3_vacuum_toast: 
++    VACUUM pg_toast.rewrite_test_toast;
++
++step s3_repack: 
++    REPACK rewrite_test;
++
++step s1_release: 
++    SELECT dblink_exec('holder', 'COMMIT');
++    SELECT dblink_disconnect('holder');
++
++dblink_exec
++-----------
++COMMIT     
++(1 row)
++
++dblink_disconnect
++-----------------
++OK               
++(1 row)
++
++
++starting permutation: s1_hold_xmin s2_begin s3_delete s3_vacuum_main_only s2_commit s3_vacuum_toast s3_create_index s1_release
++step s1_hold_xmin: 
++    SELECT dblink_connect('holder',
++        'dbname=regress_other_db port=' || current_setting('port'));
++    SELECT dblink_exec('holder', 'BEGIN');
++    SELECT dblink_exec('holder', 'CREATE TEMP TABLE xid_holder(x int)');
++
++dblink_connect
++--------------
++OK            
++(1 row)
++
++dblink_exec
++-----------
++BEGIN      
++(1 row)
++
++dblink_exec 
++------------
++CREATE TABLE
++(1 row)
++
++step s2_begin: 
++    BEGIN ISOLATION LEVEL REPEATABLE READ;
++    SELECT 1;
++
++?column?
++--------
++       1
++(1 row)
++
++step s3_delete: 
++    DELETE FROM rewrite_test WHERE id = 1;
++
++step s3_vacuum_main_only: 
++    VACUUM (PROCESS_TOAST false) rewrite_test;
++
++step s2_commit: COMMIT;
++step s3_vacuum_toast: 
++    VACUUM pg_toast.rewrite_test_toast;
++
++step s3_create_index: 
++    CREATE INDEX rewrite_test_data_idx ON rewrite_test (data);
++
++step s1_release: 
++    SELECT dblink_exec('holder', 'COMMIT');
++    SELECT dblink_disconnect('holder');
++
++dblink_exec
++-----------
++COMMIT     
++(1 row)
++
++dblink_disconnect
++-----------------
++OK               
++(1 row)
++
+diff --git a/contrib/dblink/meson.build b/contrib/dblink/meson.build
+index e2489f41229..86fbd372b88 100644
+--- a/contrib/dblink/meson.build
++++ b/contrib/dblink/meson.build
+@@ -36,6 +36,11 @@ tests += {
+     ],
+     'regress_args': ['--dlpath', meson.project_build_root() / 'src/test/regress'],
+   },
++  'isolation': {
++    'specs': [
++      'rewrite_stale_xmin',
++    ],
++  },
+   'tap': {
+     'tests': [
+       't/001_auth_scram.pl',
+diff --git a/contrib/dblink/specs/rewrite_stale_xmin.spec b/contrib/dblink/specs/rewrite_stale_xmin.spec
+new file mode 100644
+index 00000000000..fe88e789f85
+--- /dev/null
++++ b/contrib/dblink/specs/rewrite_stale_xmin.spec
+@@ -0,0 +1,137 @@
++# Test that heap rewrites work when the rewriting backend's own xmin is
++# held back by a transaction in another database.
++
++setup
++{
++    CREATE DATABASE regress_other_db;
++}
++
++setup
++{
++    CREATE EXTENSION IF NOT EXISTS dblink;
++
++    CREATE TABLE rewrite_test (id int PRIMARY KEY, data text)
++        WITH (autovacuum_enabled = off);
++    ALTER TABLE rewrite_test ALTER COLUMN data SET STORAGE EXTERNAL;
++    INSERT INTO rewrite_test VALUES (1, repeat('x', 2500));
++    INSERT INTO rewrite_test VALUES (2, repeat('y', 2500));
++
++    -- Rename the toast table to a known name so we can VACUUM it directly.
++    SET allow_system_table_mods TO true;
++    DO $$DECLARE r record;
++      BEGIN
++        SELECT INTO r reltoastrelid::regclass::text AS table_name
++          FROM pg_class WHERE oid = 'rewrite_test'::regclass;
++        EXECUTE 'ALTER TABLE ' || r.table_name || ' RENAME TO rewrite_test_toast;';
++      END$$;
++    RESET allow_system_table_mods;
++}
++
++teardown
++{
++    DROP DATABASE regress_other_db;
++}
++
++# Session s1: use dblink to hold a transaction in another database.
++# This must start before the DELETE so its XID is older, ensuring
++# GetSnapshotData() holds back any rewrites.
++session s1
++step s1_hold_xmin
++{
++    SELECT dblink_connect('holder',
++        'dbname=regress_other_db port=' || current_setting('port'));
++    SELECT dblink_exec('holder', 'BEGIN');
++    SELECT dblink_exec('holder', 'CREATE TEMP TABLE xid_holder(x int)');
++}
++step s1_release
++{
++    SELECT dblink_exec('holder', 'COMMIT');
++    SELECT dblink_disconnect('holder');
++}
++
++# Session s2: holds xmin in the SAME database temporarily, so the
++# main-table vacuum preserves the dead tuple as RECENTLY_DEAD.
++session s2
++step s2_begin
++{
++    BEGIN ISOLATION LEVEL REPEATABLE READ;
++    SELECT 1;
++}
++step s2_commit { COMMIT; }
++
++# Session s3: performs DML, split vacuum, and the rewrite.
++session s3
++step s3_delete
++{
++    DELETE FROM rewrite_test WHERE id = 1;
++}
++step s3_vacuum_main_only
++{
++    VACUUM (PROCESS_TOAST false) rewrite_test;
++}
++step s3_vacuum_toast
++{
++    VACUUM pg_toast.rewrite_test_toast;
++}
++step s3_cluster
++{
++    CLUSTER rewrite_test USING rewrite_test_pkey;
++}
++step s3_vacuum_full
++{
++    VACUUM FULL rewrite_test;
++}
++step s3_repack
++{
++    REPACK rewrite_test;
++}
++step s3_create_index
++{
++    CREATE INDEX rewrite_test_data_idx ON rewrite_test (data);
++}
++
++teardown { DROP TABLE IF EXISTS rewrite_test; }
++
++# CLUSTER
++permutation
++    s1_hold_xmin
++    s2_begin
++    s3_delete
++    s3_vacuum_main_only
++    s2_commit
++    s3_vacuum_toast
++    s3_cluster
++    s1_release
++
++# VACUUM FULL
++permutation
++    s1_hold_xmin
++    s2_begin
++    s3_delete
++    s3_vacuum_main_only
++    s2_commit
++    s3_vacuum_toast
++    s3_vacuum_full
++    s1_release
++
++# REPACK
++permutation
++    s1_hold_xmin
++    s2_begin
++    s3_delete
++    s3_vacuum_main_only
++    s2_commit
++    s3_vacuum_toast
++    s3_repack
++    s1_release
++
++# CREATE INDEX
++permutation
++    s1_hold_xmin
++    s2_begin
++    s3_delete
++    s3_vacuum_main_only
++    s2_commit
++    s3_vacuum_toast
++    s3_create_index
++    s1_release
+diff --git a/src/backend/access/common/detoast.c b/src/backend/access/common/detoast.c
+index a6c1f3a734b..3195d77db4b 100644
+--- a/src/backend/access/common/detoast.c
++++ b/src/backend/access/common/detoast.c
+@@ -16,13 +16,14 @@
+ #include "access/detoast.h"
+ #include "access/table.h"
+ #include "access/tableam.h"
++#include "access/toast_helper.h"
+ #include "access/toast_internals.h"
+ #include "common/int.h"
+ #include "common/pg_lzcompress.h"
+ #include "utils/expandeddatum.h"
+ #include "utils/rel.h"
+ 
+-static varlena *toast_fetch_datum(varlena *attr);
++static varlena *toast_fetch_datum(varlena *attr, uint32 flags);
+ static varlena *toast_fetch_datum_slice(varlena *attr,
+ 										int32 sliceoffset,
+ 										int32 slicelength);
+@@ -51,7 +52,7 @@ detoast_external_attr(varlena *attr)
+ 		/*
+ 		 * This is an external stored plain value
+ 		 */
+-		result = toast_fetch_datum(attr);
++		result = toast_fetch_datum(attr, 0);
+ 	}
+ 	else if (VARATT_IS_EXTERNAL_INDIRECT(attr))
+ 	{
+@@ -102,6 +103,23 @@ detoast_external_attr(varlena *attr)
+ }
+ 
+ 
++/* ----------
++ * detoast_external_attr_extended -
++ *
++ *	Like detoast_external_attr, but returns NULL if toast chunks are
++ *	missing for external pointers.
++ * ----------
++ */
++varlena *
++detoast_external_attr_extended(varlena *attr)
++{
++	if (VARATT_IS_EXTERNAL_ONDISK(attr))
++		return toast_fetch_datum(attr, TOAST_MISSING_OK);
++	else
++		return detoast_external_attr(attr);
++}
++
++
+ /* ----------
+  * detoast_attr -
+  *
+@@ -120,7 +138,7 @@ detoast_attr(varlena *attr)
+ 		/*
+ 		 * This is an externally stored datum --- fetch it back from there
+ 		 */
+-		attr = toast_fetch_datum(attr);
++		attr = toast_fetch_datum(attr, 0);
+ 		/* If it's compressed, decompress it */
+ 		if (VARATT_IS_COMPRESSED(attr))
+ 		{
+@@ -262,7 +280,7 @@ detoast_attr_slice(varlena *attr,
+ 			preslice = toast_fetch_datum_slice(attr, 0, max_size);
+ 		}
+ 		else
+-			preslice = toast_fetch_datum(attr);
++			preslice = toast_fetch_datum(attr, 0);
+ 	}
+ 	else if (VARATT_IS_EXTERNAL_INDIRECT(attr))
+ 	{
+@@ -337,10 +355,12 @@ detoast_attr_slice(varlena *attr,
+  *
+  *	Reconstruct an in memory Datum from the chunks saved
+  *	in the toast relation
++ *
++ *	If flags uses TOAST_MISSING_OK, returns NULL when chunks are missing.
+  * ----------
+  */
+ static varlena *
+-toast_fetch_datum(varlena *attr)
++toast_fetch_datum(varlena *attr, uint32 flags)
+ {
+ 	Relation	toastrel;
+ 	varlena    *result;
+@@ -372,8 +392,14 @@ toast_fetch_datum(varlena *attr)
+ 	toastrel = table_open(toast_pointer.va_toastrelid, AccessShareLock);
+ 
+ 	/* Fetch all chunks */
+-	table_relation_fetch_toast_slice(toastrel, toast_pointer.va_valueid,
+-									 attrsize, 0, attrsize, result);
++	if (!table_relation_fetch_toast_slice(toastrel, toast_pointer.va_valueid,
++										  attrsize, 0, attrsize, result,
++										  flags))
++	{
++		pfree(result);
++		table_close(toastrel, AccessShareLock);
++		return NULL;
++	}
+ 
+ 	/* Close toast table */
+ 	table_close(toastrel, AccessShareLock);
+@@ -454,7 +480,7 @@ toast_fetch_datum_slice(varlena *attr, int32 sliceoffset,
+ 	/* Fetch all chunks */
+ 	table_relation_fetch_toast_slice(toastrel, toast_pointer.va_valueid,
+ 									 attrsize, sliceoffset, slicelength,
+-									 result);
++									 result, 0);
+ 
+ 	/* Close toast table */
+ 	table_close(toastrel, AccessShareLock);
+diff --git a/src/backend/access/heap/heapam.c b/src/backend/access/heap/heapam.c
+index 8b488cfd8f6..e58c3ea0328 100644
+--- a/src/backend/access/heap/heapam.c
++++ b/src/backend/access/heap/heapam.c
+@@ -2262,7 +2262,7 @@ heap_prepare_insert(Relation relation, HeapTuple tup, TransactionId xid,
+ 		return tup;
+ 	}
+ 	else if (HeapTupleHasExternal(tup) || tup->t_len > TOAST_TUPLE_THRESHOLD)
+-		return heap_toast_insert_or_update(relation, tup, NULL, options);
++		return heap_toast_insert_or_update(relation, tup, NULL, options, 0);
+ 	else
+ 		return tup;
+ }
+@@ -3962,7 +3962,7 @@ l2:
+ 		if (need_toast)
+ 		{
+ 			/* Note we always use WAL and FSM during updates */
+-			heaptup = heap_toast_insert_or_update(relation, newtup, &oldtup, 0);
++			heaptup = heap_toast_insert_or_update(relation, newtup, &oldtup, 0, 0);
+ 			newtupsize = MAXALIGN(heaptup->t_len);
+ 		}
+ 		else
+diff --git a/src/backend/access/heap/heapam_handler.c b/src/backend/access/heap/heapam_handler.c
+index bf87430cf01..e900ea0c067 100644
+--- a/src/backend/access/heap/heapam_handler.c
++++ b/src/backend/access/heap/heapam_handler.c
+@@ -19,6 +19,7 @@
+  */
+ #include "postgres.h"
+ 
++#include "access/detoast.h"
+ #include "access/genam.h"
+ #include "access/heapam.h"
+ #include "access/heaptoast.h"
+@@ -26,6 +27,7 @@
+ #include "access/rewriteheap.h"
+ #include "access/syncscan.h"
+ #include "access/tableam.h"
++#include "access/toast_helper.h"
+ #include "access/tsmapi.h"
+ #include "access/visibilitymap.h"
+ #include "access/xact.h"
+@@ -36,6 +38,7 @@
+ #include "commands/progress.h"
+ #include "executor/executor.h"
+ #include "miscadmin.h"
++#include "optimizer/optimizer.h"
+ #include "pgstat.h"
+ #include "storage/bufmgr.h"
+ #include "storage/bufpage.h"
+@@ -48,9 +51,11 @@
+ #include "utils/rel.h"
+ #include "utils/tuplesort.h"
+ 
+-static void reform_and_rewrite_tuple(HeapTuple tuple,
++/* See toast_helper.h for values of "flags" */
++static bool reform_and_rewrite_tuple(HeapTuple tuple,
+ 									 Relation OldHeap, Relation NewHeap,
+-									 Datum *values, bool *isnull, RewriteState rwstate);
++									 Datum *values, bool *isnull, RewriteState rwstate,
++									 uint32 flags);
+ static void heap_insert_for_repack(HeapTuple tuple, Relation OldHeap,
+ 								   Relation NewHeap, Datum *values, bool *isnull,
+ 								   BulkInsertState bistate);
+@@ -711,6 +716,7 @@ heapam_relation_copy_for_cluster(Relation OldHeap, Relation NewHeap,
+ 		HeapTuple	tuple;
+ 		Buffer		buf;
+ 		bool		isdead;
++		bool		recently_dead = false;
+ 
+ 		CHECK_FOR_INTERRUPTS();
+ 
+@@ -796,6 +802,7 @@ heapam_relation_copy_for_cluster(Relation OldHeap, Relation NewHeap,
+ 					break;
+ 				case HEAPTUPLE_RECENTLY_DEAD:
+ 					*tups_recently_dead += 1;
++					recently_dead = true;
+ 					pg_fallthrough;
+ 				case HEAPTUPLE_LIVE:
+ 					/* Live or recently dead, must copy it */
+@@ -829,6 +836,7 @@ heapam_relation_copy_for_cluster(Relation OldHeap, Relation NewHeap,
+ 							 RelationGetRelationName(OldHeap));
+ 					/* treat as recently dead */
+ 					*tups_recently_dead += 1;
++					recently_dead = true;
+ 					isdead = false;
+ 					break;
+ 				default:
+@@ -857,6 +865,45 @@ heapam_relation_copy_for_cluster(Relation OldHeap, Relation NewHeap,
+ 		*num_tuples += 1;
+ 		if (tuplesort != NULL)
+ 		{
++			/*
++			 * For RECENTLY_DEAD tuples, verify TOAST data is still available
++			 * before putting the tuple in the sort.  If a concurrent VACUUM
++			 * already reclaimed it, skip the tuple.
++			 */
++			if (recently_dead)
++			{
++				bool		skip = false;
++
++				heap_deform_tuple(tuple, oldTupDesc, values, isnull);
++				for (int i = 0; i < oldTupDesc->natts; i++)
++				{
++					Form_pg_attribute att = TupleDescAttr(oldTupDesc, i);
++					varlena    *d;
++
++					if (att->attlen != -1 || att->attisdropped)
++						continue;
++					if (isnull[i])
++						continue;
++					if (!VARATT_IS_EXTERNAL_ONDISK(DatumGetPointer(values[i])))
++						continue;
++					d = detoast_external_attr_extended(
++													   (varlena *) DatumGetPointer(values[i]));
++					if (d == NULL)
++					{
++						skip = true;
++						break;
++					}
++					pfree(d);
++				}
++				if (skip)
++				{
++					*num_tuples -= 1;
++					*tups_vacuumed += 1;
++					*tups_recently_dead -= 1;
++					continue;
++				}
++			}
++
+ 			tuplesort_putheaptuple(tuplesort, tuple);
+ 
+ 			/*
+@@ -875,8 +922,22 @@ heapam_relation_copy_for_cluster(Relation OldHeap, Relation NewHeap,
+ 			int64		ct_val[2];
+ 
+ 			if (!concurrent)
+-				reform_and_rewrite_tuple(tuple, OldHeap, NewHeap,
+-										 values, isnull, rwstate);
++			{
++				if (!reform_and_rewrite_tuple(tuple, OldHeap, NewHeap,
++											  values, isnull, rwstate,
++											  recently_dead ? TOAST_MISSING_OK : 0))
++				{
++					/*
++					 * Missing TOAST chunks for a recently-dead tuple. Treat
++					 * it as dead.
++					 */
++					*tups_vacuumed += 1;
++					*num_tuples -= 1;
++					if (recently_dead)
++						*tups_recently_dead -= 1;
++					continue;
++				}
++			}
+ 			else
+ 				heap_insert_for_repack(tuple, OldHeap, NewHeap,
+ 									   values, isnull, bistate);
+@@ -928,10 +989,12 @@ heapam_relation_copy_for_cluster(Relation OldHeap, Relation NewHeap,
+ 
+ 			n_tuples += 1;
+ 			if (!concurrent)
+-				reform_and_rewrite_tuple(tuple,
+-										 OldHeap, NewHeap,
+-										 values, isnull,
+-										 rwstate);
++			{
++				(void) reform_and_rewrite_tuple(tuple,
++												OldHeap, NewHeap,
++												values, isnull,
++												rwstate, 0);
++			}
+ 			else
+ 				heap_insert_for_repack(tuple, OldHeap, NewHeap,
+ 									   values, isnull, bistate);
+@@ -1163,6 +1226,7 @@ heapam_index_build_range_scan(Relation heapRelation,
+ 	BlockNumber previous_blkno = InvalidBlockNumber;
+ 	BlockNumber root_blkno = InvalidBlockNumber;
+ 	OffsetNumber root_offsets[MaxHeapTuplesPerPage];
++	Bitmapset  *index_attrs = NULL;
+ 
+ 	/*
+ 	 * sanity checks
+@@ -1259,6 +1323,21 @@ heapam_index_build_range_scan(Relation heapRelation,
+ 		   !TransactionIdIsValid(OldestXmin));
+ 	Assert(snapshot == SnapshotAny || !anyvisible);
+ 
++	/*
++	 * Extract the set of attributes an index may need to detoast, including
++	 * expressions and predicates.
++	 */
++	for (int i = 0; i < indexInfo->ii_NumIndexAttrs; i++)
++	{
++		int			attnum = indexInfo->ii_IndexAttrNumbers[i];
++
++		if (attnum != 0)
++			index_attrs = bms_add_member(index_attrs,
++										 attnum - FirstLowInvalidHeapAttributeNumber);
++	}
++	pull_varattnos((Node *) indexInfo->ii_Expressions, 1, &index_attrs);
++	pull_varattnos((Node *) indexInfo->ii_Predicate, 1, &index_attrs);
++
+ 	/* Publish number of blocks to scan */
+ 	if (progress)
+ 	{
+@@ -1607,6 +1686,44 @@ heapam_index_build_range_scan(Relation heapRelation,
+ 				continue;
+ 		}
+ 
++		/* For RECENTLY_DEAD tuples, pre-detoast external TOAST values. */
++		if (!tupleIsAlive)
++		{
++			bool		skip = false;
++			int			attno;
++
++			slot_getallattrs(slot);
++			attno = -1;
++			while ((attno = bms_next_member(index_attrs, attno)) >= 0)
++			{
++				int			attnum = attno + FirstLowInvalidHeapAttributeNumber;
++				Form_pg_attribute att;
++
++				if (attnum <= 0)
++					continue;	/* system column */
++				att = TupleDescAttr(RelationGetDescr(heapRelation), attnum - 1);
++				if (att->attlen != -1 || att->attisdropped)
++					continue;
++				if (slot->tts_isnull[attnum - 1])
++					continue;
++				if (VARATT_IS_EXTERNAL_ONDISK(DatumGetPointer(slot->tts_values[attnum - 1])))
++				{
++					varlena    *detoasted;
++
++					detoasted = detoast_external_attr_extended(
++															   (varlena *) DatumGetPointer(slot->tts_values[attnum - 1]));
++					if (detoasted == NULL)
++					{
++						skip = true;
++						break;
++					}
++					slot->tts_values[attnum - 1] = PointerGetDatum(detoasted);
++				}
++			}
++			if (skip)
++				continue;
++		}
++
+ 		/*
+ 		 * For the current heap tuple, extract all the attributes we use in
+ 		 * this index, and note which are null.  This also performs evaluation
+@@ -2341,20 +2458,29 @@ heapam_scan_sample_next_tuple(TableScanDesc scan, SampleScanState *scanstate,
+  * SET WITHOUT OIDS.
+  *
+  * So, we must reconstruct the tuple from component Datums.
++ *
++ * Returns true on success, and false on failure if flags uses
++ * TOAST_MISSING_OK.  See toast_helper.h.
+  */
+-static void
++static bool
+ reform_and_rewrite_tuple(HeapTuple tuple,
+ 						 Relation OldHeap, Relation NewHeap,
+-						 Datum *values, bool *isnull, RewriteState rwstate)
++						 Datum *values, bool *isnull, RewriteState rwstate,
++						 uint32 flags)
+ {
+ 	HeapTuple	newtuple;
+ 
+ 	newtuple = reform_tuple(tuple, OldHeap, NewHeap, values, isnull);
+ 
+ 	/* The heap rewrite module does the rest */
+-	rewrite_heap_tuple(rwstate, tuple, newtuple);
++	if (!rewrite_heap_tuple(rwstate, tuple, newtuple, flags))
++	{
++		heap_freetuple(newtuple);
++		return false;
++	}
+ 
+ 	heap_freetuple(newtuple);
++	return true;
+ }
+ 
+ /*
+diff --git a/src/backend/access/heap/heaptoast.c b/src/backend/access/heap/heaptoast.c
+index 03f885a25b0..ba5942a9495 100644
+--- a/src/backend/access/heap/heaptoast.c
++++ b/src/backend/access/heap/heaptoast.c
+@@ -84,9 +84,10 @@ heap_toast_delete(Relation rel, HeapTuple oldtup, bool is_speculative)
+  *	newtup: the candidate new tuple to be inserted
+  *	oldtup: the old row version for UPDATE, or NULL for INSERT
+  *	options: options to be passed to heap_insert() for toast rows
++ *	flags: additional control flags, see heaptoast.h.
+  * Result:
+- *	either newtup if no toasting is needed, or a palloc'd modified tuple
+- *	that is what should actually get stored
++ *	either newtup if no toasting is needed, a palloc'd modified tuple
++ *	that is what should actually get stored, or NULL.
+  *
+  * NOTE: neither newtup nor oldtup will be modified.  This is a change
+  * from the pre-8.1 API of this routine.
+@@ -94,7 +95,7 @@ heap_toast_delete(Relation rel, HeapTuple oldtup, bool is_speculative)
+  */
+ HeapTuple
+ heap_toast_insert_or_update(Relation rel, HeapTuple newtup, HeapTuple oldtup,
+-							uint32 options)
++							uint32 options, uint32 flags)
+ {
+ 	HeapTuple	result_tuple;
+ 	TupleDesc	tupleDesc;
+@@ -154,7 +155,8 @@ heap_toast_insert_or_update(Relation rel, HeapTuple newtup, HeapTuple oldtup,
+ 		ttc.ttc_oldisnull = toast_oldisnull;
+ 	}
+ 	ttc.ttc_attr = toast_attr;
+-	toast_tuple_init(&ttc);
++	if (!toast_tuple_init(&ttc, flags))
++		return NULL;
+ 
+ 	/* ----------
+ 	 * Compress and/or save external until data fits into target length
+@@ -621,11 +623,15 @@ toast_build_flattened_tuple(TupleDesc tupleDesc,
+  * sliceoffset is the byte offset within the TOAST value from which to fetch.
+  * slicelength is the number of bytes to be fetched from the TOAST value.
+  * result is the varlena into which the results should be written.
++ * flags records more options, see toast_helper.h.
++ *
++ * Returns true on success, or false if flags uses TOAST_MISSING_OK and
++ * chunks are missing rather than raising an error.
+  */
+-void
++bool
+ heap_fetch_toast_slice(Relation toastrel, Oid valueid, int32 attrsize,
+ 					   int32 sliceoffset, int32 slicelength,
+-					   varlena *result)
++					   varlena *result, uint32 flags)
+ {
+ 	Relation   *toastidxs;
+ 	ScanKeyData toastkey[3];
+@@ -779,13 +785,23 @@ heap_fetch_toast_slice(Relation toastrel, Oid valueid, int32 attrsize,
+ 	 * Final checks that we successfully fetched the datum
+ 	 */
+ 	if (expectedchunk != (endchunk + 1))
++	{
++		if (flags & TOAST_MISSING_OK)
++		{
++			systable_endscan_ordered(toastscan);
++			toast_close_indexes(toastidxs, num_indexes, AccessShareLock);
++			return false;
++		}
+ 		ereport(ERROR,
+ 				(errcode(ERRCODE_DATA_CORRUPTED),
+ 				 errmsg_internal("missing chunk number %d for toast value %u in %s",
+ 								 expectedchunk, valueid,
+ 								 RelationGetRelationName(toastrel))));
++	}
+ 
+ 	/* End scan and close indexes. */
+ 	systable_endscan_ordered(toastscan);
+ 	toast_close_indexes(toastidxs, num_indexes, AccessShareLock);
++
++	return true;
+ }
+diff --git a/src/backend/access/heap/rewriteheap.c b/src/backend/access/heap/rewriteheap.c
+index 0648e433031..c68333ed03f 100644
+--- a/src/backend/access/heap/rewriteheap.c
++++ b/src/backend/access/heap/rewriteheap.c
+@@ -211,7 +211,8 @@ typedef struct RewriteMappingDataEntry
+ 
+ 
+ /* prototypes for internal functions */
+-static void raw_heap_insert(RewriteState state, HeapTuple tup);
++static bool raw_heap_insert(RewriteState state, HeapTuple tup,
++							uint32 flags);
+ 
+ /* internal logical remapping prototypes */
+ static void logical_begin_heap_rewrite(RewriteState state);
+@@ -309,7 +310,7 @@ end_heap_rewrite(RewriteState state)
+ 	while ((unresolved = hash_seq_search(&seq_status)) != NULL)
+ 	{
+ 		ItemPointerSetInvalid(&unresolved->tuple->t_data->t_ctid);
+-		raw_heap_insert(state, unresolved->tuple);
++		raw_heap_insert(state, unresolved->tuple, 0);
+ 	}
+ 
+ 	/* Write the last page, if any */
+@@ -338,9 +339,10 @@ end_heap_rewrite(RewriteState state)
+  * old_tuple	original tuple in the old heap
+  * new_tuple	new, rewritten tuple to be inserted to new heap
+  */
+-void
++bool
+ rewrite_heap_tuple(RewriteState state,
+-				   HeapTuple old_tuple, HeapTuple new_tuple)
++				   HeapTuple old_tuple, HeapTuple new_tuple,
++				   uint32 flags)
+ {
+ 	MemoryContext old_cxt;
+ 	ItemPointerData old_tid;
+@@ -437,7 +439,7 @@ rewrite_heap_tuple(RewriteState state,
+ 			 * tuple will be written.
+ 			 */
+ 			MemoryContextSwitchTo(old_cxt);
+-			return;
++			return true;
+ 		}
+ 	}
+ 
+@@ -455,7 +457,13 @@ rewrite_heap_tuple(RewriteState state,
+ 		ItemPointerData new_tid;
+ 
+ 		/* Insert the tuple and find out where it's put in new_heap */
+-		raw_heap_insert(state, new_tuple);
++		if (!raw_heap_insert(state, new_tuple, flags))
++		{
++			if (free_new)
++				heap_freetuple(new_tuple);
++			MemoryContextSwitchTo(old_cxt);
++			return false;
++		}
+ 		new_tid = new_tuple->t_self;
+ 
+ 		logical_rewrite_heap_tuple(state, old_tid, new_tuple);
+@@ -532,6 +540,7 @@ rewrite_heap_tuple(RewriteState state,
+ 	}
+ 
+ 	MemoryContextSwitchTo(old_cxt);
++	return true;
+ }
+ 
+ /*
+@@ -593,8 +602,8 @@ rewrite_heap_dead_tuple(RewriteState state, HeapTuple old_tuple)
+  * tuple is invalid on entry, it's replaced with the new TID as well (in
+  * the inserted data only, not in the caller's copy).
+  */
+-static void
+-raw_heap_insert(RewriteState state, HeapTuple tup)
++static bool
++raw_heap_insert(RewriteState state, HeapTuple tup, uint32 flags)
+ {
+ 	Page		page;
+ 	Size		pageFreeSpace,
+@@ -628,7 +637,9 @@ raw_heap_insert(RewriteState state, HeapTuple tup)
+ 		options |= HEAP_INSERT_NO_LOGICAL;
+ 
+ 		heaptup = heap_toast_insert_or_update(state->rs_new_rel, tup, NULL,
+-											  options);
++											  options, flags);
++		if (heaptup == NULL)
++			return false;
+ 	}
+ 	else
+ 		heaptup = tup;
+@@ -702,6 +713,8 @@ raw_heap_insert(RewriteState state, HeapTuple tup)
+ 	/* If heaptup is a private copy, release it. */
+ 	if (heaptup != tup)
+ 		heap_freetuple(heaptup);
++
++	return true;
+ }
+ 
+ /* ------------------------------------------------------------------------
+diff --git a/src/backend/access/table/toast_helper.c b/src/backend/access/table/toast_helper.c
+index 2f2022d9951..50ce051a687 100644
+--- a/src/backend/access/table/toast_helper.c
++++ b/src/backend/access/table/toast_helper.c
+@@ -36,9 +36,13 @@
+  * toast_flags is just a single uint8, but toast_attr is a caller-provided
+  * array with a length equal to tupleDesc->natts.  The caller need not
+  * perform any initialization of the array before calling this function.
++ *
++ * If flags uses TOAST_MISSING_OK and an external TOAST value cannot be
++ * fetched, returns false instead of raising an error.  Returns true on
++ * success.  See toast_helper.h.
+  */
+-void
+-toast_tuple_init(ToastTupleContext *ttc)
++bool
++toast_tuple_init(ToastTupleContext *ttc, uint32 flags)
+ {
+ 	TupleDesc	tupleDesc = ttc->ttc_rel->rd_att;
+ 	int			numAttrs = tupleDesc->natts;
+@@ -137,7 +141,14 @@ toast_tuple_init(ToastTupleContext *ttc)
+ 			if (VARATT_IS_EXTERNAL(new_value))
+ 			{
+ 				ttc->ttc_attr[i].tai_oldexternal = new_value;
+-				if (att->attstorage == TYPSTORAGE_PLAIN)
++				if ((flags & TOAST_MISSING_OK) != 0 &&
++					VARATT_IS_EXTERNAL_ONDISK(new_value))
++				{
++					new_value = detoast_external_attr_extended(new_value);
++					if (new_value == NULL)
++						return false;
++				}
++				else if (att->attstorage == TYPSTORAGE_PLAIN)
+ 					new_value = detoast_attr(new_value);
+ 				else
+ 					new_value = detoast_external_attr(new_value);
+@@ -159,6 +170,8 @@ toast_tuple_init(ToastTupleContext *ttc)
+ 			ttc->ttc_attr[i].tai_colflags |= TOASTCOL_IGNORE;
+ 		}
+ 	}
++
++	return true;
+ }
+ 
+ /*
+diff --git a/src/include/access/detoast.h b/src/include/access/detoast.h
+index fbd98181a3a..c5eeed04b01 100644
+--- a/src/include/access/detoast.h
++++ b/src/include/access/detoast.h
+@@ -43,6 +43,15 @@ do { \
+  */
+ extern varlena *detoast_external_attr(varlena *attr);
+ 
++/* ----------
++ * detoast_external_attr_extended() -
++ *
++ *		Like detoast_external_attr, but returns NULL if toast chunks
++ *		are missing (instead of raising an error).
++ * ----------
++ */
++extern varlena *detoast_external_attr_extended(varlena *attr);
++
+ /* ----------
+  * detoast_attr() -
+  *
+diff --git a/src/include/access/heaptoast.h b/src/include/access/heaptoast.h
+index 631cb1836b9..bc4087b3c95 100644
+--- a/src/include/access/heaptoast.h
++++ b/src/include/access/heaptoast.h
+@@ -91,11 +91,15 @@
+ /* ----------
+  * heap_toast_insert_or_update -
+  *
+- *	Called by heap_insert() and heap_update().
++ *	Called by heap_insert() and heap_update().  Returns NULL if the
++ *	insert/update could not be completed.
++ *
++ * See toast_helper.h for the values of "flags".
+  * ----------
+  */
+ extern HeapTuple heap_toast_insert_or_update(Relation rel, HeapTuple newtup,
+-											 HeapTuple oldtup, uint32 options);
++											 HeapTuple oldtup, uint32 options,
++											 uint32 flags);
+ 
+ /* ----------
+  * heap_toast_delete -
+@@ -139,11 +143,15 @@ extern HeapTuple toast_build_flattened_tuple(TupleDesc tupleDesc,
+ /* ----------
+  * heap_fetch_toast_slice
+  *
+- *	Fetch a slice from a toast value stored in a heap table.
++ *	Fetch a slice from a toast value stored in a heap table.  Returns
++ *	false if the slice could not be fetched, otherwise true on success.
++ *
++ * See toast_helper.h for the values of "flags".
+  * ----------
+  */
+-extern void heap_fetch_toast_slice(Relation toastrel, Oid valueid,
++extern bool heap_fetch_toast_slice(Relation toastrel, Oid valueid,
+ 								   int32 attrsize, int32 sliceoffset,
+-								   int32 slicelength, varlena *result);
++								   int32 slicelength, varlena *result,
++								   uint32 flags);
+ 
+ #endif							/* HEAPTOAST_H */
+diff --git a/src/include/access/rewriteheap.h b/src/include/access/rewriteheap.h
+index 6ccf7b45c04..09110f6337a 100644
+--- a/src/include/access/rewriteheap.h
++++ b/src/include/access/rewriteheap.h
+@@ -25,8 +25,10 @@ extern RewriteState begin_heap_rewrite(Relation old_heap, Relation new_heap,
+ 									   TransactionId oldest_xmin, TransactionId freeze_xid,
+ 									   MultiXactId cutoff_multi);
+ extern void end_heap_rewrite(RewriteState state);
+-extern void rewrite_heap_tuple(RewriteState state, HeapTuple old_tuple,
+-							   HeapTuple new_tuple);
++
++/* See toast_helper.h for the values of "flags" */
++extern bool rewrite_heap_tuple(RewriteState state, HeapTuple old_tuple,
++							   HeapTuple new_tuple, uint32 flags);
+ extern bool rewrite_heap_dead_tuple(RewriteState state, HeapTuple old_tuple);
+ 
+ /*
+diff --git a/src/include/access/tableam.h b/src/include/access/tableam.h
+index f2c36696bca..707baf804e3 100644
+--- a/src/include/access/tableam.h
++++ b/src/include/access/tableam.h
+@@ -782,12 +782,17 @@ typedef struct TableAmRoutine
+ 	 * This callback is invoked when detoasting a value stored in a toast
+ 	 * table implemented by this AM.  See table_relation_fetch_toast_slice()
+ 	 * for more details.
++	 *
++	 * If TOAST_MISSING_OK is set in flags, returns false when chunks are
++	 * missing instead of raising an error.  Returns true on success.  See
++	 * toast_helper.h for possible values of "flags".
+ 	 */
+-	void		(*relation_fetch_toast_slice) (Relation toastrel, Oid valueid,
++	bool		(*relation_fetch_toast_slice) (Relation toastrel, Oid valueid,
+ 											   int32 attrsize,
+ 											   int32 sliceoffset,
+ 											   int32 slicelength,
+-											   varlena *result);
++											   varlena *result,
++											   uint32 flags);
+ 
+ 
+ 	/* ------------------------------------------------------------------------
+@@ -1981,16 +1986,21 @@ table_relation_toast_am(Relation rel)
+  *
+  * result is caller-allocated space into which the fetched bytes should be
+  * stored.
++ *
++ * flags: if TOAST_MISSING_OK is set, return false when toast chunks are
++ * missing instead of raising an error.  Returns true on success.  See
++ * also toast_helper.h.
+  */
+-static inline void
++static inline bool
+ table_relation_fetch_toast_slice(Relation toastrel, Oid valueid,
+ 								 int32 attrsize, int32 sliceoffset,
+-								 int32 slicelength, varlena *result)
++								 int32 slicelength, varlena *result,
++								 uint32 flags)
+ {
+-	toastrel->rd_tableam->relation_fetch_toast_slice(toastrel, valueid,
+-													 attrsize,
+-													 sliceoffset, slicelength,
+-													 result);
++	return toastrel->rd_tableam->relation_fetch_toast_slice(toastrel, valueid,
++															attrsize,
++															sliceoffset, slicelength,
++															result, flags);
+ }
+ 
+ 
+diff --git a/src/include/access/toast_helper.h b/src/include/access/toast_helper.h
+index 2ec92397f26..4abebe82798 100644
+--- a/src/include/access/toast_helper.h
++++ b/src/include/access/toast_helper.h
+@@ -101,7 +101,15 @@ typedef struct
+ #define TOASTCOL_IGNORE						0x0010
+ #define TOASTCOL_INCOMPRESSIBLE				0x0020
+ 
+-extern void toast_tuple_init(ToastTupleContext *ttc);
++/*
++ * Flags for TOAST fetch operations.
++ *
++ * TOAST_MISSING_OK, when set, means that a TOAST fetch tolerates missing
++ * chunks and returns a failure state instead of raising an error.
++ */
++#define TOAST_MISSING_OK		(1 << 1)
++
++extern bool toast_tuple_init(ToastTupleContext *ttc, uint32 flags);
+ extern int	toast_tuple_find_biggest_attribute(ToastTupleContext *ttc,
+ 											   bool for_compression,
+ 											   bool check_main);
+diff --git a/src/test/recovery/meson.build b/src/test/recovery/meson.build
+index ad0d85f4189..7e583ee39a1 100644
+--- a/src/test/recovery/meson.build
++++ b/src/test/recovery/meson.build
+@@ -63,6 +63,7 @@ tests += {
+       't/052_checkpoint_segment_missing.pl',
+       't/053_standby_login_event_trigger.pl',
+       't/054_unlogged_sequence_promotion.pl',
++      't/055_rewrite_stale_xmin.pl',
+     ],
+   },
+ }
+diff --git a/src/test/recovery/t/055_rewrite_stale_xmin.pl b/src/test/recovery/t/055_rewrite_stale_xmin.pl
+new file mode 100644
+index 00000000000..dad95c0cf96
+--- /dev/null
++++ b/src/test/recovery/t/055_rewrite_stale_xmin.pl
+@@ -0,0 +1,124 @@
++# Copyright (c) 2025-2026, PostgreSQL Global Development Group
++#
++# Test that heap rewrites (CLUSTER, VACUUM FULL, REPACK) and index builds
++# work in the case when the backend's own xmin is held back by a transaction
++# in another database.
++
++use strict;
++use warnings;
++use PostgreSQL::Test::Cluster;
++use Test::More;
++
++my $node = PostgreSQL::Test::Cluster->new('primary');
++$node->init;
++# No Autovacuum, no random interferences.
++$node->append_conf(
++	'postgresql.conf', qq[
++autovacuum = off
++]);
++$node->start;
++
++# Create two databases.
++$node->safe_psql('postgres', 'CREATE DATABASE db_holder');
++$node->safe_psql('postgres', 'CREATE DATABASE db_target');
++
++# Set up a table with TOAST data.  Returns the toast table name.
++sub setup_table
++{
++	my ($tblname, $extra_ddl) = @_;
++	$extra_ddl //= '';
++
++	$node->safe_psql(
++		'db_target', qq{
++		DROP TABLE IF EXISTS $tblname;
++		CREATE TABLE $tblname (id int PRIMARY KEY, data text)
++			WITH (autovacuum_enabled = off);
++		ALTER TABLE $tblname ALTER COLUMN data SET STORAGE EXTERNAL;
++		INSERT INTO $tblname VALUES (1, repeat('x', 2500));
++		INSERT INTO $tblname VALUES (2, repeat('z', 2500));
++		$extra_ddl
++	});
++
++	my $toast = $node->safe_psql(
++		'db_target', qq{
++		SELECT 'pg_toast.' || relname FROM pg_class
++		WHERE oid = (SELECT reltoastrelid FROM pg_class
++					 WHERE relname = '$tblname');
++	});
++	chomp $toast;
++	return $toast;
++}
++
++# Create precondition state.  Requires that $holder is already running with
++# a write XID.
++sub create_missing_toast_state
++{
++	my ($tblname, $toast_table) = @_;
++
++	# Hold xmin in same DB to prevent main tuple removal.
++	my $xmin_holder = $node->background_psql('db_target', on_error_stop => 1);
++	$xmin_holder->query_safe("BEGIN ISOLATION LEVEL REPEATABLE READ");
++	$xmin_holder->query_safe("SELECT 1");
++
++	# Delete the row with TOAST data.
++	$node->safe_psql('db_target', "DELETE FROM $tblname WHERE id = 1");
++
++	# VACUUM main table only.  The xmin_holder keeps the dead tuple.
++	$node->safe_psql('db_target', "VACUUM (PROCESS_TOAST false) $tblname");
++
++	# Release same-DB xmin.
++	$xmin_holder->query_safe("COMMIT");
++	$xmin_holder->quit;
++
++	# Vacuum toast table: toast chunks now DEAD and removed.
++	$node->safe_psql('db_target', "VACUUM $toast_table");
++}
++
++# Open a transaction holding an XID before any deletes.  This XID will hold
++# back GetSnapshotData() globally, on a different database than the one
++# running the various rewrite operations.
++my $holder = $node->background_psql('db_holder', on_error_stop => 1);
++$holder->query_safe("BEGIN");
++$holder->query_safe("CREATE TEMP TABLE xid_holder(x int)");
++
++# Test 1: CLUSTER
++my $toast = setup_table('rewrite_test');
++create_missing_toast_state('rewrite_test', $toast);
++
++my ($ret, $stdout, $stderr) =
++  $node->psql('db_target', 'CLUSTER rewrite_test USING rewrite_test_pkey');
++is($ret, 0, "CLUSTER succeeds without missing-chunk error");
++unlike($stderr, qr/missing chunk/, "CLUSTER: no missing-chunk error");
++
++# Test 2: VACUUM FULL
++$toast = setup_table('rewrite_test');
++create_missing_toast_state('rewrite_test', $toast);
++
++($ret, $stdout, $stderr) =
++  $node->psql('db_target', 'VACUUM FULL rewrite_test');
++is($ret, 0, "VACUUM FULL succeeds without missing-chunk error");
++unlike($stderr, qr/missing chunk/, "VACUUM FULL: no missing-chunk error");
++
++# Test 3: REPACK
++$toast = setup_table('rewrite_test');
++create_missing_toast_state('rewrite_test', $toast);
++
++($ret, $stdout, $stderr) = $node->psql('db_target', 'REPACK rewrite_test');
++is($ret, 0, "REPACK succeeds without missing-chunk error");
++unlike($stderr, qr/missing chunk/, "REPACK: no missing-chunk error");
++
++# Test 4: CREATE INDEX on toasted column
++$toast = setup_table('rewrite_test');
++create_missing_toast_state('rewrite_test', $toast);
++
++($ret, $stdout, $stderr) = $node->psql('db_target',
++	'CREATE INDEX rewrite_test_data_idx ON rewrite_test (data)');
++is($ret, 0, "CREATE INDEX succeeds without missing-chunk error");
++unlike($stderr, qr/missing chunk/, "CREATE INDEX: no missing-chunk error");
++
++# Cleanup.
++$holder->query_safe("COMMIT");
++$holder->quit;
++
++$node->stop;
++done_testing();
+-- 
+2.50.1 (Apple Git-155)
+

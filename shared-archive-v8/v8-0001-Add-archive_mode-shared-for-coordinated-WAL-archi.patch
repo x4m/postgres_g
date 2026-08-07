@@ -1,0 +1,1684 @@
+From e3fe96ffebafd3487a08fa9835c15308c32a6214 Mon Sep 17 00:00:00 2001
+From: Andrey Borodin <amborodin@acm.org>
+Date: Tue, 10 Feb 2026 12:47:32 +0500
+Subject: [PATCH v8 1/3] Add archive_mode=shared for coordinated WAL archiving
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+This adds a new archive_mode setting "shared" to prevent WAL history
+loss during standby promotion in HA streaming replication setups.
+
+In shared mode, the standby tracks which files have been archived by the
+primary. The standby refrains from recycling files that the primary has not
+yet archived, and at failover, the standby archives all those files too
+from the old timeline. This prevents WAL from being recycled
+before it's safely archived, addressing a possible gap in PITR continuity
+during failover.
+
+Primary sends last archived WAL segment every
+`archive_status_report_interval` ms via new walsender protocol message.
+Standby marks all segments <= reported segment as .done on current
+timeline. For any ancestor timeline, standby marks all segments which
+are in its history as .done.
+
+Cascading replication on each standby coordinates with immediate
+upstream. Standby relays its primary last archived WAL donwstream.
+
+Implementaion based on Heikki Linnakangas's 2014 design & patсh, also we
+grabbed some ideas & tests from Greenplum's production implementation[0],
+and modernized the whole thing for current HEAD (PostgreSQL 20 at time).
+
+Includes TAP tests covering basic synchronization, promotion,
+cascading replication. Also includes additional test for checkpoint
+wal recycling on standby logic in shared-archive mode.
+
+Author: Andrey Borodin <x4mmm@yandex-team.ru>
+Co-authored-by: Heikki Linnakangas <hlinnaka@iki.fi> (earlier versions)
+Co-authored-by: Kirill Reshke <reshkekirill@gmail.com>
+Reviewed-by: Fujii Masao <masao.fujii@gmail.com> (earlier versions)
+Reviewed-by: Grigory Smolkin <smallkeen@gmail.com>
+Reviewed-by: Jaroslav Novikov <njrslv@yandex-team.ru>
+
+[0] https://github.com/open-gpdb/gpdb/commit/4f2db1929df1b5eed28f33505955636096bb4e8b
+---
+ doc/src/sgml/config.sgml                      |  36 ++-
+ doc/src/sgml/high-availability.sgml           |  72 +++--
+ doc/src/sgml/protocol.sgml                    |  26 ++
+ src/backend/access/transam/xlog.c             |   2 +
+ src/backend/access/transam/xlogarchive.c      |  14 +-
+ src/backend/commands/subscriptioncmds.c       |  10 +-
+ src/backend/postmaster/pgarch.c               |  16 +-
+ .../libpqwalreceiver/libpqwalreceiver.c       |   9 +-
+ .../replication/logical/sequencesync.c        |   2 +-
+ src/backend/replication/logical/slotsync.c    |   2 +-
+ src/backend/replication/logical/tablesync.c   |   2 +-
+ src/backend/replication/logical/worker.c      |   2 +-
+ src/backend/replication/slotfuncs.c           |   2 +-
+ src/backend/replication/walreceiver.c         | 261 +++++++++++++++++-
+ src/backend/replication/walsender.c           | 108 ++++++++
+ src/backend/tcop/backend_startup.c            |  10 +
+ src/backend/utils/misc/guc_parameters.dat     |   9 +
+ src/backend/utils/misc/postgresql.conf.sample |   6 +-
+ src/include/access/xlog.h                     |   2 +
+ src/include/libpq/protocol.h                  |   1 +
+ src/include/postmaster/pgarch.h               |  24 ++
+ src/include/replication/walreceiver.h         |   5 +-
+ src/include/replication/walsender.h           |   1 +
+ src/interfaces/libpq/fe-connect.c             |   5 +
+ src/interfaces/libpq/fe-protocol3.c           |   2 +
+ src/interfaces/libpq/libpq-int.h              |   1 +
+ src/test/recovery/meson.build                 |   2 +
+ src/test/recovery/t/055_archive_shared.pl     | 260 +++++++++++++++++
+ .../t/056_archive_shared_checkpoint.pl        | 214 ++++++++++++++
+ 29 files changed, 1042 insertions(+), 64 deletions(-)
+ create mode 100644 src/test/recovery/t/055_archive_shared.pl
+ create mode 100644 src/test/recovery/t/056_archive_shared_checkpoint.pl
+
+diff --git a/doc/src/sgml/config.sgml b/doc/src/sgml/config.sgml
+index aa7b1bd75d2..55d40ecb2ca 100644
+--- a/doc/src/sgml/config.sgml
++++ b/doc/src/sgml/config.sgml
+@@ -4048,14 +4048,36 @@ include_dir 'conf.d'
+         are sent to archive storage by setting
+         <xref linkend="guc-archive-command"/> or
+         <xref linkend="guc-archive-library"/>. In addition to <literal>off</literal>,
+-        to disable, there are two modes: <literal>on</literal>, and
+-        <literal>always</literal>. During normal operation, there is no
+-        difference between the two modes, but when set to <literal>always</literal>
+-        the WAL archiver is enabled also during archive recovery or standby
+-        mode. In <literal>always</literal> mode, all files restored from the archive
+-        or streamed with streaming physical replication will be archived (again). See
+-        <xref linkend="continuous-archiving-in-standby"/> for details.
++        to disable, there are three modes: <literal>on</literal>, <literal>shared</literal>,
++        and <literal>always</literal>. During normal operation as a primary, there is no
++        difference between the three modes, but they differ during archive recovery or
++        standby mode:
+        </para>
++       <itemizedlist>
++        <listitem>
++         <para>
++          <literal>on</literal>: Archives WAL only when running as a primary.
++         </para>
++        </listitem>
++        <listitem>
++         <para>
++          <literal>shared</literal>: Coordinates archiving between primary and standby.
++          The standby defers WAL archival and deletion until the primary confirms
++          archival via streaming replication. This prevents WAL history loss during
++          standby promotion in high availability setups. Upon promotion, the standby
++          automatically starts archiving any remaining unarchived WAL. This mode works
++          with cascading replication, where each standby coordinates with its immediate
++          upstream server. See <xref linkend="continuous-archiving-in-standby"/> for details.
++         </para>
++        </listitem>
++        <listitem>
++         <para>
++          <literal>always</literal>: Archives all WAL independently, even during recovery.
++          All files restored from the archive or streamed with streaming physical
++          replication will be archived (again), regardless of their source.
++         </para>
++        </listitem>
++       </itemizedlist>
+        <para>
+         <varname>archive_mode</varname> is a separate setting from
+         <varname>archive_command</varname> and
+diff --git a/doc/src/sgml/high-availability.sgml b/doc/src/sgml/high-availability.sgml
+index fd338ab1540..e5b455cc103 100644
+--- a/doc/src/sgml/high-availability.sgml
++++ b/doc/src/sgml/high-availability.sgml
+@@ -1452,35 +1452,61 @@ postgres=# WAIT FOR LSN '0/306EE20';
+    </indexterm>
+ 
+    <para>
+-     When continuous WAL archiving is used in a standby, there are two
+-     different scenarios: the WAL archive can be shared between the primary
+-     and the standby, or the standby can have its own WAL archive. When
+-     the standby has its own WAL archive, set <varname>archive_mode</varname>
++     When continuous WAL archiving is used in a standby, there are three
++     different scenarios: the standby can have its own independent WAL archive,
++     the WAL archive can be shared between the primary and standby, or archiving
++     can be coordinated between them.
++   </para>
++
++   <para>
++     For an independent archive, set <varname>archive_mode</varname>
+      to <literal>always</literal>, and the standby will call the archive
+      command for every WAL segment it receives, whether it's by restoring
+-     from the archive or by streaming replication. The shared archive can
+-     be handled similarly, but the <varname>archive_command</varname> or <varname>archive_library</varname> must
+-     test if the file being archived exists already, and if the existing file
+-     has identical contents. This requires more care in the
+-     <varname>archive_command</varname> or <varname>archive_library</varname>, as it must
+-     be careful to not overwrite an existing file with different contents,
+-     but return success if the exactly same file is archived twice. And
+-     all that must be done free of race conditions, if two servers attempt
+-     to archive the same file at the same time.
++     from the archive or by streaming replication.
++   </para>
++
++   <para>
++     For a shared archive where both primary and standby can write, use
++     <literal>always</literal> mode as well, but the <varname>archive_command</varname>
++     or <varname>archive_library</varname> must test if the file being archived
++     exists already, and if the existing file has identical contents. This requires
++     more care in the <varname>archive_command</varname> or <varname>archive_library</varname>,
++     as it must be careful to not overwrite an existing file with different contents,
++     but return success if the exactly same file is archived twice. And all that must
++     be done free of race conditions, if two servers attempt to archive the same file
++     at the same time.
++   </para>
++
++   <para>
++     For coordinated archiving in high availability setups, use
++     <varname>archive_mode</varname>=<literal>shared</literal>. In this mode, only
++     the primary archives WAL segments. The standby creates <literal>.ready</literal>
++     files for received segments but defers actual archiving. The primary periodically
++     sends archival status updates to the standby via streaming replication, informing
++     it which segments have been archived. The standby then marks these as archived
++     and allows them to be recycled. Upon promotion, the standby automatically starts
++     archiving any remaining WAL segments that weren't confirmed as archived by the
++     former primary. This prevents WAL history loss during failover while avoiding
++     the complexity of coordinating concurrent archiving. This mode works with cascading
++     replication, where each standby coordinates with its immediate upstream server.
+    </para>
+ 
+    <para>
+      If <varname>archive_mode</varname> is set to <literal>on</literal>, the
+-     archiver is not enabled during recovery or standby mode. If the standby
+-     server is promoted, it will start archiving after the promotion, but
+-     will not archive any WAL or timeline history files that
+-     it did not generate itself. To get a complete
+-     series of WAL files in the archive, you must ensure that all WAL is
+-     archived, before it reaches the standby. This is inherently true with
+-     file-based log shipping, as the standby can only restore files that
+-     are found in the archive, but not if streaming replication is enabled.
+-     When a server is not in recovery mode, there is no difference between
+-     <literal>on</literal> and <literal>always</literal> modes.
++     archiver is not enabled during recovery or standby mode, and this setting
++     cannot be used on a standby. If a standby with <literal>archive_mode</literal>
++     set to <literal>on</literal> is promoted, it will start archiving after the
++     promotion, but will not archive any WAL or timeline history files that it did
++     not generate itself. To get a complete series of WAL files in the archive, you
++     must ensure that all WAL is archived before it reaches the standby. This is
++     inherently true with file-based log shipping, as the standby can only restore
++     files that are found in the archive, but not if streaming replication is enabled.
++   </para>
++
++   <para>
++     When a server is not in recovery mode, <literal>on</literal>,
++     <literal>shared</literal>, and <literal>always</literal> modes all behave
++     identically, archiving completed WAL segments.
+    </para>
+   </sect2>
+   </sect1>
+diff --git a/doc/src/sgml/protocol.sgml b/doc/src/sgml/protocol.sgml
+index 49f81676712..5a669443043 100644
+--- a/doc/src/sgml/protocol.sgml
++++ b/doc/src/sgml/protocol.sgml
+@@ -2839,6 +2839,32 @@ psql "dbname=postgres replication=database" -c "IDENTIFY_SYSTEM;"
+          </variablelist>
+         </listitem>
+        </varlistentry>
++
++       <varlistentry id="protocol-replication-arhive-status-report">
++        <term>WAL archival report message (B)</term>
++        <listitem>
++         <variablelist>
++          <varlistentry>
++           <term>Byte1('a')</term>
++           <listitem>
++            <para>
++             Identifies the message as a last archived WAL segment update.
++            </para>
++           </listitem>
++          </varlistentry>
++
++          <varlistentry>
++           <term>Byte<replaceable>n</replaceable></term>
++           <listitem>
++            <para>
++             Filename of the latest archived file.
++            </para>
++           </listitem>
++          </varlistentry>
++         </variablelist>
++        </listitem>
++       </varlistentry>
++
+       </variablelist>
+ 
+       <para>
+diff --git a/src/backend/access/transam/xlog.c b/src/backend/access/transam/xlog.c
+index f8b939853e9..1496c685502 100644
+--- a/src/backend/access/transam/xlog.c
++++ b/src/backend/access/transam/xlog.c
+@@ -123,6 +123,7 @@ int			min_wal_size_mb = 80;	/* 80 MB */
+ int			wal_keep_size_mb = 0;
+ int			XLOGbuffers = -1;
+ int			XLogArchiveTimeout = 0;
++int			XLogArchiveStatusReportInterval = 0;
+ int			XLogArchiveMode = ARCHIVE_MODE_OFF;
+ char	   *XLogArchiveCommand = NULL;
+ bool		EnableHotStandby = false;
+@@ -199,6 +200,7 @@ const struct config_enum_entry archive_mode_options[] = {
+ 	{"always", ARCHIVE_MODE_ALWAYS, false},
+ 	{"on", ARCHIVE_MODE_ON, false},
+ 	{"off", ARCHIVE_MODE_OFF, false},
++	{"shared", ARCHIVE_MODE_SHARED, false},
+ 	{"true", ARCHIVE_MODE_ON, true},
+ 	{"false", ARCHIVE_MODE_OFF, true},
+ 	{"yes", ARCHIVE_MODE_ON, true},
+diff --git a/src/backend/access/transam/xlogarchive.c b/src/backend/access/transam/xlogarchive.c
+index 9a0c8097cb1..62360cc4864 100644
+--- a/src/backend/access/transam/xlogarchive.c
++++ b/src/backend/access/transam/xlogarchive.c
+@@ -574,16 +574,22 @@ XLogArchiveCheckDone(const char *xlog)
+ 
+ 	/*
+ 	 * During archive recovery, the file is deletable if archive_mode is not
+-	 * "always".
++	 * "always" or "shared".
++	 *
++	 * In "shared" mode the standby does not archive independently; instead it
++	 * waits for the primary to report successful archival, at which point the
++	 * walreceiver converts the .ready file to .done.  We must therefore fall
++	 * through to the .done/.ready check below so that checkpoint cannot
++	 * delete a segment whose .ready file has not yet become .done.
+ 	 */
+-	if (!XLogArchivingAlways() &&
++	if (!XLogArchivingAlways() && !(XLogArchiveMode == ARCHIVE_MODE_SHARED) &&
+ 		GetRecoveryState() == RECOVERY_STATE_ARCHIVE)
+ 		return true;
+ 
+ 	/*
+ 	 * At this point of the logic, note that we are either a primary with
+-	 * archive_mode set to "on" or "always", or a standby with archive_mode
+-	 * set to "always".
++	 * archive_mode set to "on" or "always", a standby with archive_mode set
++	 * to "always", or a standby with archive_mode set to "shared".
+ 	 */
+ 
+ 	/* First check for .done --- this means archiver is done with it */
+diff --git a/src/backend/commands/subscriptioncmds.c b/src/backend/commands/subscriptioncmds.c
+index 013ac46db07..a939defd319 100644
+--- a/src/backend/commands/subscriptioncmds.c
++++ b/src/backend/commands/subscriptioncmds.c
+@@ -953,7 +953,7 @@ CreateSubscription(ParseState *pstate, CreateSubscriptionStmt *stmt,
+ 
+ 		/* Try to connect to the publisher. */
+ 		must_use_password = !superuser_arg(owner) && opts.passwordrequired;
+-		wrconn = walrcv_connect(conninfo, true, true, must_use_password,
++		wrconn = walrcv_connect(conninfo, true, true, must_use_password, false,
+ 								stmt->subname, &err);
+ 		if (!wrconn)
+ 			ereport(ERROR,
+@@ -1117,7 +1117,7 @@ AlterSubscription_refresh(Subscription *sub, bool copy_data,
+ 
+ 	/* Try to connect to the publisher. */
+ 	must_use_password = sub->passwordrequired && !sub->ownersuperuser;
+-	wrconn = walrcv_connect(sub->conninfo, true, true, must_use_password,
++	wrconn = walrcv_connect(sub->conninfo, true, true, must_use_password, false,
+ 							sub->name, &err);
+ 	if (!wrconn)
+ 		ereport(ERROR,
+@@ -1370,7 +1370,7 @@ AlterSubscription_refresh_seq(Subscription *sub)
+ 
+ 	/* Try to connect to the publisher. */
+ 	must_use_password = sub->passwordrequired && !sub->ownersuperuser;
+-	wrconn = walrcv_connect(sub->conninfo, true, true, must_use_password,
++	wrconn = walrcv_connect(sub->conninfo, true, true, must_use_password, false,
+ 							sub->name, &err);
+ 	if (!wrconn)
+ 		ereport(ERROR,
+@@ -2417,7 +2417,7 @@ AlterSubscription(ParseState *pstate, AlterSubscriptionStmt *stmt,
+ 		 */
+ 		must_use_password = sub->passwordrequired && !sub->ownersuperuser;
+ 		wrconn = walrcv_connect(new_conninfo ? new_conninfo : sub->conninfo,
+-								true, true, must_use_password, sub->name,
++								true, true, must_use_password, false, sub->name,
+ 								&err);
+ 		if (!wrconn)
+ 			ereport(ERROR,
+@@ -2770,7 +2770,7 @@ DropSubscription(DropSubscriptionStmt *stmt, bool isTopLevel)
+ 		conninfo = subconninfo;
+ 
+ 	if (conninfo)
+-		wrconn = walrcv_connect(conninfo, true, true, must_use_password,
++		wrconn = walrcv_connect(conninfo, true, true, must_use_password, false,
+ 								subname, &err);
+ 
+ 	if (wrconn == NULL)
+diff --git a/src/backend/postmaster/pgarch.c b/src/backend/postmaster/pgarch.c
+index 0f207ac0356..ef1423133ce 100644
+--- a/src/backend/postmaster/pgarch.c
++++ b/src/backend/postmaster/pgarch.c
+@@ -83,16 +83,6 @@
+  */
+ #define NUM_FILES_PER_DIRECTORY_SCAN 64
+ 
+-/* Shared memory area for archiver process */
+-typedef struct PgArchData
+-{
+-	int			pgprocno;		/* proc number of archiver process */
+-
+-	/*
+-	 * Forces a directory scan in pgarch_readyXlog().
+-	 */
+-	pg_atomic_uint32 force_dir_scan;
+-} PgArchData;
+ 
+ char	   *XLogArchiveLibrary = "";
+ char	   *arch_module_check_errdetail_string;
+@@ -103,7 +93,7 @@ char	   *arch_module_check_errdetail_string;
+  * ----------
+  */
+ static time_t last_sigterm_time = 0;
+-static PgArchData *PgArch = NULL;
++PgArchData *PgArch = NULL;
+ static const ArchiveModuleCallbacks *ArchiveCallbacks;
+ static ArchiveModuleState *archive_module_state;
+ static MemoryContext archive_context;
+@@ -180,6 +170,10 @@ PgArchShmemInit(void *arg)
+ 	MemSet(PgArch, 0, sizeof(PgArchData));
+ 	PgArch->pgprocno = INVALID_PROC_NUMBER;
+ 	pg_atomic_init_u32(&PgArch->force_dir_scan, 0);
++
++	PgArch->primary_last_archived[0] = '\0';
++
++	SpinLockInit(&PgArch->lock);
+ }
+ 
+ /*
+diff --git a/src/backend/replication/libpqwalreceiver/libpqwalreceiver.c b/src/backend/replication/libpqwalreceiver/libpqwalreceiver.c
+index 86d31c46599..e438cba1373 100644
+--- a/src/backend/replication/libpqwalreceiver/libpqwalreceiver.c
++++ b/src/backend/replication/libpqwalreceiver/libpqwalreceiver.c
+@@ -56,6 +56,7 @@ struct WalReceiverConn
+ static WalReceiverConn *libpqrcv_connect(const char *conninfo,
+ 										 bool replication, bool logical,
+ 										 bool must_use_password,
++										 bool expect_archive_reports,
+ 										 const char *appname, char **err);
+ static void libpqrcv_check_conninfo(const char *conninfo,
+ 									bool must_use_password);
+@@ -146,7 +147,7 @@ _PG_init(void)
+  */
+ static WalReceiverConn *
+ libpqrcv_connect(const char *conninfo, bool replication, bool logical,
+-				 bool must_use_password, const char *appname, char **err)
++				 bool must_use_password, bool expect_archive_reports, const char *appname, char **err)
+ {
+ 	WalReceiverConn *conn;
+ 	const char *keys[6];
+@@ -216,6 +217,12 @@ libpqrcv_connect(const char *conninfo, bool replication, bool logical,
+ 	keys[++i] = "fallback_application_name";
+ 	vals[i] = appname;
+ 
++	if (expect_archive_reports)
++	{
++		keys[++i] = "archive_status_reports";
++		vals[i] = "true";
++	}
++
+ 	keys[++i] = NULL;
+ 	vals[i] = NULL;
+ 
+diff --git a/src/backend/replication/logical/sequencesync.c b/src/backend/replication/logical/sequencesync.c
+index fe506a98c20..8e6f88354f1 100644
+--- a/src/backend/replication/logical/sequencesync.c
++++ b/src/backend/replication/logical/sequencesync.c
+@@ -806,7 +806,7 @@ LogicalRepSyncSequences(void)
+ 	 * Establish the connection to the publisher for sequence synchronization.
+ 	 */
+ 	LogRepWorkerWalRcvConn =
+-		walrcv_connect(MySubscription->conninfo, true, true,
++		walrcv_connect(MySubscription->conninfo, true, true, false,
+ 					   must_use_password,
+ 					   app_name.data, &err);
+ 	if (LogRepWorkerWalRcvConn == NULL)
+diff --git a/src/backend/replication/logical/slotsync.c b/src/backend/replication/logical/slotsync.c
+index d1936823506..be0fdddd3d0 100644
+--- a/src/backend/replication/logical/slotsync.c
++++ b/src/backend/replication/logical/slotsync.c
+@@ -1701,7 +1701,7 @@ ReplSlotSyncWorkerMain(const void *startup_data, size_t startup_data_len)
+ 	 * Establish the connection to the primary server for slot
+ 	 * synchronization.
+ 	 */
+-	wrconn = walrcv_connect(PrimaryConnInfo, false, false, false,
++	wrconn = walrcv_connect(PrimaryConnInfo, false, false, false, false,
+ 							app_name.data, &err);
+ 
+ 	if (!wrconn)
+diff --git a/src/backend/replication/logical/tablesync.c b/src/backend/replication/logical/tablesync.c
+index a04b84ebc1d..693a0c3c814 100644
+--- a/src/backend/replication/logical/tablesync.c
++++ b/src/backend/replication/logical/tablesync.c
+@@ -1306,7 +1306,7 @@ LogicalRepSyncTableStart(XLogRecPtr *origin_startpos)
+ 	 */
+ 	LogRepWorkerWalRcvConn =
+ 		walrcv_connect(MySubscription->conninfo, true, true,
+-					   must_use_password,
++					   must_use_password, false,
+ 					   slotname, &err);
+ 	if (LogRepWorkerWalRcvConn == NULL)
+ 		ereport(ERROR,
+diff --git a/src/backend/replication/logical/worker.c b/src/backend/replication/logical/worker.c
+index 0bd19074010..98c522e7390 100644
+--- a/src/backend/replication/logical/worker.c
++++ b/src/backend/replication/logical/worker.c
+@@ -5719,7 +5719,7 @@ run_apply_worker(void)
+ 		!MySubscription->ownersuperuser;
+ 
+ 	LogRepWorkerWalRcvConn = walrcv_connect(MySubscription->conninfo, true,
+-											true, must_use_password,
++											true, must_use_password, false,
+ 											MySubscription->name, &err);
+ 
+ 	if (LogRepWorkerWalRcvConn == NULL)
+diff --git a/src/backend/replication/slotfuncs.c b/src/backend/replication/slotfuncs.c
+index 16fbd383735..6fa5f2e5e2a 100644
+--- a/src/backend/replication/slotfuncs.c
++++ b/src/backend/replication/slotfuncs.c
+@@ -944,7 +944,7 @@ pg_sync_replication_slots(PG_FUNCTION_ARGS)
+ 		appendStringInfoString(&app_name, "slotsync");
+ 
+ 	/* Connect to the primary server. */
+-	wrconn = walrcv_connect(PrimaryConnInfo, false, false, false,
++	wrconn = walrcv_connect(PrimaryConnInfo, false, false, false, false,
+ 							app_name.data, &err);
+ 
+ 	if (!wrconn)
+diff --git a/src/backend/replication/walreceiver.c b/src/backend/replication/walreceiver.c
+index 429a1b2d96d..abf449a9089 100644
+--- a/src/backend/replication/walreceiver.c
++++ b/src/backend/replication/walreceiver.c
+@@ -69,6 +69,7 @@
+ #include "replication/walreceiver.h"
+ #include "replication/walsender.h"
+ #include "storage/ipc.h"
++#include "storage/fd.h"
+ #include "storage/proc.h"
+ #include "storage/procarray.h"
+ #include "storage/procsignal.h"
+@@ -76,6 +77,7 @@
+ #include "utils/acl.h"
+ #include "utils/builtins.h"
+ #include "utils/guc.h"
++#include "utils/injection_point.h"
+ #include "utils/pg_lsn.h"
+ #include "utils/ps_status.h"
+ #include "utils/timestamp.h"
+@@ -133,6 +135,17 @@ static TimestampTz wakeup[NUM_WALRCV_WAKEUPS];
+ 
+ static StringInfoData reply_message;
+ 
++static TimeLineID primary_last_archived_tli = 0;
++static XLogSegNo primary_last_archived_segno = 0;
++
++/*
++ * Last segment we successfully marked as .done. Used to optimize
++ * ProcessArchivalReport() by generating expected filenames instead
++ * of scanning the archive_status directory.
++ */
++static TimeLineID last_processed_tli = 0;
++static XLogSegNo last_processed_segno = 0;
++
+ /* Prototypes for private functions */
+ static void WalRcvFetchTimeLineHistoryFiles(TimeLineID first, TimeLineID last);
+ static void WalRcvWaitForStartPosition(XLogRecPtr *startpoint, TimeLineID *startpointTLI);
+@@ -146,6 +159,7 @@ static void XLogWalRcvClose(XLogRecPtr recptr, TimeLineID tli);
+ static void XLogWalRcvSendReply(bool force, bool requestReply, bool checkApply);
+ static void XLogWalRcvSendHSFeedback(bool immed);
+ static void ProcessWalSndrMessage(XLogRecPtr walEnd, TimestampTz sendTime);
++static void ProcessArchivalReport(const char *primary_last_archived);
+ static void WalRcvComputeNextWakeup(WalRcvWakeupReason reason, TimestampTz now);
+ 
+ 
+@@ -283,7 +297,7 @@ WalReceiverMain(const void *startup_data, size_t startup_data_len)
+ 
+ 	/* Establish the connection to the primary for XLOG streaming */
+ 	appname = cluster_name[0] ? cluster_name : "walreceiver";
+-	wrconn = walrcv_connect(conninfo, true, false, false, appname, &err);
++	wrconn = walrcv_connect(conninfo, true, false, false, XLogArchiveMode == ARCHIVE_MODE_SHARED, appname, &err);
+ 	if (!wrconn)
+ 		ereport(ERROR,
+ 				(errcode(ERRCODE_CONNECTION_FAILURE),
+@@ -846,6 +860,7 @@ XLogWalRcvProcessMsg(unsigned char type, char *buf, Size len, TimeLineID tli)
+ 	XLogRecPtr	walEnd;
+ 	TimestampTz sendTime;
+ 	bool		replyRequested;
++	char		primary_last_archived[MAX_XFN_CHARS + 1];
+ 
+ 	switch (type)
+ 	{
+@@ -898,6 +913,33 @@ XLogWalRcvProcessMsg(unsigned char type, char *buf, Size len, TimeLineID tli)
+ 					XLogWalRcvSendReply(true, false, false);
+ 				break;
+ 			}
++		case PqReplMsg_ArchiveStatusReport:
++			{
++				/* Check that the filename looks valid */
++				if (len >= sizeof(primary_last_archived))
++					ereport(ERROR,
++							(errcode(ERRCODE_PROTOCOL_VIOLATION),
++							 errmsg_internal("invalid archival report message with length %d, expected at most %zu",
++											 (int) len, sizeof(primary_last_archived))));
++
++				memcpy(primary_last_archived, buf, len);
++				primary_last_archived[len] = '\0';
++
++				/* Verify it contains only valid characters */
++				if (!IsXLogFileName(primary_last_archived))
++					ereport(ERROR,
++							 errcode(ERRCODE_PROTOCOL_VIOLATION),
++							 errmsg_internal("unexpected character in primary's last archived filename"));
++
++				SpinLockAcquire(&PgArch->lock);
++				memcpy(PgArch->primary_last_archived, primary_last_archived, sizeof(PgArch->primary_last_archived));
++				SpinLockRelease(&PgArch->lock);
++
++				INJECTION_POINT("walreceiver-after-primary-last-archived", NULL);
++
++				ProcessArchivalReport(primary_last_archived);
++				break;
++			}
+ 		default:
+ 			ereport(ERROR,
+ 					(errcode(ERRCODE_PROTOCOL_VIOLATION),
+@@ -1100,12 +1142,45 @@ XLogWalRcvClose(XLogRecPtr recptr, TimeLineID tli)
+ 
+ 	/*
+ 	 * Create .done file forcibly to prevent the streamed segment from being
+-	 * archived later.
++	 * archived later, unless archive_mode is 'always' or 'shared'.
++	 *
++	 * In 'always' mode, the standby archives independently.
++	 *
++	 * In 'shared' mode, we optimize by checking if this segment is already
++	 * covered by the last archival report from the primary. If so, create
++	 * .done directly. Otherwise, create .ready and wait for the next report.
+ 	 */
+-	if (XLogArchiveMode != ARCHIVE_MODE_ALWAYS)
+-		XLogArchiveForceDone(xlogfname);
+-	else
++	if (XLogArchiveMode == ARCHIVE_MODE_ALWAYS)
++	{
+ 		XLogArchiveNotify(xlogfname);
++	}
++	else if (XLogArchiveMode == ARCHIVE_MODE_SHARED)
++	{
++		/*
++		 * In shared mode, check if this segment is already archived on primary.
++		 * If we're on the same timeline and this segment is <= last archived,
++		 * mark it .done immediately. Otherwise create .ready.
++		 *
++		 * We don't check ancestor timeline cases here to avoid reading timeline
++		 * history files on every segment close. ProcessArchivalReport() will
++		 * handle marking ancestor timeline segments as .done when it scans
++		 * the archive_status directory.
++		 */
++		if (primary_last_archived_tli == recvFileTLI &&
++			recvSegNo <= primary_last_archived_segno)
++		{
++			XLogArchiveForceDone(xlogfname);
++			INJECTION_POINT("walreceiver-after-force-done", NULL);
++		}
++		else
++		{
++			XLogArchiveNotify(xlogfname);
++		}
++	}
++	else
++	{
++		XLogArchiveForceDone(xlogfname);
++	}
+ 
+ 	recvFile = -1;
+ }
+@@ -1296,6 +1371,182 @@ XLogWalRcvSendHSFeedback(bool immed)
+ 		primary_has_standby_xmin = false;
+ }
+ 
++/*
++ * Process archival report from primary.
++ *
++ * The primary sends us the last WAL segment it has archived. We scan the
++ * archive_status directory for .ready files and mark segments on the same
++ * timeline as .done if they're <= the reported segment.
++ */
++static void
++ProcessArchivalReport(const char *primary_last_archived)
++{
++	TimeLineID	reported_tli;
++	XLogSegNo	reported_segno;
++	char		status_path[MAXPGPATH];
++	bool		use_direct_check = false;
++	XLogSegNo	start_segno;
++
++	elog(DEBUG2, "received archival report from primary: %s",
++		 primary_last_archived);
++
++	XLogFromFileName(primary_last_archived, &reported_tli, &reported_segno,
++					 wal_segment_size);
++
++	/* Remember the last archived segment for XLogWalRcvClose() */
++	primary_last_archived_tli = reported_tli;
++	primary_last_archived_segno = reported_segno;
++
++	/*
++	 * Optimization: If the new report is on the same timeline as the last
++	 * processed segment and moves forward, we can directly check for .ready
++	 * files for segments between last_processed_segno and reported_segno
++	 * instead of scanning the entire archive_status directory.
++	 *
++	 * Fall back to directory scan if:
++	 * - Timeline changed (need to handle ancestor timelines)
++	 * - This is the first report (last_processed_tli == 0)
++	 * - Reported segment is not ahead (nothing new to process)
++	 */
++	if (last_processed_tli == reported_tli &&
++		last_processed_tli != 0 &&
++		reported_segno > last_processed_segno)
++	{
++		use_direct_check = true;
++		start_segno = last_processed_segno + 1;
++	}
++
++	if (use_direct_check)
++	{
++		/*
++		 * Direct check: generate filenames for expected segments.
++		 * XLogArchiveForceDone() will handle the case where .ready doesn't
++		 * exist or .done already exists, so no need to stat() first.
++		 */
++		XLogSegNo	segno;
++
++		for (segno = start_segno; segno <= reported_segno; segno++)
++		{
++			char		walfile[MAXFNAMELEN];
++
++			/* Generate WAL filename and mark as archived */
++			XLogFileName(walfile, reported_tli, segno, wal_segment_size);
++			XLogArchiveForceDone(walfile);
++			elog(DEBUG3, "marked WAL segment %s as archived (primary archived up to %s)",
++				 walfile, primary_last_archived);
++
++			/* Track the last segment we processed */
++			last_processed_tli = reported_tli;
++			last_processed_segno = segno;
++		}
++	}
++	else
++	{
++		/*
++		 * Directory scan: needed when timeline changed or first report.
++		 * This handles both same-timeline and ancestor-timeline cases.
++		 */
++		DIR		   *status_dir;
++		struct dirent *status_de;
++		List	   *tli_history = NIL;
++
++		snprintf(status_path, MAXPGPATH, XLOGDIR "/archive_status");
++		status_dir = AllocateDir(status_path);
++		if (status_dir == NULL)
++		{
++			elog(DEBUG2, "could not open archive_status directory: %m");
++			return;
++		}
++
++		while ((status_de = ReadDir(status_dir, status_path)) != NULL)
++		{
++			char	   *ready_suffix;
++			char		walfile[MAXPGPATH];
++			size_t		namelen;
++			TimeLineID	file_tli;
++			XLogSegNo	file_segno;
++
++			/* Look for .ready files only */
++			ready_suffix = strstr(status_de->d_name, ".ready");
++			if (ready_suffix == NULL || ready_suffix[6] != '\0')
++				continue;
++
++			/* Extract WAL filename (remove .ready suffix) */
++			namelen = ready_suffix - status_de->d_name;
++			memcpy(walfile, status_de->d_name, namelen);
++			walfile[namelen] = '\0';
++
++			/* Parse the WAL filename */
++			if (!IsXLogFileName(walfile))
++				continue;
++
++			XLogFromFileName(walfile, &file_tli, &file_segno, wal_segment_size);
++
++			/*
++			 * Mark as .done if:
++			 * 1. Same timeline and segment <= reported segment, OR
++			 * 2. Ancestor timeline and segment is before the timeline switch point
++			 *
++			 * For ancestor timelines: if primary archived segment X on timeline T,
++			 * then all segments on ancestor timelines before the switch to T must
++			 * have been archived (they're required to reach timeline T).
++			 */
++			if (file_tli == reported_tli && file_segno <= reported_segno)
++			{
++				/* Same timeline, segment already archived */
++				XLogArchiveForceDone(walfile);
++				elog(DEBUG3, "marked WAL segment %s as archived (primary archived up to %s)",
++					 walfile, primary_last_archived);
++			}
++			else if (file_tli != reported_tli)
++			{
++				/*
++				 * Different timeline - check if it's an ancestor and if this
++				 * segment is before the timeline switch point. Only read timeline
++				 * history if we haven't already (lazy loading).
++				 *
++				 * Note: Timelines form a tree structure, not a linear sequence,
++				 * so we can't use < or > to compare them.
++				 */
++				if (tli_history == NIL)
++					tli_history = readTimeLineHistory(reported_tli);
++
++				if (tliInHistory(file_tli, tli_history))
++				{
++					XLogRecPtr	switchpoint;
++					XLogSegNo	switchpoint_segno;
++
++					/* Get the point where we switched away from this timeline */
++					switchpoint = tliSwitchPoint(file_tli, tli_history, NULL);
++
++					/*
++					 * If the segment is at or before the switch point, it must have
++					 * been archived (it's required to reach the reported timeline).
++					 * The segment containing the switch point belongs to the old
++					 * timeline up to the switch point and should be archived.
++					 */
++					XLByteToSeg(switchpoint, switchpoint_segno, wal_segment_size);
++					if (file_segno <= switchpoint_segno)
++					{
++						XLogArchiveForceDone(walfile);
++						elog(DEBUG3, "marked ancestor timeline segment %s as archived (before switch to timeline %u)",
++							 walfile, reported_tli);
++					}
++				}
++			}
++		}
++
++		FreeDir(status_dir);
++
++		/*
++		 * After a full directory scan following a timeline change, update
++		 * our tracking to the newly reported position for future optimizations.
++		 */
++		last_processed_tli = reported_tli;
++		last_processed_segno = reported_segno;
++	}
++}
++
+ /*
+  * Update shared memory status upon receiving a message from primary.
+  *
+diff --git a/src/backend/replication/walsender.c b/src/backend/replication/walsender.c
+index 35ebc7e61c8..bfe43ef6214 100644
+--- a/src/backend/replication/walsender.c
++++ b/src/backend/replication/walsender.c
+@@ -135,6 +135,7 @@ WalSnd	   *MyWalSnd = NULL;
+ bool		am_walsender = false;	/* Am I a walsender process? */
+ bool		am_cascading_walsender = false; /* Am I cascading WAL to another
+ 											 * standby? */
++bool		am_archive_status_walsender = false; /* Am I replying with archive status reports? */
+ bool		am_db_walsender = false;	/* Connected to a database? */
+ 
+ /* GUC variables */
+@@ -216,6 +217,14 @@ static TimestampTz shutdown_request_timestamp = 0;
+  */
+ static bool shutdown_stream_done_queued = false;
+ 
++/*
++ * Last archived WAL file. This is fetched from pgstat periodically and sent
++ * to the standby. last_archival_report_timestamp tracks when we last sent
++ * the report to avoid excessive pgstat access.
++ */
++static char last_archived_report_wal[MAX_XFN_CHARS + 1];
++static TimestampTz last_archival_report_timestamp = 0;
++
+ /*
+  * While streaming WAL in Copy mode, streamingDoneSending is set to true
+  * after we have sent CopyDone. We should not send any more CopyData messages
+@@ -304,6 +313,7 @@ static void ProcessStandbyMessage(void);
+ static void ProcessStandbyReplyMessage(void);
+ static void ProcessStandbyHSFeedbackMessage(void);
+ static void ProcessStandbyPSRequestMessage(void);
++static void WalSndArchivalReport(void);
+ static void ProcessRepliesIfAny(void);
+ static void ProcessPendingWrites(void);
+ static void WalSndKeepalive(bool requestReply, XLogRecPtr writePtr);
+@@ -2844,6 +2854,101 @@ ProcessStandbyHSFeedbackMessage(void)
+ 	}
+ }
+ 
++/*
++ * Send archival status report to standby.
++ *
++ * This is called periodically during physical replication to inform the
++ * standby about the last WAL segment archived by the primary. The standby
++ * can then mark segments up to that point as .done, allowing them to be
++ * recycled. This prevents WAL loss during standby promotion.
++ */
++static void
++WalSndArchivalReport(void)
++{
++	PgStat_ArchiverStats *archiver_stats;
++	TimestampTz now;
++	char		last_archived[MAX_XFN_CHARS + 1];
++
++	/* Only send reports when requested */
++	if (!am_archive_status_walsender)
++		return;
++
++	if (MyWalSnd->state != WALSNDSTATE_CATCHUP &&
++		MyWalSnd->state != WALSNDSTATE_STREAMING)
++		return;
++
++	/*
++	 * Don't send to temporary replication slots (used by pg_basebackup).
++	 * Connections without slots (regular standbys) are OK.
++	 */
++	if (MyReplicationSlot != NULL &&
++		MyReplicationSlot->data.persistency == RS_TEMPORARY)
++		return;
++
++	now = GetCurrentTimestamp();
++
++	/*
++	 * Send report at most once per configured interval.
++	 * This avoids excessive pgstat access.
++	 */
++	if (now < TimestampTzPlusMilliseconds(last_archival_report_timestamp,
++										  XLogArchiveStatusReportInterval))
++		return;
++
++	last_archival_report_timestamp = now;
++
++	/* In recovery, simply relay received message downstream. */
++	if (RecoveryInProgress())
++	{
++		SpinLockAcquire(&PgArch->lock);
++		if (PgArch->primary_last_archived[0] == '\0')
++		{
++			SpinLockRelease(&PgArch->lock);
++			return;
++		}
++		memcpy(last_archived, PgArch->primary_last_archived, sizeof(last_archived));
++		SpinLockRelease(&PgArch->lock);
++	}
++	else
++	{
++		/*
++		* Get archiver statistics.  The pgstat snapshot is cached per-session and
++		* is only invalidated at transaction boundaries.  The walsender runs
++		* without transaction boundaries, so we must clear the snapshot explicitly
++		* to avoid reading stale data (e.g. last_archived_wal stuck at its initial
++		* empty value even after the archiver has archived new segments).
++		*/
++		pgstat_clear_snapshot();
++		archiver_stats = pgstat_fetch_stat_archiver();
++		if (archiver_stats == NULL)
++			return;
++
++		memcpy(last_archived, archiver_stats->last_archived_wal, sizeof(last_archived));
++	}
++	/*
++	 * Only send a report if the last archived WAL has changed. This is both
++	 * an optimization and ensures we don't send empty reports on startup.
++	 */
++	if (strcmp(last_archived, last_archived_report_wal) == 0)
++		return;
++
++	/* Only send reports for WAL segments, not backup history files or other archived files */
++	if (!IsXLogFileName(last_archived))
++		return;
++
++	elog(DEBUG2, "sending archival report: %s", last_archived);
++
++	/* Remember what we sent */
++	strlcpy(last_archived_report_wal, last_archived, sizeof(last_archived_report_wal));
++
++	/* Construct the message... */
++	resetStringInfo(&output_message);
++	pq_sendbyte(&output_message, PqReplMsg_ArchiveStatusReport);
++	pq_sendbytes(&output_message, last_archived, strlen(last_archived));
++	/* ... and send it wrapped in CopyData */
++	pq_putmessage_noblock(PqMsg_CopyData, output_message.data, output_message.len);
++}
++
+ /*
+  * Process the request for a primary status update message.
+  */
+@@ -4467,6 +4572,9 @@ WalSndKeepaliveIfNecessary(void)
+ 		if (pq_flush_if_writable() != 0)
+ 			WalSndShutdown();
+ 	}
++
++	/* Send archival status report if needed */
++	WalSndArchivalReport();
+ }
+ 
+ /*
+diff --git a/src/backend/tcop/backend_startup.c b/src/backend/tcop/backend_startup.c
+index 25205cee0fa..6df50d3c98f 100644
+--- a/src/backend/tcop/backend_startup.c
++++ b/src/backend/tcop/backend_startup.c
+@@ -803,6 +803,16 @@ retry:
+ 									valptr),
+ 							 errhint("Valid values are: \"false\", 0, \"true\", 1, \"database\".")));
+ 			}
++			else if (strcmp(nameptr, "archive_status_reports") == 0)
++			{
++				if (!parse_bool(valptr, &am_archive_status_walsender))
++					ereport(FATAL,
++							 errcode(ERRCODE_INVALID_PARAMETER_VALUE),
++							 errmsg("invalid value for parameter \"%s\": \"%s\"",
++									"archive_status_reports",
++									valptr),
++							 errhint("Valid values are: \"false\", 0, \"true\", 1."));
++			}
+ 			else if (strncmp(nameptr, "_pq_.", 5) == 0)
+ 			{
+ 				/*
+diff --git a/src/backend/utils/misc/guc_parameters.dat b/src/backend/utils/misc/guc_parameters.dat
+index adb72361ce0..949f73d7a4d 100644
+--- a/src/backend/utils/misc/guc_parameters.dat
++++ b/src/backend/utils/misc/guc_parameters.dat
+@@ -95,6 +95,15 @@
+   options => 'archive_mode_options',
+ },
+ 
++{ name => 'archive_status_report_interval', type => 'int', context => 'PGC_SIGHUP', group => 'WAL_ARCHIVING',
++  short_desc => 'Sets the amount of time between consecutive WAL archive status reports.',
++  flags => 'GUC_UNIT_MS',
++  variable => 'XLogArchiveStatusReportInterval',
++  boot_val => '10000',
++  min => '10',
++  max => 'INT_MAX / 2',
++},
++
+ { name => 'archive_timeout', type => 'int', context => 'PGC_SIGHUP', group => 'WAL_ARCHIVING',
+   short_desc => 'Sets the amount of time to wait before forcing a switch to the next WAL file.',
+   long_desc => '0 disables the timeout.',
+diff --git a/src/backend/utils/misc/postgresql.conf.sample b/src/backend/utils/misc/postgresql.conf.sample
+index 7958653077b..5715d36b260 100644
+--- a/src/backend/utils/misc/postgresql.conf.sample
++++ b/src/backend/utils/misc/postgresql.conf.sample
+@@ -291,8 +291,12 @@
+ 
+ # - Archiving -
+ 
+-#archive_mode = off             # enables archiving; off, on, or always
++#archive_mode = off             # enables archiving; off, on, always or shared
+                                 # (change requires restart)
++
++#archive_status_report_interval = 10s # configures archive status reports frequency in
++                                    # shared archive mode
++
+ #archive_library = ''           # library to use to archive a WAL file
+                                 # (empty string indicates archive_command should
+                                 # be used)
+diff --git a/src/include/access/xlog.h b/src/include/access/xlog.h
+index 4dd98624204..2aeb8ce14b5 100644
+--- a/src/include/access/xlog.h
++++ b/src/include/access/xlog.h
+@@ -42,6 +42,7 @@ extern PGDLLIMPORT int wal_keep_size_mb;
+ extern PGDLLIMPORT int max_slot_wal_keep_size_mb;
+ extern PGDLLIMPORT int XLOGbuffers;
+ extern PGDLLIMPORT int XLogArchiveTimeout;
++extern PGDLLIMPORT int XLogArchiveStatusReportInterval;
+ extern PGDLLIMPORT int wal_retrieve_retry_interval;
+ extern PGDLLIMPORT char *XLogArchiveCommand;
+ extern PGDLLIMPORT bool EnableHotStandby;
+@@ -67,6 +68,7 @@ typedef enum ArchiveMode
+ 	ARCHIVE_MODE_OFF = 0,		/* disabled */
+ 	ARCHIVE_MODE_ON,			/* enabled while server is running normally */
+ 	ARCHIVE_MODE_ALWAYS,		/* enabled always (even during recovery) */
++	ARCHIVE_MODE_SHARED,		/* shared archive between primary and standby */
+ } ArchiveMode;
+ extern PGDLLIMPORT int XLogArchiveMode;
+ 
+diff --git a/src/include/libpq/protocol.h b/src/include/libpq/protocol.h
+index eae8f0e7238..d22aaf9e225 100644
+--- a/src/include/libpq/protocol.h
++++ b/src/include/libpq/protocol.h
+@@ -72,6 +72,7 @@
+ 
+ /* Replication codes sent by the primary (wrapped in CopyData messages). */
+ 
++#define PqReplMsg_ArchiveStatusReport 'a'
+ #define PqReplMsg_Keepalive			'k'
+ #define PqReplMsg_PrimaryStatusUpdate 's'
+ #define PqReplMsg_WALData			'w'
+diff --git a/src/include/postmaster/pgarch.h b/src/include/postmaster/pgarch.h
+index 9772bb573a1..1d8571fc5a5 100644
+--- a/src/include/postmaster/pgarch.h
++++ b/src/include/postmaster/pgarch.h
+@@ -13,6 +13,9 @@
+ #ifndef _PGARCH_H
+ #define _PGARCH_H
+ 
++#include "port/atomics.h"
++#include "storage/spin.h"
++
+ /* ----------
+  * Archiver control info.
+  *
+@@ -31,4 +34,25 @@ pg_noreturn extern void PgArchiverMain(const void *startup_data, size_t startup_
+ extern void PgArchWakeup(void);
+ extern void PgArchForceDirScan(void);
+ 
++/* Shared memory area for archiver process */
++typedef struct PgArchData
++{
++	int			pgprocno;		/* proc number of archiver process */
++
++	/* Lock to protect the `primary_last_archived`. */
++	slock_t		lock;
++
++	/* Last archived WAL segment file reported by the primary */
++	char primary_last_archived[MAX_XFN_CHARS + 1];
++
++	/*
++	 * Forces a directory scan in pgarch_readyXlog().
++	 */
++	pg_atomic_uint32 force_dir_scan;
++} PgArchData;
++
++
++extern PgArchData *PgArch;
++
++
+ #endif							/* _PGARCH_H */
+diff --git a/src/include/replication/walreceiver.h b/src/include/replication/walreceiver.h
+index 760364e3587..0e5459d3ac4 100644
+--- a/src/include/replication/walreceiver.h
++++ b/src/include/replication/walreceiver.h
+@@ -244,6 +244,7 @@ typedef WalReceiverConn *(*walrcv_connect_fn) (const char *conninfo,
+ 											   bool replication,
+ 											   bool logical,
+ 											   bool must_use_password,
++											   bool expect_archive_reports,
+ 											   const char *appname,
+ 											   char **err);
+ 
+@@ -433,8 +434,8 @@ typedef struct WalReceiverFunctionsType
+ 
+ extern PGDLLIMPORT WalReceiverFunctionsType *WalReceiverFunctions;
+ 
+-#define walrcv_connect(conninfo, replication, logical, must_use_password, appname, err) \
+-	WalReceiverFunctions->walrcv_connect(conninfo, replication, logical, must_use_password, appname, err)
++#define walrcv_connect(conninfo, replication, logical, must_use_password, expect_archive_reports, appname, err) \
++	WalReceiverFunctions->walrcv_connect(conninfo, replication, logical, must_use_password, expect_archive_reports, appname, err)
+ #define walrcv_check_conninfo(conninfo, must_use_password) \
+ 	WalReceiverFunctions->walrcv_check_conninfo(conninfo, must_use_password)
+ #define walrcv_get_conninfo(conn) \
+diff --git a/src/include/replication/walsender.h b/src/include/replication/walsender.h
+index 386cedfc7aa..f2fbada75db 100644
+--- a/src/include/replication/walsender.h
++++ b/src/include/replication/walsender.h
+@@ -27,6 +27,7 @@ typedef enum
+ /* global state */
+ extern PGDLLIMPORT bool am_walsender;
+ extern PGDLLIMPORT bool am_cascading_walsender;
++extern PGDLLIMPORT bool am_archive_status_walsender;
+ extern PGDLLIMPORT bool am_db_walsender;
+ extern PGDLLIMPORT bool wake_wal_senders;
+ 
+diff --git a/src/interfaces/libpq/fe-connect.c b/src/interfaces/libpq/fe-connect.c
+index 17c2288e9bc..9b1929fc395 100644
+--- a/src/interfaces/libpq/fe-connect.c
++++ b/src/interfaces/libpq/fe-connect.c
+@@ -380,6 +380,10 @@ static const internalPQconninfoOption PQconninfoOptions[] = {
+ 		"Replication", "D", 5,
+ 	offsetof(struct pg_conn, replication)},
+ 
++	{"archive_status_reports", NULL, NULL, NULL,
++		"Replication", "D", 5,
++	offsetof(struct pg_conn, archive_status_reports)},
++
+ 	{"target_session_attrs", "PGTARGETSESSIONATTRS",
+ 		DefaultTargetSessionAttrs, NULL,
+ 		"Target-Session-Attrs", "", 15, /* sizeof("prefer-standby") = 15 */
+@@ -5118,6 +5122,7 @@ freePGconn(PGconn *conn)
+ 	free(conn->fbappname);
+ 	free(conn->dbName);
+ 	free(conn->replication);
++	free(conn->archive_status_reports);
+ 	free(conn->pgservice);
+ 	free(conn->pgservicefile);
+ 	free(conn->pguser);
+diff --git a/src/interfaces/libpq/fe-protocol3.c b/src/interfaces/libpq/fe-protocol3.c
+index 9d6a285fb28..ed7a3f6b9dd 100644
+--- a/src/interfaces/libpq/fe-protocol3.c
++++ b/src/interfaces/libpq/fe-protocol3.c
+@@ -2513,6 +2513,8 @@ build_startup_packet(const PGconn *conn, char *packet,
+ 		ADD_STARTUP_OPTION("database", conn->dbName);
+ 	if (conn->replication && conn->replication[0])
+ 		ADD_STARTUP_OPTION("replication", conn->replication);
++	if (conn->archive_status_reports && conn->archive_status_reports[0])
++		ADD_STARTUP_OPTION("archive_status_reports", conn->archive_status_reports);
+ 	if (conn->pgoptions && conn->pgoptions[0])
+ 		ADD_STARTUP_OPTION("options", conn->pgoptions);
+ 	if (conn->send_appname)
+diff --git a/src/interfaces/libpq/libpq-int.h b/src/interfaces/libpq/libpq-int.h
+index 3f921207a14..8115db5e332 100644
+--- a/src/interfaces/libpq/libpq-int.h
++++ b/src/interfaces/libpq/libpq-int.h
+@@ -391,6 +391,7 @@ struct pg_conn
+ 	char	   *fbappname;		/* fallback application name */
+ 	char	   *dbName;			/* database name */
+ 	char	   *replication;	/* connect as the replication standby? */
++	char	   *archive_status_reports;	/* do we send primary last archived WAL to the standby? */
+ 	char	   *pgservice;		/* Postgres service, if any */
+ 	char	   *pgservicefile;	/* path to a service file containing
+ 								 * service(s) */
+diff --git a/src/test/recovery/meson.build b/src/test/recovery/meson.build
+index ad0d85f4189..7e0c6ba67cc 100644
+--- a/src/test/recovery/meson.build
++++ b/src/test/recovery/meson.build
+@@ -63,6 +63,8 @@ tests += {
+       't/052_checkpoint_segment_missing.pl',
+       't/053_standby_login_event_trigger.pl',
+       't/054_unlogged_sequence_promotion.pl',
++      't/055_archive_shared.pl',
++      't/056_archive_shared_checkpoint.pl',
+     ],
+   },
+ }
+diff --git a/src/test/recovery/t/055_archive_shared.pl b/src/test/recovery/t/055_archive_shared.pl
+new file mode 100644
+index 00000000000..106065e0f68
+--- /dev/null
++++ b/src/test/recovery/t/055_archive_shared.pl
+@@ -0,0 +1,260 @@
++# Copyright (c) 2026, PostgreSQL Global Development Group
++
++# Test archive_mode=shared for coordinated WAL archiving between primary and standby
++use strict;
++use warnings FATAL => 'all';
++use PostgreSQL::Test::Cluster;
++use PostgreSQL::Test::Utils;
++use Test::More;
++use File::Path qw(rmtree);
++
++if ($ENV{enable_injection_points} ne 'yes')
++{
++	plan skip_all => 'Injection points not supported by this build';
++}
++
++
++# Helper: Wait for a session to hit an injection point.
++# Optional second argument is timeout in seconds.
++# Returns true if found, false if timeout.
++# On timeout, logs diagnostic information about all active queries.
++sub wait_for_injection_point
++{
++	my ($node, $point_name, $timeout) = @_;
++	$timeout //= $PostgreSQL::Test::Utils::timeout_default / 2;
++
++	for (my $elapsed = 0; $elapsed < $timeout * 10; $elapsed++)
++	{
++		my $pid = $node->safe_psql(
++			'postgres', qq[
++			SELECT pid FROM pg_stat_activity
++			WHERE wait_event_type = 'InjectionPoint'
++			  AND wait_event = '$point_name'
++			LIMIT 1;
++		]);
++		return 1 if $pid ne '';
++		sleep(1);
++	}
++
++	# Timeout - report diagnostic information
++	my $activity = $node->safe_psql(
++		'postgres', q[
++		SELECT format('pid=%s, state=%s, wait_event_type=%s, wait_event=%s, backend_xmin=%s, backend_xid=%s, query=%s',
++			pid, state, wait_event_type, wait_event, backend_xmin, backend_xid, left(query, 100))
++		FROM pg_stat_activity
++		ORDER BY pid;
++	]);
++	diag(   "wait_for_injection_point timeout waiting for: $point_name\n"
++		  . "Current queries in pg_stat_activity:\n$activity");
++
++	return 0;
++}
++
++# Initialize primary node with archiving
++my $archive_dir = PostgreSQL::Test::Utils::tempdir();
++my $primary = PostgreSQL::Test::Cluster->new('primary');
++$primary->init(has_archiving => 1, allows_streaming => 1);
++
++my $archive_command =
++  $PostgreSQL::Test::Utils::windows_os
++  ? qq{copy "%p" "$archive_dir\\%f"}
++  : qq{cp "%p" "$archive_dir/%f"};
++
++$primary->append_conf('postgresql.conf', "
++archive_mode = shared
++archive_status_report_interval = 10ms
++archive_command = '$archive_command'
++wal_keep_size = 128MB
++");
++$primary->start;
++
++###############################################################################
++# Test 1: Basic testing
++###############################################################################
++
++# Check if the extension injection_points is available, as it may be
++# possible that this script is run with installcheck, where the module
++# would not be installed by default.
++if (!$primary->check_extension('injection_points'))
++{
++	plan skip_all => 'Extension injection_points not installed';
++}
++
++$primary->safe_psql('postgres', q(CREATE EXTENSION injection_points));
++
++# Ensure WAL activity exists in the current segment before switching.
++# pg_switch_wal() is a no-op when called at the very start of a segment,
++# so we write a bump transaction counter
++# first to guarantee there is WAL to switch away from.
++$primary->safe_psql('postgres', "SELECT txid_current();SELECT pg_switch_wal();");
++
++# Wait for archiver to archive segments
++$primary->poll_query_until('postgres',
++	"SELECT archived_count > 0 FROM pg_stat_archiver")
++	or die "Timed out waiting for archiver to complete archiving";
++
++my $archived_count = () = glob("$archive_dir/*");
++ok($archived_count > 0, "primary has archived WAL files to shared archive");
++note("Primary archived $archived_count files");
++
++# Take backup for standby
++my $backup_name = 'standby_backup';
++$primary->backup($backup_name);
++
++# Exclude possible race condition when backup WAL is last archived
++$primary->safe_psql('postgres', "SELECT txid_current();SELECT pg_switch_wal();");
++
++# Set up standby with archive_mode=shared
++my $standby = PostgreSQL::Test::Cluster->new('standby');
++$standby->init_from_backup($primary, $backup_name, has_streaming => 1);
++$standby->append_conf('postgresql.conf', "
++archive_mode = shared
++archive_status_report_interval = 10ms
++archive_command = '$archive_command'
++wal_receiver_status_interval = 1s
++");
++$standby->start;
++
++# Pause the standby's archiver so it stays idle during recovery.
++$standby->safe_psql('postgres',
++	q{SELECT injection_points_attach('pgarch-main-loop', 'wait')});
++
++# Wait for standby to catch up
++$primary->wait_for_catchup($standby);
++
++# Generate more WAL on primary (these are new segments not yet archived)
++$primary->safe_psql('postgres', "SELECT txid_current();SELECT pg_switch_wal();");
++
++# Wait for standby to receive the new WAL
++$primary->wait_for_catchup($standby);
++
++# Check that standby has .ready or .done files for the newly received segments.
++# Normally they should be .ready (not yet archived by primary), but in rare cases
++# the archiver could be very fast and an archive report sent immediately, creating
++# .done files instead. Both are correct behavior - the key is that files exist.
++my $standby_archive_status = $standby->data_dir . '/pg_wal/archive_status';
++my $status_count = 0;
++if (opendir(my $dh, $standby_archive_status))
++{
++	my @files = grep { /\.(ready|done)$/ } readdir($dh);
++	$status_count = scalar(@files);
++	my $ready_count = scalar(grep { /\.ready$/ } @files);
++	my $done_count = scalar(grep { /\.done$/ } @files);
++	note("Standby has $ready_count .ready files and $done_count .done files");
++	closedir($dh);
++}
++cmp_ok($status_count, '>', 0, "standby creates archive status files for received WAL");
++
++# Generate more WAL and wait for archiving on primary
++my $initial_archived = $primary->safe_psql('postgres', 'SELECT archived_count FROM pg_stat_archiver');
++my $primary_last_archived = $primary->safe_psql('postgres',
++	q{SELECT pg_walfile_name(pg_current_wal_lsn())});
++
++$standby->safe_psql('postgres',
++	q{SELECT injection_points_attach('walreceiver-after-primary-last-archived', 'wait')});
++
++$primary->safe_psql('postgres', "SELECT txid_current();SELECT pg_switch_wal();");
++
++# Wait for primary to archive the new segments
++$primary->poll_query_until('postgres',
++	"SELECT archived_count > $initial_archived FROM pg_stat_archiver")
++	or die "Timed out waiting for primary to archive new segments";
++
++$standby->safe_psql('postgres',
++	q{SELECT injection_points_attach('walreceiver-after-force-done', 'wait')});
++
++$standby->safe_psql(
++	'postgres', qq[
++SELECT injection_points_detach('walreceiver-after-primary-last-archived');
++SELECT injection_points_wakeup('walreceiver-after-primary-last-archived');
++]);
++
++wait_for_injection_point($standby, 'walreceiver-after-force-done');
++
++$standby->safe_psql(
++	'postgres', qq[
++SELECT injection_points_detach('walreceiver-after-force-done');
++SELECT injection_points_wakeup('walreceiver-after-force-done');
++]);
++
++# Wait for standby to catch up (archive status is sent during replication)
++$primary->wait_for_catchup($standby);
++
++# Wait for primary to send archival status updates and standby to process them
++# The standby should mark segments as .done after receiving archive status from primary
++my $done_count = 0;
++if (opendir(my $dh, $standby_archive_status))
++{
++	$done_count = scalar(grep { /\.done$/ } readdir($dh));
++	closedir($dh);
++}
++
++ok($done_count > 0, "standby marked segments as .done after primary's archival report");
++note("Standby has $done_count .done files");
++
++# The primary_last_archived done status for WAL file itself must also be present.
++ok(-f "$standby_archive_status/$primary_last_archived.done",
++	"WAL segment $primary_last_archived done file exists in standby pg_wal/archive_status");
++
++###############################################################################
++# Test 2: Cascading replication
++###############################################################################
++
++# Take a backup from the promoted standby (now the new primary)
++my $promoted_backup = 'promoted_backup';
++$standby->backup($promoted_backup);
++
++# Set up second-level standby (cascading from first standby, now promoted)
++my $cascade_standby = PostgreSQL::Test::Cluster->new('cascade_standby');
++$cascade_standby->init_from_backup($standby, $promoted_backup, has_streaming => 1);
++$cascade_standby->append_conf('postgresql.conf', "
++archive_mode = shared
++archive_status_report_interval = 10ms
++archive_command = '$archive_command'
++wal_receiver_status_interval = 1s
++");
++$cascade_standby->start;
++
++# Generate WAL
++my $cascading_archived_before = $primary->safe_psql('postgres', 'SELECT archived_count FROM pg_stat_archiver');
++
++my $current_walfile = $primary->safe_psql('postgres', "SELECT pg_walfile_name(pg_current_wal_lsn());");
++
++$primary->safe_psql(
++	'postgres', q{
++	CHECKPOINT;
++	SELECT pg_switch_wal();
++});
++
++my $walfile_ready = "pg_wal/archive_status/$current_walfile.ready";
++my $walfile_done = "pg_wal/archive_status/$current_walfile.done";
++
++# Wait for the primary to send archive status
++$primary->poll_query_until('postgres',
++	"SELECT archived_count > $cascading_archived_before FROM pg_stat_archiver")
++	or die "Timed out waiting for primary to archive segment in cascading test";
++
++# Wait for cascading standby to catch up
++$standby->wait_for_catchup($cascade_standby);
++
++my $cascade_data = $cascade_standby->data_dir;
++my $cascade_standby_archive_status = $cascade_standby->data_dir . '/pg_wal/archive_status';
++
++for (my $i = 0; $i < $PostgreSQL::Test::Utils::timeout_default; $i++)
++{
++	if (-f "$cascade_data/$walfile_done")
++	{
++		last;
++	}
++	sleep(1);
++}
++
++# Wait for cascading standby to receive archive status and mark segments as .done
++ok( !-f "$cascade_data/$walfile_ready",
++	".ready file exists on cascade replica for WAL segment $current_walfile"
++);
++ok( -f "$cascade_data/$walfile_done",
++	".done file exists on cascade replica for WAL segment $current_walfile"
++);
++
++done_testing();
+diff --git a/src/test/recovery/t/056_archive_shared_checkpoint.pl b/src/test/recovery/t/056_archive_shared_checkpoint.pl
+new file mode 100644
+index 00000000000..8083ee99513
+--- /dev/null
++++ b/src/test/recovery/t/056_archive_shared_checkpoint.pl
+@@ -0,0 +1,214 @@
++# Copyright (c) 2026, PostgreSQL Global Development Group
++
++# Tests for archive_mode=shared correctness on standbys:
++#
++# 1. Checkpoint on standby must NOT remove WAL segments that have a .ready
++#    status file (i.e. not yet archived by the primary).  With the bug,
++#    XLogArchiveCheckDone() returns true unconditionally during recovery for
++#    any mode that is not "always", so checkpoint deletes these segments.
++#
++# 2. After archiving is broken on the primary and then restored, .ready files
++#    on the standby must eventually transition to .done (primary sends archival
++#    status reports to the standby via the walsender).
++
++use strict;
++use warnings FATAL => 'all';
++use PostgreSQL::Test::Cluster;
++use PostgreSQL::Test::Utils;
++use Test::More;
++
++# Use 1 MB WAL segments so we can generate many segments cheaply.
++my $wal_segsize = 1;
++
++# An archive command that always fails (but is recognized by the archiver as a
++# real failure, not a missing command).  Mirrors the approach in
++# 020_archive_status.pl to stay portable.
++my $broken_command =
++  $PostgreSQL::Test::Utils::windows_os
++  ? q{copy "%p_does_not_exist" "%f_does_not_exist"}
++  : q{cp "%p_does_not_exist" "%f_does_not_exist"};
++
++my $archive_dir = PostgreSQL::Test::Utils::tempdir();
++my $good_command =
++  $PostgreSQL::Test::Utils::windows_os
++  ? qq{copy "%p" "$archive_dir\\%f"}
++  : qq{cp %p "$archive_dir/%f"};
++
++###############################################################################
++# Set up primary with archive_mode=shared and BROKEN archiving so that every
++# WAL segment received by the standby gets a .ready file.
++###############################################################################
++
++my $primary = PostgreSQL::Test::Cluster->new('primary');
++$primary->init(
++	has_archiving   => 1,
++	allows_streaming => 1,
++	extra           => [ '--wal-segsize' => $wal_segsize ]);
++$primary->append_conf('postgresql.conf', qq{
++archive_mode    = shared
++archive_status_report_interval = 10ms
++archive_command = '$broken_command'
++wal_keep_size   = 0 # to trigger wal deletion
++});
++$primary->start;
++
++my $backup_name = 'standby_backup';
++$primary->backup($backup_name);
++
++my $standby = PostgreSQL::Test::Cluster->new('standby');
++$standby->init_from_backup($primary, $backup_name, has_streaming => 1);
++$standby->append_conf('postgresql.conf', qq{
++archive_mode               = shared
++archive_status_report_interval = 10ms
++archive_command            = '$good_command'
++wal_receiver_status_interval = 1s
++wal_keep_size              = 0 # to trigger wal deletion
++});
++$standby->start;
++
++$primary->wait_for_catchup($standby);
++
++###############################################################################
++# Generate WAL while archiving is broken.
++# The standby will create .ready files for every received segment.
++###############################################################################
++
++# Switch WAL several times to create clearly-identifiable old segments.
++# We capture the name of the first switched-away segment; it is the primary
++# candidate that checkpoint would delete.
++my $target_seg = $primary->safe_psql('postgres',
++	q{SELECT pg_walfile_name(pg_current_wal_lsn())});
++
++for my $i (1..3)
++{
++	$primary->safe_psql('postgres', "SELECT txid_current();SELECT pg_switch_wal();");
++}
++
++# Wait for the archiver to register failures so we are sure archiving is
++# truly broken (not just slow).
++$primary->poll_query_until('postgres',
++	q{SELECT failed_count > 0 FROM pg_stat_archiver})
++  or die "Timed out waiting for archiver to fail";
++
++# Issue a CHECKPOINT on the primary so that the standby can form a
++# restartpoint whose redo LSN is past $target_seg.
++$primary->safe_psql('postgres', 'CHECKPOINT');
++
++# Wait for the standby to replay everything up to that checkpoint.
++$primary->wait_for_catchup($standby);
++
++my $standby_wal_dir    = $standby->data_dir . '/pg_wal';
++my $standby_status_dir = "$standby_wal_dir/archive_status";
++
++# The target segment must already be visible on the standby as .ready.
++my $target_ready = "$standby_status_dir/$target_seg.ready";
++ok(-f $target_ready,
++	"standby has .ready file for segment $target_seg (not archived by primary)");
++
++# The WAL file itself must also be present.
++ok(-f "$standby_wal_dir/$target_seg",
++	"WAL segment $target_seg exists in standby pg_wal before CHECKPOINT");
++
++###############################################################################
++# Test 1: CHECKPOINT (restartpoint) on standby must not remove .ready segments
++###############################################################################
++
++# This triggers CreateRestartPoint, which calls RemoveOldXlogFiles.
++# With the bug, XLogArchiveCheckDone returns true for every segment in
++# archive_mode=shared during recovery, so $target_seg would be deleted.
++$standby->safe_psql('postgres', 'CHECKPOINT');
++
++ok(-f "$standby_wal_dir/$target_seg",
++	"WAL segment $target_seg still exists after CHECKPOINT on standby "
++	  . "(not deleted despite .ready status)");
++
++ok(-f $target_ready,
++	".ready file for $target_seg still present after CHECKPOINT on standby");
++
++###############################################################################
++# Test 2: Restoring archiving on primary causes .ready -> .done on standby
++#
++# This part is independent of Test 1: we generate fresh WAL (with archiving
++# still broken) so the standby accumulates new .ready files, then restore
++# archiving and verify those files become .done.
++###############################################################################
++
++# Generate a few more segments so the standby definitely has fresh .ready files
++# regardless of what checkpoint may have done above.
++for my $i (1..3)
++{
++	$primary->safe_psql('postgres', "SELECT txid_current();SELECT pg_switch_wal();");
++}
++$primary->wait_for_catchup($standby);
++
++# Collect all current .ready files on the standby.
++my @ready_segs;
++if (opendir(my $dh, $standby_status_dir))
++{
++	@ready_segs =
++	  map { (my $s = $_) =~ s/\.ready$//; $s }
++	  grep { /\.ready$/ } readdir($dh);
++	closedir($dh);
++}
++note("Standby has "
++	  . scalar(@ready_segs)
++	  . " .ready segments before archiving is restored");
++cmp_ok(scalar(@ready_segs), '>', 0,
++	"standby has fresh .ready files for newly received unarchived segments");
++
++# Restore archiving on the primary.
++$primary->safe_psql('postgres', qq{
++	ALTER SYSTEM SET archive_command TO '$good_command';
++	SELECT pg_reload_conf();
++});
++
++# Wait until primary has archived at least one segment.
++$primary->poll_query_until('postgres',
++	q{SELECT archived_count > 0 FROM pg_stat_archiver})
++  or die "Timed out waiting for primary to start archiving after restore";
++
++# Generate one more WAL switch so the walsender picks up the updated
++# last_archived_wal and sends a fresh archival report to the standby.
++# (The walsender only sends when last_archived_wal changes and every
++# archive_status_report_interval = 10 ms at most.)
++$primary->safe_psql('postgres', 'SELECT pg_switch_wal()');
++$primary->wait_for_catchup($standby);
++
++# Poll until all previously .ready segments have become .done.
++# Allow up to the framework default timeout (usually 120 s); the walsender
++# reports every 10 ms so convergence should happen well within that.
++my $remaining_ready = scalar(@ready_segs);
++for my $i (1 .. $PostgreSQL::Test::Utils::timeout_default)
++{
++	$remaining_ready = 0;
++	if (opendir(my $dh, $standby_status_dir))
++	{
++		# Count only the segments that were .ready before archiving was restored
++		for my $seg (@ready_segs)
++		{
++			$remaining_ready++ if -f "$standby_status_dir/$seg.ready";
++		}
++		closedir($dh);
++	}
++	last if $remaining_ready == 0;
++	sleep(1);
++}
++
++for my $seg (@ready_segs)
++{
++	ok( -f "$standby_status_dir/$seg.done",
++		"$seg .ready file on standby transitioned to .done"
++	);
++}
++
++is($remaining_ready, 0,
++	"all .ready files on standby transitioned to .done "
++	  . "after archiving restored on primary");
++
++# Sanity-check: the WAL files are still present (they weren't deleted by
++# checkpoint while .ready, nor disappeared otherwise).
++my @still_missing = grep { !-f "$standby_wal_dir/$_" } @ready_segs;
++is(scalar(@still_missing), 0,
++	"WAL segments were not lost while waiting for archival reports");
++
++done_testing();
+-- 
+2.50.1 (Apple Git-155)
+

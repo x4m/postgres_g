@@ -1,0 +1,44 @@
+Subject: [PATCH] Fix timeline history after recovery stops on an ancestor
+
+Hi,
+
+While working on WAL verification, we found a case where a timeline
+history file does not describe the sequence of timeline switches that
+actually took place.
+
+Suppose timeline 2 forked from timeline 1 at LSN B.  We then perform
+PITR with recovery_target_timeline = 'latest', but stop at a restore
+point A on timeline 1, where A < B.  PostgreSQL allocates timeline 3,
+but currently records recoveryTargetTLI, i.e. timeline 2, as its
+parent.  The resulting history looks like this:
+
+    1    B    ...
+    2    A    ...
+
+The switchpoints run backwards.  The actual ancestry is a direct fork
+from timeline 1 to timeline 3 at A.  A consumer such as a WAL verifier
+cannot reconstruct that ancestry from the history file.
+
+The attached patch uses the timeline of the last replayed WAL record
+as the parent of the new timeline.  It is important to use lastRecTLI
+rather than EndOfLogTLI here.  An old-timeline record may have been
+read from the common prefix of a segment whose filename has a newer
+timeline ID, as happens in 028_pitr_timelines.pl.
+
+The patch extends that existing test to check the generated history
+file.  It also adjusts 002_archiving.pl to make the second standby
+reach timeline 2, preserving that test's coverage of cleanup of a
+history file restored during promotion.
+
+This came up while looking at the following related discussions:
+
+https://www.postgresql.org/message-id/flat/CA%2BTgmobr27GpKDZx3_ezW2%2BC5_g18i%2BjSK3sGF_cR-_ESv5N5A%40mail.gmail.com
+
+https://www.postgresql.org/message-id/flat/85386EF6-16B7-4D62-86BE-526A10F93825%40yandex-team.ru
+
+I think this is a correctness issue and should be backpatched.
+
+Regards,
+Stepan Filippov,
+Yandex Cloud.
+

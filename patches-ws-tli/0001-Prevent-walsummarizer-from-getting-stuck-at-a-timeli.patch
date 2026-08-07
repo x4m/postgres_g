@@ -1,0 +1,441 @@
+From afbbae9b1ddf91b411310eb3a98ac8ab0ba31387 Mon Sep 17 00:00:00 2001
+From: Robert Haas <rhaas@postgresql.org>
+Date: Mon, 13 Jul 2026 16:33:57 -0400
+Subject: [PATCH 1/2] Prevent walsummarizer from getting stuck at a timeline
+ switch.
+
+As previously coded, walsummarizer only wants to read WAL from a file
+where the TimeLineID in the filename exactly matches the TimeLineID being
+summarized. But in some cases, when a timeline switch occurs, the WAL file
+from the old timeline is not archived, because it's never completely
+filled, so the only way to obtain the contents of that last partial
+segment is to read from the first segment on the new timeline. Teach
+WAL summarizer to do that, and add a test case to make sure that it
+works.
+
+Reported-by: Nick Ivanov <nick.ivanov@enterprisedb.com>
+---
+ src/backend/postmaster/walsummarizer.c    | 173 ++++++++++++++++++++--
+ src/bin/pg_walsummary/meson.build         |   1 +
+ src/bin/pg_walsummary/t/003_tli_switch.pl | 125 ++++++++++++++++
+ 3 files changed, 285 insertions(+), 14 deletions(-)
+ create mode 100644 src/bin/pg_walsummary/t/003_tli_switch.pl
+
+diff --git a/src/backend/postmaster/walsummarizer.c b/src/backend/postmaster/walsummarizer.c
+index 4f12eaf2c85..aeee22388e7 100644
+--- a/src/backend/postmaster/walsummarizer.c
++++ b/src/backend/postmaster/walsummarizer.c
+@@ -105,6 +105,8 @@ typedef struct
+ 	bool		historic;
+ 	XLogRecPtr	read_upto;
+ 	bool		end_of_wal;
++	int			num_descendant_tlis;
++	TimeLineID *descendant_tlis;
+ } SummarizerReadLocalXLogPrivate;
+ 
+ /* Pointer to shared memory state. */
+@@ -156,10 +158,14 @@ int			wal_summary_keep_time = 10 * HOURS_PER_DAY * MINS_PER_HOUR;
+ 
+ static void WalSummarizerShutdown(int code, Datum arg);
+ static XLogRecPtr GetLatestLSN(TimeLineID *tli);
++static XLogRecPtr WalSummarizerSwitchPoint(TimeLineID current_tli, List *tles,
++										   int *num_descendant_tlis,
++										   TimeLineID **descendant_tlis);
+ static void ProcessWalSummarizerInterrupts(void);
+ static XLogRecPtr SummarizeWAL(TimeLineID tli, XLogRecPtr start_lsn,
+ 							   bool exact, XLogRecPtr switch_lsn,
+-							   XLogRecPtr maximum_lsn);
++							   XLogRecPtr maximum_lsn,
++							   int num_descendant_tlis, TimeLineID *descendant_tlis);
+ static void SummarizeDbaseRecord(XLogReaderState *xlogreader,
+ 								 BlockRefTable *brtab);
+ static void SummarizeSmgrRecord(XLogReaderState *xlogreader,
+@@ -168,6 +174,9 @@ static void SummarizeXactRecord(XLogReaderState *xlogreader,
+ 								BlockRefTable *brtab);
+ static bool SummarizeXlogRecord(XLogReaderState *xlogreader,
+ 								bool *new_fast_forward);
++static void summarizer_wal_segment_open(XLogReaderState *state,
++										XLogSegNo nextSegNo,
++										TimeLineID *tli_p);
+ static int	summarizer_read_local_xlog_page(XLogReaderState *state,
+ 											XLogRecPtr targetPagePtr,
+ 											int reqLen,
+@@ -222,16 +231,19 @@ WalSummarizerMain(const void *startup_data, size_t startup_data_len)
+ 	 * true if 'current_lsn' is known to be the start of a WAL record or WAL
+ 	 * segment, and false if it might be in the middle of a record someplace.
+ 	 *
+-	 * 'switch_lsn' and 'switch_tli', if set, are the LSN at which we need to
+-	 * switch to a new timeline and the timeline to which we need to switch.
+-	 * If not set, we either haven't figured out the answers yet or we're
+-	 * already on the latest timeline.
++	 * 'switch_lsn', is the LSN at which we need to switch to a new timeline.
++	 * If not set, we either haven't figured out the answer yet or we're
++	 * already on the latest timeline. 'descendant_tlis' stores an array of
++	 * future timeline IDs to which we know we'll need to switch, and
++	 * 'num_descendant_tlis' is the length of that array. The first element of
++	 * the array is the first timeline to which we will need to switch.
+ 	 */
+ 	XLogRecPtr	current_lsn;
+ 	TimeLineID	current_tli;
+ 	bool		exact;
+ 	XLogRecPtr	switch_lsn = InvalidXLogRecPtr;
+-	TimeLineID	switch_tli = 0;
++	int			num_descendant_tlis = 0;
++	TimeLineID *descendant_tlis = NULL;
+ 
+ 	Assert(startup_data_len == 0);
+ 
+@@ -379,11 +391,33 @@ WalSummarizerMain(const void *startup_data, size_t startup_data_len)
+ 		if (current_tli != latest_tli && !XLogRecPtrIsValid(switch_lsn))
+ 		{
+ 			List	   *tles = readTimeLineHistory(latest_tli);
++			int			new_num_descendant_tlis;
++			TimeLineID *new_descendant_tlis;
+ 
+-			switch_lsn = tliSwitchPoint(current_tli, tles, &switch_tli);
++			/*
++			 * Make sure that the array of descendant TLIs get stored into
++			 * TopMemoryContext.
++			 */
++			MemoryContextSwitchTo(TopMemoryContext);
++			switch_lsn = WalSummarizerSwitchPoint(current_tli, tles,
++												  &new_num_descendant_tlis,
++												  &new_descendant_tlis);
++			MemoryContextSwitchTo(context);
++
++			/*
++			 * Free any old array of descendant TLIs and install the new
++			 * values.
++			 */
++			if (descendant_tlis != NULL)
++				pfree(descendant_tlis);
++			num_descendant_tlis = new_num_descendant_tlis;
++			descendant_tlis = new_descendant_tlis;
++
++			/* Debug message. */
+ 			ereport(DEBUG1,
+ 					errmsg_internal("switch point from TLI %u to TLI %u is at %X/%08X",
+-									current_tli, switch_tli, LSN_FORMAT_ARGS(switch_lsn)));
++									current_tli, descendant_tlis[0],
++									LSN_FORMAT_ARGS(switch_lsn)));
+ 		}
+ 
+ 		/*
+@@ -394,12 +428,15 @@ WalSummarizerMain(const void *startup_data, size_t startup_data_len)
+ 		if (XLogRecPtrIsValid(switch_lsn) && current_lsn >= switch_lsn)
+ 		{
+ 			/* Restart summarization from switch point. */
+-			current_tli = switch_tli;
++			Assert(num_descendant_tlis > 0);
++			current_tli = descendant_tlis[0];
+ 			current_lsn = switch_lsn;
+ 
+-			/* Next timeline and switch point, if any, not yet known. */
++			/* Switch point, if any, and future TLIs, not yet known. */
+ 			switch_lsn = InvalidXLogRecPtr;
+-			switch_tli = 0;
++			num_descendant_tlis = 0;
++			pfree(descendant_tlis);
++			descendant_tlis = NULL;
+ 
+ 			/* Update (really, rewind, if needed) state in shared memory. */
+ 			LWLockAcquire(WALSummarizerLock, LW_EXCLUSIVE);
+@@ -415,7 +452,8 @@ WalSummarizerMain(const void *startup_data, size_t startup_data_len)
+ 		/* Summarize WAL. */
+ 		end_of_summary_lsn = SummarizeWAL(current_tli,
+ 										  current_lsn, exact,
+-										  switch_lsn, latest_lsn);
++										  switch_lsn, latest_lsn,
++										  num_descendant_tlis, descendant_tlis);
+ 		Assert(XLogRecPtrIsValid(end_of_summary_lsn));
+ 		Assert(end_of_summary_lsn >= current_lsn);
+ 
+@@ -851,6 +889,62 @@ GetLatestLSN(TimeLineID *tli)
+ 	}
+ }
+ 
++/*
++ * Compute the LSN at which we switched from current_tli to some later timeline.
++ * 'tles' must be the timeline history of the latest timeline.
++ *
++ * As a side effect, we set *num_descendant_tlis to the number of later TLIs that
++ * appear in the timeline history, and *descendant_tlis to an array of those TLIs,
++ * starting with immediate successor of current_tli.
++ */
++static XLogRecPtr
++WalSummarizerSwitchPoint(TimeLineID current_tli, List *tles,
++						 int *num_descendant_tlis, TimeLineID **descendant_tlis)
++{
++	XLogRecPtr	switch_lsn = InvalidXLogRecPtr;
++	int			count = 0;
++
++	/*
++	 * Find the switch point and, at the same time, count the number of TLIs
++	 * in this history that are descendants of that TLI.
++	 */
++	foreach_ptr(TimeLineHistoryEntry, tle, tles)
++	{
++		if (tle->tli == current_tli)
++		{
++			switch_lsn = tle->end;
++			break;
++		}
++		++count;
++	}
++
++	/* Sanity checks. */
++	if (!XLogRecPtrIsValid(switch_lsn))
++		ereport(ERROR,
++				(errmsg("requested timeline %u is not in this server's history",
++						current_tli)));
++	if (count == 0)
++		elog(ERROR, "cannot compute switch point for current TLI %u", current_tli);
++
++	/*
++	 * Generate an array of TLIs that are part of this history and descendants
++	 * of current_tli. The TLE list starts with the newest timeline and works
++	 * backward toward older timelines; we want the opposite ordering.
++	 */
++	*num_descendant_tlis = count;
++	*descendant_tlis = palloc_array(TimeLineID, count);
++	for (int i = 0; i < count; ++i)
++	{
++		TimeLineHistoryEntry *tle;
++
++		tle = (TimeLineHistoryEntry *) list_nth(tles, count - i - 1);
++		(*descendant_tlis)[i] = tle->tli;
++	}
++
++	/* Return value is the switchpoint. */
++	return switch_lsn;
++}
++
+ /*
+  * Interrupt handler for main loop of WAL summarizer process.
+  */
+@@ -904,7 +998,8 @@ ProcessWalSummarizerInterrupts(void)
+  */
+ static XLogRecPtr
+ SummarizeWAL(TimeLineID tli, XLogRecPtr start_lsn, bool exact,
+-			 XLogRecPtr switch_lsn, XLogRecPtr maximum_lsn)
++			 XLogRecPtr switch_lsn, XLogRecPtr maximum_lsn,
++			 int num_descendant_tlis, TimeLineID *descendant_tlis)
+ {
+ 	SummarizerReadLocalXLogPrivate *private_data;
+ 	XLogReaderState *xlogreader;
+@@ -922,11 +1017,13 @@ SummarizeWAL(TimeLineID tli, XLogRecPtr start_lsn, bool exact,
+ 	private_data->tli = tli;
+ 	private_data->historic = XLogRecPtrIsValid(switch_lsn);
+ 	private_data->read_upto = maximum_lsn;
++	private_data->num_descendant_tlis = num_descendant_tlis;
++	private_data->descendant_tlis = descendant_tlis;
+ 
+ 	/* Create xlogreader. */
+ 	xlogreader = XLogReaderAllocate(wal_segment_size, NULL,
+ 									XL_ROUTINE(.page_read = &summarizer_read_local_xlog_page,
+-											   .segment_open = &wal_segment_open,
++											   .segment_open = &summarizer_wal_segment_open,
+ 											   .segment_close = &wal_segment_close),
+ 									private_data);
+ 	if (xlogreader == NULL)
+@@ -1490,6 +1587,54 @@ SummarizeXlogRecord(XLogReaderState *xlogreader, bool *new_fast_forward)
+ 	return true;
+ }
+ 
++/*
++ * Similar to wal_segment_open, but checks for a file on any descendant timelines
++ * known to us if no file is found on the requested timeline.
++ */
++static void
++summarizer_wal_segment_open(XLogReaderState *state, XLogSegNo nextSegNo,
++							TimeLineID *tli_p)
++{
++	SummarizerReadLocalXLogPrivate *private_data = state->private_data;
++	int			count = 0;
++	TimeLineID	tli = *tli_p;
++	char		path[MAXPGPATH];
++
++	for (;;)
++	{
++		XLogFilePath(path, tli, nextSegNo, state->segcxt.ws_segsize);
++		state->seg.ws_file = BasicOpenFile(path, O_RDONLY | PG_BINARY);
++		if (state->seg.ws_file >= 0)
++		{
++			*tli_p = tli;
++			return;
++		}
++
++		/*
++		 * If the error is anything other than file-not-found, complain at
++		 * once.
++		 */
++		if (errno != ENOENT)
++			ereport(ERROR,
++					(errcode_for_file_access(),
++					 errmsg("could not open file \"%s\": %m",
++							path)));
++
++		/* Try other timelines, if any remain. */
++		if (count >= private_data->num_descendant_tlis)
++			break;
++		tli = private_data->descendant_tlis[count];
++		++count;
++	}
++
++	/* Complain about the originally requested filename. */
++	XLogFilePath(path, *tli_p, nextSegNo, state->segcxt.ws_segsize);
++	ereport(ERROR,
++			(errcode_for_file_access(),
++			 errmsg("requested WAL segment %s has already been removed",
++					path)));
++}
++
+ /*
+  * Similar to read_local_xlog_page, but limited to read from one particular
+  * timeline. If the end of WAL is reached, it will wait for more if reading
+diff --git a/src/bin/pg_walsummary/meson.build b/src/bin/pg_walsummary/meson.build
+index d012275402b..839b644ef23 100644
+--- a/src/bin/pg_walsummary/meson.build
++++ b/src/bin/pg_walsummary/meson.build
+@@ -25,6 +25,7 @@ tests += {
+     'tests': [
+       't/001_basic.pl',
+       't/002_blocks.pl',
++      't/003_tli_switch.pl',
+     ],
+   }
+ }
+diff --git a/src/bin/pg_walsummary/t/003_tli_switch.pl b/src/bin/pg_walsummary/t/003_tli_switch.pl
+new file mode 100644
+index 00000000000..6258cb44643
+--- /dev/null
++++ b/src/bin/pg_walsummary/t/003_tli_switch.pl
+@@ -0,0 +1,125 @@
++# Copyright (c) 2021-2026, PostgreSQL Global Development Group
++#
++# In the original version of the WAL summarizer code, we were only willing
++# to read WAL for a given TLI from a file with that exact TLI encoded into
++# the filename. This could result in WAL summarization running on an archiving
++# standby getting stuck.
++#
++# The reason for the problem is that when a new primary is promoted, the
++# partial file that ends the old timeline is renamed, giving it a ".partial"
++# suffix, and is not archived. That's not a problem for recovery, because
++# the bytes that appear at the start of that segment will be copied into the
++# first segment on the new timeline, and recovery will read them from there
++# and work just fine. Because the WAL summarizer was unwilling to do the same
++# thing, it got stuck. This test aims to validate that this bug has been fixed.
++
++use strict;
++use warnings FATAL => 'all';
++use PostgreSQL::Test::Cluster;
++use PostgreSQL::Test::Utils;
++use Test::More;
++
++# Set up node1 as primary.
++my $node1 = PostgreSQL::Test::Cluster->new('node1');
++$node1->init(allows_streaming => 1);
++$node1->append_conf('postgresql.conf', <<EOM);
++autovacuum = off
++EOM
++$node1->start;
++
++# Set up node2 as a standby for node1.
++$node1->backup('backup1');
++my $node2 = PostgreSQL::Test::Cluster->new('node2');
++$node2->init_from_backup($node1, 'backup1', has_streaming => 1);
++$node2->enable_archiving();
++$node2->start;
++
++# Wait for node2 to catch up.
++$node1->wait_for_replay_catchup($node2);
++
++# Set up node3 as a standby for node2. To get the desired behavior, we need a few
++# configuration changes here. First, we must enable summarization on the new node,
++# since that's what we want to test. We also set log_min_messages = debug1 since
++# WAL summarization prints a bunch of diagnostics at that level that may be useful
++# in case this test fails. Second, we must clear primary_conninfo, so that it can
++# only obtain WAL from the archive. Finally, we lower wal_retrieve_retry_interval
++# to avoid long, unnecessary waits while running the test.
++$node2->backup('backup2');
++my $node3 = PostgreSQL::Test::Cluster->new('node3');
++$node3->init_from_backup($node2, 'backup2', has_restoring => 1);
++$node3->append_conf('postgresql.conf', <<EOM);
++summarize_wal = on
++log_min_messages = debug1
++primary_conninfo = ''
++wal_retrieve_retry_interval = '500ms'
++EOM
++$node3->start;
++
++# Create a new, partially-filled WAL segment on node1.
++$node1->safe_psql('postgres', <<EOM);
++SELECT pg_switch_wal();
++CREATE TABLE dummy ();
++EOM
++$node1->wait_for_replay_catchup($node2);
++
++# Record the WAL insert LSN on node1, so we can later verify that summarization on
++# node3 advances past this point.
++my $node1_final_lsn = $node1->safe_psql('postgres',
++	'SELECT pg_current_wal_insert_lsn()');
++
++# Promote node2. This creates a timeline switch that node3 must follow.
++$node2->promote;
++$node2->poll_query_until('postgres', "SELECT pg_is_in_recovery() = 'f';");
++
++# Cause the partial segment to get archived on the *new* timeline.
++#
++# In more detail: the WAL segment that contains the current insert LSN exists on
++# timeline 1, but since all we did is CREATE TABLE dummy (), it wasn't full. We're
++# now running on timeline 2, and pg_switch_wal() fills up the rest of the segment.
++# So the full segment should get archived on timeline 2, but not on timeline 1.
++# We do a CHECKPOINT here to make sure that the summarizer tries to progress.
++$node2->safe_psql('postgres', <<EOM);
++SELECT pg_switch_wal();
++CHECKPOINT;
++EOM
++
++# Wait for WAL summarization on node3 to advance past the pre-promotion LSN.
++# If the bug is present, the summarizer gets stuck trying to open the old
++# timeline's segment file.
++my $result = $node3->poll_query_until('postgres', <<EOM);
++SELECT EXISTS (SELECT * FROM pg_available_wal_summaries() WHERE tli = 2)
++EOM
++ok($result, "WAL summarization on node3 advanced past timeline switch");
++
++# Verify the absence of summaries on timeline 2 starting before the final LSN
++# from timeline 1.
++my $too_early_summaries = $node3->safe_psql('postgres', <<EOM);
++SELECT start_lsn, end_lsn FROM pg_available_wal_summaries()
++WHERE tli = 2 AND start_lsn < '$node1_final_lsn' ORDER BY start_lsn
++EOM
++is($too_early_summaries, '', "no summaries from before LSN $node1_final_lsn");
++
++# Verify the presence of summaries on timeline 2 starting at or after the final
++# LSN from timeline 1.
++my $summaries = $node3->safe_psql('postgres', <<EOM);
++SELECT tli, start_lsn, end_lsn FROM pg_available_wal_summaries()
++WHERE tli = 2 AND start_lsn >= '$node1_final_lsn' ORDER BY start_lsn
++EOM
++my @summary_lines = split(/\n/, $summaries);
++ok(@summary_lines > 0, "at least one summary from LSN $node1_final_lsn or later");
++
++# We expect the new summaries to be empty, because we have not actually touched
++# any block data (and we disabled autovacuum from the start).
++for my $line (@summary_lines)
++{
++	my ($tli, $start_lsn, $end_lsn) = split(/\|/, $line);
++	my $filename = sprintf "%s/pg_wal/summaries/%08s%08s%08s%08s%08s.summary",
++	  $node3->data_dir, $tli,
++	  split(m@/@, $start_lsn),
++	  split(m@/@, $end_lsn);
++	my ($stdout, $stderr) = run_command([ 'pg_walsummary', $filename ]);
++	is($stdout, '', "pg_walsummary TLI $tli $start_lsn-$end_lsn: no blocks");
++	is($stderr, '', "pg_walsummary TLI $tli $start_lsn-$end_lsn: no error");
++}
++
++done_testing();
+-- 
+2.50.1 (Apple Git-155)
+

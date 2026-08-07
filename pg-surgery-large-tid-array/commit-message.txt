@@ -1,0 +1,12 @@
+Fix pg_surgery with large TID arrays
+
+heap_force_common() used OffsetNumber variables to track positions in its
+input TID array.  An array position of 65536 therefore wrapped to zero,
+causing the loop over the array to start over instead of terminating.
+
+Use int for the array positions, consistently with the array length and the
+loop variable in find_tids_one_page().  Add a regression test with 65536
+copies of one TID.
+
+Reported-by: Yuelin Wang <1217816127@qq.com>
+Bug: #19607

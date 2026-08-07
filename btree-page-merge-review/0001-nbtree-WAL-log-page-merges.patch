@@ -1,0 +1,313 @@
+From e93134c9c96a7805dbcfafd1508828ca691e8629 Mon Sep 17 00:00:00 2001
+From: Andrey Borodin <amborodin@acm.org>
+Date: Fri, 31 Jul 2026 17:31:25 +0500
+Subject: [PATCH] nbtree: WAL-log page merges
+
+AB: bne cautionus, it all is generated without any human attention
+
+A page merge changes the left page, right page, and parent as one
+logical operation.  A critical section alone cannot make those changes
+atomic on disk, and a standby cannot reproduce them without WAL.
+
+Introduce a btree merge record that forces a full-page image for every
+affected buffer.  This deliberately simple initial format makes redo
+independent of the pre-record contents of all three pages.  Also WAL-log
+each restartable merge-group cleanup transition, set page LSNs, and add
+rmgr identification and description support.
+---
+ src/backend/access/nbtree/nbtmerge.c  | 31 +++++++++++++++--
+ src/backend/access/nbtree/nbtree.c    | 39 +++++++++++++++++++++-
+ src/backend/access/nbtree/nbtxlog.c   | 48 +++++++++++++++++++++++++++
+ src/backend/access/rmgrdesc/nbtdesc.c | 24 ++++++++++++++
+ src/include/access/nbtxlog.h          | 26 +++++++++++++++
+ 5 files changed, 165 insertions(+), 3 deletions(-)
+
+diff --git a/src/backend/access/nbtree/nbtmerge.c b/src/backend/access/nbtree/nbtmerge.c
+index b9ea0696fd..e1b0c49944 100644
+--- a/src/backend/access/nbtree/nbtmerge.c
++++ b/src/backend/access/nbtree/nbtmerge.c
+@@ -18,7 +18,9 @@
+ #include "postgres.h"
+ 
+ #include "access/nbtree.h"
++#include "access/nbtxlog.h"
+ #include "access/tableam.h"
++#include "access/xloginsert.h"
+ #include "common/int.h"
+ #include "storage/bufmgr.h"
+ #include "storage/lmgr.h"
+@@ -313,6 +315,7 @@ _bt_mergepage(BTMergeState mstate)
+ 	Size	   *r_sizes = NULL;
+ 	BTPageOpaqueData saved_opaque;
+ 	FullTransactionId safemergexid;
++	XLogRecPtr	recptr;
+ 	bool		merged = false;
+ 
+ 	parent_blkno = stack->bts_blkno;
+@@ -418,8 +421,9 @@ _bt_mergepage(BTMergeState mstate)
+ 	 * absorbs all tuples, parent loses R's downlink) would leave the index in
+ 	 * an inconsistent state.  Perform all three modifications as an atomic
+ 	 * unit inside a critical section so that any error panics the server
+-	 * rather than aborting with a partially updated index.  WAL logging will
+-	 * be added here once the redo infrastructure is in place.
++	 * rather than aborting with a partially updated index.  One WAL record
++	 * covers all three buffers, so redo cannot observe only part of the
++	 * merge.
+ 	 */
+ 	START_CRIT_SECTION();
+ 
+@@ -469,6 +473,29 @@ _bt_mergepage(BTMergeState mstate)
+ 	MarkBufferDirty(right_buf);
+ 	MarkBufferDirty(parent_buf);
+ 
++	if (RelationNeedsWAL(rel))
++	{
++		xl_btree_merge xlrec;
++
++		xlrec.action = XLOG_BTREE_MERGE_PAGES;
++
++		XLogBeginInsert();
++		XLogRegisterData(&xlrec, SizeOfBtreeMerge);
++		XLogRegisterBuffer(0, left_buf,
++						   REGBUF_STANDARD | REGBUF_FORCE_IMAGE);
++		XLogRegisterBuffer(1, right_buf,
++						   REGBUF_STANDARD | REGBUF_FORCE_IMAGE);
++		XLogRegisterBuffer(2, parent_buf,
++						   REGBUF_STANDARD | REGBUF_FORCE_IMAGE);
++		recptr = XLogInsert(RM_BTREE_ID, XLOG_BTREE_MERGE);
++	}
++	else
++		recptr = XLogGetFakeLSN(rel);
++
++	PageSetLSN(left_page, recptr);
++	PageSetLSN(right_page, recptr);
++	PageSetLSN(parent_page, recptr);
++
+ 	END_CRIT_SECTION();
+ 
+ 	/* Free temporary memory. */
+diff --git a/src/backend/access/nbtree/nbtree.c b/src/backend/access/nbtree/nbtree.c
+index 8750ace5fb..fdb91edc92 100644
+--- a/src/backend/access/nbtree/nbtree.c
++++ b/src/backend/access/nbtree/nbtree.c
+@@ -19,8 +19,10 @@
+ #include "postgres.h"
+ 
+ #include "access/nbtree.h"
++#include "access/nbtxlog.h"
+ #include "access/relscan.h"
+ #include "access/stratnum.h"
++#include "access/xloginsert.h"
+ #include "commands/progress.h"
+ #include "commands/vacuum.h"
+ #include "nodes/execnodes.h"
+@@ -1671,11 +1673,29 @@ backtrack:
+ 					goto skip_merge_cleanup;
+ 				}
+ 
++				START_CRIT_SECTION();
++
+ 				bwd_opaque->btpo_flags &= ~(BTP_MERGED);
+ 				BTMergedPageClearMABlkno(bwd_page);
+ 				MarkBufferDirty(bwd_buf);
+ 
+-				/* TODO: (WAL) needs a critical section + XLOG record */
++				if (RelationNeedsWAL(rel))
++				{
++					xl_btree_merge xlrec;
++					XLogRecPtr	recptr;
++
++					xlrec.action = XLOG_BTREE_MERGE_CLEAR_PAGE;
++					XLogBeginInsert();
++					XLogRegisterData(&xlrec, SizeOfBtreeMerge);
++					XLogRegisterBuffer(0, bwd_buf,
++									   REGBUF_STANDARD | REGBUF_FORCE_IMAGE);
++					recptr = XLogInsert(RM_BTREE_ID, XLOG_BTREE_MERGE);
++					PageSetLSN(bwd_page, recptr);
++				}
++				else
++					PageSetLSN(bwd_page, XLogGetFakeLSN(rel));
++
++				END_CRIT_SECTION();
+ 
+ 				right_anchor = BufferGetBlockNumber(bwd_buf);
+ 				bwd_blkno = bwd_opaque->btpo_prev;
+@@ -1728,6 +1748,22 @@ backtrack:
+ 			opaque->btpo_flags |= BTP_HALF_DEAD;
+ 			MarkBufferDirty(buf);
+ 
++			if (RelationNeedsWAL(rel))
++			{
++				xl_btree_merge xlrec;
++				XLogRecPtr	recptr;
++
++				xlrec.action = XLOG_BTREE_MERGE_MARK_HALFDEAD;
++				XLogBeginInsert();
++				XLogRegisterData(&xlrec, SizeOfBtreeMerge);
++				XLogRegisterBuffer(0, buf,
++								   REGBUF_STANDARD | REGBUF_FORCE_IMAGE);
++				recptr = XLogInsert(RM_BTREE_ID, XLOG_BTREE_MERGE);
++				PageSetLSN(page, recptr);
++			}
++			else
++				PageSetLSN(page, XLogGetFakeLSN(rel));
++
+ 			END_CRIT_SECTION();
+ 
+ 			attempt_pagedel = true;
+@@ -1846,6 +1882,7 @@ backtrack:
+ 			}
+ 		}
+ skip_merge_cleanup:
++		;
+ 
+ 		/*
+ 		 * Apply any needed deletes or updates.  We issue just one
+diff --git a/src/backend/access/nbtree/nbtxlog.c b/src/backend/access/nbtree/nbtxlog.c
+index dff7d286fc..ef8c9859c4 100644
+--- a/src/backend/access/nbtree/nbtxlog.c
++++ b/src/backend/access/nbtree/nbtxlog.c
+@@ -1000,6 +1000,51 @@ btree_xlog_reuse_page(XLogReaderState *record)
+ 												   xlrec->locator);
+ }
+ 
++/*
++ * Replay a page merge or one step of merge-group cleanup.
++ *
++ * Every registered block is required to carry a full-page image.  Restoring
++ * those images is sufficient redo; XLogReadBufferForRedo() also handles the
++ * usual page-LSN check and marks restored buffers dirty.
++ */
++static void
++btree_xlog_merge(XLogReaderState *record)
++{
++	xl_btree_merge *xlrec = (xl_btree_merge *) XLogRecGetData(record);
++	int			nblocks;
++
++	switch (xlrec->action)
++	{
++		case XLOG_BTREE_MERGE_PAGES:
++			nblocks = 3;
++			break;
++		case XLOG_BTREE_MERGE_CLEAR_PAGE:
++		case XLOG_BTREE_MERGE_MARK_HALFDEAD:
++			nblocks = 1;
++			break;
++		default:
++			elog(PANIC, "btree_xlog_merge: unknown action %u",
++				 xlrec->action);
++	}
++
++	for (int block_id = 0; block_id < nblocks; block_id++)
++	{
++		Buffer		buf = InvalidBuffer;
++		XLogRedoAction action;
++
++		if (!XLogRecHasBlockRef(record, block_id))
++			elog(PANIC, "btree_xlog_merge: missing block reference %d",
++				 block_id);
++
++		action = XLogReadBufferForRedo(record, block_id, &buf);
++		if (action == BLK_NEEDS_REDO)
++			elog(PANIC, "btree_xlog_merge: block %d has no full-page image",
++				 block_id);
++		if (BufferIsValid(buf))
++			UnlockReleaseBuffer(buf);
++	}
++}
++
+ void
+ btree_redo(XLogReaderState *record)
+ {
+@@ -1052,6 +1097,9 @@ btree_redo(XLogReaderState *record)
+ 		case XLOG_BTREE_META_CLEANUP:
+ 			_bt_restore_meta(record, 0);
+ 			break;
++		case XLOG_BTREE_MERGE:
++			btree_xlog_merge(record);
++			break;
+ 		default:
+ 			elog(PANIC, "btree_redo: unknown op code %u", info);
+ 	}
+diff --git a/src/backend/access/rmgrdesc/nbtdesc.c b/src/backend/access/rmgrdesc/nbtdesc.c
+index 1d08f9957b..5ba3a5243a 100644
+--- a/src/backend/access/rmgrdesc/nbtdesc.c
++++ b/src/backend/access/rmgrdesc/nbtdesc.c
+@@ -132,6 +132,27 @@ btree_desc(StringInfo buf, XLogReaderState *record)
+ 								 xlrec->last_cleanup_num_delpages);
+ 				break;
+ 			}
++		case XLOG_BTREE_MERGE:
++			{
++				xl_btree_merge *xlrec = (xl_btree_merge *) rec;
++
++				switch (xlrec->action)
++				{
++					case XLOG_BTREE_MERGE_PAGES:
++						appendStringInfoString(buf, "merge pages");
++						break;
++					case XLOG_BTREE_MERGE_CLEAR_PAGE:
++						appendStringInfoString(buf, "clear merged page");
++						break;
++					case XLOG_BTREE_MERGE_MARK_HALFDEAD:
++						appendStringInfoString(buf, "mark merged-away page half-dead");
++						break;
++					default:
++						appendStringInfo(buf, "unknown action %u", xlrec->action);
++						break;
++				}
++				break;
++			}
+ 	}
+ }
+ 
+@@ -187,6 +208,9 @@ btree_identify(uint8 info)
+ 		case XLOG_BTREE_META_CLEANUP:
+ 			id = "META_CLEANUP";
+ 			break;
++		case XLOG_BTREE_MERGE:
++			id = "MERGE";
++			break;
+ 	}
+ 
+ 	return id;
+diff --git a/src/include/access/nbtxlog.h b/src/include/access/nbtxlog.h
+index 3a78ec27fe..61b2af1cc3 100644
+--- a/src/include/access/nbtxlog.h
++++ b/src/include/access/nbtxlog.h
+@@ -42,6 +42,32 @@
+ 										 * FSM */
+ #define XLOG_BTREE_META_CLEANUP	0xE0	/* update cleanup-related data in the
+ 										 * metapage */
++#define XLOG_BTREE_MERGE		0xF0	/* merge pages or advance merge
++										 * cleanup */
++
++typedef enum xl_btree_merge_action
++{
++	XLOG_BTREE_MERGE_PAGES,
++	XLOG_BTREE_MERGE_CLEAR_PAGE,
++	XLOG_BTREE_MERGE_MARK_HALFDEAD,
++}			xl_btree_merge_action;
++
++/*
++ * Page merge WAL records currently force a full-page image for every
++ * registered buffer.  This deliberately simple representation makes the
++ * three-page merge atomic with respect to WAL replay.  It can be replaced by
++ * a compact logical representation once the on-page design has settled.
++ *
++ * MERGE_PAGES:        blocks 0, 1, 2 are L, R, and parent
++ * MERGE_CLEAR_PAGE:   block 0 is one M page
++ * MERGE_MARK_HALFDEAD: block 0 is the MA page
++ */
++typedef struct xl_btree_merge
++{
++	uint8		action;
++}			xl_btree_merge;
++
++#define SizeOfBtreeMerge (offsetof(xl_btree_merge, action) + sizeof(uint8))
+ 
+ /*
+  * All that we need to regenerate the meta-data page
+-- 
+2.50.1 (Apple Git-155)
+

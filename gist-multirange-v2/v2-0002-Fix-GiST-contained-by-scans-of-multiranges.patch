@@ -1,0 +1,53 @@
+From 53351747b520641e8d498cab9d98213c469b32ad Mon Sep 17 00:00:00 2001
+From: Andrey Borodin <amborodin@acm.org>
+Date: Sat, 1 Aug 2026 23:48:14 +0500
+Subject: [PATCH v2 2/2] Fix GiST contained-by scans of multiranges
+
+GiST stores a multirange leaf key as its union range.  When both the
+indexed value and the query have gaps, the indexed multirange can be
+contained by the query even though its union range is not.  The current
+leaf check can therefore discard a matching row before heap recheck.
+
+Use the conservative internal-page check for contained-by scans with a
+multirange query.  A nonempty matching multirange must overlap the
+query, while an empty multirange must always be visited.
+
+Back-patch to all supported branches.
+
+Discussion: https://postgr.es/m/CAH2-Wzm1GpQ9qixP=Xs2TYdfnLM88OZ=yUFHNuajS_W7U90-tQ@mail.gmail.com
+---
+ src/backend/utils/adt/rangetypes_gist.c | 18 ++++++++++++++++--
+ 1 file changed, 16 insertions(+), 2 deletions(-)
+
+diff --git a/src/backend/utils/adt/rangetypes_gist.c b/src/backend/utils/adt/rangetypes_gist.c
+index 1a01a8f4c3c..360ff7f7630 100644
+--- a/src/backend/utils/adt/rangetypes_gist.c
++++ b/src/backend/utils/adt/rangetypes_gist.c
+@@ -295,8 +295,22 @@ multirange_gist_consistent(PG_FUNCTION_ARGS)
+ 	if (GIST_LEAF(entry))
+ 	{
+ 		if (!OidIsValid(subtype) || subtype == ANYMULTIRANGEOID)
+-			result = range_gist_consistent_leaf_multirange(typcache, strategy, key,
+-														   DatumGetMultirangeTypeP(query));
++		{
++			/*
++			 * The union range is not necessarily contained by a multirange
++			 * that contains the original multirange, because it also covers
++			 * the gaps in the original multirange.  Use the less restrictive
++			 * internal-page test in that case.
++			 */
++			if (strategy == RANGESTRAT_CONTAINED_BY)
++				result = range_gist_consistent_int_multirange(typcache, strategy,
++														key,
++														DatumGetMultirangeTypeP(query));
++			else
++				result = range_gist_consistent_leaf_multirange(typcache, strategy,
++														 key,
++														 DatumGetMultirangeTypeP(query));
++		}
+ 		else if (subtype == ANYRANGEOID)
+ 			result = range_gist_consistent_leaf_range(typcache, strategy, key,
+ 													  DatumGetRangeTypeP(query));
+-- 
+2.50.1 (Apple Git-155)
+

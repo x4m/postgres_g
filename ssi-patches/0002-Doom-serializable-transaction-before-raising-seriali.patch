@@ -1,0 +1,61 @@
+From e7ce11d54fef745a9c2eec82a49ed61cfb4fddd3 Mon Sep 17 00:00:00 2001
+From: Andrey Borodin <amborodin@acm.org>
+Date: Sat, 30 May 2026 23:07:47 +0500
+Subject: [PATCH 2/2] Doom serializable transaction before raising
+ serialization error
+
+OnConflict_CheckForSerializationFailure() cancels the current
+serializable transaction with ereport(ERROR) when it is identified as a
+pivot, both on the "during write" and the "during read" paths.  In both
+cases it released SerializableXactHashLock and raised the error without
+setting SXACT_FLAG_DOOMED on MySerializableXact first; the writer is only
+doomed afterwards, which the ereport() longjmp skips for the current
+transaction.
+
+If the error is caught by a subtransaction abort (ROLLBACK TO
+SAVEPOINT), the transaction is not doomed and is allowed to COMMIT,
+which violates serializability.  Set SXACT_FLAG_DOOMED on ourselves
+before raising the error so that PreCommit_CheckForSerializationFailure()
+catches the transaction at commit time even if the error was swallowed.
+
+Co-authored-by: Cursor <cursoragent@cursor.com>
+---
+ src/backend/storage/lmgr/predicate.c | 13 +++++++++++--
+ 1 file changed, 11 insertions(+), 2 deletions(-)
+
+diff --git a/src/backend/storage/lmgr/predicate.c b/src/backend/storage/lmgr/predicate.c
+index 0ae85b7d5b4..461e899727b 100644
+--- a/src/backend/storage/lmgr/predicate.c
++++ b/src/backend/storage/lmgr/predicate.c
+@@ -4589,6 +4589,12 @@ OnConflict_CheckForSerializationFailure(const SERIALIZABLEXACT *reader,
+ 		 */
+ 		if (MySerializableXact == writer)
+ 		{
++			/*
++			 * Mark ourselves doomed before raising the error.  Otherwise a
++			 * subtransaction abort (ROLLBACK TO SAVEPOINT) could swallow this
++			 * error and let the transaction commit anyway, defeating SSI.
++			 */
++			MySerializableXact->flags |= SXACT_FLAG_DOOMED;
+ 			LWLockRelease(SerializableXactHashLock);
+ 			ereport(ERROR,
+ 					(errcode(ERRCODE_T_R_SERIALIZATION_FAILURE),
+@@ -4598,10 +4604,13 @@ OnConflict_CheckForSerializationFailure(const SERIALIZABLEXACT *reader,
+ 		}
+ 		else if (SxactIsPrepared(writer))
+ 		{
+-			LWLockRelease(SerializableXactHashLock);
+-
+ 			/* if we're not the writer, we have to be the reader */
+ 			Assert(MySerializableXact == reader);
++
++			/* See comment above: doom ourselves before raising the error. */
++			MySerializableXact->flags |= SXACT_FLAG_DOOMED;
++			LWLockRelease(SerializableXactHashLock);
++
+ 			ereport(ERROR,
+ 					(errcode(ERRCODE_T_R_SERIALIZATION_FAILURE),
+ 					 errmsg("could not serialize access due to read/write dependencies among transactions"),
+-- 
+2.50.1 (Apple Git-155)
+

@@ -1,0 +1,68 @@
+From a68ef2649352929f226ede8836d60209692610fc Mon Sep 17 00:00:00 2001
+From: Andrey Borodin <amborodin@acm.org>
+Date: Mon, 3 Aug 2026 23:48:00 +0500
+Subject: [PATCH v1] Document vacuum delay points called with interrupts held
+
+vacuum_delay_point() cannot process pending interrupts when interrupts are
+held.  Some call sites are reached while a buffer content lock is held, but
+that constraint is not apparent at the call itself.
+
+Mark the three such call sites observed by the regression and isolation test
+suites with a common, grep-friendly comment.  Describe the lock responsible
+at each site.  This changes no behavior.
+
+Discussion: https://postgr.es/m/CAA3qoJkBf6H7KukXTWFWCYnf_GHf354kOdWATCfoK%3D-bgdwTJw%40mail.gmail.com
+---
+ src/backend/access/gin/ginfast.c | 4 ++++
+ src/backend/access/hash/hash.c   | 4 ++++
+ src/backend/commands/analyze.c   | 4 ++++
+ 3 files changed, 12 insertions(+)
+
+diff --git a/src/backend/access/gin/ginfast.c b/src/backend/access/gin/ginfast.c
+index f50848eb65a..429a8c38d7d 100644
+--- a/src/backend/access/gin/ginfast.c
++++ b/src/backend/access/gin/ginfast.c
+@@ -892,6 +892,10 @@ ginInsertCleanup(GinState *ginstate, bool full_clean,
+ 		 */
+ 		processPendingPage(&accum, &datums, page, FirstOffsetNumber);
+ 
++		/*
++		 * VACUUM_DELAY_POINT_WITH_INTERRUPTS_HELD: the current pending-list
++		 * page remains locked in GIN_SHARE mode at this point.
++		 */
+ 		vacuum_delay_point(false);
+ 
+ 		/*
+diff --git a/src/backend/access/hash/hash.c b/src/backend/access/hash/hash.c
+index 8d8cd30dc38..2c7f198ba1f 100644
+--- a/src/backend/access/hash/hash.c
++++ b/src/backend/access/hash/hash.c
+@@ -797,6 +797,10 @@ hashbucketcleanup(Relation rel, Bucket cur_bucket, Buffer bucket_buf,
+ 		bool		retain_pin = false;
+ 		bool		clear_dead_marking = false;
+ 
++		/*
++		 * VACUUM_DELAY_POINT_WITH_INTERRUPTS_HELD: the caller holds a cleanup
++		 * lock on the primary bucket, and we chain-lock overflow pages.
++		 */
+ 		vacuum_delay_point(false);
+ 
+ 		page = BufferGetPage(buf);
+diff --git a/src/backend/commands/analyze.c b/src/backend/commands/analyze.c
+index f66e80b757c..0f2b5c6e889 100644
+--- a/src/backend/commands/analyze.c
++++ b/src/backend/commands/analyze.c
+@@ -1312,6 +1312,10 @@ acquire_sample_rows(Relation onerel, int elevel,
+ 	/* Outer loop over blocks to sample */
+ 	while (table_scan_analyze_next_block(scan, stream))
+ 	{
++		/*
++		 * VACUUM_DELAY_POINT_WITH_INTERRUPTS_HELD: the table AM holds a
++		 * content lock on the sample block until next_tuple returns false.
++		 */
+ 		vacuum_delay_point(true);
+ 
+ 		while (table_scan_analyze_next_tuple(scan, &liverows, &deadrows, slot))
+-- 
+2.50.1 (Apple Git-155)
+

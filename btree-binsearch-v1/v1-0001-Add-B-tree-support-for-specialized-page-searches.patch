@@ -1,0 +1,860 @@
+From ccf85bc65d88adf4c63fd3541a2673ebe34e6703 Mon Sep 17 00:00:00 2001
+From: Andrey Borodin <amborodin@acm.org>
+Date: Tue, 4 Aug 2026 21:48:21 +0500
+Subject: [PATCH v1 1/2] Add B-tree support for specialized page searches
+
+Binary search within a B-tree page repeatedly invokes the opclass
+comparison function through fmgr and deforms each index tuple.  This is a
+significant part of the cost of searches and random insertions for simple
+fixed-width datatypes, where comparison itself is otherwise very cheap.
+
+Add optional B-tree support procedure 7, which can install callbacks for
+comparing an insertion key with a page tuple and for searching a complete
+page interval.  An opclass callback can decline an individual operation, in
+which case nbtree uses the existing generic implementation.
+
+Use the facility for single-column int4 indexes.  The specialized callback
+reads the fixed-width key directly and preserves nbtree's handling of NULLs,
+descending order, pivot tuples, heap TID tie breakers, and posting lists.
+
+The new procedure deliberately applies only when the scan key and index key
+have the same type.  Cross-type searches continue to use the regular support
+procedure 1 comparison function.
+---
+ doc/src/sgml/btree.sgml                     |  22 ++-
+ doc/src/sgml/xindex.sgml                    |  12 +-
+ src/backend/access/nbtree/nbtcompare.c      | 140 ++++++++++++++++++++
+ src/backend/access/nbtree/nbtsearch.c       |  58 ++++++++
+ src/backend/access/nbtree/nbtutils.c        |  56 ++++++++
+ src/backend/access/nbtree/nbtvalidate.c     |   1 +
+ src/backend/commands/opclasscmds.c          |  17 +++
+ src/include/access/nbtree.h                 |  42 +++++-
+ src/include/catalog/pg_amproc.dat           |   3 +
+ src/include/catalog/pg_proc.dat             |   3 +
+ src/test/regress/expected/alter_generic.out |  10 +-
+ src/test/regress/expected/btree_index.out   |  93 +++++++++++++
+ src/test/regress/sql/alter_generic.sql      |   5 +-
+ src/test/regress/sql/btree_index.sql        |  70 ++++++++++
+ 14 files changed, 524 insertions(+), 8 deletions(-)
+
+diff --git a/doc/src/sgml/btree.sgml b/doc/src/sgml/btree.sgml
+index 027361f20bb..da4d8704c49 100644
+--- a/doc/src/sgml/btree.sgml
++++ b/doc/src/sgml/btree.sgml
+@@ -207,7 +207,7 @@
+ 
+  <para>
+   As shown in <xref linkend="xindex-btree-support-table"/>, btree defines
+-  one required and five optional support functions.  The six
++  one required and six optional support functions.  The seven
+   user-defined methods are:
+  </para>
+  <variablelist>
+@@ -612,6 +612,26 @@ options(<replaceable>relopts</replaceable> <type>local_relopts *</type>) returns
+     </para>
+    </listitem>
+   </varlistentry>
++  <varlistentry>
++   <term><function>binsearchsupport</function></term>
++   <listitem>
++    <para>
++     Optionally, a btree operator family may provide a binary search support
++     function, registered under support function number 7.  This function
++     can install C-callable callbacks that compare an insertion scan key with
++     an index tuple and search all of the tuples on an index page at once.
++     It allows an operator class to avoid the repeated generic function-call
++     and tuple-deformation overhead of comparing one tuple at a time.
++    </para>
++    <para>
++     Binary search support is used only for indexes with a single key
++     attribute and same-type scan keys.  The callback can decline individual
++     searches, which makes the B-tree code restart the search using the
++     required support function number 1.  It is not sensible to register a
++     cross-type binary search support function.
++    </para>
++   </listitem>
++  </varlistentry>
+  </variablelist>
+ 
+ </sect2>
+diff --git a/doc/src/sgml/xindex.sgml b/doc/src/sgml/xindex.sgml
+index 3d315df2f98..4edc98175a9 100644
+--- a/doc/src/sgml/xindex.sgml
++++ b/doc/src/sgml/xindex.sgml
+@@ -406,7 +406,7 @@
+ 
+   <para>
+    B-trees require a comparison support function,
+-   and allow four additional support functions to be
++   and allow six additional support functions to be
+    supplied at the operator class author's option, as shown in <xref
+    linkend="xindex-btree-support-table"/>.
+    The requirements for these support functions are explained further in
+@@ -468,6 +468,13 @@
+        </entry>
+        <entry>6</entry>
+       </row>
++      <row>
++       <entry>
++        Return the address of a C-callable index-page binary search function
++        (optional)
++       </entry>
++       <entry>7</entry>
++      </row>
+      </tbody>
+     </tgroup>
+    </table>
+@@ -1084,7 +1091,8 @@ DEFAULT FOR TYPE int4 USING btree FAMILY integer_ops AS
+   FUNCTION 2 btint4sortsupport(internal) ,
+   FUNCTION 3 in_range(int4, int4, int4, boolean, boolean) ,
+   FUNCTION 4 btequalimage(oid) ,
+-  FUNCTION 6 btint4skipsupport(internal) ;
++  FUNCTION 6 btint4skipsupport(internal) ,
++  FUNCTION 7 btint4binsearchsupport(internal) ;
+ 
+ CREATE OPERATOR CLASS int2_ops
+ DEFAULT FOR TYPE int2 USING btree FAMILY integer_ops AS
+diff --git a/src/backend/access/nbtree/nbtcompare.c b/src/backend/access/nbtree/nbtcompare.c
+index 795fded49d3..895b42c8f00 100644
+--- a/src/backend/access/nbtree/nbtcompare.c
++++ b/src/backend/access/nbtree/nbtcompare.c
+@@ -57,8 +57,11 @@
+ 
+ #include <limits.h>
+ 
++#include "access/nbtree.h"
++#include "common/int.h"
+ #include "utils/builtins.h"
+ #include "utils/fmgrprotos.h"
++#include "utils/rel.h"
+ #include "utils/skipsupport.h"
+ #include "utils/sortsupport.h"
+ 
+@@ -202,6 +205,143 @@ btint4cmp(PG_FUNCTION_ARGS)
+ 		PG_RETURN_INT32(A_LESS_THAN_B);
+ }
+ 
++static bool
++btint4pagecmp(Relation rel, BTScanInsert key, Page page, OffsetNumber offnum,
++			  int32 *result)
++{
++	TupleDesc	tupdesc = RelationGetDescr(rel);
++	ScanKey		skey = key->scankeys;
++	int32		search = DatumGetInt32(skey->sk_argument);
++	ItemId		itemid = PageGetItemId(page, offnum);
++	IndexTuple	itup;
++	ItemPointer heapTid;
++	Datum		datum;
++	bool		isnull;
++
++	itup = (IndexTuple) PageGetItem(page, itemid);
++
++	if (likely(!IndexTupleHasNulls(itup)))
++	{
++		int32		value;
++
++		/* int4 is the first and only key, so its offset is fixed. */
++		memcpy(&value, (char *) itup + sizeof(IndexTupleData), sizeof(value));
++		datum = Int32GetDatum(value);
++		isnull = false;
++	}
++	else
++		datum = index_getattr(itup, 1, tupdesc, &isnull);
++
++	if (isnull)
++		*result = (skey->sk_flags & SK_BT_NULLS_FIRST) ? 1 : -1;
++	else if (skey->sk_flags & SK_BT_DESC)
++		*result = pg_cmp_s32(DatumGetInt32(datum), search);
++	else
++		*result = pg_cmp_s32(search, DatumGetInt32(datum));
++
++	if (*result != 0)
++		return true;
++
++	heapTid = BTreeTupleGetHeapTID(itup);
++	if (key->scantid == NULL)
++	{
++		if (!key->backward && heapTid == NULL && key->heapkeyspace)
++			*result = 1;
++		return true;
++	}
++
++	if (heapTid == NULL)
++	{
++		*result = 1;
++		return true;
++	}
++
++	*result = ItemPointerCompare(key->scantid, heapTid);
++	if (*result > 0 && BTreeTupleIsPosting(itup))
++	{
++		*result = ItemPointerCompare(key->scantid,
++									 BTreeTupleGetMaxHeapTID(itup));
++		if (*result <= 0)
++			*result = 0;
++	}
++
++	return true;
++}
++
++/* Nonincremental searches don't need a cached strict upper bound. */
++static inline bool
++btint4binsearch_uncached(Relation rel, BTScanInsert key, Page page,
++						 OffsetNumber low, OffsetNumber high, int32 cmpval,
++						 OffsetNumber *resultoff)
++{
++	while (high > low)
++	{
++		OffsetNumber mid = low + ((high - low) / 2);
++		int32		result;
++		bool		advance;
++
++		if (!btint4pagecmp(rel, key, page, mid, &result))
++			return false;
++		if (unlikely(result == 0 && key->scantid != NULL))
++			return false;
++
++		advance = result >= cmpval;
++		low = advance ? mid + 1 : low;
++		high = advance ? high : mid;
++	}
++
++	*resultoff = low;
++	return true;
++}
++
++/* Single-column page binary search for int4 opclasses. */
++static bool
++btint4binsearch(Relation rel, BTScanInsert key, Page page,
++				OffsetNumber low, OffsetNumber high, int32 cmpval,
++				OffsetNumber *resultoff, OffsetNumber *strictresult)
++{
++	OffsetNumber stricthigh = high;
++
++	if (strictresult == NULL)
++		return btint4binsearch_uncached(rel, key, page, low, high, cmpval,
++										resultoff);
++
++	while (high > low)
++	{
++		OffsetNumber mid = low + ((high - low) / 2);
++		int32		result;
++
++		if (!btint4pagecmp(rel, key, page, mid, &result))
++			return false;
++		if (unlikely(result == 0 && key->scantid != NULL))
++			return false;
++
++		if (result >= cmpval)
++			low = mid + 1;
++		else
++		{
++			high = mid;
++			if (result != 0)
++				stricthigh = high;
++		}
++	}
++
++	*resultoff = low;
++	*strictresult = stricthigh;
++	return true;
++}
++
++Datum
++btint4binsearchsupport(PG_FUNCTION_ARGS)
++{
++	BTBinSearchSupportData *support =
++		(BTBinSearchSupportData *) PG_GETARG_POINTER(0);
++
++	support->compare_tuple = btint4pagecmp;
++	support->binary_search = btint4binsearch;
++	PG_RETURN_VOID();
++}
++
+ Datum
+ btint4sortsupport(PG_FUNCTION_ARGS)
+ {
+diff --git a/src/backend/access/nbtree/nbtsearch.c b/src/backend/access/nbtree/nbtsearch.c
+index 5964bc9195e..93845d42acb 100644
+--- a/src/backend/access/nbtree/nbtsearch.c
++++ b/src/backend/access/nbtree/nbtsearch.c
+@@ -341,6 +341,9 @@ _bt_moveright(Relation rel,
+  * This procedure is not responsible for walking right, it just examines
+  * the given page.  _bt_binsrch() has no lock or refcount side effects
+  * on the buffer.
++ *
++ * NB: Keep opclass binary_search callbacks in sync with changes to the
++ * search semantics here or in _bt_binsrch_insert().
+  */
+ static OffsetNumber
+ _bt_binsrch(Relation rel,
+@@ -391,6 +394,27 @@ _bt_binsrch(Relation rel,
+ 
+ 	cmpval = key->nextkey ? 0 : 1;	/* select comparison value */
+ 
++	/*
++	 * A specialized search may skip the minus-infinity first item on an
++	 * internal page.  It can decline at run time, in which case use the
++	 * generic comparison loop from its original bounds.
++	 */
++	if (key->binary_search != NULL)
++	{
++		OffsetNumber resultoff;
++		OffsetNumber searchlow = low;
++
++		if (!P_ISLEAF(opaque))
++			searchlow++;
++
++		if (key->binary_search(rel, key, page, searchlow, high, cmpval,
++							   &resultoff, NULL))
++		{
++			low = resultoff;
++			goto search_done;
++		}
++	}
++
+ 	while (high > low)
+ 	{
+ 		OffsetNumber mid = low + ((high - low) / 2);
+@@ -405,6 +429,8 @@ _bt_binsrch(Relation rel,
+ 			high = mid;
+ 	}
+ 
++search_done:
++
+ 	/*
+ 	 * At this point we have high == low.
+ 	 *
+@@ -472,6 +498,9 @@ _bt_binsrch(Relation rel,
+  * tuple matches (callers can use insertstate's postingoff field to
+  * determine which existing heap TID will need to be replaced by a posting
+  * list split).
++ *
++ * NB: Keep opclass binary_search callbacks in sync with changes to the
++ * search semantics here or in _bt_binsrch().
+  */
+ OffsetNumber
+ _bt_binsrch_insert(Relation rel, BTInsertState insertstate)
+@@ -531,6 +560,25 @@ _bt_binsrch_insert(Relation rel, BTInsertState insertstate)
+ 
+ 	cmpval = 1;					/* !nextkey comparison value */
+ 
++	/*
++	 * Let an opclass complete the search using a specialized implementation.
++	 * It may decline at run time, in which case the generic loop starts from
++	 * the original bounds.
++	 */
++	if (!insertstate->bounds_valid && key->binary_search != NULL)
++	{
++		OffsetNumber keylow;
++		OffsetNumber keystricthigh;
++
++		if (key->binary_search(rel, key, page, low, high, cmpval,
++							   &keylow, &keystricthigh))
++		{
++			low = keylow;
++			high = keylow;
++			stricthigh = keystricthigh;
++		}
++	}
++
+ 	while (high > low)
+ 	{
+ 		OffsetNumber mid = low + ((high - low) / 2);
+@@ -685,6 +733,9 @@ _bt_binsrch_posting(BTScanInsert key, Page page, OffsetNumber offnum)
+  * that isn't relied upon.  This allows us to implement the Lehman and
+  * Yao convention that the first down-link pointer is before the first
+  * key.  See backend/access/nbtree/README for details.
++ *
++ * NB: Keep opclass compare_tuple callbacks in sync with changes to the
++ * comparison semantics here.
+  *----------
+  */
+ int32
+@@ -713,6 +764,10 @@ _bt_compare(Relation rel,
+ 	if (!P_ISLEAF(opaque) && offnum == P_FIRSTDATAKEY(opaque))
+ 		return 1;
+ 
++	if (key->compare_tuple != NULL &&
++		key->compare_tuple(rel, key, page, offnum, &result))
++		return result;
++
+ 	itup = (IndexTuple) PageGetItem(page, PageGetItemId(page, offnum));
+ 	ntupatts = BTreeTupleGetNAtts(itup, rel);
+ 
+@@ -1445,6 +1500,9 @@ _bt_first(IndexScanDesc scan, ScanDirection dir)
+ 	inskey.anynullkeys = false; /* unused */
+ 	inskey.scantid = NULL;
+ 	inskey.keysz = keysz;
++	inskey.compare_tuple = NULL;
++	inskey.binary_search = NULL;
++	_bt_setup_binsearch(rel, &inskey);
+ 	switch (strat_total)
+ 	{
+ 		case BTLessStrategyNumber:
+diff --git a/src/backend/access/nbtree/nbtutils.c b/src/backend/access/nbtree/nbtutils.c
+index 014faa1622f..68bcb26a8a2 100644
+--- a/src/backend/access/nbtree/nbtutils.c
++++ b/src/backend/access/nbtree/nbtutils.c
+@@ -34,6 +34,7 @@
+ static int	_bt_compare_int(const void *va, const void *vb);
+ static int	_bt_keep_natts(Relation rel, IndexTuple lastleft,
+ 						   IndexTuple firstright, BTScanInsert itup_key);
++static const BTBinSearchSupportData no_binsearch_support = {0};
+ 
+ 
+ /*
+@@ -94,6 +95,8 @@ _bt_mkscankey(Relation rel, IndexTuple itup)
+ 	key->nextkey = false;		/* usual case, required by btinsert */
+ 	key->backward = false;		/* usual case, required by btinsert */
+ 	key->keysz = Min(indnkeyatts, tupnatts);
++	key->compare_tuple = NULL;
++	key->binary_search = NULL;
+ 	key->scantid = key->heapkeyspace && itup ?
+ 		BTreeTupleGetHeapTID(itup) : NULL;
+ 	skey = key->scankeys;
+@@ -143,9 +146,62 @@ _bt_mkscankey(Relation rel, IndexTuple itup)
+ 	if (rel->rd_index->indnullsnotdistinct)
+ 		key->anynullkeys = false;
+ 
++	_bt_setup_binsearch(rel, key);
++
+ 	return key;
+ }
+ 
++/* Set up an optional opclass-provided single-column page binary search. */
++void
++_bt_setup_binsearch(Relation rel, BTScanInsert key)
++{
++	Oid			proc;
++	FmgrInfo   *procinfo;
++	BTBinSearchSupportData *support;
++	ScanKey		skey;
++
++	key->compare_tuple = NULL;
++	key->binary_search = NULL;
++
++	if (IndexRelationGetNumberOfKeyAttributes(rel) != 1 || key->keysz != 1)
++		return;
++
++	skey = key->scankeys;
++	if (skey->sk_flags & (SK_ISNULL | SK_ROW_HEADER) ||
++		(skey->sk_subtype != InvalidOid &&
++		 skey->sk_subtype != rel->rd_opcintype[0]))
++		return;
++
++	/* Avoid repeating fmgr setup work for every tuple inserted. */
++	procinfo = &rel->rd_supportinfo[BTBINSEARCH_PROC - 1];
++	support = (BTBinSearchSupportData *) procinfo->fn_extra;
++	if (support != NULL)
++	{
++		key->compare_tuple = support->compare_tuple;
++		key->binary_search = support->binary_search;
++		return;
++	}
++
++	proc = index_getprocid(rel, 1, BTBINSEARCH_PROC);
++	if (!OidIsValid(proc))
++	{
++		/* Cache the absence of optional support for subsequent tuples. */
++		procinfo->fn_extra = (void *) &no_binsearch_support;
++		return;
++	}
++
++	procinfo = index_getprocinfo(rel, 1, BTBINSEARCH_PROC);
++	support = (BTBinSearchSupportData *) procinfo->fn_extra;
++	if (support == NULL)
++	{
++		support = MemoryContextAllocZero(procinfo->fn_mcxt, sizeof(*support));
++		FunctionCall1(procinfo, PointerGetDatum(support));
++		procinfo->fn_extra = support;
++	}
++	key->compare_tuple = support->compare_tuple;
++	key->binary_search = support->binary_search;
++}
++
+ /*
+  * qsort comparison function for int arrays
+  */
+diff --git a/src/backend/access/nbtree/nbtvalidate.c b/src/backend/access/nbtree/nbtvalidate.c
+index b67c015a4e7..dc31ccc2c67 100644
+--- a/src/backend/access/nbtree/nbtvalidate.c
++++ b/src/backend/access/nbtree/nbtvalidate.c
+@@ -107,6 +107,7 @@ btvalidate(Oid opclassoid)
+ 				ok = check_amoptsproc_signature(procform->amproc);
+ 				break;
+ 			case BTSKIPSUPPORT_PROC:
++			case BTBINSEARCH_PROC:
+ 				ok = check_amproc_signature(procform->amproc, VOIDOID, true,
+ 											1, 1, INTERNALOID);
+ 				break;
+diff --git a/src/backend/commands/opclasscmds.c b/src/backend/commands/opclasscmds.c
+index 7493a9ccc06..b6f5c56a717 100644
+--- a/src/backend/commands/opclasscmds.c
++++ b/src/backend/commands/opclasscmds.c
+@@ -1374,6 +1374,23 @@ assignProcTypes(OpFamilyMember *member, Oid amoid, Oid typeoid,
+ 						(errcode(ERRCODE_INVALID_OBJECT_DEFINITION),
+ 						 errmsg("btree skip support functions must not be cross-type")));
+ 		}
++		else if (member->number == BTBINSEARCH_PROC)
++		{
++			if (procform->pronargs != 1 ||
++				procform->proargtypes.values[0] != INTERNALOID)
++				ereport(ERROR,
++						(errcode(ERRCODE_INVALID_OBJECT_DEFINITION),
++						 errmsg("btree binary search support functions must accept type \"internal\"")));
++			if (procform->prorettype != VOIDOID)
++				ereport(ERROR,
++						(errcode(ERRCODE_INVALID_OBJECT_DEFINITION),
++						 errmsg("btree binary search support functions must return void")));
++
++			if (member->lefttype != member->righttype)
++				ereport(ERROR,
++						(errcode(ERRCODE_INVALID_OBJECT_DEFINITION),
++						 errmsg("btree binary search support functions must not be cross-type")));
++		}
+ 	}
+ 	else if (GetIndexAmRoutineByAmId(amoid, false)->amcanhash)
+ 	{
+diff --git a/src/include/access/nbtree.h b/src/include/access/nbtree.h
+index 3097e9bb1af..9b4b419a398 100644
+--- a/src/include/access/nbtree.h
++++ b/src/include/access/nbtree.h
+@@ -712,6 +712,9 @@ BTreeTupleGetMaxHeapTID(IndexTuple itup)
+  *	To facilitate more efficient B-Tree skip scans, an operator class may
+  *	choose to offer a sixth amproc procedure (BTSKIPSUPPORT_PROC).  For full
+  *	details, see src/include/utils/skipsupport.h.
++ *
++ *	To accelerate searches within individual index pages, an operator class
++ *	may choose to offer a seventh amproc procedure (BTBINSEARCH_PROC).
+  */
+ 
+ #define BTORDER_PROC		1
+@@ -720,7 +723,8 @@ BTreeTupleGetMaxHeapTID(IndexTuple itup)
+ #define BTEQUALIMAGE_PROC	4
+ #define BTOPTIONS_PROC		5
+ #define BTSKIPSUPPORT_PROC	6
+-#define BTNProcs			6
++#define BTBINSEARCH_PROC	7
++#define BTNProcs			7
+ 
+ /*
+  *	We need to be able to tell the difference between read and write
+@@ -792,6 +796,39 @@ typedef BTStackData *BTStack;
+  * flexible array member, though it's sized in a way that makes it possible to
+  * use stack allocations.  See nbtree/README for full details.
+  */
++struct BTScanInsertData;
++
++/*
++ * Optional callbacks installed by a BTBINSEARCH_PROC support function.
++ *
++ * compare_tuple has the same result semantics as _bt_compare().  It is never
++ * asked to compare the minus-infinity tuple at the start of an internal page.
++ * binary_search searches the half-open interval [low, high), using cmpval in
++ * the same way as _bt_binsrch().  When requested, stricthigh must be set to a
++ * bound known to compare strictly greater than the insertion scankey.
++ *
++ * A callback may return false without changing its output arguments, making
++ * nbtree repeat the operation using the generic comparator.
++ */
++typedef bool (*BTCompareTupleFunction) (Relation rel,
++										struct BTScanInsertData *key,
++										Page page, OffsetNumber offnum,
++										int32 *result);
++
++typedef bool (*BTBinSearchFunction) (Relation rel,
++									 struct BTScanInsertData *key,
++									 Page page, OffsetNumber low,
++									 OffsetNumber high, int32 cmpval,
++									 OffsetNumber *result,
++									 OffsetNumber *stricthigh);
++
++typedef struct BTBinSearchSupportData
++{
++	/* Support functions set either or both callbacks. */
++	BTCompareTupleFunction compare_tuple;
++	BTBinSearchFunction binary_search;
++}			BTBinSearchSupportData;
++
+ typedef struct BTScanInsertData
+ {
+ 	bool		heapkeyspace;
+@@ -801,6 +838,8 @@ typedef struct BTScanInsertData
+ 	bool		backward;		/* backward index scan? */
+ 	ItemPointer scantid;		/* tiebreaker for scankeys */
+ 	int			keysz;			/* Size of scankeys array */
++	BTCompareTupleFunction compare_tuple;
++	BTBinSearchFunction binary_search;
+ 	ScanKeyData scankeys[INDEX_MAX_KEYS];	/* Must appear last */
+ } BTScanInsertData;
+ 
+@@ -1295,6 +1334,7 @@ extern Buffer _bt_get_endpoint(Relation rel, uint32 level, bool rightmost);
+  * prototypes for functions in nbtutils.c
+  */
+ extern BTScanInsert _bt_mkscankey(Relation rel, IndexTuple itup);
++extern void _bt_setup_binsearch(Relation rel, BTScanInsert key);
+ extern void _bt_killitems(IndexScanDesc scan);
+ extern BTCycleId _bt_vacuum_cycleid(Relation rel);
+ extern BTCycleId _bt_start_vacuum(Relation rel);
+diff --git a/src/include/catalog/pg_amproc.dat b/src/include/catalog/pg_amproc.dat
+index 4a1efdbc899..b2a413e9263 100644
+--- a/src/include/catalog/pg_amproc.dat
++++ b/src/include/catalog/pg_amproc.dat
+@@ -157,6 +157,9 @@
+   amprocrighttype => 'int4', amprocnum => '4', amproc => 'btequalimage' },
+ { amprocfamily => 'btree/integer_ops', amproclefttype => 'int4',
+   amprocrighttype => 'int4', amprocnum => '6', amproc => 'btint4skipsupport' },
++{ amprocfamily => 'btree/integer_ops', amproclefttype => 'int4',
++  amprocrighttype => 'int4', amprocnum => '7',
++  amproc => 'btint4binsearchsupport' },
+ { amprocfamily => 'btree/integer_ops', amproclefttype => 'int4',
+   amprocrighttype => 'int8', amprocnum => '1', amproc => 'btint48cmp' },
+ { amprocfamily => 'btree/integer_ops', amproclefttype => 'int4',
+diff --git a/src/include/catalog/pg_proc.dat b/src/include/catalog/pg_proc.dat
+index f8a021987b5..c48f5220307 100644
+--- a/src/include/catalog/pg_proc.dat
++++ b/src/include/catalog/pg_proc.dat
+@@ -1016,6 +1016,9 @@
+ { oid => '6403', descr => 'skip support',
+   proname => 'btint4skipsupport', prorettype => 'void',
+   proargtypes => 'internal', prosrc => 'btint4skipsupport' },
++{ oid => '8000', descr => 'binary search support',
++  proname => 'btint4binsearchsupport', prorettype => 'void',
++  proargtypes => 'internal', prosrc => 'btint4binsearchsupport' },
+ { oid => '842', descr => 'less-equal-greater',
+   proname => 'btint8cmp', proleakproof => 't', prorettype => 'int4',
+   proargtypes => 'int8 int8', prosrc => 'btint8cmp' },
+diff --git a/src/test/regress/expected/alter_generic.out b/src/test/regress/expected/alter_generic.out
+index 97d83f4e9b4..0059fad0c03 100644
+--- a/src/test/regress/expected/alter_generic.out
++++ b/src/test/regress/expected/alter_generic.out
+@@ -362,9 +362,9 @@ ERROR:  invalid operator number 0, must be between 1 and 5
+ ALTER OPERATOR FAMILY alt_opf4 USING btree ADD OPERATOR 1 < ; -- operator without argument types
+ ERROR:  operator argument types must be specified in ALTER OPERATOR FAMILY
+ ALTER OPERATOR FAMILY alt_opf4 USING btree ADD FUNCTION 0 btint42cmp(int4, int2); -- invalid options parsing function
+-ERROR:  invalid function number 0, must be between 1 and 6
+-ALTER OPERATOR FAMILY alt_opf4 USING btree ADD FUNCTION 7 btint42cmp(int4, int2); -- function number should be between 1 and 6
+-ERROR:  invalid function number 7, must be between 1 and 6
++ERROR:  invalid function number 0, must be between 1 and 7
++ALTER OPERATOR FAMILY alt_opf4 USING btree ADD FUNCTION 8 btint42cmp(int4, int2); -- function number should be between 1 and 7
++ERROR:  invalid function number 8, must be between 1 and 7
+ ALTER OPERATOR FAMILY alt_opf4 USING btree ADD STORAGE invalid_storage; -- Ensure STORAGE is not a part of ALTER OPERATOR FAMILY
+ ERROR:  STORAGE cannot be specified in ALTER OPERATOR FAMILY
+ DROP OPERATOR FAMILY alt_opf4 USING btree;
+@@ -509,6 +509,10 @@ ERROR:  ordering equal image functions must not be cross-type
+ ALTER OPERATOR FAMILY alt_opf18 USING btree
+   ADD FUNCTION 6 (int4, int2) btint4skipsupport(internal);
+ ERROR:  btree skip support functions must not be cross-type
++-- Should fail. Not allowed to have cross-type binary search support function.
++ALTER OPERATOR FAMILY alt_opf18 USING btree
++  ADD FUNCTION 7 (int4, int2) btint4binsearchsupport(internal);
++ERROR:  btree binary search support functions must not be cross-type
+ ALTER OPERATOR FAMILY alt_opf18 USING btree DROP FUNCTION 2 (int4, int4);
+ ERROR:  function 2(integer,integer) does not exist in operator family "alt_opf18"
+ DROP OPERATOR FAMILY alt_opf18 USING btree;
+diff --git a/src/test/regress/expected/btree_index.out b/src/test/regress/expected/btree_index.out
+index 3a83e9a0534..6bfc63e1a5c 100644
+--- a/src/test/regress/expected/btree_index.out
++++ b/src/test/regress/expected/btree_index.out
+@@ -893,3 +893,96 @@ ALTER INDEX btree_part_idx ALTER COLUMN id SET (n_distinct=100);
+ ERROR:  ALTER action ALTER COLUMN ... SET cannot be performed on relation "btree_part_idx"
+ DETAIL:  This operation is not supported for partitioned indexes.
+ DROP TABLE btree_part;
++-- Test the optional single-column page binary search support function.
++CREATE OPERATOR FAMILY btree_no_binsearch_family USING btree;
++CREATE OPERATOR CLASS btree_no_binsearch_ops
++FOR TYPE int4 USING btree FAMILY btree_no_binsearch_family AS
++  OPERATOR 1 < (int4, int4),
++  OPERATOR 2 <= (int4, int4),
++  OPERATOR 3 = (int4, int4),
++  OPERATOR 4 >= (int4, int4),
++  OPERATOR 5 > (int4, int4),
++  FUNCTION 1 btint4cmp(int4, int4);
++CREATE TABLE btree_binsearch_fast (k int4, v int4);
++CREATE TABLE btree_binsearch_control (k int4, v int4);
++INSERT INTO btree_binsearch_fast
++SELECT CASE WHEN g % 101 = 0 THEN NULL ELSE g % 257 - 128 END, g
++FROM generate_series(1, 20000) g;
++INSERT INTO btree_binsearch_control SELECT * FROM btree_binsearch_fast;
++CREATE INDEX btree_binsearch_fast_idx ON btree_binsearch_fast
++  (k DESC NULLS FIRST) WITH (deduplicate_items = on);
++CREATE INDEX btree_binsearch_control_idx ON btree_binsearch_control
++  (k btree_no_binsearch_ops DESC NULLS FIRST);
++-- Exercise insertion into a multilevel index, including duplicate keys.
++INSERT INTO btree_binsearch_fast
++SELECT g % 31 - 15, 20000 + g FROM generate_series(1, 2000) g;
++INSERT INTO btree_binsearch_control
++SELECT g % 31 - 15, 20000 + g FROM generate_series(1, 2000) g;
++ANALYZE btree_binsearch_fast;
++ANALYZE btree_binsearch_control;
++SET enable_seqscan = off;
++SET enable_bitmapscan = off;
++-- Existing, missing, NULL, and range scan keys must give identical results.
++SELECT
++  (SELECT array_agg(v ORDER BY v) FROM btree_binsearch_fast WHERE k = 7) =
++  (SELECT array_agg(v ORDER BY v) FROM btree_binsearch_control WHERE k = 7);
++ ?column? 
++----------
++ t
++(1 row)
++
++SELECT
++  (SELECT count(*) FROM btree_binsearch_fast WHERE k = 1000) =
++  (SELECT count(*) FROM btree_binsearch_control WHERE k = 1000);
++ ?column? 
++----------
++ t
++(1 row)
++
++SELECT
++  (SELECT array_agg(v ORDER BY v) FROM btree_binsearch_fast WHERE k IS NULL) =
++  (SELECT array_agg(v ORDER BY v) FROM btree_binsearch_control WHERE k IS NULL);
++ ?column? 
++----------
++ t
++(1 row)
++
++SELECT
++  (SELECT array_agg(v ORDER BY v) FROM btree_binsearch_fast
++   WHERE k >= -10 AND k < 10) =
++  (SELECT array_agg(v ORDER BY v) FROM btree_binsearch_control
++   WHERE k >= -10 AND k < 10);
++ ?column? 
++----------
++ t
++(1 row)
++
++-- Check both scan directions across many leaf pages.
++SELECT
++  (SELECT array_agg(k) FROM
++     (SELECT k FROM btree_binsearch_fast
++      WHERE k IS NOT NULL ORDER BY k ASC) s) =
++  (SELECT array_agg(k) FROM
++     (SELECT k FROM btree_binsearch_control
++      WHERE k IS NOT NULL ORDER BY k ASC) s);
++ ?column? 
++----------
++ t
++(1 row)
++
++SELECT
++  (SELECT array_agg(k) FROM
++     (SELECT k FROM btree_binsearch_fast
++      WHERE k IS NOT NULL ORDER BY k DESC) s) =
++  (SELECT array_agg(k) FROM
++     (SELECT k FROM btree_binsearch_control
++      WHERE k IS NOT NULL ORDER BY k DESC) s);
++ ?column? 
++----------
++ t
++(1 row)
++
++RESET enable_seqscan;
++RESET enable_bitmapscan;
++DROP TABLE btree_binsearch_fast, btree_binsearch_control;
++DROP OPERATOR FAMILY btree_no_binsearch_family USING btree;
+diff --git a/src/test/regress/sql/alter_generic.sql b/src/test/regress/sql/alter_generic.sql
+index 528e6f548a4..08e09fd8b4c 100644
+--- a/src/test/regress/sql/alter_generic.sql
++++ b/src/test/regress/sql/alter_generic.sql
+@@ -310,7 +310,7 @@ ALTER OPERATOR FAMILY alt_opf4 USING btree ADD OPERATOR 6 < (int4, int2); -- ope
+ ALTER OPERATOR FAMILY alt_opf4 USING btree ADD OPERATOR 0 < (int4, int2); -- operator number should be between 1 and 5
+ ALTER OPERATOR FAMILY alt_opf4 USING btree ADD OPERATOR 1 < ; -- operator without argument types
+ ALTER OPERATOR FAMILY alt_opf4 USING btree ADD FUNCTION 0 btint42cmp(int4, int2); -- invalid options parsing function
+-ALTER OPERATOR FAMILY alt_opf4 USING btree ADD FUNCTION 7 btint42cmp(int4, int2); -- function number should be between 1 and 6
++ALTER OPERATOR FAMILY alt_opf4 USING btree ADD FUNCTION 8 btint42cmp(int4, int2); -- function number should be between 1 and 7
+ ALTER OPERATOR FAMILY alt_opf4 USING btree ADD STORAGE invalid_storage; -- Ensure STORAGE is not a part of ALTER OPERATOR FAMILY
+ DROP OPERATOR FAMILY alt_opf4 USING btree;
+ 
+@@ -447,6 +447,9 @@ ALTER OPERATOR FAMILY alt_opf18 USING btree
+ -- Should fail. Not allowed to have cross-type skip support function.
+ ALTER OPERATOR FAMILY alt_opf18 USING btree
+   ADD FUNCTION 6 (int4, int2) btint4skipsupport(internal);
++-- Should fail. Not allowed to have cross-type binary search support function.
++ALTER OPERATOR FAMILY alt_opf18 USING btree
++  ADD FUNCTION 7 (int4, int2) btint4binsearchsupport(internal);
+ ALTER OPERATOR FAMILY alt_opf18 USING btree DROP FUNCTION 2 (int4, int4);
+ DROP OPERATOR FAMILY alt_opf18 USING btree;
+ 
+diff --git a/src/test/regress/sql/btree_index.sql b/src/test/regress/sql/btree_index.sql
+index a08bb101c20..b9104dace4b 100644
+--- a/src/test/regress/sql/btree_index.sql
++++ b/src/test/regress/sql/btree_index.sql
+@@ -523,3 +523,73 @@ CREATE TABLE btree_part (id int4) PARTITION BY RANGE (id);
+ CREATE INDEX btree_part_idx ON btree_part(id);
+ ALTER INDEX btree_part_idx ALTER COLUMN id SET (n_distinct=100);
+ DROP TABLE btree_part;
++
++-- Test the optional single-column page binary search support function.
++CREATE OPERATOR FAMILY btree_no_binsearch_family USING btree;
++CREATE OPERATOR CLASS btree_no_binsearch_ops
++FOR TYPE int4 USING btree FAMILY btree_no_binsearch_family AS
++  OPERATOR 1 < (int4, int4),
++  OPERATOR 2 <= (int4, int4),
++  OPERATOR 3 = (int4, int4),
++  OPERATOR 4 >= (int4, int4),
++  OPERATOR 5 > (int4, int4),
++  FUNCTION 1 btint4cmp(int4, int4);
++
++CREATE TABLE btree_binsearch_fast (k int4, v int4);
++CREATE TABLE btree_binsearch_control (k int4, v int4);
++INSERT INTO btree_binsearch_fast
++SELECT CASE WHEN g % 101 = 0 THEN NULL ELSE g % 257 - 128 END, g
++FROM generate_series(1, 20000) g;
++INSERT INTO btree_binsearch_control SELECT * FROM btree_binsearch_fast;
++CREATE INDEX btree_binsearch_fast_idx ON btree_binsearch_fast
++  (k DESC NULLS FIRST) WITH (deduplicate_items = on);
++CREATE INDEX btree_binsearch_control_idx ON btree_binsearch_control
++  (k btree_no_binsearch_ops DESC NULLS FIRST);
++
++-- Exercise insertion into a multilevel index, including duplicate keys.
++INSERT INTO btree_binsearch_fast
++SELECT g % 31 - 15, 20000 + g FROM generate_series(1, 2000) g;
++INSERT INTO btree_binsearch_control
++SELECT g % 31 - 15, 20000 + g FROM generate_series(1, 2000) g;
++ANALYZE btree_binsearch_fast;
++ANALYZE btree_binsearch_control;
++
++SET enable_seqscan = off;
++SET enable_bitmapscan = off;
++
++-- Existing, missing, NULL, and range scan keys must give identical results.
++SELECT
++  (SELECT array_agg(v ORDER BY v) FROM btree_binsearch_fast WHERE k = 7) =
++  (SELECT array_agg(v ORDER BY v) FROM btree_binsearch_control WHERE k = 7);
++SELECT
++  (SELECT count(*) FROM btree_binsearch_fast WHERE k = 1000) =
++  (SELECT count(*) FROM btree_binsearch_control WHERE k = 1000);
++SELECT
++  (SELECT array_agg(v ORDER BY v) FROM btree_binsearch_fast WHERE k IS NULL) =
++  (SELECT array_agg(v ORDER BY v) FROM btree_binsearch_control WHERE k IS NULL);
++SELECT
++  (SELECT array_agg(v ORDER BY v) FROM btree_binsearch_fast
++   WHERE k >= -10 AND k < 10) =
++  (SELECT array_agg(v ORDER BY v) FROM btree_binsearch_control
++   WHERE k >= -10 AND k < 10);
++
++-- Check both scan directions across many leaf pages.
++SELECT
++  (SELECT array_agg(k) FROM
++     (SELECT k FROM btree_binsearch_fast
++      WHERE k IS NOT NULL ORDER BY k ASC) s) =
++  (SELECT array_agg(k) FROM
++     (SELECT k FROM btree_binsearch_control
++      WHERE k IS NOT NULL ORDER BY k ASC) s);
++SELECT
++  (SELECT array_agg(k) FROM
++     (SELECT k FROM btree_binsearch_fast
++      WHERE k IS NOT NULL ORDER BY k DESC) s) =
++  (SELECT array_agg(k) FROM
++     (SELECT k FROM btree_binsearch_control
++      WHERE k IS NOT NULL ORDER BY k DESC) s);
++
++RESET enable_seqscan;
++RESET enable_bitmapscan;
++DROP TABLE btree_binsearch_fast, btree_binsearch_control;
++DROP OPERATOR FAMILY btree_no_binsearch_family USING btree;
+-- 
+2.50.1 (Apple Git-155)
+

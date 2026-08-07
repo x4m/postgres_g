@@ -1,0 +1,135 @@
+From 3cf6a6884781d9f0d9aa89766dab9b0a4bb5c8de Mon Sep 17 00:00:00 2001
+From: Andrey Borodin <amborodin@acm.org>
+Date: Sat, 30 May 2026 23:07:39 +0500
+Subject: [PATCH 1/2] Add isolation test: SSI serialization failure swallowed
+ by SAVEPOINT
+
+A serialization failure raised by predicate.c while a transaction is
+identified as the pivot of a dangerous structure ("Canceled on conflict
+out to pivot ..., during read", and likewise "during write") aborts the
+current transaction via ereport() WITHOUT first marking the transaction
+SXACT_FLAG_DOOMED.
+
+If that error is raised inside a subtransaction, ROLLBACK TO SAVEPOINT
+swallows it and the transaction is free to COMMIT, defeating
+serializable isolation.
+
+This test sets up a two-transaction write-skew.  s2 performs its write
+before the savepoint, then reads inside the savepoint and is correctly
+cancelled by SSI; it rolls back to the savepoint and commits.  On an
+unpatched server the COMMIT succeeds, leaving both writes committed (a
+non-serializable outcome).  The expected output reflects the correct
+behavior, where the COMMIT fails with a serialization error, so this
+test fails until the accompanying predicate.c fix is applied.
+
+Co-authored-by: Cursor <cursoragent@cursor.com>
+---
+ .../expected/serializable-savepoint.out       | 25 +++++++++
+ src/test/isolation/isolation_schedule         |  2 +
+ .../specs/serializable-savepoint.spec         | 52 +++++++++++++++++++
+ 3 files changed, 79 insertions(+)
+ create mode 100644 src/test/isolation/expected/serializable-savepoint.out
+ create mode 100644 src/test/isolation/specs/serializable-savepoint.spec
+
+diff --git a/src/test/isolation/expected/serializable-savepoint.out b/src/test/isolation/expected/serializable-savepoint.out
+new file mode 100644
+index 00000000000..0dd4f787efd
+--- /dev/null
++++ b/src/test/isolation/expected/serializable-savepoint.out
+@@ -0,0 +1,25 @@
++Parsed test spec with 3 sessions
++
++starting permutation: r1 w2 w1 c1 sp2 r2 rb2 c2 rall
++step r1: SELECT v FROM t WHERE id = 2;
++v
++-
++0
++(1 row)
++
++step w2: UPDATE t SET v = 1 WHERE id = 2;
++step w1: UPDATE t SET v = 1 WHERE id = 1;
++step c1: COMMIT;
++step sp2: SAVEPOINT f;
++step r2: SELECT v FROM t WHERE id = 1;
++ERROR:  could not serialize access due to read/write dependencies among transactions
++step rb2: ROLLBACK TO SAVEPOINT f;
++step c2: COMMIT;
++ERROR:  could not serialize access due to read/write dependencies among transactions
++step rall: SELECT id, v FROM t ORDER BY id;
++id|v
++--+-
++ 1|1
++ 2|0
++(2 rows)
++
+diff --git a/src/test/isolation/isolation_schedule b/src/test/isolation/isolation_schedule
+index 15c33fad4c5..62a334ad3d9 100644
+--- a/src/test/isolation/isolation_schedule
++++ b/src/test/isolation/isolation_schedule
+@@ -127,3 +127,5 @@ test: matview-write-skew
+ test: lock-nowait
+ test: for-portion-of
+ test: ddl-dependency-locking
++
++test: serializable-savepoint
+diff --git a/src/test/isolation/specs/serializable-savepoint.spec b/src/test/isolation/specs/serializable-savepoint.spec
+new file mode 100644
+index 00000000000..de61b615529
+--- /dev/null
++++ b/src/test/isolation/specs/serializable-savepoint.spec
+@@ -0,0 +1,52 @@
++# Test that a serialization failure raised while *checking* a read (the
++# "conflict out to pivot, during read" cancellation) cannot be discarded by
++# rolling back to a SAVEPOINT.
++#
++# s1 and s2 form the classic write-skew dangerous structure under SERIALIZABLE:
++#   s1 reads row 2 and writes row 1
++#   s2 writes row 2 and reads row 1
++# s1 commits first.  When s2 then reads row 1 it is correctly identified as the
++# pivot of a dangerous structure and PostgreSQL raises
++#   ERROR:  could not serialize access ...
++#   (Canceled on conflict out to pivot ..., during read).
++#
++# Crucially, s2's *write* to row 2 happened BEFORE the savepoint, so it is not
++# undone.  s2 only wraps the offending READ in a SAVEPOINT, rolls back to it
++# (swallowing the error) and commits.  That COMMIT must fail: allowing it
++# leaves both s1's and s2's writes committed, which is the write-skew anomaly
++# SSI is supposed to prevent (no serial order exists).
++
++setup
++{
++  CREATE TABLE t (id int PRIMARY KEY, v int);
++  INSERT INTO t VALUES (1, 0), (2, 0);
++}
++
++teardown
++{
++  DROP TABLE t;
++}
++
++session s1
++setup { BEGIN ISOLATION LEVEL SERIALIZABLE; }
++step r1  { SELECT v FROM t WHERE id = 2; }
++step w1  { UPDATE t SET v = 1 WHERE id = 1; }
++step c1  { COMMIT; }
++
++session s2
++setup { BEGIN ISOLATION LEVEL SERIALIZABLE; }
++step w2   { UPDATE t SET v = 1 WHERE id = 2; }
++step sp2  { SAVEPOINT f; }
++step r2   { SELECT v FROM t WHERE id = 1; }
++step rb2  { ROLLBACK TO SAVEPOINT f; }
++step c2   { COMMIT; }
++
++# Used to observe the final committed state.
++session s3
++step rall { SELECT id, v FROM t ORDER BY id; }
++
++# s2 takes its snapshot at w2 (before s1 commits), writes row 2, then after s1
++# commits it reads row 1 inside a savepoint and is cancelled.  After rolling
++# back to the savepoint it must not be able to commit.  If it does (the bug),
++# rall shows both rows updated -- the non-serializable write-skew outcome.
++permutation r1 w2 w1 c1 sp2 r2 rb2 c2 rall
+-- 
+2.50.1 (Apple Git-155)
+

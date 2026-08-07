@@ -1,0 +1,97 @@
+From c09a5b4a190cdb33debf88e5ca0f7899e0d4bb55 Mon Sep 17 00:00:00 2001
+From: Andrey Borodin <amborodin@acm.org>
+Date: Mon, 3 Aug 2026 18:41:56 +0500
+Subject: [PATCH v1] Fix pg_surgery with large TID arrays
+
+heap_force_common() used OffsetNumber variables to track positions in its
+input TID array.  An array position of 65536 therefore wrapped to zero,
+causing the loop over the array to start over instead of terminating.
+
+Use int for the array positions, consistently with the array length and the
+loop variable in find_tids_one_page().  Add a regression test with 65536
+copies of one TID.
+
+Reported-by: Yuelin Wang <1217816127@qq.com>
+Bug: #19607
+---
+ contrib/pg_surgery/expected/heap_surgery.out | 12 ++++++++++++
+ contrib/pg_surgery/heap_surgery.c            |  6 +++---
+ contrib/pg_surgery/sql/heap_surgery.sql      |  8 ++++++++
+ 3 files changed, 23 insertions(+), 3 deletions(-)
+
+diff --git a/contrib/pg_surgery/expected/heap_surgery.out b/contrib/pg_surgery/expected/heap_surgery.out
+index df7d13b0908..f50e036cf8f 100644
+--- a/contrib/pg_surgery/expected/heap_surgery.out
++++ b/contrib/pg_surgery/expected/heap_surgery.out
+@@ -84,6 +84,18 @@ NOTICE:  skipping tid (0, 6) for relation "htab" because the item number is out
+  
+ (1 row)
+ 
++-- a TID array can have more entries than fit in an OffsetNumber
++create temp table htab_many_tids (a int);
++insert into htab_many_tids values (1);
++set statement_timeout = '5s';
++select heap_force_kill('htab_many_tids'::regclass,
++					   array_fill('(0, 1)'::tid, ARRAY[65536]));
++ heap_force_kill 
++-----------------
++ 
++(1 row)
++
++reset statement_timeout;
+ -- set up a new table with a redirected line pointer
+ -- use a temp table so that vacuum behavior doesn't depend on global xmin
+ create temp table htab2(a int);
+diff --git a/contrib/pg_surgery/heap_surgery.c b/contrib/pg_surgery/heap_surgery.c
+index 181b7d1e210..51f3f3c49eb 100644
+--- a/contrib/pg_surgery/heap_surgery.c
++++ b/contrib/pg_surgery/heap_surgery.c
+@@ -44,7 +44,7 @@ static Datum heap_force_common(FunctionCallInfo fcinfo,
+ 							   HeapTupleForceOption heap_force_opt);
+ static void sanity_check_tid_array(ArrayType *ta, int *ntids);
+ static BlockNumber find_tids_one_page(ItemPointer tids, int ntids,
+-									  OffsetNumber *next_start_ptr);
++									  int *next_start_ptr);
+ 
+ /*-------------------------------------------------------------------------
+  * heap_force_kill()
+@@ -91,7 +91,7 @@ heap_force_common(FunctionCallInfo fcinfo, HeapTupleForceOption heap_force_opt)
+ 	int			ntids,
+ 				nblocks;
+ 	Relation	rel;
+-	OffsetNumber curr_start_ptr,
++	int			curr_start_ptr,
+ 				next_start_ptr;
+ 	bool		include_this_tid[MaxHeapTuplesPerPage];
+ 
+@@ -413,7 +413,7 @@ sanity_check_tid_array(ArrayType *ta, int *ntids)
+  * ------------------------------------------------------------------------
+  */
+ static BlockNumber
+-find_tids_one_page(ItemPointer tids, int ntids, OffsetNumber *next_start_ptr)
++find_tids_one_page(ItemPointer tids, int ntids, int *next_start_ptr)
+ {
+ 	int			i;
+ 	BlockNumber prev_blkno,
+diff --git a/contrib/pg_surgery/sql/heap_surgery.sql b/contrib/pg_surgery/sql/heap_surgery.sql
+index 6526b27535d..6b0894b429c 100644
+--- a/contrib/pg_surgery/sql/heap_surgery.sql
++++ b/contrib/pg_surgery/sql/heap_surgery.sql
+@@ -37,6 +37,14 @@ select ctid, xmax from htab where xmin = 2;
+ -- out-of-range TIDs should be skipped
+ select heap_force_freeze('htab'::regclass, ARRAY['(0, 0)', '(0, 6)']::tid[]);
+ 
++-- a TID array can have more entries than fit in an OffsetNumber
++create temp table htab_many_tids (a int);
++insert into htab_many_tids values (1);
++set statement_timeout = '5s';
++select heap_force_kill('htab_many_tids'::regclass,
++					   array_fill('(0, 1)'::tid, ARRAY[65536]));
++reset statement_timeout;
++
+ -- set up a new table with a redirected line pointer
+ -- use a temp table so that vacuum behavior doesn't depend on global xmin
+ create temp table htab2(a int);
+-- 
+2.50.1 (Apple Git-155)
+

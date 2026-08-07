@@ -1,0 +1,243 @@
+From 2da7253dd457963e70158ea51ae7fcaa3292ba77 Mon Sep 17 00:00:00 2001
+From: Andrey Borodin <amborodin@acm.org>
+Date: Wed, 29 Jul 2026 16:10:49 +0500
+Subject: [PATCH v3 2/2] Optionally wait for synchronous replication after
+ query cancel
+
+A transaction waiting for synchronous replication has already committed
+locally.  Ending that wait on query cancellation releases its locks and
+makes its changes visible before the WAL necessarily reaches a standby.
+A retry can then appear to succeed even though a subsequent failover can
+lose the change.
+
+Add synchronous_replication_wait_on_query_cancel, defaulting to off to
+preserve the existing behavior.  When it is on, report but ignore query
+cancellation during a synchronous replication wait.  Continue to honor
+session termination and postmaster shutdown.
+
+Discussion: https://postgr.es/m/0B44E464-BA62-4056-9465-3320DD2D0302@yandex-team.ru
+---
+ doc/src/sgml/config.sgml                      | 25 ++++++++
+ src/backend/replication/syncrep.c             | 30 ++++++---
+ src/backend/utils/misc/guc_parameters.dat     |  6 ++
+ src/backend/utils/misc/postgresql.conf.sample |  3 +
+ src/include/replication/syncrep.h             |  1 +
+ src/test/recovery/t/007_sync_rep.pl           | 64 +++++++++++++++++++
+ 6 files changed, 120 insertions(+), 9 deletions(-)
+
+diff --git a/doc/src/sgml/config.sgml b/doc/src/sgml/config.sgml
+index ef950f88a04..3bc0ec3f040 100644
+--- a/doc/src/sgml/config.sgml
++++ b/doc/src/sgml/config.sgml
+@@ -5095,6 +5095,31 @@ restore_command = 'copy "C:\\server\\archivedir\\%f" "%p"'  # Windows
+       </listitem>
+      </varlistentry>
+ 
++     <varlistentry id="guc-synchronous-replication-wait-on-query-cancel"
++                   xreflabel="synchronous_replication_wait_on_query_cancel">
++      <term><varname>synchronous_replication_wait_on_query_cancel</varname> (<type>boolean</type>)
++      <indexterm>
++       <primary><varname>synchronous_replication_wait_on_query_cancel</varname> configuration parameter</primary>
++      </indexterm>
++      </term>
++      <listitem>
++       <para>
++        When this parameter is off (the default), a query cancellation request
++        ends a wait for synchronous replication.  The transaction may already
++        have committed locally, so ending the wait can make its changes visible
++        before the WAL has reached the synchronous standbys.
++       </para>
++       <para>
++        When this parameter is on, query cancellation requests are reported but
++        ignored while waiting for synchronous replication.  Administrator
++        commands that terminate the session, including server shutdown, still
++        end the wait.  This parameter can only be set in the
++        <filename>postgresql.conf</filename> file or on the server command
++        line.
++       </para>
++      </listitem>
++     </varlistentry>
++
+      <varlistentry id="guc-synchronous-standby-names" xreflabel="synchronous_standby_names">
+       <term><varname>synchronous_standby_names</varname> (<type>string</type>)
+       <indexterm>
+diff --git a/src/backend/replication/syncrep.c b/src/backend/replication/syncrep.c
+index 2864bac3b8b..6e95461b939 100644
+--- a/src/backend/replication/syncrep.c
++++ b/src/backend/replication/syncrep.c
+@@ -89,6 +89,7 @@
+ 
+ /* User-settable parameters for sync rep */
+ char	   *SyncRepStandbyNames;
++bool		SyncRepWaitOnQueryCancel = false;
+ int			post_recovery_sync_level = SYNCHRONOUS_COMMIT_OFF;
+ 
+ #define SyncStandbysDefined() \
+@@ -150,6 +151,7 @@ void
+ SyncRepWaitForLSN(XLogRecPtr lsn, bool commit)
+ {
+ 	int			mode;
++	bool		query_cancel_reported = false;
+ 
+ 	/*
+ 	 * This should be called while holding interrupts during a transaction
+@@ -320,19 +322,29 @@ SyncRepWaitForLSN(XLogRecPtr lsn, bool commit)
+ 		}
+ 
+ 		/*
+-		 * It's unclear what to do if a query cancel interrupt arrives.  We
+-		 * can't actually abort at this point, but ignoring the interrupt
+-		 * altogether is not helpful, so we just terminate the wait with a
+-		 * suitable warning.
++		 * We can't actually abort at this point.  By default, terminate the
++		 * wait with a suitable warning.  If configured otherwise, continue
++		 * waiting so that query cancellation cannot make locally committed
++		 * data visible before it has been replicated.
+ 		 */
+ 		if (QueryCancelPending)
+ 		{
+ 			QueryCancelPending = false;
+-			ereport(WARNING,
+-					(errmsg("canceling wait for synchronous replication due to user request"),
+-					 errdetail("The transaction has already committed locally, but might not have been replicated to the standby.")));
+-			SyncRepCancelWait();
+-			break;
++			if (!SyncRepWaitOnQueryCancel)
++			{
++				ereport(WARNING,
++						(errmsg("canceling wait for synchronous replication due to user request"),
++						 errdetail("The transaction has already committed locally, but might not have been replicated to the standby.")));
++				SyncRepCancelWait();
++				break;
++			}
++			if (!query_cancel_reported)
++			{
++				ereport(WARNING,
++						(errmsg("ignoring request to cancel wait for synchronous replication"),
++						 errdetail_internal("The locally written WAL record has not been replicated according to \"synchronous_standby_names\".")));
++				query_cancel_reported = true;
++			}
+ 		}
+ 
+ 		/*
+diff --git a/src/backend/utils/misc/guc_parameters.dat b/src/backend/utils/misc/guc_parameters.dat
+index bae9e178746..55ac4b7c91c 100644
+--- a/src/backend/utils/misc/guc_parameters.dat
++++ b/src/backend/utils/misc/guc_parameters.dat
+@@ -2975,6 +2975,12 @@
+   assign_hook => 'assign_synchronous_commit',
+ },
+ 
++{ name => 'synchronous_replication_wait_on_query_cancel', type => 'bool', context => 'PGC_SIGHUP', group => 'REPLICATION_PRIMARY',
++  short_desc => 'Continues waiting for synchronous replication after query cancellation.',
++  variable => 'SyncRepWaitOnQueryCancel',
++  boot_val => 'false',
++},
++
+ { name => 'synchronous_standby_names', type => 'string', context => 'PGC_SIGHUP', group => 'REPLICATION_PRIMARY',
+   short_desc => 'Number of synchronous standbys and list of names of potential synchronous ones.',
+   flags => 'GUC_LIST_INPUT',
+diff --git a/src/backend/utils/misc/postgresql.conf.sample b/src/backend/utils/misc/postgresql.conf.sample
+index a51c7b1d185..f432fdabc34 100644
+--- a/src/backend/utils/misc/postgresql.conf.sample
++++ b/src/backend/utils/misc/postgresql.conf.sample
+@@ -376,6 +376,9 @@
+                                 # method to choose sync standbys, number of sync standbys,
+                                 # and comma-separated list of application_name
+                                 # from standby(s); '*' = all
++#synchronous_replication_wait_on_query_cancel = off
++                                # continue synchronous replication waits
++                                # after query cancellation
+ #synchronized_standby_slots = ''        # streaming replication standby server slot
+                                 # names that logical walsender processes will wait for
+ 
+diff --git a/src/include/replication/syncrep.h b/src/include/replication/syncrep.h
+index f6cf18b636e..6111cd74659 100644
+--- a/src/include/replication/syncrep.h
++++ b/src/include/replication/syncrep.h
+@@ -72,6 +72,7 @@ typedef struct SyncRepConfigData
+ } SyncRepConfigData;
+ 
+ extern PGDLLIMPORT SyncRepConfigData *SyncRepConfig;
++extern PGDLLIMPORT bool SyncRepWaitOnQueryCancel;
+ extern PGDLLIMPORT int post_recovery_sync_level;
+ 
+ /* user-settable parameters for synchronous replication */
+diff --git a/src/test/recovery/t/007_sync_rep.pl b/src/test/recovery/t/007_sync_rep.pl
+index 224f1a82e06..b169f02a6ab 100644
+--- a/src/test/recovery/t/007_sync_rep.pl
++++ b/src/test/recovery/t/007_sync_rep.pl
+@@ -218,6 +218,70 @@ standby4|1|quorum),
+ 	'all standbys are considered as candidates for quorum sync standbys',
+ 	'ANY 2(*)');
+ 
++# Check that a query cancel does not release a transaction which has
++# committed locally but is still waiting for synchronous replication.
++$node_primary->safe_psql(
++	'postgres', q[
++	CREATE TABLE sync_rep_cancel_test (a int);
++	ALTER SYSTEM SET synchronous_replication_wait_on_query_cancel = on;
++	ALTER SYSTEM SET synchronous_standby_names = 'unavailable';
++	SELECT pg_reload_conf();]);
++
++my $cancel_session =
++  $node_primary->background_psql('postgres', on_error_stop => 0);
++$cancel_session->query_until(
++	qr/insert_started/, q[
++	SET application_name = 'sync_rep_cancel_test';
++	\echo insert_started
++	INSERT INTO sync_rep_cancel_test VALUES (1);
++]);
++
++$node_primary->poll_query_until(
++	'postgres',
++	q[SELECT count(*) = 1
++	  FROM pg_stat_activity
++	  WHERE application_name = 'sync_rep_cancel_test'
++	    AND wait_event = 'SyncRep'])
++  or die "backend did not start waiting for synchronous replication";
++
++is(
++	$node_primary->safe_psql(
++		'postgres',
++		q[SELECT pg_cancel_backend(pid)
++		  FROM pg_stat_activity
++		  WHERE application_name = 'sync_rep_cancel_test']),
++	't',
++	'cancel request was delivered to synchronous replication waiter');
++
++$node_primary->poll_query_until(
++	'postgres',
++	q[SELECT count(*) = 1
++	  FROM pg_stat_activity
++	  WHERE application_name = 'sync_rep_cancel_test'
++	    AND wait_event = 'SyncRep'])
++  or die "query cancel ended synchronous replication wait";
++
++is(
++	$node_primary->safe_psql('postgres',
++		'SELECT count(*) FROM sync_rep_cancel_test'),
++	'0',
++	'locally committed transaction remains invisible after query cancel');
++
++$node_primary->safe_psql(
++	'postgres', q[
++	ALTER SYSTEM RESET synchronous_standby_names;
++	SELECT pg_reload_conf();]);
++$cancel_session->quit;
++is(
++	$node_primary->safe_psql('postgres',
++		'SELECT count(*) FROM sync_rep_cancel_test'),
++	'1',
++	'transaction completes after synchronous replication is disabled');
++like(
++	$cancel_session->{stderr},
++	qr/ignoring request to cancel wait for synchronous replication/,
++	'ignored query cancel is reported');
++
+ # Check that ordinary connections are rejected after crash recovery until
+ # the end-of-recovery LSN reaches the configured synchronous standby.
+ for my $standby (
+-- 
+2.50.1 (Apple Git-155)
+

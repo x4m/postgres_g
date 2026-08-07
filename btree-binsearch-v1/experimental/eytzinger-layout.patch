@@ -1,0 +1,228 @@
+diff --git a/src/backend/access/nbtree/nbtcompare.c b/src/backend/access/nbtree/nbtcompare.c
+index c021d433d75..027c2407d34 100644
+--- a/src/backend/access/nbtree/nbtcompare.c
++++ b/src/backend/access/nbtree/nbtcompare.c
+@@ -310,6 +310,7 @@ btint4binsearchsupport(PG_FUNCTION_ARGS)
+ 
+ 	support->compare_tuple = btint4pagecmp;
+ 	support->binary_search = btint4binsearch;
++	support->build_eytzinger_layout = true;
+ 	PG_RETURN_VOID();
+ }
+ 
+diff --git a/src/backend/access/nbtree/nbtsort.c b/src/backend/access/nbtree/nbtsort.c
+index 756dfa3dcf4..ab868c8bb29 100644
+--- a/src/backend/access/nbtree/nbtsort.c
++++ b/src/backend/access/nbtree/nbtsort.c
+@@ -253,6 +253,7 @@ typedef struct BTWriteState
+ 	Relation	index;
+ 	BulkWriteState *bulkstate;
+ 	BTScanInsert inskey;		/* generic insertion scankey */
++	bool		build_eytzinger_layout;
+ 	BlockNumber btws_pages_alloced; /* # pages allocated */
+ } BTWriteState;
+ 
+@@ -266,6 +267,7 @@ static void _bt_leafbuild(BTSpool *btspool, BTSpool *btspool2);
+ static void _bt_build_callback(Relation index, ItemPointer tid, Datum *values,
+ 							   bool *isnull, bool tupleIsAlive, void *state);
+ static BulkWriteBuffer _bt_blnewpage(BTWriteState *wstate, uint32 level);
++static void _bt_eytzinger_page(Page page);
+ static BTPageState *_bt_pagestate(BTWriteState *wstate, uint32 level);
+ static void _bt_slideleft(Page rightmostpage);
+ static void _bt_sortaddtup(Page page, Size itemsize,
+@@ -565,6 +567,7 @@ _bt_leafbuild(BTSpool *btspool, BTSpool *btspool2)
+ 	wstate.heap = btspool->heap;
+ 	wstate.index = btspool->index;
+ 	wstate.inskey = _bt_mkscankey(wstate.index, NULL);
++	wstate.build_eytzinger_layout = wstate.inskey->build_eytzinger_layout;
+ 	/* _bt_mkscankey() won't set allequalimage without metapage */
+ 	wstate.inskey->allequalimage = _bt_allequalimage(wstate.index, true);
+ 
+@@ -640,10 +643,83 @@ _bt_blnewpage(BTWriteState *wstate, uint32 level)
+ static void
+ _bt_blwritepage(BTWriteState *wstate, BulkWriteBuffer buf, BlockNumber blkno)
+ {
++	if (wstate->build_eytzinger_layout && blkno != BTREE_METAPAGE)
++		_bt_eytzinger_page((Page) buf);
++
+ 	smgr_bulk_write(wstate->bulkstate, blkno, buf, true);
+ 	/* smgr_bulk_write took ownership of 'buf' */
+ }
+ 
++/*
++ * Place tuple bodies in breadth-first binary-search order, without changing
++ * their logical order in the line pointer array.
++ */
++static void
++_bt_eytzinger_page(Page page)
++{
++	BTPageOpaque opaque = BTPageGetOpaque(page);
++	OffsetNumber first = P_FIRSTDATAKEY(opaque);
++	OffsetNumber maxoff = PageGetMaxOffsetNumber(page);
++	OffsetNumber order[MaxIndexTuplesPerPage];
++	OffsetNumber queue_low[MaxIndexTuplesPerPage];
++	OffsetNumber queue_high[MaxIndexTuplesPerPage];
++	Page		temp;
++	Offset		upper;
++	int			nitems = 0;
++	int			queue_head = 0;
++	int			queue_tail = 0;
++
++	if (!P_ISLEAF(opaque))
++		first = OffsetNumberNext(first);
++
++	if (first <= maxoff)
++	{
++		queue_low[queue_tail] = first;
++		queue_high[queue_tail++] = OffsetNumberNext(maxoff);
++	}
++
++	while (queue_head < queue_tail)
++	{
++		OffsetNumber low = queue_low[queue_head];
++		OffsetNumber high = queue_high[queue_head++];
++		OffsetNumber mid = low + (high - low) / 2;
++
++		order[nitems++] = mid;
++		if (low < mid)
++		{
++			queue_low[queue_tail] = low;
++			queue_high[queue_tail++] = mid;
++		}
++		if (OffsetNumberNext(mid) < high)
++		{
++			queue_low[queue_tail] = OffsetNumberNext(mid);
++			queue_high[queue_tail++] = high;
++		}
++	}
++
++	/* Keep non-search tuples out of the decision tree. */
++	if (!P_ISLEAF(opaque))
++		order[nitems++] = P_FIRSTDATAKEY(opaque);
++	if (!P_RIGHTMOST(opaque))
++		order[nitems++] = P_HIKEY;
++
++	Assert(nitems == maxoff);
++	temp = PageGetTempPageCopy(page);
++	upper = ((PageHeader) page)->pd_special;
++	for (int i = nitems - 1; i >= 0; i--)
++	{
++		ItemId		dest = PageGetItemId(page, order[i]);
++		ItemId		source = PageGetItemId(temp, order[i]);
++		Size		len = MAXALIGN(ItemIdGetLength(source));
++
++		upper -= len;
++		memcpy((char *) page + upper, PageGetItem(temp, source), len);
++		dest->lp_off = upper;
++	}
++	((PageHeader) page)->pd_upper = upper;
++	pfree(temp);
++}
++
+ /*
+  * allocate and initialize a new BTPageState.  the returned structure
+  * is suitable for immediate use by _bt_buildadd.
+diff --git a/src/backend/access/nbtree/nbtutils.c b/src/backend/access/nbtree/nbtutils.c
+index 68bcb26a8a2..0a5bdacd051 100644
+--- a/src/backend/access/nbtree/nbtutils.c
++++ b/src/backend/access/nbtree/nbtutils.c
+@@ -151,7 +151,7 @@ _bt_mkscankey(Relation rel, IndexTuple itup)
+ 	return key;
+ }
+ 
+-/* Set up an optional opclass-provided single-column page binary search. */
++/* Set up optional opclass-provided single-column page search support. */
+ void
+ _bt_setup_binsearch(Relation rel, BTScanInsert key)
+ {
+@@ -162,42 +162,45 @@ _bt_setup_binsearch(Relation rel, BTScanInsert key)
+ 
+ 	key->compare_tuple = NULL;
+ 	key->binary_search = NULL;
++	key->build_eytzinger_layout = false;
+ 
+-	if (IndexRelationGetNumberOfKeyAttributes(rel) != 1 || key->keysz != 1)
+-		return;
+-
+-	skey = key->scankeys;
+-	if (skey->sk_flags & (SK_ISNULL | SK_ROW_HEADER) ||
+-		(skey->sk_subtype != InvalidOid &&
+-		 skey->sk_subtype != rel->rd_opcintype[0]))
++	if (IndexRelationGetNumberOfKeyAttributes(rel) != 1)
+ 		return;
+ 
+ 	/* Avoid repeating fmgr setup work for every tuple inserted. */
+ 	procinfo = &rel->rd_supportinfo[BTBINSEARCH_PROC - 1];
+ 	support = (BTBinSearchSupportData *) procinfo->fn_extra;
+-	if (support != NULL)
++	if (support == NULL)
+ 	{
+-		key->compare_tuple = support->compare_tuple;
+-		key->binary_search = support->binary_search;
+-		return;
++		proc = index_getprocid(rel, 1, BTBINSEARCH_PROC);
++		if (!OidIsValid(proc))
++		{
++			/* Cache the absence of optional support. */
++			procinfo->fn_extra = (void *) &no_binsearch_support;
++			return;
++		}
++
++		procinfo = index_getprocinfo(rel, 1, BTBINSEARCH_PROC);
++		support = (BTBinSearchSupportData *) procinfo->fn_extra;
++		if (support == NULL)
++		{
++			support = MemoryContextAllocZero(procinfo->fn_mcxt,
++											 sizeof(*support));
++			FunctionCall1(procinfo, PointerGetDatum(support));
++			procinfo->fn_extra = support;
++		}
+ 	}
+ 
+-	proc = index_getprocid(rel, 1, BTBINSEARCH_PROC);
+-	if (!OidIsValid(proc))
+-	{
+-		/* Cache the absence of optional support for subsequent tuples. */
+-		procinfo->fn_extra = (void *) &no_binsearch_support;
++	key->build_eytzinger_layout = support->build_eytzinger_layout;
++	if (key->keysz != 1)
++		return;
++
++	skey = key->scankeys;
++	if (skey->sk_flags & (SK_ISNULL | SK_ROW_HEADER) ||
++		(skey->sk_subtype != InvalidOid &&
++		 skey->sk_subtype != rel->rd_opcintype[0]))
+ 		return;
+-	}
+ 
+-	procinfo = index_getprocinfo(rel, 1, BTBINSEARCH_PROC);
+-	support = (BTBinSearchSupportData *) procinfo->fn_extra;
+-	if (support == NULL)
+-	{
+-		support = MemoryContextAllocZero(procinfo->fn_mcxt, sizeof(*support));
+-		FunctionCall1(procinfo, PointerGetDatum(support));
+-		procinfo->fn_extra = support;
+-	}
+ 	key->compare_tuple = support->compare_tuple;
+ 	key->binary_search = support->binary_search;
+ }
+diff --git a/src/include/access/nbtree.h b/src/include/access/nbtree.h
+index 9b4b419a398..4b49f19d2e0 100644
+--- a/src/include/access/nbtree.h
++++ b/src/include/access/nbtree.h
+@@ -827,6 +827,7 @@ typedef struct BTBinSearchSupportData
+ 	/* Support functions set either or both callbacks. */
+ 	BTCompareTupleFunction compare_tuple;
+ 	BTBinSearchFunction binary_search;
++	bool		build_eytzinger_layout;
+ }			BTBinSearchSupportData;
+ 
+ typedef struct BTScanInsertData
+@@ -840,6 +841,7 @@ typedef struct BTScanInsertData
+ 	int			keysz;			/* Size of scankeys array */
+ 	BTCompareTupleFunction compare_tuple;
+ 	BTBinSearchFunction binary_search;
++	bool		build_eytzinger_layout;
+ 	ScanKeyData scankeys[INDEX_MAX_KEYS];	/* Must appear last */
+ } BTScanInsertData;
+ 

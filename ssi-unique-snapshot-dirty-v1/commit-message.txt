@@ -1,0 +1,24 @@
+Detect SSI conflicts when unique checks reuse keys
+
+Unique checks use SnapshotDirty to account for concurrent tuple changes.
+Since special snapshots do not participate in SSI, a serializable
+transaction can read a row, rely on another transaction's committed
+deletion to insert the same key, observe both versions, and commit.  Partial
+checks used by ON CONFLICT have the same problem.
+
+Have the table AM report the deleting transaction when SnapshotDirty skips
+a tuple that remains visible to the transaction snapshot.  If an
+rw-conflict to that exact transaction already exists, mark the serializable
+transaction doomed and report a serialization failure.  Marking it doomed
+ensures that rolling back a savepoint cannot suppress the failure.
+
+Add isolation coverage for regular and partial unique checks, savepoint
+handling, and an unrelated rw-conflict that must not cause a false positive.
+
+Discussion:
+https://postgr.es/m/CA%2BCOZaBOiiRPmEfX00oE%3DN6HBSZVe0Y-y-ZqqaXq8BAAj1gu%2BQ%40mail.gmail.com
+
+Related-Discussion:
+https://postgr.es/m/165342c0-0c75-461e-b334-b997639ad48d%40aphyr.com
+
+Reported-by: Jacob Brazeal <jacob.brazeal@gmail.com>

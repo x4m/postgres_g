@@ -1,0 +1,49 @@
+Subject: [PATCH] Support specialized B-tree page searches
+
+Hi hackers,
+
+B-tree page searches repeatedly call the comparison function through
+fmgr and deform index tuples.  For simple fixed-width types, this can
+cost much more than the comparison itself.
+
+I first presented this idea at PGConf.dev 2024, but only recently found
+the time to hack it properly.
+
+The attached patch set adds an optional opclass support procedure for
+searching a page interval.  The first patch implements it for
+single-column int4 indexes, including searches and insertions.  The
+second patch uses the first and last int4 keys to try an interpolation
+probe.  It accepts that probe only after checking the adjacent tuple
+proves the exact boundary; otherwise it continues with binary search.
+
+The fast path is limited to same-type, single-key operations that it can
+handle.  Everything else falls back to the existing code.
+
+For one million successful parameterized index-only lookups over five
+million int4 keys, six interleaved runs gave these median times on an
+AMD EPYC Genoa machine.  The table contained the integers 1 through
+5,000,000 with a non-unique B-tree index.  The query visited one million
+distinct existing keys in a deterministic pseudorandom order:
+
+    SELECT count(*)
+    FROM generate_series(1, 1000000) g
+    WHERE (SELECT i
+           FROM layout_t
+           WHERE i = ((g::bigint * 15485863) % 5000000 + 1)::int
+           LIMIT 1) IS NOT NULL;
+
+This dense key distribution is deliberately a favorable case for
+interpolation search. It's realistic, though.
+
+The median times were:
+
+    master       2.245 s
+    patched      1.470 s
+
+That is 35% less elapsed time, or 53% more throughput.  Standard
+pgbench -S did not show a measurable difference.
+
+WDYT?
+
+
+Best regards, Andrey Borodin.

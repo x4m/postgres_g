@@ -1,0 +1,36 @@
+From 7c91758acb114acc95a51cbd9ae96dcdd68b86ae Mon Sep 17 00:00:00 2001
+From: Andrey Borodin <amborodin@acm.org>
+Date: Mon, 3 Aug 2026 23:59:15 +0500
+Subject: [PATCH v1] Document a CHECK_FOR_INTERRUPTS call with interrupts held
+
+CHECK_FOR_INTERRUPTS() cannot process pending interrupts while an LWLock is
+held.  The stats-file writer calls it while dshash sequential iteration holds
+the current hash partition lock, but that constraint is not apparent at the
+call itself.
+
+Mark the call with a grep-friendly comment and describe the lock responsible.
+This changes no behavior.
+
+Discussion: https://postgr.es/m/CAA3qoJkBf6H7KukXTWFWCYnf_GHf354kOdWATCfoK%3D-bgdwTJw%40mail.gmail.com
+---
+ src/backend/utils/activity/pgstat.c | 4 ++++
+ 1 file changed, 4 insertions(+)
+
+diff --git a/src/backend/utils/activity/pgstat.c b/src/backend/utils/activity/pgstat.c
+index 50cd07822b4..916089a3c2f 100644
+--- a/src/backend/utils/activity/pgstat.c
++++ b/src/backend/utils/activity/pgstat.c
+@@ -1729,6 +1729,10 @@ pgstat_write_statsfile(void)
+ 		PgStatShared_Common *shstats;
+ 		const PgStat_KindInfo *kind_info = NULL;
+ 
++		/*
++		 * CHECK_FOR_INTERRUPTS_WITH_INTERRUPTS_HELD: dshash_seq_next()
++		 * returns with the current hash partition lock still held.
++		 */
+ 		CHECK_FOR_INTERRUPTS();
+ 
+ 		/*
+-- 
+2.50.1 (Apple Git-155)
+

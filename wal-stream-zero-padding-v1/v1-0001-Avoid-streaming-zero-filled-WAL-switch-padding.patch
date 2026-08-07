@@ -1,0 +1,686 @@
+From a04648641ff2d0ad2602f84fa04aa28029afd85f Mon Sep 17 00:00:00 2001
+From: Andrey Borodin <amborodin@acm.org>
+Date: Thu, 6 Aug 2026 12:03:11 +0500
+Subject: [PATCH v1] Avoid streaming zero-filled WAL switch padding
+
+Forced WAL switches can leave nearly a whole segment as zero padding.
+Sending those bytes wastes network bandwidth and can delay synchronous
+replication, particularly on low-traffic servers that use archive_timeout.
+
+Add a physical replication message that represents zero-filled
+end-of-segment padding.  Walsender emits one such message after detecting a
+zero WAL page.  The server walreceiver and uncompressed frontend WAL writers
+reconstruct the tail with truncate and extend, allowing the filesystem to
+store it sparsely.  Compressed frontend writers generate the zeros locally.
+
+Add a recovery test that verifies the reconstructed segment byte for byte
+and checks that its tail is sparse.
+---
+ doc/src/sgml/protocol.sgml                  |  55 ++++++++++
+ src/backend/replication/walreceiver.c       | 115 ++++++++++++++++++--
+ src/backend/replication/walsender.c         |  33 ++++++
+ src/bin/pg_basebackup/receivelog.c          |  92 ++++++++++++++++
+ src/bin/pg_basebackup/walmethods.c          |  81 ++++++++++++++
+ src/bin/pg_basebackup/walmethods.h          |   3 +
+ src/include/libpq/protocol.h                |   1 +
+ src/test/recovery/t/056_stream_wal_zeros.pl |  73 +++++++++++++
+ 8 files changed, 445 insertions(+), 8 deletions(-)
+ create mode 100644 src/test/recovery/t/056_stream_wal_zeros.pl
+
+diff --git a/doc/src/sgml/protocol.sgml b/doc/src/sgml/protocol.sgml
+index 49f81676712..8726624e384 100644
+--- a/doc/src/sgml/protocol.sgml
++++ b/doc/src/sgml/protocol.sgml
+@@ -2736,6 +2736,61 @@ psql "dbname=postgres replication=database" -c "IDENTIFY_SYSTEM;"
+         </listitem>
+        </varlistentry>
+ 
++       <varlistentry id="protocol-replication-zero-wal-data">
++        <term>Zero WAL data (B)</term>
++        <listitem>
++         <variablelist>
++          <varlistentry>
++           <term>Byte1('z')</term>
++           <listitem>
++            <para>
++             Identifies zero-filled padding after a WAL switch record.  The
++             client may assume that the remainder of this WAL segment is also
++             zero-filled.
++            </para>
++           </listitem>
++          </varlistentry>
++
++          <varlistentry>
++           <term>Int64</term>
++           <listitem>
++            <para>
++             The starting point of the zero-filled WAL data.
++            </para>
++           </listitem>
++          </varlistentry>
++
++          <varlistentry>
++           <term>Int64</term>
++           <listitem>
++            <para>
++             The current end of WAL on the server.
++            </para>
++           </listitem>
++          </varlistentry>
++
++          <varlistentry>
++           <term>Int64</term>
++           <listitem>
++            <para>
++             The server's system clock at the time of transmission, as
++             microseconds since midnight on 2000-01-01.
++            </para>
++           </listitem>
++          </varlistentry>
++
++          <varlistentry>
++           <term>Int64</term>
++           <listitem>
++            <para>
++             The number of zero bytes in this section.
++            </para>
++           </listitem>
++          </varlistentry>
++         </variablelist>
++        </listitem>
++       </varlistentry>
++
+        <varlistentry id="protocol-replication-primary-keepalive-message">
+         <term>Primary keepalive message (B)</term>
+         <listitem>
+diff --git a/src/backend/replication/walreceiver.c b/src/backend/replication/walreceiver.c
+index 61dc6a5588b..397d2a7e3dc 100644
+--- a/src/backend/replication/walreceiver.c
++++ b/src/backend/replication/walreceiver.c
+@@ -104,6 +104,7 @@ WalReceiverFunctionsType *WalReceiverFunctions = NULL;
+ static int	recvFile = -1;
+ static TimeLineID recvFileTLI = 0;
+ static XLogSegNo recvSegNo = 0;
++static int	recvFileZeroedFrom = -1;
+ 
+ /*
+  * LogstreamResult indicates the byte positions that we have already
+@@ -142,6 +143,9 @@ static void XLogWalRcvProcessMsg(unsigned char type, char *buf, Size len,
+ 								 TimeLineID tli);
+ static void XLogWalRcvWrite(char *buf, Size nbytes, XLogRecPtr recptr,
+ 							TimeLineID tli);
++static void XLogWalRcvWriteZeros(Size nbytes, XLogRecPtr recptr,
++								 TimeLineID tli);
++static void XLogWalRcvAdvanceWrite(XLogRecPtr recptr);
+ static void XLogWalRcvFlush(bool dying, TimeLineID tli);
+ static void XLogWalRcvClose(XLogRecPtr recptr, TimeLineID tli);
+ static void XLogWalRcvSendReply(bool force, bool requestReply, bool checkApply);
+@@ -943,6 +947,34 @@ XLogWalRcvProcessMsg(unsigned char type, char *buf, Size len, TimeLineID tli)
+ 				XLogWalRcvWrite(buf, len, dataStart, tli);
+ 				break;
+ 			}
++		case PqReplMsg_WALDataZeros:
++			{
++				StringInfoData incoming_message;
++				uint64		nbytes;
++
++				hdrlen = sizeof(int64) + sizeof(int64) + sizeof(int64) +
++					sizeof(int64);
++				if (len != hdrlen)
++					ereport(ERROR,
++							(errcode(ERRCODE_PROTOCOL_VIOLATION),
++							 errmsg_internal("invalid zero WAL message received from primary")));
++
++				initReadOnlyStringInfo(&incoming_message, buf, hdrlen);
++				dataStart = pq_getmsgint64(&incoming_message);
++				walEnd = pq_getmsgint64(&incoming_message);
++				sendTime = pq_getmsgint64(&incoming_message);
++				nbytes = pq_getmsgint64(&incoming_message);
++
++				if (nbytes == 0 || nbytes > wal_segment_size ||
++					dataStart != LogstreamResult.Write)
++					ereport(ERROR,
++							(errcode(ERRCODE_PROTOCOL_VIOLATION),
++							 errmsg_internal("invalid zero WAL range received from primary")));
++
++				ProcessWalSndrMessage(walEnd, sendTime);
++				XLogWalRcvWriteZeros(nbytes, dataStart, tli);
++				break;
++			}
+ 		case PqReplMsg_Keepalive:
+ 			{
+ 				StringInfoData incoming_message;
+@@ -976,6 +1008,76 @@ XLogWalRcvProcessMsg(unsigned char type, char *buf, Size len, TimeLineID tli)
+ 	}
+ }
+ 
++/*
++ * Reconstruct a run of zeros omitted from the replication stream.
++ *
++ * These messages represent the padding after XLOG_SWITCH, so the remainder of
++ * the segment is known to contain zeros.  Truncating at the first omitted run
++ * and extending the file again therefore creates a sparse zero-filled tail,
++ * even when the file was recycled.
++ */
++static void
++XLogWalRcvWriteZeros(Size nbytes, XLogRecPtr recptr, TimeLineID tli)
++{
++	int			startoff;
++	XLogRecPtr endptr = recptr + nbytes;
++
++	if (recvFile >= 0 && !XLByteInSeg(recptr, recvSegNo, wal_segment_size))
++		XLogWalRcvClose(recptr, tli);
++
++	if (recvFile < 0)
++	{
++		XLByteToSeg(recptr, recvSegNo, wal_segment_size);
++		recvFile = XLogFileInit(recvSegNo, tli);
++		recvFileTLI = tli;
++		recvFileZeroedFrom = -1;
++	}
++
++	startoff = XLogSegmentOffset(recptr, wal_segment_size);
++	if (startoff + nbytes > wal_segment_size)
++		ereport(ERROR,
++				(errcode(ERRCODE_PROTOCOL_VIOLATION),
++				 errmsg_internal("zero WAL range crosses a segment boundary")));
++
++	if (recvFileZeroedFrom < 0 || recvFileZeroedFrom > startoff)
++	{
++		int			rc;
++
++		pgstat_report_wait_start(WAIT_EVENT_WAL_WRITE);
++		do
++			rc = ftruncate(recvFile, startoff);
++		while (rc < 0 && errno == EINTR);
++		if (rc == 0)
++		{
++			do
++				rc = ftruncate(recvFile, wal_segment_size);
++			while (rc < 0 && errno == EINTR);
++		}
++		pgstat_report_wait_end();
++
++		if (rc < 0)
++			ereport(PANIC,
++					(errcode_for_file_access(),
++					 errmsg("could not create sparse zero-filled WAL tail: %m")));
++
++		recvFileZeroedFrom = startoff;
++	}
++
++	XLogWalRcvAdvanceWrite(endptr);
++
++	if (!XLByteInSeg(endptr, recvSegNo, wal_segment_size))
++		XLogWalRcvClose(endptr, tli);
++}
++
++static void
++XLogWalRcvAdvanceWrite(XLogRecPtr recptr)
++{
++	LogstreamResult.Write = recptr;
++
++	pg_atomic_write_membarrier_u64(&WalRcv->writtenUpto, recptr);
++	WaitLSNWakeup(WAIT_LSN_TYPE_STANDBY_WRITE, recptr);
++}
++
+ /*
+  * Write XLOG data to disk.
+  */
+@@ -1002,6 +1104,7 @@ XLogWalRcvWrite(char *buf, Size nbytes, XLogRecPtr recptr, TimeLineID tli)
+ 			XLByteToSeg(recptr, recvSegNo, wal_segment_size);
+ 			recvFile = XLogFileInit(recvSegNo, tli);
+ 			recvFileTLI = tli;
++			recvFileZeroedFrom = -1;
+ 		}
+ 
+ 		/* Calculate the start offset of the received logs */
+@@ -1053,16 +1156,11 @@ XLogWalRcvWrite(char *buf, Size nbytes, XLogRecPtr recptr, TimeLineID tli)
+ 		buf += byteswritten;
+ 
+ 		LogstreamResult.Write = recptr;
++		if (recvFileZeroedFrom >= 0)
++			recvFileZeroedFrom = startoff + byteswritten;
+ 	}
+ 
+-	/* Update shared-memory status */
+-	pg_atomic_write_membarrier_u64(&WalRcv->writtenUpto, LogstreamResult.Write);
+-
+-	/*
+-	 * Wake up processes waiting for standby write LSN to reach current write
+-	 * position.
+-	 */
+-	WaitLSNWakeup(WAIT_LSN_TYPE_STANDBY_WRITE, LogstreamResult.Write);
++	XLogWalRcvAdvanceWrite(LogstreamResult.Write);
+ 
+ 	/*
+ 	 * Close the current segment if it's fully written up in the last cycle of
+@@ -1178,6 +1276,7 @@ XLogWalRcvClose(XLogRecPtr recptr, TimeLineID tli)
+ 		XLogArchiveNotify(xlogfname);
+ 
+ 	recvFile = -1;
++	recvFileZeroedFrom = -1;
+ }
+ 
+ /*
+diff --git a/src/backend/replication/walsender.c b/src/backend/replication/walsender.c
+index c65dd324325..bf6a467c124 100644
+--- a/src/backend/replication/walsender.c
++++ b/src/backend/replication/walsender.c
+@@ -3368,6 +3368,7 @@ XLogSendPhysical(void)
+ 	XLogSegNo	segno;
+ 	WALReadError errinfo;
+ 	Size		rbytes;
++	Size		hdrlen = 1 + sizeof(int64) + sizeof(int64) + sizeof(int64);
+ 
+ 	/* If requested switch the WAL sender to the stopping state. */
+ 	if (got_STOPPING)
+@@ -3633,6 +3634,38 @@ retry:
+ 	output_message.len += nbytes;
+ 	output_message.data[output_message.len] = '\0';
+ 
++	/*
++	 * Avoid sending zero-filled WAL chunks.  XLOG_SWITCH commonly leaves
++	 * almost a whole segment of zeros.  Messages are cut only at WAL record or
++	 * page boundaries, where valid WAL pages have nonzero headers, so an
++	 * entirely zero message can only contain end-of-segment padding.  Detecting
++	 * the bytes rather than remembering the switch point also handles a sender
++	 * that starts in the middle of the padding.
++	 */
++	{
++		const char *p = output_message.data + hdrlen;
++		const char *end = output_message.data + output_message.len;
++
++		while (p < end && *p == '\0')
++			p++;
++
++		if (p == end)
++		{
++			XLogSegNo	zero_segno;
++			XLogRecPtr	segment_end;
++
++			/* The first zero page proves that this is switch padding. */
++			XLByteToSeg(sentPtr, zero_segno, wal_segment_size);
++			segment_end = (zero_segno + 1) * wal_segment_size;
++			endptr = Min(segment_end, SendRqstPtr);
++			WalSndCaughtUp = !sendTimeLineIsHistoric && endptr == SendRqstPtr;
++
++			output_message.data[0] = PqReplMsg_WALDataZeros;
++			output_message.len = hdrlen;
++			pq_sendint64(&output_message, endptr - sentPtr);
++		}
++	}
++
+ 	/*
+ 	 * Fill the send timestamp last, so that it is taken as late as possible.
+ 	 */
+diff --git a/src/bin/pg_basebackup/receivelog.c b/src/bin/pg_basebackup/receivelog.c
+index faa60711b1b..baca147ce2d 100644
+--- a/src/bin/pg_basebackup/receivelog.c
++++ b/src/bin/pg_basebackup/receivelog.c
+@@ -41,6 +41,9 @@ static bool ProcessKeepaliveMsg(PGconn *conn, StreamCtl *stream, char *copybuf,
+ 								int len, XLogRecPtr blockpos, TimestampTz *last_status);
+ static bool ProcessWALDataMsg(PGconn *conn, StreamCtl *stream, char *copybuf, int len,
+ 							  XLogRecPtr *blockpos);
++static bool ProcessWALDataZerosMsg(PGconn *conn, StreamCtl *stream,
++								   char *copybuf, int len,
++								   XLogRecPtr *blockpos);
+ static PGresult *HandleEndOfCopyStream(PGconn *conn, StreamCtl *stream, char *copybuf,
+ 									   XLogRecPtr blockpos, XLogRecPtr *stoppos);
+ static bool CheckCopyStreamStop(PGconn *conn, StreamCtl *stream, XLogRecPtr blockpos);
+@@ -848,6 +851,14 @@ HandleCopyStream(PGconn *conn, StreamCtl *stream,
+ 				if (!CheckCopyStreamStop(conn, stream, blockpos))
+ 					goto error;
+ 			}
++			else if (copybuf[0] == PqReplMsg_WALDataZeros)
++			{
++				if (!ProcessWALDataZerosMsg(conn, stream, copybuf, r, &blockpos))
++					goto error;
++
++				if (!CheckCopyStreamStop(conn, stream, blockpos))
++					goto error;
++			}
+ 			else
+ 			{
+ 				pg_log_error("unrecognized streaming header: \"%c\"",
+@@ -1178,6 +1189,87 @@ ProcessWALDataMsg(PGconn *conn, StreamCtl *stream, char *copybuf, int len,
+ 	return true;
+ }
+ 
++/* Process a compact representation of a zero-filled WAL range. */
++static bool
++ProcessWALDataZerosMsg(PGconn *conn, StreamCtl *stream, char *copybuf,
++					   int len, XLogRecPtr *blockpos)
++{
++	uint64		bytes_left;
++	uint64		nbytes;
++	int			xlogoff;
++	int			hdr_len = 1 + 8 + 8 + 8 + 8;
++
++	if (!still_sending)
++		return true;
++
++	if (len != hdr_len)
++	{
++		pg_log_error("invalid zero WAL message size: %d", len);
++		return false;
++	}
++
++	*blockpos = fe_recvint64(&copybuf[1]);
++	nbytes = fe_recvint64(&copybuf[1 + 8 + 8 + 8]);
++	if (nbytes == 0 || nbytes > WalSegSz)
++	{
++		pg_log_error("invalid zero WAL range length: " UINT64_FORMAT, nbytes);
++		return false;
++	}
++
++	xlogoff = XLogSegmentOffset(*blockpos, WalSegSz);
++	if ((walfile == NULL && xlogoff != 0) ||
++		(walfile != NULL && walfile->currpos != xlogoff))
++	{
++		pg_log_error("got zero WAL data offset %08x, expected %08x",
++					 xlogoff, walfile == NULL ? 0 : (int) walfile->currpos);
++		return false;
++	}
++
++	bytes_left = nbytes;
++	while (bytes_left > 0)
++	{
++		size_t		bytes_to_write = Min(bytes_left, WalSegSz - xlogoff);
++
++		if (walfile == NULL && !open_walfile(stream, *blockpos))
++			return false;
++
++		if (stream->walmethod->ops->write_zeros(walfile, bytes_to_write) !=
++			bytes_to_write)
++		{
++			pg_log_error("could not write %zu zero bytes to WAL file \"%s\": %s",
++						 bytes_to_write, walfile->pathname,
++						 GetLastWalMethodError(stream->walmethod));
++			return false;
++		}
++
++		bytes_left -= bytes_to_write;
++		*blockpos += bytes_to_write;
++		xlogoff += bytes_to_write;
++
++		if (XLogSegmentOffset(*blockpos, WalSegSz) == 0)
++		{
++			if (!close_walfile(stream, *blockpos))
++				return false;
++
++			xlogoff = 0;
++			if (still_sending &&
++				stream->stream_stop(*blockpos, stream->timeline, true))
++			{
++				if (PQputCopyEnd(conn, NULL) <= 0 || PQflush(conn))
++				{
++					pg_log_error("could not send copy-end packet: %s",
++								 PQerrorMessage(conn));
++					return false;
++				}
++				still_sending = false;
++				return true;
++			}
++		}
++	}
++
++	return true;
++}
++
+ /*
+  * Handle end of the copy stream.
+  */
+diff --git a/src/bin/pg_basebackup/walmethods.c b/src/bin/pg_basebackup/walmethods.c
+index 3a6b3b5f45b..be18a83b448 100644
+--- a/src/bin/pg_basebackup/walmethods.c
++++ b/src/bin/pg_basebackup/walmethods.c
+@@ -51,6 +51,7 @@ static ssize_t dir_get_file_size(WalWriteMethod *wwmethod,
+ static char *dir_get_file_name(WalWriteMethod *wwmethod,
+ 							   const char *pathname, const char *temp_suffix);
+ static ssize_t dir_write(Walfile *f, const void *buf, size_t count);
++static ssize_t dir_write_zeros(Walfile *f, size_t count);
+ static int	dir_sync(Walfile *f);
+ static bool dir_finish(WalWriteMethod *wwmethod);
+ static void dir_free(WalWriteMethod *wwmethod);
+@@ -62,6 +63,7 @@ static const WalWriteMethodOps WalDirectoryMethodOps = {
+ 	.get_file_size = dir_get_file_size,
+ 	.get_file_name = dir_get_file_name,
+ 	.write = dir_write,
++	.write_zeros = dir_write_zeros,
+ 	.sync = dir_sync,
+ 	.finish = dir_finish,
+ 	.free = dir_free
+@@ -84,6 +86,8 @@ typedef struct DirectoryMethodFile
+ 	Walfile		base;
+ 	int			fd;
+ 	char	   *fullpath;
++	size_t		pad_to_size;
++	pgoff_t		zeroed_from;
+ 	char	   *temp_suffix;
+ #ifdef HAVE_LIBZ
+ 	gzFile		gzfp;
+@@ -294,6 +298,8 @@ dir_open_for_write(WalWriteMethod *wwmethod, const char *pathname,
+ 	f->base.pathname = pg_strdup(pathname);
+ 	f->fd = fd;
+ 	f->fullpath = pg_strdup(tmppath);
++	f->pad_to_size = pad_to_size;
++	f->zeroed_from = -1;
+ 	if (temp_suffix)
+ 		f->temp_suffix = pg_strdup(temp_suffix);
+ 
+@@ -377,10 +383,66 @@ dir_write(Walfile *f, const void *buf, size_t count)
+ 		}
+ 	}
+ 	if (r > 0)
++	{
+ 		df->base.currpos += r;
++		if (df->zeroed_from >= 0)
++			df->zeroed_from = df->base.currpos;
++	}
+ 	return r;
+ }
+ 
++static ssize_t
++dir_write_zeros(Walfile *f, size_t count)
++{
++	DirectoryMethodFile *df = (DirectoryMethodFile *) f;
++
++	if (f->wwmethod->compression_algorithm == PG_COMPRESSION_NONE)
++	{
++		int			rc;
++
++		clear_error(f->wwmethod);
++		rc = 0;
++		if (df->zeroed_from < 0 || df->zeroed_from > f->currpos)
++		{
++			do
++				rc = ftruncate(df->fd, f->currpos);
++			while (rc < 0 && errno == EINTR);
++			if (rc == 0)
++			{
++				do
++					rc = ftruncate(df->fd, df->pad_to_size);
++				while (rc < 0 && errno == EINTR);
++			}
++		}
++
++		if (rc < 0)
++		{
++			f->wwmethod->lasterrno = errno;
++			return -1;
++		}
++
++		if (df->zeroed_from < 0)
++			df->zeroed_from = f->currpos;
++		f->currpos += count;
++		return count;
++	}
++	else
++	{
++		PGAlignedXLogBlock zerobuf = {0};
++		size_t		remaining = count;
++
++		while (remaining > 0)
++		{
++			size_t		chunk = Min(remaining, sizeof(zerobuf.data));
++
++			if (dir_write(f, zerobuf.data, chunk) != chunk)
++				return -1;
++			remaining -= chunk;
++		}
++		return count;
++	}
++}
++
+ static int
+ dir_close(Walfile *f, WalCloseMethod method)
+ {
+@@ -672,6 +734,7 @@ static ssize_t tar_get_file_size(WalWriteMethod *wwmethod,
+ static char *tar_get_file_name(WalWriteMethod *wwmethod,
+ 							   const char *pathname, const char *temp_suffix);
+ static ssize_t tar_write(Walfile *f, const void *buf, size_t count);
++static ssize_t tar_write_zeros(Walfile *f, size_t count);
+ static int	tar_sync(Walfile *f);
+ static bool tar_finish(WalWriteMethod *wwmethod);
+ static void tar_free(WalWriteMethod *wwmethod);
+@@ -683,6 +746,7 @@ static const WalWriteMethodOps WalTarMethodOps = {
+ 	.get_file_size = tar_get_file_size,
+ 	.get_file_name = tar_get_file_name,
+ 	.write = tar_write,
++	.write_zeros = tar_write_zeros,
+ 	.sync = tar_sync,
+ 	.finish = tar_finish,
+ 	.free = tar_free
+@@ -801,6 +865,23 @@ tar_write(Walfile *f, const void *buf, size_t count)
+ 	}
+ }
+ 
++static ssize_t
++tar_write_zeros(Walfile *f, size_t count)
++{
++	PGAlignedXLogBlock zerobuf = {0};
++	size_t		remaining = count;
++
++	while (remaining > 0)
++	{
++		size_t		chunk = Min(remaining, sizeof(zerobuf.data));
++
++		if (tar_write(f, zerobuf.data, chunk) != chunk)
++			return -1;
++		remaining -= chunk;
++	}
++	return count;
++}
++
+ static bool
+ tar_write_padding_data(TarMethodFile *f, size_t bytes)
+ {
+diff --git a/src/bin/pg_basebackup/walmethods.h b/src/bin/pg_basebackup/walmethods.h
+index f296a4e43ab..8234d4b1a46 100644
+--- a/src/bin/pg_basebackup/walmethods.h
++++ b/src/bin/pg_basebackup/walmethods.h
+@@ -72,6 +72,9 @@ typedef struct WalWriteMethodOps
+ 	 */
+ 	ssize_t		(*write) (Walfile *f, const void *buf, size_t count);
+ 
++	/* Write count zero bytes, using a sparse representation when possible. */
++	ssize_t		(*write_zeros) (Walfile *f, size_t count);
++
+ 	/*
+ 	 * fsync the contents of the specified file. Returns 0 on success.
+ 	 */
+diff --git a/src/include/libpq/protocol.h b/src/include/libpq/protocol.h
+index eae8f0e7238..0d002bb06eb 100644
+--- a/src/include/libpq/protocol.h
++++ b/src/include/libpq/protocol.h
+@@ -75,6 +75,7 @@
+ #define PqReplMsg_Keepalive			'k'
+ #define PqReplMsg_PrimaryStatusUpdate 's'
+ #define PqReplMsg_WALData			'w'
++#define PqReplMsg_WALDataZeros		'z'
+ 
+ 
+ /* Replication codes sent by the standby (wrapped in CopyData messages). */
+diff --git a/src/test/recovery/t/056_stream_wal_zeros.pl b/src/test/recovery/t/056_stream_wal_zeros.pl
+new file mode 100644
+index 00000000000..ff22e0481c1
+--- /dev/null
++++ b/src/test/recovery/t/056_stream_wal_zeros.pl
+@@ -0,0 +1,73 @@
++# Copyright (c) 2026, PostgreSQL Global Development Group
++
++use strict;
++use warnings FATAL => 'all';
++use PostgreSQL::Test::Cluster;
++use PostgreSQL::Test::Utils;
++use Test::More;
++
++sub files_are_equal
++{
++	my ($left, $right) = @_;
++	open(my $left_fh, '<:raw', $left) or die "could not open $left: $!";
++	open(my $right_fh, '<:raw', $right) or die "could not open $right: $!";
++
++	while (1)
++	{
++		my ($left_buf, $right_buf);
++		my $left_len = read($left_fh, $left_buf, 64 * 1024);
++		my $right_len = read($right_fh, $right_buf, 64 * 1024);
++		die "could not read WAL files: $!"
++		  if !defined($left_len) || !defined($right_len);
++		return 0 if $left_len != $right_len || $left_buf ne $right_buf;
++		last if $left_len == 0;
++	}
++
++	close($left_fh) or die "could not close $left: $!";
++	close($right_fh) or die "could not close $right: $!";
++	return 1;
++}
++
++my $primary = PostgreSQL::Test::Cluster->new('primary');
++$primary->init(allows_streaming => 1);
++$primary->append_conf('postgresql.conf', 'wal_init_zero = off');
++$primary->start;
++
++$primary->backup('backup');
++my $standby = PostgreSQL::Test::Cluster->new('standby');
++$standby->init_from_backup($primary, 'backup', has_streaming => 1);
++$standby->append_conf('postgresql.conf', 'wal_init_zero = off');
++$standby->start;
++
++# Start near the beginning of a segment, then generate a small amount of WAL
++# so that the next switch leaves a large zero-filled tail.
++$primary->safe_psql('postgres', 'SELECT pg_switch_wal()');
++$primary->wait_for_replay_catchup($standby);
++$primary->safe_psql('postgres',
++	'CREATE TABLE stream_wal_zeros AS SELECT generate_series(1, 10) AS i');
++
++my $walfile = $primary->safe_psql('postgres',
++	'SELECT pg_walfile_name(pg_switch_wal())');
++my $flush_lsn = $primary->lsn('flush');
++$primary->wait_for_catchup($standby, 'flush', $flush_lsn);
++
++my $primary_path = $primary->data_dir . "/pg_wal/$walfile";
++my $standby_path = $standby->data_dir . "/pg_wal/$walfile";
++
++ok(files_are_equal($standby_path, $primary_path),
++	'streamed WAL segment is reconstructed byte for byte');
++
++SKIP:
++{
++	skip 'allocated block count is not portable to Windows', 1
++	  if $^O eq 'MSWin32';
++
++	my @st = stat($standby_path);
++	skip 'filesystem does not report allocated blocks', 1
++	  if !defined($st[12]) || $st[12] == 0;
++
++	cmp_ok($st[12] * 512, '<', $st[7],
++		'zero-filled WAL tail is stored sparsely on the standby');
++}
++
++done_testing();
+-- 
+2.50.1 (Apple Git-155)
+

@@ -1,0 +1,58 @@
+Subject: Re: Small fixes needed by high-availability tools
+
+Hi hackers,
+
+I have rebased and reworked the first two patches in this series.
+This is version 3.
+
+I dropped the third patch, which exposed the WAL receiver's write
+position.  WAL that has only been written, but not flushed, cannot be
+relied upon when choosing a failover candidate, so that value does not
+provide the durability guarantee needed by an HA tool.
+
+The first attached patch adds post_recovery_sync_level.  When set to
+remote_write, on, or remote_apply, a client connection is rejected
+after recovery until the end-of-recovery WAL location reaches the
+configured synchronous standbys.  The setting can be assigned per role
+or database, and completion is tracked separately for each level.  WAL
+senders are still allowed to connect.  An empty
+synchronous_standby_names acts as an explicit operator bypass.
+
+The second patch adds synchronous_replication_wait_on_query_cancel.  It
+defaults to off, preserving the current behavior.  When it is on,
+query cancellation is reported but does not end a synchronous
+replication wait.  ProcDiePending is deliberately unchanged, so
+session termination and postmaster shutdown can still end the wait.
+
+At an Advanced Patch Review session, it was suggested that this policy
+might be better exposed as a hook, allowing an extension to decide
+whether a query cancellation should end the wait.  I kept the GUC in
+this version because it provides a simple built-in cluster-wide policy
+without requiring a preload library.  A hook could allow more elaborate
+policies, but it would run after local commit while interrupts are held,
+so its API and allowed operations would need to be deliberately narrow.
+I would particularly appreciate opinions on whether this should be a
+GUC, an extension hook, or a combination of both.
+
+Compared with v2, this version:
+
+* separates the startup policy from the query-cancellation policy;
+* stores and checks post-recovery synchronization state under
+  SyncRepLock;
+* allows different synchronization levels for roles and databases;
+* does not exempt superusers from the startup gate;
+* keeps the existing behavior by default for both features;
+* documents both settings; and
+* adds TAP coverage for cancellation, startup gating, standby catchup,
+  and the explicit empty-configuration bypass.
+
+This problem has now been discussed for almost seven years[0,1], and the
+behavior is in a sensitive part of the commit path.  Review from people
+interested in quorum replication and interrupt handling would be
+especially valuable.
+
+
+Best regards, Andrey Borodin.
+
+[0] https://www.postgresql.org/message-id/flat/C1F7905E-5DB2-497D-ABCC-E14D4DEE506C%40yandex-team.ru
+[1] https://www.postgresql.org/message-id/flat/0B44E464-BA62-4056-9465-3320DD2D0302%40yandex-team.ru

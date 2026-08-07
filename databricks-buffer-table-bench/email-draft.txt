@@ -1,0 +1,33 @@
+Subject: Re: Restructured Shared Buffer Hash Table
+
+Hi,
+
+I benchmarked the `restructured_shared_buffer_table.patch` attachment.  My
+standalone patched commit was 62c27e43559, on top of f585671055d.  The machine
+had 16 vCPUs and 32 GB of RAM; both builds used -O2 without assertions.  The
+numbers below are medians of five paired 30-second runs, shown as patched/base
+TPS deltas.  Runs above 64 clients used 64 pgbench jobs.  No checkpoints ran
+during the measured intervals.
+
+For select-only workloads I got:
+
+                                      clients
+scale / shared_buffers        1       16       64      128      256      512
+100 / 4 GB (fits)           +1.75%   +0.76%   +2.19%      -        -        -
+500 / 512 MB (larger)       +1.03%   +0.75%   +1.11%      -        -        -
+5 / 256 MB (fits)               -        -        -     +1.10%   +0.84%   +1.84%
+100 / 128 MB (larger)           -        -        -     +1.22%       -     -0.45%
+
+I also tested fresh scale-100 clusters with 128 MB of shared buffers:
+
+workload          1       16       64      256 clients
+select-only     +1.52%   -0.08%   +1.01%   -2.56%
+simple-update   +0.34%   -1.32%   -3.59%   -1.30%
+TPC-B-like      -0.29%   +1.65%   +2.31%   +1.82%
+
+The read-write results were noisy.  The select-only tests show a small
+improvement in most configurations, but I do not see an improvement that
+consistently grows with contention.
+
+
+Best regards, Andrey Borodin

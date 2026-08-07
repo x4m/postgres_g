@@ -1,0 +1,811 @@
+From ead264d98f6f78ae653bc779595af5bc9cfff8d4 Mon Sep 17 00:00:00 2001
+From: Kirill Reshke <reshkekirill@yandex.ru>
+Date: Wed, 29 Jul 2026 20:30:58 +0500
+Subject: [PATCH v8 3/3] Guard against configuration hazards in
+ archive_mode=shared setups.
+
+A configuration that is otherwise valid may cause problems when used with archive_mode=shared.
+For example, when standby has archive_mode=shared and its replication
+source is unable to provide archive status reports, standby will keep
+all WAL segments forever, leading to disk exhaustion.
+
+Fix this by refusing the archive_status_report_interval request at
+connection startup unless archive_mode is active on the upstream node.
+
+Two TAP tests in 057_archive_shared_hazards.pl are added: the first
+checks that a shared-mode standby is rejected with a FATAL error when
+its upstream has archive_mode=off; the second demonstrates a still-hazardous
+but not-rejected topology, where an intermediate archive_mode=on standby
+never requested reports and thus cannot relay them to a cascading
+shared-mode standby, which consequently never marks segments as .done.
+
+To address this, allow archiver to work on standby in archive mode
+shared, and archive WAL's for which we did not receive archive status
+report for too long (PGARCH_SHARED_FALLBACK_INTERVALS times of
+archive_status_report_interval).
+---
+ src/backend/postmaster/pgarch.c               |  64 +++-
+ src/backend/postmaster/postmaster.c           |  25 +-
+ .../libpqwalreceiver/libpqwalreceiver.c       |   9 +-
+ src/backend/replication/walreceiver.c         |   4 +
+ src/backend/replication/walsender.c           |   8 +-
+ src/backend/tcop/backend_startup.c            |  14 +-
+ src/include/access/xlog.h                     |   3 +
+ src/include/postmaster/pgarch.h               |   2 +
+ src/include/replication/walsender.h           |   2 +-
+ src/interfaces/libpq/fe-connect.c             |   8 +-
+ src/interfaces/libpq/fe-protocol3.c           |   4 +-
+ src/interfaces/libpq/libpq-int.h              |   5 +-
+ src/test/recovery/meson.build                 |   1 +
+ .../t/056_archive_shared_checkpoint.pl        |  19 ++
+ .../recovery/t/057_archive_shared_hazards.pl  | 316 ++++++++++++++++++
+ 15 files changed, 457 insertions(+), 27 deletions(-)
+ create mode 100644 src/test/recovery/t/057_archive_shared_hazards.pl
+
+diff --git a/src/backend/postmaster/pgarch.c b/src/backend/postmaster/pgarch.c
+index ef1423133ce..c7a051b4ec4 100644
+--- a/src/backend/postmaster/pgarch.c
++++ b/src/backend/postmaster/pgarch.c
+@@ -50,6 +50,7 @@
+ #include "storage/shmem.h"
+ #include "storage/subsystems.h"
+ #include "utils/guc.h"
++#include "utils/injection_point.h"
+ #include "utils/memutils.h"
+ #include "utils/ps_status.h"
+ #include "utils/resowner.h"
+@@ -66,6 +67,15 @@
+ #define PGARCH_RESTART_INTERVAL 10	/* How often to attempt to restart a
+ 									 * failed archiver; in seconds. */
+ 
++/*
++ * In archive_mode=shared, a standby normally relies on the primary's archival
++ * status reports and does not archive segments itself.  If reports stop
++ * arriving, the standby must fall back to archiving on its own to avoid
++ * accumulating WAL forever.  We wait for this many report intervals to pass
++ * with no report before starting to archive locally.
++ */
++#define PGARCH_SHARED_FALLBACK_INTERVALS 3
++
+ /*
+  * Maximum number of retries allowed when attempting to archive a WAL
+  * file.
+@@ -173,6 +183,15 @@ PgArchShmemInit(void *arg)
+ 
+ 	PgArch->primary_last_archived[0] = '\0';
+ 
++	/*
++	 * Seed the report timestamp when starting up during recovery so that the
++	 * archiver does not rush to archive segments itself right after startup.
++	 * We give the primary a chance to send its first archival report before
++	 * the fallback timeout (see pgarch_MainLoop) elapses.
++	 */
++	if (RecoveryInProgress())
++		PgArch->last_archival_report_timestamp = GetCurrentTimestamp();
++
+ 	SpinLockInit(&PgArch->lock);
+ }
+ 
+@@ -307,6 +326,8 @@ static void
+ pgarch_MainLoop(void)
+ {
+ 	bool		time_to_stop;
++	bool		do_copy_loop;
++	TimestampTz last_archival_report_timestamp;
+ 
+ 	/*
+ 	 * There shouldn't be anything for the archiver to do except to wait for a
+@@ -317,6 +338,8 @@ pgarch_MainLoop(void)
+ 	{
+ 		ResetLatch(MyLatch);
+ 
++		INJECTION_POINT("pgarch-main-loop", NULL);
++
+ 		/* When we get SIGUSR2, we do one more archive cycle, then exit */
+ 		time_to_stop = ready_to_stop;
+ 
+@@ -342,8 +365,45 @@ pgarch_MainLoop(void)
+ 				break;
+ 		}
+ 
+-		/* Do what we're here for */
+-		pgarch_ArchiverCopyLoop();
++		if (RecoveryInProgress() && XLogArchivingShared())
++		{
++			int64		fallback_ms;
++
++			SpinLockAcquire(&PgArch->lock);
++			last_archival_report_timestamp = PgArch->last_archival_report_timestamp;
++			SpinLockRelease(&PgArch->lock);
++
++			/*
++			 * Compute the fallback timeout in 64-bit arithmetic:
++			 * XLogArchiveStatusReportInterval can be as large as INT_MAX / 2,
++			 * so multiplying it as an int would overflow.
++			 */
++			fallback_ms = (int64) XLogArchiveStatusReportInterval *
++				PGARCH_SHARED_FALLBACK_INTERVALS;
++
++			/*
++			 * Only archive locally once we have gone long enough without a
++			 * report from the primary.  Note that an incoming report does not
++			 * set our latch, so we may notice the timeout up to
++			 * PGARCH_AUTOWAKE_INTERVAL late; that coarse granularity is fine
++			 * for a fallback path.
++			 */
++			do_copy_loop = GetCurrentTimestamp() >
++				TimestampTzPlusMilliseconds(last_archival_report_timestamp,
++											fallback_ms);
++		}
++		else
++		{
++			do_copy_loop = true;
++		}
++
++		if (do_copy_loop)
++		{
++			/* Do what we're here for */
++			pgarch_ArchiverCopyLoop();
++
++			INJECTION_POINT("pgarch-main-loop-after-copy", NULL);
++		}
+ 
+ 		/*
+ 		 * Sleep until a signal is received, or until a poll is forced by
+diff --git a/src/backend/postmaster/postmaster.c b/src/backend/postmaster/postmaster.c
+index 90c7c4528e8..4a9c063698a 100644
+--- a/src/backend/postmaster/postmaster.c
++++ b/src/backend/postmaster/postmaster.c
+@@ -3378,14 +3378,23 @@ LaunchMissingBackgroundProcesses(void)
+ 	}
+ 
+ 	/*
+-	 * If WAL archiving is enabled always, we are allowed to start archiver
+-	 * even during recovery.
++	 * Decide whether the archiver may run in the current postmaster state.
++	 * It always runs while the server is running normally.  With
++	 * archive_mode=always or =shared it also runs during recovery, since in
++	 * those modes the standby has archiving work of its own to do.
+ 	 */
+-	if (PgArchPMChild == NULL &&
+-		((XLogArchivingActive() && pmState == PM_RUN) ||
+-		 (XLogArchivingAlways() && (pmState == PM_RECOVERY || pmState == PM_HOT_STANDBY))) &&
+-		PgArchCanRestart())
+-		PgArchPMChild = StartChildProcess(B_ARCHIVER);
++	if (PgArchPMChild == NULL && PgArchCanRestart())
++	{
++		bool		start_archiver = false;
++
++		if (pmState == PM_RUN)
++			start_archiver = XLogArchivingActive();
++		else if (pmState == PM_RECOVERY || pmState == PM_HOT_STANDBY)
++			start_archiver = XLogArchivingAlways() || XLogArchivingShared();
++
++		if (start_archiver)
++			PgArchPMChild = StartChildProcess(B_ARCHIVER);
++	}
+ 
+ 	/*
+ 	 * If we need to start a slot sync worker, try to do that now
+@@ -3753,7 +3762,7 @@ process_pm_pmsignal(void)
+ 		 * files.
+ 		 */
+ 		Assert(PgArchPMChild == NULL);
+-		if (XLogArchivingAlways())
++		if (XLogArchivingAlways() || XLogArchivingShared())
+ 			PgArchPMChild = StartChildProcess(B_ARCHIVER);
+ 
+ 		/*
+diff --git a/src/backend/replication/libpqwalreceiver/libpqwalreceiver.c b/src/backend/replication/libpqwalreceiver/libpqwalreceiver.c
+index e438cba1373..f980a7f54b8 100644
+--- a/src/backend/replication/libpqwalreceiver/libpqwalreceiver.c
++++ b/src/backend/replication/libpqwalreceiver/libpqwalreceiver.c
+@@ -22,6 +22,7 @@
+ #include <unistd.h>
+ #include <sys/time.h>
+ 
++#include "access/xlog.h"
+ #include "common/connect.h"
+ #include "funcapi.h"
+ #include "libpq-fe.h"
+@@ -154,6 +155,7 @@ libpqrcv_connect(const char *conninfo, bool replication, bool logical,
+ 	const char *vals[6];
+ 	int			i = 0;
+ 	char	   *options_val = NULL;
++	char	   *archive_interval_val = NULL;
+ 
+ 	/*
+ 	 * Re-validate connection string. The validation already happened at DDL
+@@ -219,8 +221,9 @@ libpqrcv_connect(const char *conninfo, bool replication, bool logical,
+ 
+ 	if (expect_archive_reports)
+ 	{
+-		keys[++i] = "archive_status_reports";
+-		vals[i] = "true";
++		archive_interval_val = psprintf("%d", XLogArchiveStatusReportInterval);
++		keys[++i] = "archive_status_report_interval";
++		vals[i] = archive_interval_val;
+ 	}
+ 
+ 	keys[++i] = NULL;
+@@ -239,6 +242,8 @@ libpqrcv_connect(const char *conninfo, bool replication, bool logical,
+ 
+ 	if (options_val != NULL)
+ 		pfree(options_val);
++	if (archive_interval_val != NULL)
++		pfree(archive_interval_val);
+ 
+ 	if (PQstatus(conn->streamConn) != CONNECTION_OK)
+ 		goto bad_connection_errmsg;
+diff --git a/src/backend/replication/walreceiver.c b/src/backend/replication/walreceiver.c
+index cce623f169f..4b7011f5850 100644
+--- a/src/backend/replication/walreceiver.c
++++ b/src/backend/replication/walreceiver.c
+@@ -856,6 +856,7 @@ static void
+ XLogWalRcvProcessMsg(unsigned char type, char *buf, Size len, TimeLineID tli)
+ {
+ 	int			hdrlen;
++	TimestampTz now;
+ 	XLogRecPtr	dataStart;
+ 	XLogRecPtr	walEnd;
+ 	TimestampTz sendTime;
+@@ -931,8 +932,11 @@ XLogWalRcvProcessMsg(unsigned char type, char *buf, Size len, TimeLineID tli)
+ 							 errcode(ERRCODE_PROTOCOL_VIOLATION),
+ 							 errmsg_internal("unexpected character in primary's last archived filename"));
+ 
++				now = GetCurrentTimestamp();
++
+ 				SpinLockAcquire(&PgArch->lock);
+ 				memcpy(PgArch->primary_last_archived, primary_last_archived, sizeof(PgArch->primary_last_archived));
++				PgArch->last_archival_report_timestamp = now;
+ 				SpinLockRelease(&PgArch->lock);
+ 
+ 				INJECTION_POINT("walreceiver-after-primary-last-archived", NULL);
+diff --git a/src/backend/replication/walsender.c b/src/backend/replication/walsender.c
+index bfe43ef6214..3881b54d978 100644
+--- a/src/backend/replication/walsender.c
++++ b/src/backend/replication/walsender.c
+@@ -135,7 +135,9 @@ WalSnd	   *MyWalSnd = NULL;
+ bool		am_walsender = false;	/* Am I a walsender process? */
+ bool		am_cascading_walsender = false; /* Am I cascading WAL to another
+ 											 * standby? */
+-bool		am_archive_status_walsender = false; /* Am I replying with archive status reports? */
++int			archive_status_report_interval = 0; /* interval (ms) between
++												 * archive status reports; 0
++												 * disables them */
+ bool		am_db_walsender = false;	/* Connected to a database? */
+ 
+ /* GUC variables */
+@@ -2870,7 +2872,7 @@ WalSndArchivalReport(void)
+ 	char		last_archived[MAX_XFN_CHARS + 1];
+ 
+ 	/* Only send reports when requested */
+-	if (!am_archive_status_walsender)
++	if (archive_status_report_interval <= 0)
+ 		return;
+ 
+ 	if (MyWalSnd->state != WALSNDSTATE_CATCHUP &&
+@@ -2892,7 +2894,7 @@ WalSndArchivalReport(void)
+ 	 * This avoids excessive pgstat access.
+ 	 */
+ 	if (now < TimestampTzPlusMilliseconds(last_archival_report_timestamp,
+-										  XLogArchiveStatusReportInterval))
++										  archive_status_report_interval))
+ 		return;
+ 
+ 	last_archival_report_timestamp = now;
+diff --git a/src/backend/tcop/backend_startup.c b/src/backend/tcop/backend_startup.c
+index 6df50d3c98f..23114f0f84e 100644
+--- a/src/backend/tcop/backend_startup.c
++++ b/src/backend/tcop/backend_startup.c
+@@ -35,6 +35,7 @@
+ #include "tcop/backend_startup.h"
+ #include "tcop/tcopprot.h"
+ #include "utils/builtins.h"
++#include "utils/guc.h"
+ #include "utils/guc_hooks.h"
+ #include "utils/injection_point.h"
+ #include "utils/memutils.h"
+@@ -803,15 +804,20 @@ retry:
+ 									valptr),
+ 							 errhint("Valid values are: \"false\", 0, \"true\", 1, \"database\".")));
+ 			}
+-			else if (strcmp(nameptr, "archive_status_reports") == 0)
++			else if (strcmp(nameptr, "archive_status_report_interval") == 0)
+ 			{
+-				if (!parse_bool(valptr, &am_archive_status_walsender))
++				if (!parse_int(valptr, &archive_status_report_interval, 0, NULL))
+ 					ereport(FATAL,
+ 							 errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+ 							 errmsg("invalid value for parameter \"%s\": \"%s\"",
+-									"archive_status_reports",
++									"archive_status_report_interval",
+ 									valptr),
+-							 errhint("Valid values are: \"false\", 0, \"true\", 1."));
++							 errhint("Value must be a non-negative integer."));
++				if (archive_status_report_interval > 0 && !XLogArchivingActive())
++					ereport(FATAL,
++							errcode(ERRCODE_INVALID_PARAMETER_VALUE),
++							errmsg("archive status report requested, but archiving is not enabled"),
++							errhint("Change parameter %s.", "archive_mode"));
+ 			}
+ 			else if (strncmp(nameptr, "_pq_.", 5) == 0)
+ 			{
+diff --git a/src/include/access/xlog.h b/src/include/access/xlog.h
+index 2aeb8ce14b5..e71606e60f0 100644
+--- a/src/include/access/xlog.h
++++ b/src/include/access/xlog.h
+@@ -106,6 +106,9 @@ extern PGDLLIMPORT bool XLogLogicalInfo;
+ /* Is WAL archiving enabled always (even during recovery)? */
+ #define XLogArchivingAlways() \
+ 	(AssertMacro(XLogArchiveMode == ARCHIVE_MODE_OFF || wal_level >= WAL_LEVEL_REPLICA), XLogArchiveMode == ARCHIVE_MODE_ALWAYS)
++/* Is WAL archiving coordinated between primary and standby? */
++#define XLogArchivingShared() \
++	(AssertMacro(XLogArchiveMode == ARCHIVE_MODE_OFF || wal_level >= WAL_LEVEL_REPLICA), XLogArchiveMode == ARCHIVE_MODE_SHARED)
+ 
+ /*
+  * Is WAL-logging necessary for archival or log-shipping, or can we skip
+diff --git a/src/include/postmaster/pgarch.h b/src/include/postmaster/pgarch.h
+index 1d8571fc5a5..070de3c74b5 100644
+--- a/src/include/postmaster/pgarch.h
++++ b/src/include/postmaster/pgarch.h
+@@ -45,6 +45,8 @@ typedef struct PgArchData
+ 	/* Last archived WAL segment file reported by the primary */
+ 	char primary_last_archived[MAX_XFN_CHARS + 1];
+ 
++	TimestampTz last_archival_report_timestamp;
++
+ 	/*
+ 	 * Forces a directory scan in pgarch_readyXlog().
+ 	 */
+diff --git a/src/include/replication/walsender.h b/src/include/replication/walsender.h
+index f2fbada75db..c0c583511a9 100644
+--- a/src/include/replication/walsender.h
++++ b/src/include/replication/walsender.h
+@@ -27,7 +27,7 @@ typedef enum
+ /* global state */
+ extern PGDLLIMPORT bool am_walsender;
+ extern PGDLLIMPORT bool am_cascading_walsender;
+-extern PGDLLIMPORT bool am_archive_status_walsender;
++extern PGDLLIMPORT int archive_status_report_interval;
+ extern PGDLLIMPORT bool am_db_walsender;
+ extern PGDLLIMPORT bool wake_wal_senders;
+ 
+diff --git a/src/interfaces/libpq/fe-connect.c b/src/interfaces/libpq/fe-connect.c
+index 9b1929fc395..8dfcea76f89 100644
+--- a/src/interfaces/libpq/fe-connect.c
++++ b/src/interfaces/libpq/fe-connect.c
+@@ -380,9 +380,9 @@ static const internalPQconninfoOption PQconninfoOptions[] = {
+ 		"Replication", "D", 5,
+ 	offsetof(struct pg_conn, replication)},
+ 
+-	{"archive_status_reports", NULL, NULL, NULL,
+-		"Replication", "D", 5,
+-	offsetof(struct pg_conn, archive_status_reports)},
++	{"archive_status_report_interval", NULL, NULL, NULL,
++		"Replication", "D", 10,
++	offsetof(struct pg_conn, archive_status_report_interval)},
+ 
+ 	{"target_session_attrs", "PGTARGETSESSIONATTRS",
+ 		DefaultTargetSessionAttrs, NULL,
+@@ -5122,7 +5122,7 @@ freePGconn(PGconn *conn)
+ 	free(conn->fbappname);
+ 	free(conn->dbName);
+ 	free(conn->replication);
+-	free(conn->archive_status_reports);
++	free(conn->archive_status_report_interval);
+ 	free(conn->pgservice);
+ 	free(conn->pgservicefile);
+ 	free(conn->pguser);
+diff --git a/src/interfaces/libpq/fe-protocol3.c b/src/interfaces/libpq/fe-protocol3.c
+index ed7a3f6b9dd..ae0011b9f3b 100644
+--- a/src/interfaces/libpq/fe-protocol3.c
++++ b/src/interfaces/libpq/fe-protocol3.c
+@@ -2513,8 +2513,8 @@ build_startup_packet(const PGconn *conn, char *packet,
+ 		ADD_STARTUP_OPTION("database", conn->dbName);
+ 	if (conn->replication && conn->replication[0])
+ 		ADD_STARTUP_OPTION("replication", conn->replication);
+-	if (conn->archive_status_reports && conn->archive_status_reports[0])
+-		ADD_STARTUP_OPTION("archive_status_reports", conn->archive_status_reports);
++	if (conn->archive_status_report_interval && conn->archive_status_report_interval[0])
++		ADD_STARTUP_OPTION("archive_status_report_interval", conn->archive_status_report_interval);
+ 	if (conn->pgoptions && conn->pgoptions[0])
+ 		ADD_STARTUP_OPTION("options", conn->pgoptions);
+ 	if (conn->send_appname)
+diff --git a/src/interfaces/libpq/libpq-int.h b/src/interfaces/libpq/libpq-int.h
+index 8115db5e332..7219deacdbf 100644
+--- a/src/interfaces/libpq/libpq-int.h
++++ b/src/interfaces/libpq/libpq-int.h
+@@ -391,7 +391,10 @@ struct pg_conn
+ 	char	   *fbappname;		/* fallback application name */
+ 	char	   *dbName;			/* database name */
+ 	char	   *replication;	/* connect as the replication standby? */
+-	char	   *archive_status_reports;	/* do we send primary last archived WAL to the standby? */
++	char	   *archive_status_report_interval; /* interval (ms) between
++												 * archive status reports the
++												 * primary sends to the
++												 * standby; 0 disables them */
+ 	char	   *pgservice;		/* Postgres service, if any */
+ 	char	   *pgservicefile;	/* path to a service file containing
+ 								 * service(s) */
+diff --git a/src/test/recovery/meson.build b/src/test/recovery/meson.build
+index 7e0c6ba67cc..efb0c555f19 100644
+--- a/src/test/recovery/meson.build
++++ b/src/test/recovery/meson.build
+@@ -65,6 +65,7 @@ tests += {
+       't/054_unlogged_sequence_promotion.pl',
+       't/055_archive_shared.pl',
+       't/056_archive_shared_checkpoint.pl',
++      't/057_archive_shared_hazards.pl',
+     ],
+   },
+ }
+diff --git a/src/test/recovery/t/056_archive_shared_checkpoint.pl b/src/test/recovery/t/056_archive_shared_checkpoint.pl
+index 8083ee99513..52f8ec6863e 100644
+--- a/src/test/recovery/t/056_archive_shared_checkpoint.pl
++++ b/src/test/recovery/t/056_archive_shared_checkpoint.pl
+@@ -17,6 +17,11 @@ use PostgreSQL::Test::Cluster;
+ use PostgreSQL::Test::Utils;
+ use Test::More;
+ 
++if ($ENV{enable_injection_points} ne 'yes')
++{
++	plan skip_all => 'Injection points not supported by this build';
++}
++
+ # Use 1 MB WAL segments so we can generate many segments cheaply.
+ my $wal_segsize = 1;
+ 
+@@ -52,6 +57,16 @@ wal_keep_size   = 0 # to trigger wal deletion
+ });
+ $primary->start;
+ 
++# Check if the extension injection_points is available, as it may be
++# possible that this script is run with installcheck, where the module
++# would not be installed by default.
++if (!$primary->check_extension('injection_points'))
++{
++	plan skip_all => 'Extension injection_points not installed';
++}
++
++$primary->safe_psql('postgres', q(CREATE EXTENSION injection_points));
++
+ my $backup_name = 'standby_backup';
+ $primary->backup($backup_name);
+ 
+@@ -66,6 +81,10 @@ wal_keep_size              = 0 # to trigger wal deletion
+ });
+ $standby->start;
+ 
++# Pause the standby's archiver so received segments keep their .ready files.
++$standby->safe_psql('postgres',
++	q{SELECT injection_points_attach('pgarch-main-loop', 'wait')});
++
+ $primary->wait_for_catchup($standby);
+ 
+ ###############################################################################
+diff --git a/src/test/recovery/t/057_archive_shared_hazards.pl b/src/test/recovery/t/057_archive_shared_hazards.pl
+new file mode 100644
+index 00000000000..efdf5041788
+--- /dev/null
++++ b/src/test/recovery/t/057_archive_shared_hazards.pl
+@@ -0,0 +1,316 @@
++# Copyright (c) 2026, PostgreSQL Global Development Group
++
++# Tests for configuration hazards involving archive_mode=shared.
++#
++# Test 1 checks that a shared-mode standby whose upstream does not archive
++# (archive_mode=off) is rejected at connection startup, since the upstream
++# cannot provide the archival status reports the standby relies on.
++#
++# Test 2 exercises a mixed archiving topology:
++#
++#   primary (archive_mode=on)
++#       |
++#   standby (archive_mode=on)
++#       |
++#   cascade (archive_mode=shared)
++#
++# The cascading standby runs in shared mode and therefore asks its upstream
++# (the standby) for archival status reports. The standby itself runs in plain
++# "on" mode: it does not request reports from the primary, so it has nothing
++# to relay downstream. As a result the cascading standby never receives an
++# archival report: its received segments stay as .ready and
++# pg_stat_wal_receiver.primary_last_archived stays empty. The test then shows
++# that a shared-mode standby falls back to archiving segments itself: once its
++# own archiver runs, it marks the segment as .done and starts archiving.
++use strict;
++use warnings FATAL => 'all';
++use PostgreSQL::Test::Cluster;
++use PostgreSQL::Test::Utils;
++use Test::More;
++
++if ($ENV{enable_injection_points} ne 'yes')
++{
++	plan skip_all => 'Injection points not supported by this build';
++}
++
++# Shared archive directory used by every node that archives.
++my $archive_dir = PostgreSQL::Test::Utils::tempdir();
++my $archive_command =
++  $PostgreSQL::Test::Utils::windows_os
++  ? qq{copy "%p" "$archive_dir\\%f"}
++  : qq{cp "%p" "$archive_dir/%f"};
++
++
++
++###############################################################################
++# Test 1: Primary archive_mode=off, standby archive_mode=shared
++#
++# A standby running in shared mode connects requesting archival status
++# reports. If the primary does not archive at all (archive_mode=off), it
++# cannot provide such reports, so the primary must reject the connection with
++# a FATAL error and replication must never start.
++###############################################################################
++
++my $noarch_primary = PostgreSQL::Test::Cluster->new('noarch_primary');
++$noarch_primary->init(allows_streaming => 1);
++$noarch_primary->append_conf('postgresql.conf', "
++archive_mode = off
++wal_keep_size = 128MB
++");
++$noarch_primary->start;
++
++# Sanity check: archiving is really disabled on the primary
++is($noarch_primary->safe_psql('postgres', "SHOW archive_mode;"), 'off',
++	"primary has archive_mode=off");
++
++my $noarch_backup = 'noarch_backup';
++$noarch_primary->backup($noarch_backup);
++
++my $shared_standby = PostgreSQL::Test::Cluster->new('shared_standby');
++$shared_standby->init_from_backup($noarch_primary, $noarch_backup,
++	has_streaming => 1);
++$shared_standby->append_conf('postgresql.conf', "
++archive_mode = shared
++archive_status_report_interval = 10ms
++archive_command = '$archive_command'
++wal_receiver_status_interval = 1s
++");
++
++# Note the current log position so wait_for_log() only inspects new output.
++my $logstart = -s $shared_standby->logfile;
++$shared_standby->start;
++
++# The primary must reject the walreceiver's connection because it cannot
++# provide archival status reports while archive_mode=off.
++$shared_standby->wait_for_log(
++	qr/FATAL:  archive status report requested, but archiving is not enabled/,
++	$logstart);
++
++# Generate WAL on the primary; it must not reach the standby since the
++# walreceiver connection is refused.
++$noarch_primary->safe_psql('postgres',
++	"SELECT txid_current();SELECT pg_switch_wal();");
++
++# The standby's walreceiver must never establish a connection.
++is($shared_standby->safe_psql('postgres',
++		"SELECT count(*) FROM pg_stat_wal_receiver;"),
++	'0',
++	"standby has no active wal receiver when connection is rejected");
++
++# ... and the primary must see no walsender for it either.
++is($noarch_primary->safe_psql('postgres',
++		"SELECT count(*) FROM pg_stat_replication;"),
++	'0',
++	"primary has no replication connection when standby is rejected");
++
++
++###############################################################################
++# Test 2: Primary with archive_mode=on, standby with archive_mode=on streaming
++# from the primary, and a cascading standby with archive_mode=shared streaming
++# from the standby.
++#
++# The cascading standby running in shared mode connects requesting archival
++# status reports from the standby, which has no report from the primary to
++# relay.
++###############################################################################
++
++my $primary = PostgreSQL::Test::Cluster->new('primary');
++$primary->init(has_archiving => 1, allows_streaming => 1);
++$primary->append_conf('postgresql.conf', "
++archive_mode = on
++archive_command = '$archive_command'
++archive_status_report_interval = 10ms
++wal_keep_size = 128MB
++");
++$primary->start;
++
++# Check if the extension injection_points is available, as it may be
++# possible that this script is run with installcheck, where the module
++# would not be installed by default.
++if (!$primary->check_extension('injection_points'))
++{
++	plan skip_all => 'Extension injection_points not installed';
++}
++
++$primary->safe_psql('postgres', q(CREATE EXTENSION injection_points));
++
++is($primary->safe_psql('postgres', "SHOW archive_mode;"), 'on',
++	"primary has archive_mode=on");
++
++# Make sure the primary actually archives something.
++$primary->safe_psql('postgres', "SELECT txid_current();SELECT pg_switch_wal();");
++$primary->poll_query_until('postgres',
++	"SELECT archived_count > 0 FROM pg_stat_archiver")
++	or die "timed out waiting for primary to archive";
++
++###############################################################################
++# Standby with archive_mode=on, streaming from the primary
++###############################################################################
++
++my $standby_backup = 'standby_backup';
++$primary->backup($standby_backup);
++
++my $standby = PostgreSQL::Test::Cluster->new('standby');
++$standby->init_from_backup($primary, $standby_backup, has_streaming => 1);
++$standby->append_conf('postgresql.conf', "
++archive_mode = on
++archive_command = '$archive_command'
++archive_status_report_interval = 10ms
++wal_receiver_status_interval = 1s
++");
++$standby->start;
++
++$primary->wait_for_catchup($standby);
++
++is($standby->safe_psql('postgres', "SELECT count(*) FROM pg_stat_wal_receiver;"),
++	'1', "standby wal receiver is connected to the primary");
++
++###############################################################################
++# Cascading standby with archive_mode=shared, streaming from the standby
++###############################################################################
++
++my $cascade_backup = 'cascade_backup';
++$standby->backup($cascade_backup);
++
++my $cascade = PostgreSQL::Test::Cluster->new('cascade');
++$cascade->init_from_backup($standby, $cascade_backup, has_streaming => 1);
++$cascade->append_conf('postgresql.conf', "
++archive_mode = shared
++archive_status_report_interval = 10ms
++archive_command = '$archive_command'
++wal_receiver_status_interval = 1s
++");
++$cascade->start;
++
++# Pause the cascading standby's archiver so we can first observe the state
++# before it archives anything on its own, then let it run in a controlled way.
++$cascade->safe_psql('postgres',
++	q{SELECT injection_points_attach('pgarch-main-loop', 'wait')});
++$cascade->safe_psql('postgres',
++	q{SELECT injection_points_attach('pgarch-main-loop-after-copy', 'wait')});
++
++# The cascading standby connects successfully: its upstream (the standby) has
++# archive_mode=on, so XLogArchivingActive() is true there and the connection
++# is not rejected.
++$standby->wait_for_catchup($cascade);
++is($cascade->safe_psql('postgres', "SELECT count(*) FROM pg_stat_wal_receiver;"),
++	'1', "cascading standby wal receiver is connected to the standby");
++
++###############################################################################
++# Generate WAL, archive it on the primary, and observe the cascade
++###############################################################################
++
++my $before = $primary->safe_psql('postgres',
++	"SELECT archived_count FROM pg_stat_archiver");
++
++my $current_walfile = $primary->safe_psql('postgres',
++	q{SELECT pg_walfile_name(pg_current_wal_lsn())});
++
++my $walfile_ready = "$current_walfile.ready";
++my $walfile_done  = "$current_walfile.done";
++
++$primary->safe_psql('postgres', "SELECT txid_current();SELECT pg_switch_wal();");
++$primary->poll_query_until('postgres',
++	"SELECT archived_count > $before FROM pg_stat_archiver")
++	or die "timed out waiting for primary to archive new segment";
++
++# Propagate the new WAL all the way down the chain.
++$primary->wait_for_catchup($standby);
++$standby->wait_for_catchup($cascade);
++
++my $cascade_status = $cascade->data_dir . '/pg_wal/archive_status';
++
++# The cascading standby must create status files for received WAL.
++my $ready_seen = 0;
++for (my $i = 0; $i < $PostgreSQL::Test::Utils::timeout_default; $i++)
++{
++	$ready_seen = 0;
++	if (opendir(my $dh, $cascade_status))
++	{
++		$ready_seen = scalar(grep { /\.ready$/ } readdir($dh));
++		closedir($dh);
++	}
++	last if $ready_seen > 0;
++	sleep(1);
++}
++
++# The cascading standby must have created a .ready status file for the segment.
++ok( -f "$cascade_status/$walfile_ready",
++	".ready file exists on cascade replica for WAL segment $current_walfile");
++
++# The intermediate standby runs in "on" mode and never requested reports from
++# the primary, so it cannot relay any report.  With the cascading standby's
++# archiver still paused, the segment must remain .ready and no report can have
++# marked it .done.
++ok( -f "$cascade_status/$walfile_ready",
++	"segment stays .ready on cascading standby without an archival report");
++ok( !-f "$cascade_status/$walfile_done",
++	"segment is not marked .done without an archival report");
++
++# And its view column must stay empty: no report ever arrived.
++is($cascade->safe_psql('postgres',
++		"SELECT primary_last_archived FROM pg_stat_wal_receiver;"),
++	'',
++	"cascading standby primary_last_archived stays empty");
++
++# Let the cascading standby's archiver run.  Since no archival report will ever
++# arrive, a shared-mode standby must fall back to archiving the segment itself.
++$cascade->safe_psql(
++	'postgres', qq[
++SELECT injection_points_detach('pgarch-main-loop');
++SELECT injection_points_wakeup('pgarch-main-loop');
++]);
++
++# Helper: Wait for a session to hit an injection point.
++# Optional second argument is timeout in seconds.
++# Returns true if found, false if timeout.
++# On timeout, logs diagnostic information about all active queries.
++sub wait_for_injection_point
++{
++	my ($node, $point_name, $timeout) = @_;
++	$timeout //= $PostgreSQL::Test::Utils::timeout_default / 2;
++
++	for (my $elapsed = 0; $elapsed < $timeout * 10; $elapsed++)
++	{
++		my $pid = $node->safe_psql(
++			'postgres', qq[
++			SELECT pid FROM pg_stat_activity
++			WHERE wait_event_type = 'InjectionPoint'
++			  AND wait_event = '$point_name'
++			LIMIT 1;
++		]);
++		return 1 if $pid ne '';
++		sleep(1);
++	}
++
++	# Timeout - report diagnostic information
++	my $activity = $node->safe_psql(
++		'postgres', q[
++		SELECT format('pid=%s, state=%s, wait_event_type=%s, wait_event=%s, backend_xmin=%s, backend_xid=%s, query=%s',
++			pid, state, wait_event_type, wait_event, backend_xmin, backend_xid, left(query, 100))
++		FROM pg_stat_activity
++		ORDER BY pid;
++	]);
++	diag(   "wait_for_injection_point timeout waiting for: $point_name\n"
++		  . "Current queries in pg_stat_activity:\n$activity");
++
++	return 0;
++}
++
++# Wait until the archiver has run one copy cycle and parked on the injection
++# point that follows it.
++wait_for_injection_point($cascade, 'pgarch-main-loop-after-copy');
++
++# The archiver archived the segment on its own: .ready is gone and .done exists.
++ok( !-f "$cascade_status/$walfile_ready",
++	"segment no longer .ready after cascading standby archives it itself");
++ok( -f "$cascade_status/$walfile_done",
++	"segment marked .done after cascading standby archives it itself");
++
++# And pg_stat_archiver must reflect the self-archived segment.
++is($cascade->safe_psql('postgres',
++		"SELECT archived_count FROM pg_stat_archiver"),
++	'1',
++	"cascading standby starts archiving on its own");
++
++done_testing();
+-- 
+2.50.1 (Apple Git-155)
+

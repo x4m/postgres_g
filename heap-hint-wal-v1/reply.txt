@@ -1,0 +1,29 @@
+Subject: [PATCH v1] Reduce WAL volume for heap tuple hint bits
+
+Hi hackers,
+
+Heap tuple visibility hint bits avoid repeated transaction status
+lookups.  With wal_log_hints enabled, PostgreSQL currently logs a
+full-page image for the first hint bit change to a page after each
+checkpoint.  This can generate considerably more WAL than the hint bits
+themselves require.
+
+My main motivation comes from our PostgreSQL fork with compute/storage
+separation, where this WAL volume is costly.  The same overhead also
+occurs in vanilla clusters with wal_log_hints enabled.
+
+The attached patch records heap tuple offsets and visibility hint bits
+in a compact WAL record when checksums are disabled.  WAL replay applies
+the hints on standbys.  The record does not advance the page LSN, so a
+later ordinary change still generates the FPI required by
+full_page_writes.  Checksummed pages continue to use FPI_FOR_HINT.
+
+For the first scan of one million rows, WAL fell from 36.8 MB to 4.2 MB
+for an int-only table and from 134.7 MB to 4.9 MB for a
+pgbench_accounts-shaped table.  With wal_compression=lz4, WAL fell from
+13.9 MB to 4.2 MB and from 16.3 MB to 4.9 MB, respectively. About 3.3x in
+both cases.
+
+PFA.
+
+Best regards, Andrey Borodin

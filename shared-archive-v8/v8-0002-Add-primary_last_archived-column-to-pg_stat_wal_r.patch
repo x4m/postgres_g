@@ -1,0 +1,176 @@
+From df7f50672829e241245e2cd1f22774bdcf127989 Mon Sep 17 00:00:00 2001
+From: reshke <reshke@qavm-273b4667.qemu>
+Date: Mon, 20 Jul 2026 18:25:39 +0300
+Subject: [PATCH v8 2/3] Add `primary_last_archived` column to
+ pg_stat_wal_receiver view.
+
+Comes in-handy for monitoring shared archive feature. TAP tests for
+shared archive feature were extended to check for this column value.
+
+Bumps catversion.
+---
+ src/backend/catalog/system_views.sql      |  1 +
+ src/backend/replication/walreceiver.c     | 25 +++++++++++++++--------
+ src/include/catalog/pg_proc.dat           |  6 +++---
+ src/test/recovery/t/055_archive_shared.pl | 20 ++++++++++++++++++
+ src/test/regress/expected/rules.out       |  3 ++-
+ 5 files changed, 43 insertions(+), 12 deletions(-)
+
+diff --git a/src/backend/catalog/system_views.sql b/src/backend/catalog/system_views.sql
+index 090281a03dd..5bd037aa59b 100644
+--- a/src/backend/catalog/system_views.sql
++++ b/src/backend/catalog/system_views.sql
+@@ -1025,6 +1025,7 @@ CREATE VIEW pg_stat_wal_receiver AS
+             s.last_msg_receipt_time,
+             s.latest_end_lsn,
+             s.latest_end_time,
++            s.primary_last_archived,
+             s.slot_name,
+             s.sender_host,
+             s.sender_port,
+diff --git a/src/backend/replication/walreceiver.c b/src/backend/replication/walreceiver.c
+index abf449a9089..cce623f169f 100644
+--- a/src/backend/replication/walreceiver.c
++++ b/src/backend/replication/walreceiver.c
+@@ -1713,6 +1713,7 @@ pg_stat_get_wal_receiver(PG_FUNCTION_ARGS)
+ 	int			sender_port = 0;
+ 	char		slotname[NAMEDATALEN];
+ 	char		conninfo[MAXCONNINFO];
++	char		primary_last_archived[MAX_XFN_CHARS + 1];
+ 
+ 	/* Take a lock to ensure value consistency */
+ 	SpinLockAcquire(&WalRcv->mutex);
+@@ -1740,6 +1741,10 @@ pg_stat_get_wal_receiver(PG_FUNCTION_ARGS)
+ 	if (pid == 0 || !ready_to_display)
+ 		PG_RETURN_NULL();
+ 
++	SpinLockAcquire(&PgArch->lock);
++	strlcpy(primary_last_archived, PgArch->primary_last_archived, sizeof(primary_last_archived));
++	SpinLockRelease(&PgArch->lock);
++
+ 	/*
+ 	 * Read "writtenUpto" without holding a spinlock.  Note that it may not be
+ 	 * consistent with the other shared variables of the WAL receiver
+@@ -1801,22 +1806,26 @@ pg_stat_get_wal_receiver(PG_FUNCTION_ARGS)
+ 			nulls[10] = true;
+ 		else
+ 			values[10] = TimestampTzGetDatum(latest_end_time);
+-		if (*slotname == '\0')
++		if (*primary_last_archived == '\0')
+ 			nulls[11] = true;
+ 		else
+-			values[11] = CStringGetTextDatum(slotname);
+-		if (*sender_host == '\0')
++			values[11] = CStringGetTextDatum(primary_last_archived);
++		if (*slotname == '\0')
+ 			nulls[12] = true;
+ 		else
+-			values[12] = CStringGetTextDatum(sender_host);
+-		if (sender_port == 0)
++			values[12] = CStringGetTextDatum(slotname);
++		if (*sender_host == '\0')
+ 			nulls[13] = true;
+ 		else
+-			values[13] = Int32GetDatum(sender_port);
+-		if (*conninfo == '\0')
++			values[13] = CStringGetTextDatum(sender_host);
++		if (sender_port == 0)
+ 			nulls[14] = true;
+ 		else
+-			values[14] = CStringGetTextDatum(conninfo);
++			values[14] = Int32GetDatum(sender_port);
++		if (*conninfo == '\0')
++			nulls[15] = true;
++		else
++			values[15] = CStringGetTextDatum(conninfo);
+ 	}
+ 
+ 	/* Returns the record as Datum */
+diff --git a/src/include/catalog/pg_proc.dat b/src/include/catalog/pg_proc.dat
+index f8a021987b5..1974b430f84 100644
+--- a/src/include/catalog/pg_proc.dat
++++ b/src/include/catalog/pg_proc.dat
+@@ -5718,9 +5718,9 @@
+ { oid => '3317', descr => 'statistics: information about WAL receiver',
+   proname => 'pg_stat_get_wal_receiver', proisstrict => 'f', provolatile => 's',
+   proparallel => 'r', prorettype => 'record', proargtypes => '',
+-  proallargtypes => '{int4,text,pg_lsn,int4,pg_lsn,pg_lsn,int4,timestamptz,timestamptz,pg_lsn,timestamptz,text,text,int4,text}',
+-  proargmodes => '{o,o,o,o,o,o,o,o,o,o,o,o,o,o,o}',
+-  proargnames => '{pid,status,receive_start_lsn,receive_start_tli,written_lsn,flushed_lsn,received_tli,last_msg_send_time,last_msg_receipt_time,latest_end_lsn,latest_end_time,slot_name,sender_host,sender_port,conninfo}',
++  proallargtypes => '{int4,text,pg_lsn,int4,pg_lsn,pg_lsn,int4,timestamptz,timestamptz,pg_lsn,timestamptz,text,text,text,int4,text}',
++  proargmodes => '{o,o,o,o,o,o,o,o,o,o,o,o,o,o,o,o}',
++  proargnames => '{pid,status,receive_start_lsn,receive_start_tli,written_lsn,flushed_lsn,received_tli,last_msg_send_time,last_msg_receipt_time,latest_end_lsn,latest_end_time,primary_last_archived,slot_name,sender_host,sender_port,conninfo}',
+   prosrc => 'pg_stat_get_wal_receiver' },
+ { oid => '6514', descr => 'statistics: information about WAL recovery',
+   proname => 'pg_stat_get_recovery', proisstrict => 'f', provolatile => 's',
+diff --git a/src/test/recovery/t/055_archive_shared.pl b/src/test/recovery/t/055_archive_shared.pl
+index 106065e0f68..1d1d6145b94 100644
+--- a/src/test/recovery/t/055_archive_shared.pl
++++ b/src/test/recovery/t/055_archive_shared.pl
+@@ -196,6 +196,9 @@ note("Standby has $done_count .done files");
+ ok(-f "$standby_archive_status/$primary_last_archived.done",
+ 	"WAL segment $primary_last_archived done file exists in standby pg_wal/archive_status");
+ 
++is($primary_last_archived, $standby->safe_psql('postgres',
++	q{SELECT primary_last_archived from pg_stat_wal_receiver; }),  "standby wal receiver stat view updated with primary last archived wal");
++
+ ###############################################################################
+ # Test 2: Cascading replication
+ ###############################################################################
+@@ -220,6 +223,9 @@ my $cascading_archived_before = $primary->safe_psql('postgres', 'SELECT archived
+ 
+ my $current_walfile = $primary->safe_psql('postgres', "SELECT pg_walfile_name(pg_current_wal_lsn());");
+ 
++$cascade_standby->safe_psql('postgres',
++	q{SELECT injection_points_attach('walreceiver-after-primary-last-archived', 'wait')});
++
+ $primary->safe_psql(
+ 	'postgres', q{
+ 	CHECKPOINT;
+@@ -234,6 +240,15 @@ $primary->poll_query_until('postgres',
+ 	"SELECT archived_count > $cascading_archived_before FROM pg_stat_archiver")
+ 	or die "Timed out waiting for primary to archive segment in cascading test";
+ 
++
++wait_for_injection_point($cascade_standby, 'walreceiver-after-primary-last-archived');
++
++$cascade_standby->safe_psql(
++	'postgres', qq[
++SELECT injection_points_detach('walreceiver-after-primary-last-archived');
++SELECT injection_points_wakeup('walreceiver-after-primary-last-archived');
++]);
++
+ # Wait for cascading standby to catch up
+ $standby->wait_for_catchup($cascade_standby);
+ 
+@@ -257,4 +272,9 @@ ok( -f "$cascade_data/$walfile_done",
+ 	".done file exists on cascade replica for WAL segment $current_walfile"
+ );
+ 
++
++is($current_walfile, $cascade_standby->safe_psql('postgres',
++	q{SELECT primary_last_archived from pg_stat_wal_receiver; }), 
++	"cascade standby wal receiver stat view updated with primary last archived wal");
++
+ done_testing();
+diff --git a/src/test/regress/expected/rules.out b/src/test/regress/expected/rules.out
+index 6a3341356da..eae03d9c105 100644
+--- a/src/test/regress/expected/rules.out
++++ b/src/test/regress/expected/rules.out
+@@ -2444,11 +2444,12 @@ pg_stat_wal_receiver| SELECT pid,
+     last_msg_receipt_time,
+     latest_end_lsn,
+     latest_end_time,
++    primary_last_archived,
+     slot_name,
+     sender_host,
+     sender_port,
+     conninfo
+-   FROM pg_stat_get_wal_receiver() s(pid, status, receive_start_lsn, receive_start_tli, written_lsn, flushed_lsn, received_tli, last_msg_send_time, last_msg_receipt_time, latest_end_lsn, latest_end_time, slot_name, sender_host, sender_port, conninfo)
++   FROM pg_stat_get_wal_receiver() s(pid, status, receive_start_lsn, receive_start_tli, written_lsn, flushed_lsn, received_tli, last_msg_send_time, last_msg_receipt_time, latest_end_lsn, latest_end_time, primary_last_archived, slot_name, sender_host, sender_port, conninfo)
+   WHERE (pid IS NOT NULL);
+ pg_stat_xact_all_tables| SELECT c.oid AS relid,
+     n.nspname AS schemaname,
+-- 
+2.50.1 (Apple Git-155)
+

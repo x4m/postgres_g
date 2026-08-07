@@ -1,0 +1,16 @@
+Hi Peter,
+
+I agree with the test and also think this is a bug.  The check in
+multirange_gist_consistent() is too strict and rejects tuples that
+should reach the recheck.  I think we should use
+range_gist_consistent_int_multirange() for this case.  Using the
+internal predicate for every strategy would also be correct, but would
+weaken filtering and cause unnecessary heap rechecks.
+
+PFA v2 patch set.  The first patch is your test, and the second is the
+fix as I see it.
+
+Thanks!
+
+--
+Andrey Borodin

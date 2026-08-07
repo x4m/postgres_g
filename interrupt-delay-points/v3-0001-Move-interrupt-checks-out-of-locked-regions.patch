@@ -1,0 +1,108 @@
+From 1455a0d3d7cac0166d3c954ce15be757aed0db10 Mon Sep 17 00:00:00 2001
+From: Andrey Borodin <amborodin@acm.org>
+Date: Tue, 4 Aug 2026 09:35:58 +0500
+Subject: [PATCH v3] Move interrupt checks out of locked regions
+
+vacuum_delay_point() and CHECK_FOR_INTERRUPTS() cannot process pending
+interrupts while interrupts are held.  A vacuum delay point may additionally
+sleep while retaining a buffer content lock.  Several call sites make these
+calls from regions where a lock is known to be held.
+
+Move the ANALYZE delay point before scan_analyze_next_block(), since the table
+AM may retain resources acquired there until the sampled block has been
+consumed.  Move the first GIN pending-list cleanup delay point before its
+locks are acquired; an existing delay point already covers transitions
+between subsequent pages.
+
+Moving the hash bucket call would break the lock chaining that prevents scans
+from overtaking cleanup.  Likewise, dshash sequential iteration returns each
+stats entry with its partition lock held and provides no unlocked per-entry
+boundary.  Mark these two calls with grep-friendly comments instead.
+
+Discussion: https://postgr.es/m/CAA3qoJkBf6H7KukXTWFWCYnf_GHf354kOdWATCfoK%3D-bgdwTJw%40mail.gmail.com
+
+Author: Kevin Rocker <me@kevinrocker.com>
+Author: Andrey Borodin <amborodin@acm.org>
+Reviewed-by: Neil Chen <carpenter.nail.cz@gmail.com>
+---
+ src/backend/access/gin/ginfast.c    | 5 +++--
+ src/backend/access/hash/hash.c      | 4 ++++
+ src/backend/commands/analyze.c      | 5 ++++-
+ src/backend/utils/activity/pgstat.c | 4 ++++
+ 4 files changed, 15 insertions(+), 3 deletions(-)
+
+diff --git a/src/backend/access/gin/ginfast.c b/src/backend/access/gin/ginfast.c
+index f50848eb65a..174610b455a 100644
+--- a/src/backend/access/gin/ginfast.c
++++ b/src/backend/access/gin/ginfast.c
+@@ -797,6 +797,9 @@ ginInsertCleanup(GinState *ginstate, bool full_clean,
+ 	bool		fsm_vac = false;
+ 	int			workMemory;
+ 
++	/* Delay or accept interrupts before acquiring the pending-list locks. */
++	vacuum_delay_point(false);
++
+ 	/*
+ 	 * We would like to prevent concurrent cleanup process. For that we will
+ 	 * lock metapage in exclusive mode using LockPage() call. Nobody other
+@@ -892,8 +895,6 @@ ginInsertCleanup(GinState *ginstate, bool full_clean,
+ 		 */
+ 		processPendingPage(&accum, &datums, page, FirstOffsetNumber);
+ 
+-		vacuum_delay_point(false);
+-
+ 		/*
+ 		 * Is it time to flush memory to disk?	Flush if we are at the end of
+ 		 * the pending list, or if we have a full row and memory is getting
+diff --git a/src/backend/access/hash/hash.c b/src/backend/access/hash/hash.c
+index 8d8cd30dc38..2c7f198ba1f 100644
+--- a/src/backend/access/hash/hash.c
++++ b/src/backend/access/hash/hash.c
+@@ -797,6 +797,10 @@ hashbucketcleanup(Relation rel, Bucket cur_bucket, Buffer bucket_buf,
+ 		bool		retain_pin = false;
+ 		bool		clear_dead_marking = false;
+ 
++		/*
++		 * VACUUM_DELAY_POINT_WITH_INTERRUPTS_HELD: the caller holds a cleanup
++		 * lock on the primary bucket, and we chain-lock overflow pages.
++		 */
+ 		vacuum_delay_point(false);
+ 
+ 		page = BufferGetPage(buf);
+diff --git a/src/backend/commands/analyze.c b/src/backend/commands/analyze.c
+index f66e80b757c..82f6c45e922 100644
+--- a/src/backend/commands/analyze.c
++++ b/src/backend/commands/analyze.c
+@@ -1310,10 +1310,13 @@ acquire_sample_rows(Relation onerel, int elevel,
+ 										0);
+ 
+ 	/* Outer loop over blocks to sample */
+-	while (table_scan_analyze_next_block(scan, stream))
++	for (;;)
+ 	{
+ 		vacuum_delay_point(true);
+ 
++		if (!table_scan_analyze_next_block(scan, stream))
++			break;
++
+ 		while (table_scan_analyze_next_tuple(scan, &liverows, &deadrows, slot))
+ 		{
+ 			/*
+diff --git a/src/backend/utils/activity/pgstat.c b/src/backend/utils/activity/pgstat.c
+index 50cd07822b4..916089a3c2f 100644
+--- a/src/backend/utils/activity/pgstat.c
++++ b/src/backend/utils/activity/pgstat.c
+@@ -1729,6 +1729,10 @@ pgstat_write_statsfile(void)
+ 		PgStatShared_Common *shstats;
+ 		const PgStat_KindInfo *kind_info = NULL;
+ 
++		/*
++		 * CHECK_FOR_INTERRUPTS_WITH_INTERRUPTS_HELD: dshash_seq_next()
++		 * returns with the current hash partition lock still held.
++		 */
+ 		CHECK_FOR_INTERRUPTS();
+ 
+ 		/*
+-- 
+2.50.1 (Apple Git-155)
+

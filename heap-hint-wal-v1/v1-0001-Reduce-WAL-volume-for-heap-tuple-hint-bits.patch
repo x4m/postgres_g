@@ -1,0 +1,829 @@
+From 151404e26ffbed713bc7fc166f7cf4d28effada2 Mon Sep 17 00:00:00 2001
+From: Andrey Borodin <amborodin@acm.org>
+Date: Tue, 4 Aug 2026 14:00:52 +0500
+Subject: [PATCH v1] Reduce WAL volume for heap tuple hint bits
+
+Heap tuple visibility hint bits avoid repeated transaction status lookups.
+With wal_log_hints enabled, PostgreSQL currently logs a full-page image
+for the first hint bit change to a page after each checkpoint.  This can
+generate much more WAL than the hint bits themselves require.
+
+Store tuple offsets and visibility hint bits in a compact WAL record when
+checksums are disabled.  WAL replay applies the hints on standbys.  Do not
+advance the page LSN, so a later ordinary change still generates the
+full-page image required by full_page_writes.  The block reference also
+preserves pg_rewind support.
+
+Continue to use full-page images when data checksums are enabled, since a
+record without an FPI cannot protect against torn page writes.
+---
+ doc/src/sgml/config.sgml                      |  13 +-
+ src/backend/access/heap/Makefile              |   1 +
+ src/backend/access/heap/heapam_hint.c         | 143 ++++++++++++++++++
+ src/backend/access/heap/heapam_visibility.c   |  19 ++-
+ src/backend/access/heap/heapam_xlog.c         |   4 +
+ src/backend/access/heap/meson.build           |   1 +
+ src/backend/access/rmgrdesc/heapdesc.c        |  15 ++
+ src/backend/access/transam/README             |   7 +
+ src/backend/storage/buffer/bufmgr.c           |  96 +++++++++---
+ src/backend/storage/page/README               |  10 +-
+ src/backend/utils/misc/guc_parameters.dat     |   2 +-
+ src/backend/utils/misc/postgresql.conf.sample |   2 +-
+ src/include/access/heapam_hint.h              |  42 +++++
+ src/include/access/heapam_xlog.h              |   2 +-
+ src/include/storage/bufmgr.h                  |   7 +
+ src/test/recovery/Makefile                    |   3 +-
+ src/test/recovery/meson.build                 |   1 +
+ src/test/recovery/t/056_heap_hint_wal.pl      | 107 +++++++++++++
+ 18 files changed, 430 insertions(+), 45 deletions(-)
+ create mode 100644 src/backend/access/heap/heapam_hint.c
+ create mode 100644 src/include/access/heapam_hint.h
+ create mode 100644 src/test/recovery/t/056_heap_hint_wal.pl
+
+diff --git a/doc/src/sgml/config.sgml b/doc/src/sgml/config.sgml
+index aa7b1bd75d2..74ffe603c07 100644
+--- a/doc/src/sgml/config.sgml
++++ b/doc/src/sgml/config.sgml
+@@ -3634,16 +3634,17 @@ include_dir 'conf.d'
+       <listitem>
+        <para>
+         When this parameter is <literal>on</literal>, the <productname>PostgreSQL</productname>
+-        server writes the entire content of each disk page to WAL during the
+-        first modification of that page after a checkpoint, even for
+-        non-critical modifications of so-called hint bits.
++        server writes information about the first modification of each disk
++        page after a checkpoint to WAL, even for non-critical modifications
++        of so-called hint bits.  Heap tuple visibility hint bits are stored in
++        compact WAL records.  Other hint changes cause the entire page to be
++        logged.
+        </para>
+ 
+        <para>
+         If data checksums are enabled, hint bit updates are always WAL-logged
+-        and this setting is ignored. You can use this setting to test how much
+-        extra WAL-logging would occur if your database had data checksums
+-        enabled.
++        and this setting is ignored.  Full-page images are still used in that
++        case to protect checksummed pages from torn writes.
+        </para>
+ 
+        <para>
+diff --git a/src/backend/access/heap/Makefile b/src/backend/access/heap/Makefile
+index 1d27ccb916e..a0c7b4626c9 100644
+--- a/src/backend/access/heap/Makefile
++++ b/src/backend/access/heap/Makefile
+@@ -15,6 +15,7 @@ include $(top_builddir)/src/Makefile.global
+ OBJS = \
+ 	heapam.o \
+ 	heapam_handler.o \
++	heapam_hint.o \
+ 	heapam_indexscan.o \
+ 	heapam_visibility.o \
+ 	heapam_xlog.o \
+diff --git a/src/backend/access/heap/heapam_hint.c b/src/backend/access/heap/heapam_hint.c
+new file mode 100644
+index 00000000000..d2adc92dab4
+--- /dev/null
++++ b/src/backend/access/heap/heapam_hint.c
+@@ -0,0 +1,143 @@
++/*-------------------------------------------------------------------------
++ *
++ * heapam_hint.c
++ *	  WAL logging and replay of heap tuple visibility hint bits.
++ *
++ * Portions Copyright (c) 1996-2026, PostgreSQL Global Development Group
++ *
++ * IDENTIFICATION
++ *	  src/backend/access/heap/heapam_hint.c
++ *
++ *-------------------------------------------------------------------------
++ */
++#include "postgres.h"
++
++#include "access/heapam_hint.h"
++#include "access/heapam_xlog.h"
++#include "access/xlog.h"
++#include "access/xloginsert.h"
++#include "access/xlogutils.h"
++
++/*
++ * WAL-log heap tuple visibility hint bits.
++ *
++ * Checksums still require a full-page image to protect against torn writes.
++ * Otherwise, store tuple offsets and hint bits in a compact WAL record.  Its
++ * block reference also identifies the changed block for pg_rewind.
++ *
++ * Unlike an FPI_FOR_HINT record, this record does not advance the page LSN.
++ * Hint bits are non-critical changes, so the page need not wait for this
++ * record before being written.  Leaving the LSN alone also ensures that the
++ * next ordinary change after a checkpoint still produces the FPI required by
++ * full_page_writes.
++ */
++XLogRecPtr
++log_heap_hint_bits(Buffer buffer)
++{
++	xl_heap_hint xlrec;
++	xl_heap_hint_tuple tuples[MaxHeapTuplesPerPage];
++	XLogRecPtr	RedoRecPtr;
++	XLogRecPtr	recptr PG_USED_FOR_ASSERTS_ONLY;
++	Page		page = BufferGetPage(buffer);
++	OffsetNumber maxoff = PageGetMaxOffsetNumber(page);
++
++	RedoRecPtr = GetRedoRecPtr();
++	if (PageGetLSN(page) > RedoRecPtr)
++		return InvalidXLogRecPtr;
++
++	/* A record without an FPI cannot protect against torn page writes. */
++	if (DataChecksumsNeedWrite())
++		return XLogSaveBufferForHint(buffer, true);
++
++	xlrec.ntuples = 0;
++	for (OffsetNumber offnum = FirstOffsetNumber;
++		 offnum <= maxoff;
++		 offnum = OffsetNumberNext(offnum))
++	{
++		ItemId		itemid = PageGetItemId(page, offnum);
++		HeapTupleHeader tuple;
++		uint16		infomask;
++
++		if (!ItemIdIsNormal(itemid))
++			continue;
++
++		tuple = (HeapTupleHeader) PageGetItem(page, itemid);
++		infomask = tuple->t_infomask & XL_HEAP_HINT_BITS;
++		if (infomask == 0)
++			continue;
++
++		/* Be defensive about corrupt pages in non-assert builds. */
++		if (xlrec.ntuples == lengthof(tuples))
++			return XLogSaveBufferForHint(buffer, true);
++		tuples[xlrec.ntuples].offnum = offnum;
++		tuples[xlrec.ntuples].infomask = infomask;
++		xlrec.ntuples++;
++	}
++
++	if (xlrec.ntuples == 0)
++		return InvalidXLogRecPtr;
++
++	XLogBeginInsert();
++	XLogRegisterBuffer(0, buffer, REGBUF_STANDARD | REGBUF_NO_IMAGE);
++	XLogRegisterBufData(0, &xlrec, sizeof(xlrec));
++	XLogRegisterBufData(0, tuples,
++						xlrec.ntuples * sizeof(xl_heap_hint_tuple));
++
++	recptr = XLogInsert(RM_HEAP2_ID, XLOG_HEAP2_HINT_BITS);
++	Assert(XLogRecPtrIsValid(recptr));
++
++	/* The caller must not install this record's LSN on the heap page. */
++	return InvalidXLogRecPtr;
++}
++
++/* Replay a heap hint-bit WAL record. */
++void
++heap_hint_redo(XLogReaderState *record)
++{
++	Buffer		buffer = InvalidBuffer;
++	XLogRedoAction action;
++
++	action = XLogReadBufferForRedo(record, 0, &buffer);
++	if (action == BLK_NEEDS_REDO)
++	{
++		Size		datalen;
++		char	   *data = XLogRecGetBlockData(record, 0, &datalen);
++		xl_heap_hint *xlrec;
++		xl_heap_hint_tuple *tuples;
++		Page		page = BufferGetPage(buffer);
++
++		if (data == NULL || datalen < sizeof(xl_heap_hint))
++			elog(PANIC, "invalid heap hint WAL record");
++
++		xlrec = (xl_heap_hint *) data;
++		if (datalen != sizeof(xl_heap_hint) +
++			xlrec->ntuples * sizeof(xl_heap_hint_tuple))
++			elog(PANIC, "invalid heap hint WAL record length");
++
++		tuples = (xl_heap_hint_tuple *) (data + sizeof(xl_heap_hint));
++		for (int i = 0; i < xlrec->ntuples; i++)
++		{
++			OffsetNumber offnum = tuples[i].offnum;
++			ItemId		itemid;
++			HeapTupleHeader tuple;
++
++			if (offnum < FirstOffsetNumber ||
++				offnum > PageGetMaxOffsetNumber(page))
++				elog(PANIC, "heap hint WAL record offset out of range");
++
++			itemid = PageGetItemId(page, offnum);
++			if (!ItemIdIsNormal(itemid))
++				elog(PANIC, "heap hint WAL record references invalid line pointer");
++			if (tuples[i].infomask & ~XL_HEAP_HINT_BITS)
++				elog(PANIC, "heap hint WAL record contains invalid bits");
++
++			tuple = (HeapTupleHeader) PageGetItem(page, itemid);
++			tuple->t_infomask |= tuples[i].infomask;
++		}
++
++		MarkBufferDirty(buffer);
++	}
++
++	if (BufferIsValid(buffer))
++		UnlockReleaseBuffer(buffer);
++}
+diff --git a/src/backend/access/heap/heapam_visibility.c b/src/backend/access/heap/heapam_visibility.c
+index 361b76e5065..e785cb837d6 100644
+--- a/src/backend/access/heap/heapam_visibility.c
++++ b/src/backend/access/heap/heapam_visibility.c
+@@ -67,6 +67,7 @@
+ #include "postgres.h"
+ 
+ #include "access/heapam.h"
++#include "access/heapam_hint.h"
+ #include "access/htup_details.h"
+ #include "access/multixact.h"
+ #include "access/tableam.h"
+@@ -110,7 +111,7 @@ typedef enum SetHintBitsState
+  * The right to set a hint bit can be acquired on a page level with
+  * BufferBeginSetHintBits(). Only a single backend gets the right to set hint
+  * bits at a time.  Alternatively, if called with a NULL SetHintBitsState*,
+- * hint bits are set with BufferSetHintBits16().
++ * hint bits are set with BufferSetHintBits16WithWal().
+  *
+  * It is only safe to set a transaction-committed hint bit if we know the
+  * transaction's commit record is guaranteed to be flushed to disk before the
+@@ -166,15 +167,16 @@ SetHintBitsExt(HeapTupleHeader tuple, Buffer buffer,
+ 	}
+ 
+ 	/*
+-	 * If we're not operating in batch mode, use BufferSetHintBits16() to mark
+-	 * the page dirty, that's cheaper than
+-	 * BufferBeginSetHintBits()/BufferFinishSetHintBits(). That's important
+-	 * for cases where we set a lot of hint bits on a page individually.
++	 * If we're not operating in batch mode, use BufferSetHintBits16WithWal()
++	 * to mark the page dirty.  That's cheaper than BufferBeginSetHintBits() /
++	 * BufferFinishSetHintBitsWithWal(), which is important for cases where we
++	 * set a lot of hint bits on a page individually.
+ 	 */
+ 	if (!state)
+ 	{
+-		BufferSetHintBits16(&tuple->t_infomask,
+-							tuple->t_infomask | infomask, buffer);
++		BufferSetHintBits16WithWal(&tuple->t_infomask,
++								   tuple->t_infomask | infomask, buffer,
++								   log_heap_hint_bits);
+ 		return;
+ 	}
+ 
+@@ -1713,7 +1715,8 @@ HeapTupleSatisfiesMVCCBatch(Snapshot snapshot, Buffer buffer,
+ 	}
+ 
+ 	if (state == SHB_ENABLED)
+-		BufferFinishSetHintBits(buffer, true, true);
++		BufferFinishSetHintBitsWithWal(buffer, true, true,
++									   log_heap_hint_bits);
+ 
+ 	return nvis;
+ }
+diff --git a/src/backend/access/heap/heapam_xlog.c b/src/backend/access/heap/heapam_xlog.c
+index 7a7bc7ea740..fcd21df0573 100644
+--- a/src/backend/access/heap/heapam_xlog.c
++++ b/src/backend/access/heap/heapam_xlog.c
+@@ -16,6 +16,7 @@
+ 
+ #include "access/bufmask.h"
+ #include "access/heapam.h"
++#include "access/heapam_hint.h"
+ #include "access/visibilitymap.h"
+ #include "access/xlog.h"
+ #include "access/xlogutils.h"
+@@ -1321,6 +1322,9 @@ heap2_redo(XLogReaderState *record)
+ 		case XLOG_HEAP2_PRUNE_VACUUM_CLEANUP:
+ 			heap_xlog_prune_freeze(record);
+ 			break;
++		case XLOG_HEAP2_HINT_BITS:
++			heap_hint_redo(record);
++			break;
+ 		case XLOG_HEAP2_MULTI_INSERT:
+ 			heap_xlog_multi_insert(record);
+ 			break;
+diff --git a/src/backend/access/heap/meson.build b/src/backend/access/heap/meson.build
+index 00ec07d7f30..f93f1aa2214 100644
+--- a/src/backend/access/heap/meson.build
++++ b/src/backend/access/heap/meson.build
+@@ -3,6 +3,7 @@
+ backend_sources += files(
+   'heapam.c',
+   'heapam_handler.c',
++  'heapam_hint.c',
+   'heapam_indexscan.c',
+   'heapam_visibility.c',
+   'heapam_xlog.c',
+diff --git a/src/backend/access/rmgrdesc/heapdesc.c b/src/backend/access/rmgrdesc/heapdesc.c
+index 75ae6f9d375..79981e4fa57 100644
+--- a/src/backend/access/rmgrdesc/heapdesc.c
++++ b/src/backend/access/rmgrdesc/heapdesc.c
+@@ -14,6 +14,7 @@
+  */
+ #include "postgres.h"
+ 
++#include "access/heapam_hint.h"
+ #include "access/heapam_xlog.h"
+ #include "access/rmgrdesc_utils.h"
+ #include "access/visibilitymapdefs.h"
+@@ -349,6 +350,17 @@ heap2_desc(StringInfo buf, XLogReaderState *record)
+ 			}
+ 		}
+ 	}
++	else if (info == XLOG_HEAP2_HINT_BITS)
++	{
++		if (XLogRecHasBlockData(record, 0))
++		{
++			Size		datalen;
++			xl_heap_hint *xlrec = (xl_heap_hint *)
++				XLogRecGetBlockData(record, 0, &datalen);
++
++			appendStringInfo(buf, "ntuples: %u", xlrec->ntuples);
++		}
++	}
+ 	else if (info == XLOG_HEAP2_MULTI_INSERT)
+ 	{
+ 		xl_heap_multi_insert *xlrec = (xl_heap_multi_insert *) rec;
+@@ -454,6 +466,9 @@ heap2_identify(uint8 info)
+ 		case XLOG_HEAP2_PRUNE_VACUUM_CLEANUP:
+ 			id = "PRUNE_VACUUM_CLEANUP";
+ 			break;
++		case XLOG_HEAP2_HINT_BITS:
++			id = "HINT_BITS";
++			break;
+ 		case XLOG_HEAP2_MULTI_INSERT:
+ 			id = "MULTI_INSERT";
+ 			break;
+diff --git a/src/backend/access/transam/README b/src/backend/access/transam/README
+index 231106270fd..dc03f617a6f 100644
+--- a/src/backend/access/transam/README
++++ b/src/backend/access/transam/README
+@@ -641,6 +641,13 @@ that includes the hint. We do this to avoid a partial page write, when we
+ write the dirtied page. WAL is not written during recovery, so we simply skip
+ dirtying blocks because of hints when in recovery.
+ 
++When wal_log_hints is enabled without checksums, heap tuple visibility hints
++are stored in compact WAL records containing tuple offsets and hint bits.
++Such a record deliberately does not advance the page LSN.  Its block reference
++is sufficient for pg_rewind, while leaving the LSN unchanged ensures that the
++next ordinary page change still generates the full-page image required after
++a checkpoint.  Other kinds of hints still use XLOG_FPI_FOR_HINT.
++
+ If you do decide to optimise away a WAL record, then any calls to
+ MarkBufferDirty() must be replaced by MarkBufferDirtyHint(),
+ otherwise you will expose the risk of partial page writes.
+diff --git a/src/backend/storage/buffer/bufmgr.c b/src/backend/storage/buffer/bufmgr.c
+index 169829eb020..f9b2189caf9 100644
+--- a/src/backend/storage/buffer/bufmgr.c
++++ b/src/backend/storage/buffer/bufmgr.c
+@@ -5717,7 +5717,8 @@ IncrBufferRefCount(Buffer buffer)
+  */
+ static inline void
+ MarkSharedBufferDirtyHint(Buffer buffer, BufferDesc *bufHdr, uint64 lockstate,
+-						  bool buffer_std)
++						  bool buffer_std,
++						  BufferHintWalLogger wal_logger)
+ {
+ 	Page		page = BufferGetPage(buffer);
+ 
+@@ -5739,17 +5740,18 @@ MarkSharedBufferDirtyHint(Buffer buffer, BufferDesc *bufHdr, uint64 lockstate,
+ 	if (unlikely(!(lockstate & BM_DIRTY)))
+ 	{
+ 		XLogRecPtr	lsn = InvalidXLogRecPtr;
+-		bool		wal_log = false;
++		bool		wal_log_needed = false;
+ 		uint64		buf_state;
+ 
+ 		/*
+-		 * If we need to protect hint bit updates from torn writes, WAL-log a
+-		 * full page image of the page. This full page image is only necessary
+-		 * if the hint bit update is the first change to the page since the
+-		 * last checkpoint.
++		 * If we need to WAL-log hint bit updates, log either a full-page
++		 * image or an access-method-specific record.  This is only necessary
++		 * when the hint update is the first change to the page since the last
++		 * checkpoint.
+ 		 *
+-		 * We don't check full_page_writes here because that logic is included
+-		 * when we call XLogInsert() since the value changes dynamically.
++		 * XLogSaveBufferForHint() leaves the dynamic full_page_writes check
++		 * to XLogInsert().  An alternative logger is responsible for deciding
++		 * whether its change needs a full-page image.
+ 		 */
+ 		if (XLogHintBitIsNeeded() && (lockstate & BM_PERMANENT))
+ 		{
+@@ -5765,17 +5767,17 @@ MarkSharedBufferDirtyHint(Buffer buffer, BufferDesc *bufHdr, uint64 lockstate,
+ 				RelFileLocatorSkippingWAL(BufTagGetRelFileLocator(&bufHdr->tag)))
+ 				return;
+ 
+-			wal_log = true;
++			wal_log_needed = true;
+ 		}
+ 
+ 		/*
+-		 * We must mark the page dirty before we emit the WAL record, as per
+-		 * the usual rules, to ensure that BufferSync()/SyncOneBuffer() try to
+-		 * flush the buffer, even if we haven't inserted the WAL record yet.
+-		 * As we hold at least a share-exclusive lock, checkpoints will wait
+-		 * for this backend to be done with the buffer before continuing. If
+-		 * we did it the other way round, a checkpoint could start between
+-		 * writing the WAL record and marking the buffer dirty.
++		 * We must mark the page dirty before we emit any WAL record to ensure
++		 * that BufferSync()/SyncOneBuffer() tries to flush the buffer, even
++		 * if we haven't inserted the WAL record yet. As we hold at least a
++		 * share-exclusive lock, checkpoints will wait for this backend to be
++		 * done with the buffer before continuing. If we did it the other way
++		 * round, a checkpoint could start between writing the WAL record and
++		 * marking the buffer dirty.
+ 		 */
+ 		buf_state = LockBufHdr(bufHdr);
+ 
+@@ -5791,13 +5793,14 @@ MarkSharedBufferDirtyHint(Buffer buffer, BufferDesc *bufHdr, uint64 lockstate,
+ 
+ 		/*
+ 		 * If the block is already dirty because we either made a change or
+-		 * set a hint already, then we don't need to write a full page image.
++		 * set a hint already, then we don't need to write another WAL record.
+ 		 * Note that aggressive cleaning of blocks dirtied by hint bit setting
+ 		 * would increase the call rate. Bulk setting of hint bits would
+ 		 * reduce the call rate...
+ 		 */
+-		if (wal_log)
+-			lsn = XLogSaveBufferForHint(buffer, buffer_std);
++		if (wal_log_needed)
++			lsn = wal_logger ? wal_logger(buffer) :
++				XLogSaveBufferForHint(buffer, buffer_std);
+ 
+ 		if (XLogRecPtrIsValid(lsn))
+ 		{
+@@ -5832,7 +5835,7 @@ MarkSharedBufferDirtyHint(Buffer buffer, BufferDesc *bufHdr, uint64 lockstate,
+  *
+  * This is essentially the same as MarkBufferDirty, except:
+  *
+- * 1. The caller does not write WAL; so if checksums are enabled, we may need
++ * 1. The change is non-critical.  If checksums are enabled, we may still need
+  *	  to write an XLOG_FPI_FOR_HINT WAL record to protect against torn pages.
+  * 2. The caller might have only a share-exclusive-lock instead of an
+  *	  exclusive-lock on the buffer's content lock.
+@@ -5858,7 +5861,7 @@ MarkBufferDirtyHint(Buffer buffer, bool buffer_std)
+ 
+ 	MarkSharedBufferDirtyHint(buffer, bufHdr,
+ 							  pg_atomic_read_u64(&bufHdr->state),
+-							  buffer_std);
++							  buffer_std, NULL);
+ }
+ 
+ /*
+@@ -7126,6 +7129,35 @@ BufferFinishSetHintBits(Buffer buffer, bool mark_dirty, bool buffer_std)
+ 		MarkBufferDirtyHint(buffer, buffer_std);
+ }
+ 
++/*
++ * Like BufferFinishSetHintBits(), but use the supplied callback instead of
++ * XLogSaveBufferForHint() when WAL logging is needed.
++ */
++void
++BufferFinishSetHintBitsWithWal(Buffer buffer, bool mark_dirty, bool buffer_std,
++							   BufferHintWalLogger wal_logger)
++{
++	BufferDesc *buf_hdr;
++
++	if (BufferIsLocal(buffer))
++	{
++		if (mark_dirty)
++			MarkLocalBufferDirty(buffer);
++		return;
++	}
++
++	Assert(BufferIsLockedByMeInMode(buffer, BUFFER_LOCK_SHARE_EXCLUSIVE) ||
++		   BufferIsLockedByMeInMode(buffer, BUFFER_LOCK_EXCLUSIVE));
++
++	if (!mark_dirty)
++		return;
++
++	buf_hdr = GetBufferDescriptor(buffer - 1);
++	MarkSharedBufferDirtyHint(buffer, buf_hdr,
++							  pg_atomic_read_u64(&buf_hdr->state),
++							  buffer_std, wal_logger);
++}
++
+ /*
+  * Try to set hint bits on a single 16bit value in a buffer.
+  *
+@@ -7138,8 +7170,9 @@ BufferFinishSetHintBits(Buffer buffer, bool mark_dirty, bool buffer_std)
+  * BufferFinishSetHintBits() when setting hints once in a buffer, but slower
+  * than the former when setting hint bits multiple times in the same buffer.
+  */
+-bool
+-BufferSetHintBits16(uint16 *ptr, uint16 val, Buffer buffer)
++static bool
++BufferSetHintBits16Internal(uint16 *ptr, uint16 val, Buffer buffer,
++							BufferHintWalLogger wal_logger)
+ {
+ 	BufferDesc *buf_hdr;
+ 	uint64		lockstate;
+@@ -7166,7 +7199,8 @@ BufferSetHintBits16(uint16 *ptr, uint16 val, Buffer buffer)
+ 	{
+ 		*ptr = val;
+ 
+-		MarkSharedBufferDirtyHint(buffer, buf_hdr, lockstate, true);
++		MarkSharedBufferDirtyHint(buffer, buf_hdr, lockstate, true,
++								  wal_logger);
+ 
+ 		return true;
+ 	}
+@@ -7174,6 +7208,20 @@ BufferSetHintBits16(uint16 *ptr, uint16 val, Buffer buffer)
+ 	return false;
+ }
+ 
++bool
++BufferSetHintBits16(uint16 *ptr, uint16 val, Buffer buffer)
++{
++	return BufferSetHintBits16Internal(ptr, val, buffer, NULL);
++}
++
++bool
++BufferSetHintBits16WithWal(uint16 *ptr, uint16 val, Buffer buffer,
++						   BufferHintWalLogger wal_logger)
++{
++	Assert(wal_logger != NULL);
++	return BufferSetHintBits16Internal(ptr, val, buffer, wal_logger);
++}
++
+ 
+ /*
+  *	Functions for buffer I/O handling
+diff --git a/src/backend/storage/page/README b/src/backend/storage/page/README
+index 73c36a63908..59c47ae79f2 100644
+--- a/src/backend/storage/page/README
++++ b/src/backend/storage/page/README
+@@ -43,9 +43,13 @@ otherwise clean page can allow torn pages; this doesn't normally matter since
+ they are just hints, but when the page has checksums, then losing a few bits
+ would cause the checksum to be invalid.  So if we have full_page_writes = on
+ and checksums enabled then we must write a WAL record specifically so that we
+-record a full page image in WAL.  Hint bits updates should be protected using
+-MarkBufferDirtyHint(), which is responsible for writing the full-page image
+-when necessary.
++record a full page image in WAL.  Hint bit updates should use the buffer hint
++interfaces, which are responsible for writing the full-page image when
++necessary.  When checksums are disabled, heap tuple visibility hints can
++instead be stored in compact WAL records containing tuple offsets and hint
++bits.  Those records provide the block references needed by tools such as
++pg_rewind without advancing the page LSN, so a later ordinary page change
++still generates the full-page image required after a checkpoint.
+ 
+ Note that when we write a page checksum we include the hopefully zeroed bytes
+ that form the hole in the centre of a standard page. Thus, when we read the
+diff --git a/src/backend/utils/misc/guc_parameters.dat b/src/backend/utils/misc/guc_parameters.dat
+index adb72361ce0..2efe12cafb8 100644
+--- a/src/backend/utils/misc/guc_parameters.dat
++++ b/src/backend/utils/misc/guc_parameters.dat
+@@ -3515,7 +3515,7 @@
+ },
+ 
+ { name => 'wal_log_hints', type => 'bool', context => 'PGC_POSTMASTER', group => 'WAL_SETTINGS',
+-  short_desc => 'Writes full pages to WAL when first modified after a checkpoint, even for a non-critical modification.',
++  short_desc => 'Writes hint bit changes to WAL when first modified after a checkpoint.',
+   variable => 'wal_log_hints',
+   boot_val => 'false',
+ },
+diff --git a/src/backend/utils/misc/postgresql.conf.sample b/src/backend/utils/misc/postgresql.conf.sample
+index 7958653077b..5a11f66ab44 100644
+--- a/src/backend/utils/misc/postgresql.conf.sample
++++ b/src/backend/utils/misc/postgresql.conf.sample
+@@ -259,7 +259,7 @@
+                                         #   fsync_writethrough
+                                         #   open_sync
+ #full_page_writes = on                  # recover from partial page writes
+-#wal_log_hints = off                    # also do full page writes of non-critical updates
++#wal_log_hints = off                    # also log non-critical updates
+                                         # (change requires restart)
+ #wal_compression = off                  # enables compression of full-page writes;
+                                         # off, pglz (or "on"), lz4, or zstd
+diff --git a/src/include/access/heapam_hint.h b/src/include/access/heapam_hint.h
+new file mode 100644
+index 00000000000..4d396cb0308
+--- /dev/null
++++ b/src/include/access/heapam_hint.h
+@@ -0,0 +1,42 @@
++/*-------------------------------------------------------------------------
++ *
++ * heapam_hint.h
++ *	  WAL definitions for heap tuple visibility hint bits.
++ *
++ * Portions Copyright (c) 1996-2026, PostgreSQL Global Development Group
++ *
++ * src/include/access/heapam_hint.h
++ *
++ *-------------------------------------------------------------------------
++ */
++#ifndef HEAPAM_HINT_H
++#define HEAPAM_HINT_H
++
++#include "access/htup_details.h"
++#include "access/xlogreader.h"
++#include "storage/buf.h"
++
++/*
++ * A hint-bit WAL record contains the hint bits of every normal tuple on the
++ * page.  Recording all of them keeps the insertion interface independent of
++ * whether a caller set one hint bit or batched a whole page's worth.
++ */
++typedef struct xl_heap_hint
++{
++	uint16		ntuples;
++}			xl_heap_hint;
++
++typedef struct xl_heap_hint_tuple
++{
++	OffsetNumber offnum;
++	uint16		infomask;
++}			xl_heap_hint_tuple;
++
++#define XL_HEAP_HINT_BITS \
++	(HEAP_XMIN_COMMITTED | HEAP_XMIN_INVALID | \
++	 HEAP_XMAX_COMMITTED | HEAP_XMAX_INVALID)
++
++extern XLogRecPtr log_heap_hint_bits(Buffer buffer);
++extern void heap_hint_redo(XLogReaderState *record);
++
++#endif							/* HEAPAM_HINT_H */
+diff --git a/src/include/access/heapam_xlog.h b/src/include/access/heapam_xlog.h
+index 3f79c389a90..ede2754b155 100644
+--- a/src/include/access/heapam_xlog.h
++++ b/src/include/access/heapam_xlog.h
+@@ -60,7 +60,7 @@
+ #define XLOG_HEAP2_PRUNE_ON_ACCESS		0x10
+ #define XLOG_HEAP2_PRUNE_VACUUM_SCAN	0x20
+ #define XLOG_HEAP2_PRUNE_VACUUM_CLEANUP	0x30
+-/* 0x40 was XLOG_HEAP2_VISIBLE */
++#define XLOG_HEAP2_HINT_BITS	0x40
+ #define XLOG_HEAP2_MULTI_INSERT 0x50
+ #define XLOG_HEAP2_LOCK_UPDATED 0x60
+ #define XLOG_HEAP2_NEW_CID		0x70
+diff --git a/src/include/storage/bufmgr.h b/src/include/storage/bufmgr.h
+index 6837b35fc6d..70be728dd2e 100644
+--- a/src/include/storage/bufmgr.h
++++ b/src/include/storage/bufmgr.h
+@@ -316,9 +316,16 @@ extern void BufferGetTag(Buffer buffer, RelFileLocator *rlocator,
+ 
+ extern void MarkBufferDirtyHint(Buffer buffer, bool buffer_std);
+ 
++typedef XLogRecPtr (*BufferHintWalLogger) (Buffer buffer);
++
+ extern bool BufferSetHintBits16(uint16 *ptr, uint16 val, Buffer buffer);
++extern bool BufferSetHintBits16WithWal(uint16 *ptr, uint16 val, Buffer buffer,
++									   BufferHintWalLogger wal_logger);
+ extern bool BufferBeginSetHintBits(Buffer buffer);
+ extern void BufferFinishSetHintBits(Buffer buffer, bool mark_dirty, bool buffer_std);
++extern void BufferFinishSetHintBitsWithWal(Buffer buffer, bool mark_dirty,
++										   bool buffer_std,
++										   BufferHintWalLogger wal_logger);
+ 
+ extern void UnlockBuffers(void);
+ extern void UnlockBuffer(Buffer buffer);
+diff --git a/src/test/recovery/Makefile b/src/test/recovery/Makefile
+index d41aaaf8ae1..a7d5b8ff99b 100644
+--- a/src/test/recovery/Makefile
++++ b/src/test/recovery/Makefile
+@@ -9,7 +9,8 @@
+ #
+ #-------------------------------------------------------------------------
+ 
+-EXTRA_INSTALL=contrib/pg_prewarm \
++EXTRA_INSTALL=contrib/pageinspect \
++	contrib/pg_prewarm \
+ 	contrib/pg_stat_statements \
+ 	contrib/test_decoding \
+ 	src/test/modules/injection_points
+diff --git a/src/test/recovery/meson.build b/src/test/recovery/meson.build
+index 39ec8c4946d..4e72a58bf64 100644
+--- a/src/test/recovery/meson.build
++++ b/src/test/recovery/meson.build
+@@ -64,6 +64,7 @@ tests += {
+       't/053_standby_login_event_trigger.pl',
+       't/054_unlogged_sequence_promotion.pl',
+       't/055_cascade_reconnect.pl',
++      't/056_heap_hint_wal.pl',
+     ],
+   },
+ }
+diff --git a/src/test/recovery/t/056_heap_hint_wal.pl b/src/test/recovery/t/056_heap_hint_wal.pl
+new file mode 100644
+index 00000000000..a7741e8ee75
+--- /dev/null
++++ b/src/test/recovery/t/056_heap_hint_wal.pl
+@@ -0,0 +1,107 @@
++# Copyright (c) 2026, PostgreSQL Global Development Group
++
++use strict;
++use warnings FATAL => 'all';
++
++use PostgreSQL::Test::Cluster;
++use PostgreSQL::Test::Utils;
++use Test::More;
++
++my $node = PostgreSQL::Test::Cluster->new('primary');
++$node->init;
++command_ok(
++	[ 'pg_checksums', '--disable', '-D', $node->data_dir ],
++	'disabled data checksums');
++$node->append_conf(
++	'postgresql.conf', qq(
++full_page_writes = on
++wal_log_hints = on
++bgwriter_lru_maxpages = 0
++checkpoint_timeout = '1h'
++));
++$node->start;
++
++$node->safe_psql('postgres',
++	'CREATE EXTENSION pageinspect; '
++	. 'CREATE TABLE hints AS SELECT g FROM generate_series(1, 100) g');
++
++# Ensure that the heap page is clean and no longer in shared buffers.  The
++# first scan after the restart will therefore WAL-log its visibility hints.
++$node->restart;
++
++my $start_lsn = $node->safe_psql('postgres',
++	'SELECT pg_current_wal_insert_lsn()');
++my $page_lsn = $node->safe_psql('postgres',
++	q[SELECT lsn FROM page_header(get_raw_page('hints', 0))]);
++is($node->safe_psql('postgres', 'SELECT count(*) FROM hints'),
++	'100', 'scanned all tuples');
++is($node->safe_psql('postgres',
++	q[SELECT lsn FROM page_header(get_raw_page('hints', 0))]),
++	$page_lsn, 'heap hint WAL does not advance the page LSN');
++my $end_lsn = $node->safe_psql('postgres',
++	'SELECT pg_current_wal_insert_lsn()');
++my $relfilenode = $node->safe_psql('postgres',
++	q[SELECT pg_relation_filenode('hints'::regclass)]);
++
++# Make the WAL segment available to pg_waldump.
++$node->safe_psql('postgres', 'SELECT pg_switch_wal()');
++
++my ($stdout, $stderr) = run_command(
++	[
++		'pg_waldump', '-p', $node->data_dir,
++		'-s', $start_lsn, '-e', $end_lsn,
++		'-r', 'Heap2', '-b'
++	]);
++
++is($stderr, '', 'pg_waldump produced no diagnostics');
++like(
++	$stdout,
++	qr/desc: HINT_BITS ntuples: 100\n\s+blkref #0: rel \d+\/\d+\/$relfilenode fork main blk 0(?:\n|\z)/,
++	'heap visibility hints use a compact WAL record without an FPI');
++
++# Exercise replay of the heap hint WAL record.
++$node->stop('immediate');
++$node->start;
++is($node->safe_psql('postgres', q[
++	SELECT bool_and((t_infomask & 2304) = 2304)
++	FROM heap_page_items(get_raw_page('hints', 0))]),
++	't', 'replay restored heap visibility hint bits');
++is($node->safe_psql('postgres', 'SELECT count(*) FROM hints'),
++	'100', 'table is readable after replaying heap hint WAL');
++
++$node->stop;
++
++command_ok(
++	[ 'pg_checksums', '--enable', '-D', $node->data_dir ],
++	'enabled data checksums');
++$node->start;
++$node->safe_psql('postgres',
++	'CREATE TABLE checksum_hints AS SELECT g FROM generate_series(1, 100) g');
++$node->restart;
++
++$start_lsn = $node->safe_psql('postgres',
++	'SELECT pg_current_wal_insert_lsn()');
++is($node->safe_psql('postgres', 'SELECT count(*) FROM checksum_hints'),
++	'100', 'scanned all tuples on a checksummed page');
++$end_lsn = $node->safe_psql('postgres',
++	'SELECT pg_current_wal_insert_lsn()');
++$relfilenode = $node->safe_psql('postgres',
++	q[SELECT pg_relation_filenode('checksum_hints'::regclass)]);
++$node->safe_psql('postgres', 'SELECT pg_switch_wal()');
++
++($stdout, $stderr) = run_command(
++	[
++		'pg_waldump', '-p', $node->data_dir,
++		'-s', $start_lsn, '-e', $end_lsn,
++		'-r', 'XLOG', '-b'
++	]);
++
++is($stderr, '', 'pg_waldump produced no checksum diagnostics');
++like(
++	$stdout,
++	qr/desc: FPI_FOR_HINT\s*\n\s+blkref #0: rel \d+\/\d+\/$relfilenode fork main blk 0 \(FPW\)/,
++	'checksummed heap hint update uses a full-page image');
++
++$node->stop;
++
++done_testing();
+-- 
+2.50.1 (Apple Git-155)
+

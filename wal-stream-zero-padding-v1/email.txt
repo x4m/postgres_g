@@ -1,0 +1,27 @@
+Subject: [PATCH] Avoid streaming zero-filled WAL switch padding
+
+Hi,
+
+pg_switch_wal() fills the remainder of the WAL segment with zeros.
+The filesystem can store this efficiently, but walsender still sends all
+of those zeros to every standby.
+
+We operate many small clusters that generate little WAL but have strict
+statement_timeout requirements.  On these clusters, archive_timeout causes
+occasional SyncRep latency spikes while the zero-filled tail is streamed.
+One user worked around this by adding a continuous dummy write workload that
+fills each WAL segment before archive_timeout switches it.
+
+The attached patch adds a compact replication message for zero-filled WAL
+padding.  Walreceiver reconstructs the tail using truncate-and-extend, so
+it is neither transferred over the network nor written to the filesystem.
+pg_receivewal and compressed output are supported too.
+
+With a nearly empty default-size segment, this reduces the transfer from
+about 16 MB to at most one 128 kB WAL chunk plus a 33-byte message, or
+roughly 99.2%.
+
+PFA.
+
+--
+Andrey Borodin

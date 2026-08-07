@@ -1,0 +1,57 @@
+Hi hackers,
+
+When I saw the tests referring to REPACK, I incorrectly assumed that
+this was a v19 issue.  I was mostly interested in fixing the older
+branches, skimmed the thread, concluded that there was no patch yet, and
+posted my test largely to bump other discussion.  I now realize that this
+was not useful.  Sorry for the noise.  I would like to review the current
+patch set instead.
+
+My main interest here is whether this can be backpatched to supported
+branches.  The underlying CREATE INDEX, CLUSTER, and VACUUM FULL problem
+is present in 14-18, even though REPACK is new.  However, changing the
+return type and arguments of relation_fetch_toast_slice changes the
+TableAmRoutine ABI in all those branches.  So v5 cannot be backpatched as
+is without breaking external table AMs.  As I understand that the current
+plan is to settle the fix for HEAD first and consider a separate
+ABI-preserving back-branch variant afterwards.
+
+Three issues identified in the thread remain unresolved in the posted v5
+patch set:
+
+* As Zhijie reported, TOAST_MISSING_OK is lost for tuples stored in 
+  rs_unresolved_tups, including those inserted by end_heap_rewrite().
+
+* As Matthias noted, the scan-and-sort path still has a check/use race
+  because it discards the detoasted values before putting the original
+  tuple into tuplesort.
+
+* As Dilip noted, the TOAST_MISSING_OK path for a TYPSTORAGE_PLAIN
+  attribute uses detoast_external_attr_extended() instead of
+  detoast_attr().  On a successful fetch, an external compressed datum
+  therefore appears to remain compressed.
+
+I think the memory-leak fix in v5-0002 misses one exit path.  Detoasting
+now precedes the partial index predicate, but if ExecQual() returns false,
+the loop continues without freeing detoasted_attrs and the detoasted
+values.
+
+I also have a question about the concern Ekaterina raised in the related
+thread regarding real corruption.  With TOAST_MISSING_OK, v5-0002 also
+returns false for an existing chunk with an unexpected size or a chunk
+outside the requested range.  Is concurrent removal expected to produce
+those cases too, or could the tolerant path be limited to a missing chunk
+or a gap?
+
+The current tests do not cover TOAST being removed after a recently-dead
+tuple has been checked but while it is waiting in tuplesort.  Nor do they
+cover a recently-dead tuple deferred in rs_unresolved_tups because its
+successor in the update chain has not been rewritten yet.  The latter is
+covered by Zhijie's reproducer, but not by the automated test suites.  I
+am not sure either case needs a dedicated regression test once the code is
+fixed, but both paths seem easy to break again during a future refactoring.
+
+Thanks!
+
+
+Best regards, Andrey Borodin.

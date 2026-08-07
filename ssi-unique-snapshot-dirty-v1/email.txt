@@ -1,0 +1,29 @@
+Subject: Re: serializable anomaly - duplicate primary keys
+
+Hi Jacob,
+
+Thanks for the report.  I reproduced it, including with INSERT ... ON
+CONFLICT DO NOTHING.
+
+This is related to the ON CONFLICT issue discussed in [0], but has the
+opposite ordering: here the deletion commits first, and the unique check
+relies on it through SnapshotDirty.
+
+The window seems fairly narrow: a serializable transaction must read a row,
+keep its snapshot across another transaction's deletion, and then reuse the
+same key.  It does not corrupt the index or leave a persistent duplicate, but
+the committed transaction violates the SERIALIZABLE guarantee.  This seems
+plausible in delete-and-recreate or upsert workflows with long transactions.
+
+PFA invasive fix for HEAD.  The table AM reports the deleting XID when
+SnapshotDirty skips a tuple still visible to the transaction snapshot.  SSI
+then fails only if there is already an rw-conflict to that transaction.  It
+also marks the transaction doomed before raising the error, so a savepoint
+cannot hide the failure.
+
+This extends the table AM interface.  An ABI-preserving back-branch fix can
+be considered separately.
+
+Best regards, Andrey Borodin.
+
+[0] https://postgr.es/m/165342c0-0c75-461e-b334-b997639ad48d%40aphyr.com

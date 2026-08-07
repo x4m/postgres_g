@@ -1,0 +1,34 @@
+Add intrapage indexing to GiST
+
+Scanning a GiST internal page currently applies the consistent function to
+every downlink.  This becomes expensive for operator classes with costly
+keys or pages with high fanout, even when one union key could reject several
+neighboring downlinks at once.
+
+Add skip tuples that form a second, page-local level of GiST keys.  Each skip
+tuple contains the union key of the real downlinks immediately following it.
+When the skip key is inconsistent with a scan key, the scan skips the whole
+group; otherwise, it examines every downlink normally.  Subtree selection
+similarly skips a group when its first-column penalty is already worse than
+the best downlink found so far.
+
+Represent a skip tuple with InvalidBlockNumber in t_tid and store the group
+size in ip_posid.  This does not consume INDEX_AM_RESERVED_BIT and remains
+distinct from the legacy GiST invalid-tuple representation.
+
+Treat skip tuples as derived metadata.  Removing them leaves a valid
+ordinary GiST page with the same downlinks.  Rebuild the affected group on a
+page update, include metadata space when splitting pages and in sorted and
+buffered builds, and move a downlink out of its group before VACUUM deletes
+it.  Existing GiST WAL record types can then log complete page states without
+a separate record for skip-tuple maintenance.
+
+Create skip tuples only on internal pages.  Supporting them on leaf pages
+would additionally require maintaining group boundaries during LP_DEAD
+cleanup and tuple-level vacuuming.
+
+Add a TAP test covering sorted and buffered builds, insertions through skip
+groups, exact scan results, VACUUM page deletion, WAL consistency, standby
+replay, and crash recovery.
+
+Discussion: https://postgr.es/m/7780A07B-4D04-41E2-B228-166B41D07EEE%40yandex-team.ru

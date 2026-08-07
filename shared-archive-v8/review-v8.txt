@@ -1,0 +1,48 @@
+Subject: Re: Streaming replication and WAL archive interactions
+
+Hi Kirill,
+
+Thanks for v8!
+
+The fallback currently treats the absence of reports for three
+archive_status_report_interval periods as a failure, but the walsender
+sends nothing when last_archived_wal has not changed.  Thus the first
+segment after an idle period can be archived locally immediately,
+racing with the primary.
+
+I suggest using two states:
+
+* before the first report, use archive_status_report_interval to detect
+  that the upstream cannot provide reports;
+* after the first report, start a longer archive_timeout-based timer
+  only when an unconfirmed .ready segment appears.
+
+The latter timer must start when there is work awaiting confirmation,
+not at the last report.  We also need to decide whether it uses the
+standby's archive_timeout or a value reported by the upstream, and
+allow time for archive_command and report delivery.
+
+Report scheduling also needs adjustment.  WalSndArchivalReport() is
+called after early returns in WalSndKeepaliveIfNecessary(), so
+wal_sender_timeout=0 disables reports.  The report deadline is not
+considered by WalSndComputeSleeptime() either.
+
+ProcessArchivalReport() also marks the segment containing an ancestor
+timeline's switchpoint as done.  A descendant report proves that its
+common prefix exists under the descendant filename, but I don't see
+what guarantees that the ancestor filename is present in the archive.
+This needs either an explanation or an archive-only recovery test with
+recovery_target_timeline set to the ancestor.
+
+Some smaller items remain: the new GUC and view column are missing from
+config.sgml and monitoring.sgml; changing
+archive_status_report_interval by SIGHUP does not renegotiate the
+existing connection; and the Windows archive paths in 055-057 are still
+not escaped as in enable_archiving() [0].  There is also a duplicated
+condition in ProcessArchivalReport(), a misspelled SGML ID, and trailing
+whitespace.
+
+
+Best regards, Andrey Borodin.
+
+[0] https://github.com/x4m/postgres_g/actions/runs/30611537052/job/91095599886

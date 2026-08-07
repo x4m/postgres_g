@@ -1,0 +1,621 @@
+From 70c4eac09a7b19ab3595730d63707cd37147c578 Mon Sep 17 00:00:00 2001
+From: Andrey Borodin <amborodin@acm.org>
+Date: Fri, 7 Aug 2026 17:36:55 +0500
+Subject: [PATCH v1] Detect SSI conflicts when unique checks reuse keys
+
+Unique checks use SnapshotDirty to account for concurrent tuple changes.
+Since special snapshots do not participate in SSI, a serializable
+transaction can read a row, rely on another transaction's committed
+deletion to insert the same key, observe both versions, and commit.  Partial
+checks used by ON CONFLICT have the same problem.
+
+Have the table AM report the deleting transaction when SnapshotDirty skips
+a tuple that remains visible to the transaction snapshot.  If an
+rw-conflict to that exact transaction already exists, mark the serializable
+transaction doomed and report a serialization failure.  Marking it doomed
+ensures that rolling back a savepoint cannot suppress the failure.
+
+Add isolation coverage for regular and partial unique checks, savepoint
+handling, and an unrelated rw-conflict that must not cause a false positive.
+
+Discussion:
+https://postgr.es/m/CA%2BCOZaBOiiRPmEfX00oE%3DN6HBSZVe0Y-y-ZqqaXq8BAAj1gu%2BQ%40mail.gmail.com
+
+Related-Discussion:
+https://postgr.es/m/165342c0-0c75-461e-b334-b997639ad48d%40aphyr.com
+
+Reported-by: Jacob Brazeal <jacob.brazeal@gmail.com>
+---
+ src/backend/access/heap/heapam_handler.c      |  1 +
+ src/backend/access/heap/heapam_indexscan.c    | 67 ++++++++++++++-
+ src/backend/access/nbtree/nbtinsert.c         | 72 +++++++++-------
+ src/backend/access/table/tableam.c            | 22 +++--
+ src/backend/storage/lmgr/predicate.c          | 51 +++++++++++
+ src/include/access/heapam.h                   |  4 +
+ src/include/access/tableam.h                  | 18 +++-
+ src/include/storage/predicate.h               |  1 +
+ .../expected/read-write-unique-5.out          | 84 +++++++++++++++++++
+ src/test/isolation/isolation_schedule         |  1 +
+ .../isolation/specs/read-write-unique-5.spec  | 60 +++++++++++++
+ 11 files changed, 335 insertions(+), 46 deletions(-)
+ create mode 100644 src/test/isolation/expected/read-write-unique-5.out
+ create mode 100644 src/test/isolation/specs/read-write-unique-5.spec
+
+diff --git a/src/backend/access/heap/heapam_handler.c b/src/backend/access/heap/heapam_handler.c
+index bf87430cf01..2f4db724ae6 100644
+--- a/src/backend/access/heap/heapam_handler.c
++++ b/src/backend/access/heap/heapam_handler.c
+@@ -2677,6 +2677,7 @@ static const TableAmRoutine heapam_methods = {
+ 	.index_fetch_reset = heapam_index_fetch_reset,
+ 	.index_fetch_end = heapam_index_fetch_end,
+ 	.index_fetch_tuple = heapam_index_fetch_tuple,
++	.index_fetch_tuple_check = heapam_index_fetch_tuple_check,
+ 
+ 	.tuple_insert = heapam_tuple_insert,
+ 	.tuple_insert_speculative = heapam_tuple_insert_speculative,
+diff --git a/src/backend/access/heap/heapam_indexscan.c b/src/backend/access/heap/heapam_indexscan.c
+index 33d14f1de7d..1d5ed438cf3 100644
+--- a/src/backend/access/heap/heapam_indexscan.c
++++ b/src/backend/access/heap/heapam_indexscan.c
+@@ -86,10 +86,12 @@ heapam_index_fetch_end(IndexFetchTableData *scan)
+  * Unlike heap_fetch, the caller must already have pin and (at least) share
+  * lock on the buffer; it is still pinned/locked at exit.
+  */
+-bool
+-heap_hot_search_buffer(ItemPointer tid, Relation relation, Buffer buffer,
+-					   Snapshot snapshot, HeapTuple heapTuple,
+-					   bool *all_dead, bool first_call)
++static bool
++heap_hot_search_buffer_internal(ItemPointer tid, Relation relation,
++								Buffer buffer, Snapshot snapshot,
++								Snapshot crosscheck, HeapTuple heapTuple,
++								bool *all_dead, bool first_call,
++								TransactionId *conflict_xid)
+ {
+ 	Page		page = BufferGetPage(buffer);
+ 	TransactionId prev_xmax = InvalidTransactionId;
+@@ -188,6 +190,20 @@ heap_hot_search_buffer(ItemPointer tid, Relation relation, Buffer buffer,
+ 					*all_dead = false;
+ 				return true;
+ 			}
++
++			/*
++			 * A unique check can use SnapshotDirty to conclude that a tuple
++			 * has been deleted, even though it remains visible to the inserting
++			 * transaction's MVCC snapshot.  Report the deleting XID so that SSI
++			 * can identify the exact dependency involved.
++			 */
++			if (crosscheck != NULL &&
++				HeapTupleSatisfiesVisibility(heapTuple, crosscheck, buffer))
++			{
++				Assert(!(heapTuple->t_data->t_infomask & HEAP_XMAX_INVALID));
++				Assert(!HeapTupleHeaderIsOnlyLocked(heapTuple->t_data));
++				*conflict_xid = HeapTupleHeaderGetUpdateXid(heapTuple->t_data);
++			}
+ 		}
+ 		skip = false;
+ 
+@@ -228,6 +244,16 @@ heap_hot_search_buffer(ItemPointer tid, Relation relation, Buffer buffer,
+ 	return false;
+ }
+ 
++bool
++heap_hot_search_buffer(ItemPointer tid, Relation relation, Buffer buffer,
++					   Snapshot snapshot, HeapTuple heapTuple,
++					   bool *all_dead, bool first_call)
++{
++	return heap_hot_search_buffer_internal(tid, relation, buffer, snapshot,
++										   NULL, heapTuple, all_dead, first_call,
++										   NULL);
++}
++
+ bool
+ heapam_index_fetch_tuple(struct IndexFetchTableData *scan,
+ 						 ItemPointer tid,
+@@ -296,3 +322,36 @@ heapam_index_fetch_tuple(struct IndexFetchTableData *scan,
+ 
+ 	return got_heap_tuple;
+ }
++
++bool
++heapam_index_fetch_tuple_check(struct IndexFetchTableData *scan,
++							   ItemPointer tid, Snapshot snapshot,
++							   Snapshot crosscheck, bool *all_dead,
++							   TransactionId *conflict_xid)
++{
++	IndexFetchHeapData *hscan = (IndexFetchHeapData *) scan;
++	HeapTupleData heap_tuple;
++	bool		found;
++
++	if (hscan->xs_blk != ItemPointerGetBlockNumber(tid))
++	{
++		hscan->xs_blk = ItemPointerGetBlockNumber(tid);
++
++		if (BufferIsValid(hscan->xs_cbuf))
++			ReleaseBuffer(hscan->xs_cbuf);
++
++		hscan->xs_cbuf = ReadBuffer(hscan->xs_base.rel, hscan->xs_blk);
++		heap_page_prune_opt(hscan->xs_base.rel, hscan->xs_cbuf,
++							&hscan->xs_vmbuffer,
++							hscan->xs_base.flags & SO_HINT_REL_READ_ONLY);
++	}
++
++	LockBuffer(hscan->xs_cbuf, BUFFER_LOCK_SHARE);
++	found = heap_hot_search_buffer_internal(tid, hscan->xs_base.rel,
++											hscan->xs_cbuf, snapshot, crosscheck,
++											&heap_tuple, all_dead, true,
++											conflict_xid);
++	LockBuffer(hscan->xs_cbuf, BUFFER_LOCK_UNLOCK);
++
++	return found;
++}
+diff --git a/src/backend/access/nbtree/nbtinsert.c b/src/backend/access/nbtree/nbtinsert.c
+index c8af97dd23d..7cce49d951f 100644
+--- a/src/backend/access/nbtree/nbtinsert.c
++++ b/src/backend/access/nbtree/nbtinsert.c
+@@ -19,6 +19,7 @@
+ #include "access/nbtxlog.h"
+ #include "access/tableam.h"
+ #include "access/transam.h"
++#include "access/xact.h"
+ #include "access/xloginsert.h"
+ #include "common/int.h"
+ #include "common/pg_prng.h"
+@@ -27,6 +28,7 @@
+ #include "storage/lmgr.h"
+ #include "storage/predicate.h"
+ #include "utils/injection_point.h"
++#include "utils/snapmgr.h"
+ 
+ /* Minimum tree height for application of fastpath optimization */
+ #define BTREE_FASTPATH_MIN_LEVEL	2
+@@ -417,6 +419,7 @@ _bt_check_unique(Relation rel, BTInsertState insertstate, Relation heapRel,
+ 	ItemId		curitemid = NULL;
+ 	BTScanInsert itup_key = insertstate->itup_key;
+ 	SnapshotData SnapshotDirty;
++	TransactionId conflict_xid;
+ 	OffsetNumber offset;
+ 	OffsetNumber maxoff;
+ 	Page		page;
+@@ -562,7 +565,10 @@ _bt_check_unique(Relation rel, BTInsertState insertstate, Relation heapRel,
+ 				 */
+ 				else if (table_index_fetch_tuple_check(heapRel, &htid,
+ 													   &SnapshotDirty,
+-													   &all_dead))
++													   IsolationIsSerializable() &&
++													   ActiveSnapshotSet() ?
++													   GetActiveSnapshot() : NULL,
++													   &all_dead, &conflict_xid))
+ 				{
+ 					TransactionId xwait;
+ 
+@@ -619,7 +625,8 @@ _bt_check_unique(Relation rel, BTInsertState insertstate, Relation heapRel,
+ 					 */
+ 					htid = itup->t_tid;
+ 					if (table_index_fetch_tuple_check(heapRel, &htid,
+-													  SnapshotSelf, NULL))
++													  SnapshotSelf, NULL, NULL,
++													  &conflict_xid))
+ 					{
+ 						/* Normal case --- it's still live */
+ 					}
+@@ -676,36 +683,43 @@ _bt_check_unique(Relation rel, BTInsertState insertstate, Relation heapRel,
+ 													RelationGetRelationName(rel))));
+ 					}
+ 				}
+-				else if (all_dead && (!inposting ||
+-									  (prevalldead &&
+-									   curposti == BTreeTupleGetNPosting(curitup) - 1)))
++				else
+ 				{
+-					/*
+-					 * The conflicting tuple (or all HOT chains pointed to by
+-					 * all posting list TIDs) is dead to everyone, so try to
+-					 * mark the index entry killed. It's ok if we're not
+-					 * allowed to, this isn't required for correctness.
+-					 */
+-					Buffer		buf;
+-
+-					/* Be sure to operate on the proper buffer */
+-					if (nbuf != InvalidBuffer)
+-						buf = nbuf;
+-					else
+-						buf = insertstate->buf;
++					if (checkUnique != UNIQUE_CHECK_EXISTING &&
++						TransactionIdIsValid(conflict_xid))
++						CheckForSerializableConflictOutToXid(conflict_xid);
+ 
+-					/*
+-					 * Use the hint bit infrastructure to check if we can
+-					 * update the page while just holding a share lock.
+-					 *
+-					 * Can't use BufferSetHintBits16() here as we update two
+-					 * different locations.
+-					 */
+-					if (BufferBeginSetHintBits(buf))
++					if (all_dead && (!inposting ||
++									 (prevalldead &&
++									  curposti == BTreeTupleGetNPosting(curitup) - 1)))
+ 					{
+-						ItemIdMarkDead(curitemid);
+-						opaque->btpo_flags |= BTP_HAS_GARBAGE;
+-						BufferFinishSetHintBits(buf, true, true);
++						/*
++						 * The conflicting tuple (or all HOT chains pointed to by
++						 * all posting list TIDs) is dead to everyone, so try to
++						 * mark the index entry killed. It's ok if we're not
++						 * allowed to, this isn't required for correctness.
++						 */
++						Buffer		buf;
++
++						/* Be sure to operate on the proper buffer */
++						if (nbuf != InvalidBuffer)
++							buf = nbuf;
++						else
++							buf = insertstate->buf;
++
++						/*
++						 * Use the hint bit infrastructure to check if we can
++						 * update the page while just holding a share lock.
++						 *
++						 * Can't use BufferSetHintBits16() here as we update two
++						 * different locations.
++						 */
++						if (BufferBeginSetHintBits(buf))
++						{
++							ItemIdMarkDead(curitemid);
++							opaque->btpo_flags |= BTP_HAS_GARBAGE;
++							BufferFinishSetHintBits(buf, true, true);
++						}
+ 					}
+ 				}
+ 
+diff --git a/src/backend/access/table/tableam.c b/src/backend/access/table/tableam.c
+index 68ff0966f1c..931c7348fb5 100644
+--- a/src/backend/access/table/tableam.c
++++ b/src/backend/access/table/tableam.c
+@@ -228,11 +228,10 @@ table_beginscan_parallel_tidrange(Relation relation,
+  */
+ 
+ /*
+- * To perform that check simply start an index scan, create the necessary
+- * slot, do the heap lookup, and shut everything down again. This could be
+- * optimized, but is unlikely to matter from a performance POV. If there
+- * frequently are live index pointers also matching a unique index key, the
+- * CPU overhead of this routine is unlikely to matter.
++ * To perform that check simply start an index scan, do the table AM lookup,
++ * and shut everything down again.  If there frequently are live index
++ * pointers also matching a unique index key, the CPU overhead of this routine
++ * is unlikely to matter.
+  *
+  * Note that *tid may be modified when we return true if the AM supports
+  * storing multiple row versions reachable via a single index entry (like
+@@ -242,19 +241,18 @@ bool
+ table_index_fetch_tuple_check(Relation rel,
+ 							  ItemPointer tid,
+ 							  Snapshot snapshot,
+-							  bool *all_dead)
++							  Snapshot crosscheck,
++							  bool *all_dead,
++							  TransactionId *conflict_xid)
+ {
+ 	IndexFetchTableData *scan;
+-	TupleTableSlot *slot;
+-	bool		call_again = false;
+ 	bool		found;
+ 
+-	slot = table_slot_create(rel, NULL);
+ 	scan = table_index_fetch_begin(rel, SO_NONE);
+-	found = table_index_fetch_tuple(scan, tid, snapshot, slot, &call_again,
+-									all_dead);
++	*conflict_xid = InvalidTransactionId;
++	found = rel->rd_tableam->index_fetch_tuple_check(scan, tid, snapshot,
++											  crosscheck, all_dead, conflict_xid);
+ 	table_index_fetch_end(scan);
+-	ExecDropSingleTupleTableSlot(slot);
+ 
+ 	return found;
+ }
+diff --git a/src/backend/storage/lmgr/predicate.c b/src/backend/storage/lmgr/predicate.c
+index 0ae85b7d5b4..d7b05547248 100644
+--- a/src/backend/storage/lmgr/predicate.c
++++ b/src/backend/storage/lmgr/predicate.c
+@@ -195,6 +195,7 @@
+ 
+ #include "access/parallel.h"
+ #include "access/slru.h"
++#include "access/subtrans.h"
+ #include "access/transam.h"
+ #include "access/twophase.h"
+ #include "access/twophase_rmgr.h"
+@@ -3935,6 +3936,56 @@ CheckForSerializableConflictOutNeeded(Relation relation, Snapshot snapshot)
+ 	return true;
+ }
+ 
++/*
++ * Fail if we already have an rw-conflict out to the given transaction.
++ *
++ * This is used when a unique check is about to rely on that transaction's
++ * deletion.  The preexisting conflict requires us to appear before the
++ * deleting transaction, while reusing its key requires us to appear after it.
++ */
++void
++CheckForSerializableConflictOutToXid(TransactionId xid)
++{
++	SERIALIZABLEXIDTAG sxidtag;
++	SERIALIZABLEXID *sxid;
++	bool		failure = false;
++
++	if (MySerializableXact == InvalidSerializableXact)
++		return;
++
++	Assert(TransactionIdIsValid(xid));
++
++	if (TransactionIdIsCurrentTransactionId(xid))
++		return;
++
++	xid = SubTransGetTopmostTransaction(xid);
++	sxidtag.xid = xid;
++
++	LWLockAcquire(SerializableXactHashLock, LW_EXCLUSIVE);
++	if (SxactIsDoomed(MySerializableXact))
++		failure = true;
++	else
++	{
++		sxid = (SERIALIZABLEXID *)
++			hash_search(SerializableXidHash, &sxidtag, HASH_FIND, NULL);
++		if (sxid != NULL && sxid->myXact != MySerializableXact &&
++			RWConflictExists(MySerializableXact, sxid->myXact))
++		{
++			/* Make the error persistent across a subtransaction rollback. */
++			MySerializableXact->flags |= SXACT_FLAG_DOOMED;
++			failure = true;
++		}
++	}
++	LWLockRelease(SerializableXactHashLock);
++
++	if (failure)
++		ereport(ERROR,
++				(errcode(ERRCODE_T_R_SERIALIZATION_FAILURE),
++				 errmsg("could not serialize access due to read/write dependencies among transactions"),
++				 errdetail_internal("Reason code: Canceled because a unique check relied on a concurrent deletion."),
++				 errhint("The transaction might succeed if retried.")));
++}
++
+ /*
+  * CheckForSerializableConflictOut
+  *		A table AM is reading a tuple that has been modified.  If it determines
+diff --git a/src/include/access/heapam.h b/src/include/access/heapam.h
+index 5176478c295..dc02116face 100644
+--- a/src/include/access/heapam.h
++++ b/src/include/access/heapam.h
+@@ -440,6 +440,10 @@ extern bool heapam_index_fetch_tuple(struct IndexFetchTableData *scan,
+ 									 ItemPointer tid, Snapshot snapshot,
+ 									 TupleTableSlot *slot, bool *heap_continue,
+ 									 bool *all_dead);
++extern bool heapam_index_fetch_tuple_check(struct IndexFetchTableData *scan,
++										   ItemPointer tid, Snapshot snapshot,
++										   Snapshot crosscheck, bool *all_dead,
++										   TransactionId *conflict_xid);
+ 
+ /* in heap/pruneheap.c */
+ extern void heap_page_prune_opt(Relation relation, Buffer buffer,
+diff --git a/src/include/access/tableam.h b/src/include/access/tableam.h
+index f2c36696bca..074535d985f 100644
+--- a/src/include/access/tableam.h
++++ b/src/include/access/tableam.h
+@@ -495,6 +495,20 @@ typedef struct TableAmRoutine
+ 									  TupleTableSlot *slot,
+ 									  bool *call_again, bool *all_dead);
+ 
++	/*
++	 * Check whether an index TID points to a tuple visible to `snapshot`, as
++	 * needed for unique checks.  If no tuple is visible to `snapshot`, but a
++	 * tuple deleted by another transaction is visible to `crosscheck`, return
++	 * the deleting transaction's XID in *conflict_xid.  `crosscheck` may be
++	 * NULL when this information is not needed.
++	 */
++	bool		(*index_fetch_tuple_check) (struct IndexFetchTableData *scan,
++										ItemPointer tid,
++										Snapshot snapshot,
++										Snapshot crosscheck,
++										bool *all_dead,
++										TransactionId *conflict_xid);
++
+ 
+ 	/* ------------------------------------------------------------------------
+ 	 * Callbacks for non-modifying operations on individual tuples
+@@ -1322,7 +1336,9 @@ table_index_fetch_tuple(struct IndexFetchTableData *scan,
+ extern bool table_index_fetch_tuple_check(Relation rel,
+ 										  ItemPointer tid,
+ 										  Snapshot snapshot,
+-										  bool *all_dead);
++										  Snapshot crosscheck,
++										  bool *all_dead,
++										  TransactionId *conflict_xid);
+ 
+ 
+ /* ------------------------------------------------------------------------
+diff --git a/src/include/storage/predicate.h b/src/include/storage/predicate.h
+index 443bffb58fd..a48ded9c9ed 100644
+--- a/src/include/storage/predicate.h
++++ b/src/include/storage/predicate.h
+@@ -63,6 +63,7 @@ extern void ReleasePredicateLocks(bool isCommit, bool isReadOnlySafe);
+ 
+ /* conflict detection (may also trigger rollback) */
+ extern bool CheckForSerializableConflictOutNeeded(Relation relation, Snapshot snapshot);
++extern void CheckForSerializableConflictOutToXid(TransactionId xid);
+ extern void CheckForSerializableConflictOut(Relation relation, TransactionId xid, Snapshot snapshot);
+ extern void CheckForSerializableConflictIn(Relation relation, const ItemPointerData *tid, BlockNumber blkno);
+ extern void CheckTableForSerializableConflictIn(Relation relation);
+diff --git a/src/test/isolation/expected/read-write-unique-5.out b/src/test/isolation/expected/read-write-unique-5.out
+new file mode 100644
+index 00000000000..ec3637a0fb9
+--- /dev/null
++++ b/src/test/isolation/expected/read-write-unique-5.out
+@@ -0,0 +1,84 @@
++Parsed test spec with 3 sessions
++
++starting permutation: b1 r1 b2 d2 c2 w1 r1again c1
++step b1: BEGIN ISOLATION LEVEL SERIALIZABLE;
++step r1: SELECT * FROM test WHERE k = 1;
++k|      j
++-+-------
++1|1000000
++(1 row)
++
++step b2: BEGIN ISOLATION LEVEL SERIALIZABLE;
++step d2: DELETE FROM test WHERE j = 1000000;
++step c2: COMMIT;
++step w1: INSERT INTO test VALUES (1, 2);
++ERROR:  could not serialize access due to read/write dependencies among transactions
++step r1again: SELECT * FROM test WHERE k = 1 ORDER BY j;
++ERROR:  current transaction is aborted, commands ignored until end of transaction block
++step c1: COMMIT;
++
++starting permutation: b1 r1 b2 d2 c2 w1conflict r1again c1
++step b1: BEGIN ISOLATION LEVEL SERIALIZABLE;
++step r1: SELECT * FROM test WHERE k = 1;
++k|      j
++-+-------
++1|1000000
++(1 row)
++
++step b2: BEGIN ISOLATION LEVEL SERIALIZABLE;
++step d2: DELETE FROM test WHERE j = 1000000;
++step c2: COMMIT;
++step w1conflict: INSERT INTO test VALUES (1, 2) ON CONFLICT DO NOTHING;
++ERROR:  could not serialize access due to read/write dependencies among transactions
++step r1again: SELECT * FROM test WHERE k = 1 ORDER BY j;
++ERROR:  current transaction is aborted, commands ignored until end of transaction block
++step c1: COMMIT;
++
++starting permutation: b1 r1 b2 d2 c2 sp1 w1 rb1 c1
++step b1: BEGIN ISOLATION LEVEL SERIALIZABLE;
++step r1: SELECT * FROM test WHERE k = 1;
++k|      j
++-+-------
++1|1000000
++(1 row)
++
++step b2: BEGIN ISOLATION LEVEL SERIALIZABLE;
++step d2: DELETE FROM test WHERE j = 1000000;
++step c2: COMMIT;
++step sp1: SAVEPOINT s;
++step w1: INSERT INTO test VALUES (1, 2);
++ERROR:  could not serialize access due to read/write dependencies among transactions
++step rb1: ROLLBACK TO SAVEPOINT s;
++step c1: COMMIT;
++ERROR:  could not serialize access due to read/write dependencies among transactions
++
++starting permutation: b2 d2 c2 b1 w1 r1again c1
++step b2: BEGIN ISOLATION LEVEL SERIALIZABLE;
++step d2: DELETE FROM test WHERE j = 1000000;
++step c2: COMMIT;
++step b1: BEGIN ISOLATION LEVEL SERIALIZABLE;
++step w1: INSERT INTO test VALUES (1, 2);
++step r1again: SELECT * FROM test WHERE k = 1 ORDER BY j;
++k|j
++-+-
++1|2
++(1 row)
++
++step c1: COMMIT;
++
++starting permutation: b1 rother1 b3 u3 c3 b2 d2 c2 w1 c1
++step b1: BEGIN ISOLATION LEVEL SERIALIZABLE;
++step rother1: SELECT * FROM other WHERE k = 1;
++k|v
++-+-
++1|1
++(1 row)
++
++step b3: BEGIN ISOLATION LEVEL SERIALIZABLE;
++step u3: UPDATE other SET v = 2 WHERE k = 1;
++step c3: COMMIT;
++step b2: BEGIN ISOLATION LEVEL SERIALIZABLE;
++step d2: DELETE FROM test WHERE j = 1000000;
++step c2: COMMIT;
++step w1: INSERT INTO test VALUES (1, 2);
++step c1: COMMIT;
+diff --git a/src/test/isolation/isolation_schedule b/src/test/isolation/isolation_schedule
+index a27480a86a2..c7cbc61b9b3 100644
+--- a/src/test/isolation/isolation_schedule
++++ b/src/test/isolation/isolation_schedule
+@@ -5,6 +5,7 @@ test: read-write-unique
+ test: read-write-unique-2
+ test: read-write-unique-3
+ test: read-write-unique-4
++test: read-write-unique-5
+ test: simple-write-skew
+ test: receipt-report
+ test: temporal-range-integrity
+diff --git a/src/test/isolation/specs/read-write-unique-5.spec b/src/test/isolation/specs/read-write-unique-5.spec
+new file mode 100644
+index 00000000000..d1e21bf22cf
+--- /dev/null
++++ b/src/test/isolation/specs/read-write-unique-5.spec
+@@ -0,0 +1,60 @@
++# Test SSI conflict detection when a unique check observes a committed
++# deletion through SnapshotDirty.
++
++setup
++{
++  CREATE TABLE test (k integer PRIMARY KEY, j integer);
++  INSERT INTO test VALUES (1, 1000000);
++  INSERT INTO test SELECT g, g FROM generate_series(100, 2000) g;
++  CREATE INDEX test_j_idx ON test (j);
++  CREATE TABLE other (k integer PRIMARY KEY, v integer);
++  INSERT INTO other VALUES (1, 1);
++  ANALYZE test;
++}
++
++teardown
++{
++  DROP TABLE other;
++  DROP TABLE test;
++}
++
++session s1
++step b1 { BEGIN ISOLATION LEVEL SERIALIZABLE; }
++step r1 { SELECT * FROM test WHERE k = 1; }
++step rother1 { SELECT * FROM other WHERE k = 1; }
++step sp1 { SAVEPOINT s; }
++step w1 { INSERT INTO test VALUES (1, 2); }
++step w1conflict { INSERT INTO test VALUES (1, 2) ON CONFLICT DO NOTHING; }
++step rb1 { ROLLBACK TO SAVEPOINT s; }
++step r1again { SELECT * FROM test WHERE k = 1 ORDER BY j; }
++step c1 { COMMIT; }
++
++session s2
++setup { SET enable_seqscan = off; }
++step b2 { BEGIN ISOLATION LEVEL SERIALIZABLE; }
++step d2 { DELETE FROM test WHERE j = 1000000; }
++step c2 { COMMIT; }
++
++session s3
++step b3 { BEGIN ISOLATION LEVEL SERIALIZABLE; }
++step u3 { UPDATE other SET v = 2 WHERE k = 1; }
++step c3 { COMMIT; }
++
++# s1's initial read must precede s2, while its INSERT relies on s2's deletion.
++# There is no serial order in which both observations are possible.
++permutation b1 r1 b2 d2 c2 w1 r1again c1
++
++# ON CONFLICT uses a partial unique check, but must detect the same anomaly.
++permutation b1 r1 b2 d2 c2 w1conflict r1again c1
++
++# The serialization failure must remain effective after rolling back the
++# statement's subtransaction.
++permutation b1 r1 b2 d2 c2 sp1 w1 rb1 c1
++
++# A deletion committed before s1 takes its snapshot is visible normally and
++# permits the key to be reused.
++permutation b2 d2 c2 b1 w1 r1again c1
++
++# An rw-conflict out to an unrelated transaction does not make relying on the
++# deletion unsafe: s2 can be ordered before s1, and s1 before s3.
++permutation b1 rother1 b3 u3 c3 b2 d2 c2 w1 c1
+-- 
+2.50.1 (Apple Git-155)
+

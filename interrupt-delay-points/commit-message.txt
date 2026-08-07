@@ -1,0 +1,23 @@
+Move interrupt checks out of locked regions
+
+vacuum_delay_point() and CHECK_FOR_INTERRUPTS() cannot process pending
+interrupts while interrupts are held.  A vacuum delay point may additionally
+sleep while retaining a buffer content lock.  Several call sites make these
+calls from regions where a lock is known to be held.
+
+Move the ANALYZE delay point before scan_analyze_next_block(), since the table
+AM may retain resources acquired there until the sampled block has been
+consumed.  Move the first GIN pending-list cleanup delay point before its
+locks are acquired; an existing delay point already covers transitions
+between subsequent pages.
+
+Moving the hash bucket call would break the lock chaining that prevents scans
+from overtaking cleanup.  Likewise, dshash sequential iteration returns each
+stats entry with its partition lock held and provides no unlocked per-entry
+boundary.  Mark these two calls with grep-friendly comments instead.
+
+Discussion: https://postgr.es/m/CAA3qoJkBf6H7KukXTWFWCYnf_GHf354kOdWATCfoK%3D-bgdwTJw%40mail.gmail.com
+
+Author: Kevin Rocker <me@kevinrocker.com>
+Author: Andrey Borodin <amborodin@acm.org>
+Reviewed-by: Neil Chen <carpenter.nail.cz@gmail.com>

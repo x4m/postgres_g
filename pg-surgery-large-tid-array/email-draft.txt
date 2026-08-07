@@ -1,0 +1,13 @@
+Subject: Re: BUG #19607: Infinite loop with a huge TID array in pg_surgery
+
+Thanks for the report.  I can reproduce this.
+
+193a4ded947 fixed the indexing of include_this_tid[], but the array positions
+curr_start_ptr and next_start_ptr are still declared as OffsetNumber.  At
+65536 entries, next_start_ptr wraps to zero and the outer loop starts over.
+
+PFA a patch using int for these array positions, with a test for the reported
+boundary case.
+
+Best regards,
+Andrey Borodin

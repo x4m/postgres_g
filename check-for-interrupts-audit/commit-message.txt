@@ -1,0 +1,11 @@
+Document a CHECK_FOR_INTERRUPTS call with interrupts held
+
+CHECK_FOR_INTERRUPTS() cannot process pending interrupts while an LWLock is
+held.  The stats-file writer calls it while dshash sequential iteration holds
+the current hash partition lock, but that constraint is not apparent at the
+call itself.
+
+Mark the call with a grep-friendly comment and describe the lock responsible.
+This changes no behavior.
+
+Discussion: https://postgr.es/m/CAA3qoJkBf6H7KukXTWFWCYnf_GHf354kOdWATCfoK%3D-bgdwTJw%40mail.gmail.com

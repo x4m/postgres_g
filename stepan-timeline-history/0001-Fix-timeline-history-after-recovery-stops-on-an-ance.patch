@@ -1,0 +1,107 @@
+From 1f603c041cedc35262680842ab7d997d203f570b Mon Sep 17 00:00:00 2001
+From: Stepan Filippov <stepan.filippov@yandex.ru>
+Date: Thu, 30 Jul 2026 16:11:27 +0500
+Subject: [PATCH] Fix timeline history after recovery stops on an ancestor
+
+A recovery target can be reached before recovery switches to the
+requested timeline.  Using recoveryTargetTLI as the parent in that case
+creates a history file that claims the new timeline forked from a
+timeline that recovery never reached.  Its switchpoints can even run
+backwards, leaving later consumers unable to reconstruct the actual
+ancestry.
+
+Use the timeline of the last replayed WAL record as the parent instead.
+Unlike the timeline of the segment containing the end of WAL, this also
+works when an old-timeline record was read from the common prefix of a
+newer-timeline segment.
+
+Extend the existing PITR timeline test to verify the resulting history.
+Adjust the archiving test so that it still covers cleanup of a restored
+history file after the parent selection changes.
+---
+ src/backend/access/transam/xlog.c         |  9 ++++++++-
+ src/test/recovery/t/002_archiving.pl      | 20 ++++++++++++++++++++
+ src/test/recovery/t/028_pitr_timelines.pl |  9 +++++++++
+ 3 files changed, 37 insertions(+), 1 deletion(-)
+
+diff --git a/src/backend/access/transam/xlog.c b/src/backend/access/transam/xlog.c
+index f8b939853e9..c4464ce323f 100644
+--- a/src/backend/access/transam/xlog.c
++++ b/src/backend/access/transam/xlog.c
+@@ -6407,7 +6407,14 @@ StartupXLOG(void)
+ 		 * To minimize the window for that, try to do as little as possible
+ 		 * between here and writing the end-of-recovery record.
+ 		 */
+-		writeTimeLineHistory(newTLI, recoveryTargetTLI,
++		/*
++		 * Recovery may stop on an ancestor of recoveryTargetTLI, for example
++		 * when a recovery target is reached before a timeline switch.  The
++		 * new timeline branches from the timeline of the last WAL record
++		 * actually replayed, not necessarily from the requested timeline or
++		 * the timeline of the segment from which the record was read.
++		 */
++		writeTimeLineHistory(newTLI, endOfRecoveryInfo->lastRecTLI,
+ 							 EndOfLog, endOfRecoveryInfo->recoveryStopReason);
+ 
+ 		ereport(LOG,
+diff --git a/src/test/recovery/t/002_archiving.pl b/src/test/recovery/t/002_archiving.pl
+index aa40f58e6d6..2908beb4441 100644
+--- a/src/test/recovery/t/002_archiving.pl
++++ b/src/test/recovery/t/002_archiving.pl
+@@ -100,6 +100,20 @@ $caughtup_query =
+ $node_primary->poll_query_until('postgres', $caughtup_query)
+   or die "Timed out while waiting for archiving of 00000002.history";
+ 
++# Generate and archive some WAL on timeline 2.  This ensures that standby2
++# actually reaches timeline 2, so that its history file is needed again when
++# standby2 is promoted.
++$node_standby->safe_psql('postgres', "CREATE TABLE timeline_2_marker (a int)");
++my $timeline_2_lsn =
++  $node_standby->safe_psql('postgres', "SELECT pg_current_wal_lsn()");
++my $timeline_2_walfile = $node_standby->safe_psql(
++	'postgres', "SELECT pg_walfile_name('$timeline_2_lsn')");
++$node_standby->safe_psql('postgres', "SELECT pg_switch_wal()");
++$caughtup_query =
++  "SELECT size IS NOT NULL FROM pg_stat_file('$primary_archive/$timeline_2_walfile', true)";
++$node_primary->poll_query_until('postgres', $caughtup_query)
++  or die "Timed out while waiting for archiving of $timeline_2_walfile";
++
+ # recovery_end_command should have been triggered on promotion.
+ ok( -f "$data_dir/$recovery_end_command_file",
+ 	'recovery_end_command executed after promotion');
+@@ -128,6 +142,12 @@ ok(-f "$node_standby2_data/standby.signal",
+ 
+ $node_standby2->start;
+ 
++# Wait until recovery has followed the switch to timeline 2.
++$caughtup_query =
++  "SELECT '$timeline_2_lsn'::pg_lsn <= pg_last_wal_replay_lsn()";
++$node_standby2->poll_query_until('postgres', $caughtup_query)
++  or die "Timed out while waiting for standby2 to reach timeline 2";
++
+ # Save the log location, to see the failure of recovery_end_command.
+ my $log_location = -s $node_standby2->logfile;
+ 
+diff --git a/src/test/recovery/t/028_pitr_timelines.pl b/src/test/recovery/t/028_pitr_timelines.pl
+index ae617f6195a..429b6e82200 100644
+--- a/src/test/recovery/t/028_pitr_timelines.pl
++++ b/src/test/recovery/t/028_pitr_timelines.pl
+@@ -150,6 +150,15 @@ $node_pitr->poll_query_until('postgres',
+ # Stop the node.  This archives the last segment.
+ $node_pitr->stop();
+ 
++# The new timeline branched from timeline 1 at the recovery target, before
++# timeline 2 branched from timeline 1.  Its history must therefore name
++# timeline 1 as its direct parent, rather than copying timeline 2's history.
++my $history = slurp_file($node_primary->archive_dir . '/00000003.history');
++like(
++	$history,
++	qr/^1\t[0-9A-F]+\/[0-9A-F]+\t[^\r\n]*(?:\r?\n)?\z/,
++	"new timeline history has the timeline containing the target as parent");
++
+ # Test archive recovery on the timeline created by the PITR.  This
+ # replays the end-of-recovery record that switches from timeline 1 to
+ # 3.
+-- 
+2.50.1 (Apple Git-155)
+

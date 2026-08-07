@@ -1,0 +1,89 @@
+Subject: Re: [PATCH] GiST intrapage indexing
+
+Hi hackers,
+
+I'd like to revive this patch.
+
+The patch adds a second, page-local level of keys to GiST internal pages.  A
+skip tuple contains the union key for a group and is immediately followed by
+the real downlinks in that group.  When Consistent returns false for the skip
+tuple, the scan skips the whole group.  Otherwise it examines every downlink
+normally.  Skip tuples themselves are never followed or added to the scan
+queue, including for ordered scans.
+
+Insertion also uses the page-local keys.  Once a downlink establishes the best
+first-column penalty, a group with a worse union-key penalty is skipped;
+otherwise its downlinks are considered normally.
+
+Skip tuples are derived metadata: removing them leaves a valid ordinary GiST
+page with exactly the same downlinks.  Inserts rebuild only the affected
+group, page splits and both sorted and buffered builds include metadata space
+in page packing, and VACUUM moves a downlink out of its group before deleting
+it.  The existing GiST WAL records therefore log complete page states without
+a separate skip-tuple WAL format.
+
+The marker no longer consumes INDEX_AM_RESERVED_BIT.  A skip tuple has an
+invalid block number in t_tid, while ip_posid stores the number of following
+downlinks.  Real heap TIDs and downlinks have valid block numbers, and this is
+also distinct from the legacy GiST invalid-tuple representation.
+
+This version creates groups only on internal pages.  The representation could
+also be used on leaf pages, but that would require maintaining group
+boundaries through LP_DEAD cleanup and tuple-level VACUUM, and seems better
+considered separately.
+
+The test covers sorted and forced-buffered builds, insertion through skip
+groups, exact scan results, VACUUM page deletion, WAL consistency, standby
+replay, and crash recovery.
+
+Numbers
+-------
+
+5M uniform points, point_ops, 16-core machine, shared_buffers=8GB, everything
+in cache.  Base is master, patched is the same commit with the attached patch.
+Three runs of each, alternating between the two builds; the join is two runs.
+Median with the largest deviation from it.
+
+                                master           patched          gain
+  join, 200k outer rows, s      3.06 +-0.01      2.16 +-0.00      1.41x
+  5000 point queries, s         0.246 +-0.010    0.218 +-0.005    1.13x
+  INSERT 500k rows, s           5.04 +-0.36      4.48 +-0.04      1.12x
+  CREATE INDEX sorted, s        8.46 +-1.68      7.41 +-0.07      --
+  index size, pages             40594            40614
+
+Build time: I cannot show a difference.  Master swings by 27% run to run on
+this machine while the patched build is steady, so the two overlap.  Sorting
+the same data without building an index takes 2.47 s and 2.43 s, as expected.
+
+The join was also measured against an index built by insertion rather than by
+sorting: 2.70 s vs 2.02 s, so the gain does not depend on how the index was
+built.
+
+Skip tuples cost almost nothing in space (+0.05% here, +0.2% on a larger
+index): the sorted build accounts for metadata when packing pages, so fanout
+is essentially unchanged.
+
+The balance differs from the 2018 numbers in this thread, which showed 30-40%
+on insertion and next to nothing on scans.  Those were measured casually on a
+laptop, perhaps I got measurements wrong that time.
+
+All of the above comes from internal pages alone - a direct count of markers
+on that index found 4511 of them on 497 internal pages and none on 49552 leaf
+pages.  Leaf support would likely add roughly a third again on the scan side,
+which is another reason to look at it separately rather than to drop it.
+
+It's Work in Progress
+---------------------
+
+Despite previous message in this thread was 8 years ago. It still is not
+ready for commitfest, and I am not asking for review time on the code
+yet.  Group size is a hardcoded 16 and was not tuned.  Only one operator class
+was measured; classes with a more expensive Consistent should gain more, and
+that is untested.  Data fitting in shared_buffers is the easy case.  I would
+rather first hear whether the representation - derived metadata carried in
+ordinary tuple space, with the invalid block number as marker - looks
+acceptable, since everything else depends on that.
+
+PFA the patch.
+
+Best regards, Andrey Borodin.

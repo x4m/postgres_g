@@ -1,0 +1,1197 @@
+From 2edbc86967d0560c5a75cb4b037960fda9c952e7 Mon Sep 17 00:00:00 2001
+From: Andrey Borodin <amborodin@acm.org>
+Date: Mon, 3 Aug 2026 15:36:07 +0500
+Subject: [PATCH v3] Add intrapage indexing to GiST
+
+Scanning a GiST internal page currently applies the consistent function to
+every downlink.  This becomes expensive for operator classes with costly
+keys or pages with high fanout, even when one union key could reject several
+neighboring downlinks at once.
+
+Add skip tuples that form a second, page-local level of GiST keys.  Each skip
+tuple contains the union key of the real downlinks immediately following it.
+When the skip key is inconsistent with a scan key, the scan skips the whole
+group; otherwise, it examines every downlink normally.  Subtree selection
+similarly skips a group when its first-column penalty is already worse than
+the best downlink found so far.
+
+Represent a skip tuple with InvalidBlockNumber in t_tid and store the group
+size in ip_posid.  This does not consume INDEX_AM_RESERVED_BIT and remains
+distinct from the legacy GiST invalid-tuple representation.
+
+Treat skip tuples as derived metadata.  Removing them leaves a valid
+ordinary GiST page with the same downlinks.  Rebuild the affected group on a
+page update, include metadata space when splitting pages and in sorted and
+buffered builds, and move a downlink out of its group before VACUUM deletes
+it.  Existing GiST WAL record types can then log complete page states without
+a separate record for skip-tuple maintenance.
+
+Create skip tuples only on internal pages.  Supporting them on leaf pages
+would additionally require maintaining group boundaries during LP_DEAD
+cleanup and tuple-level vacuuming.
+
+Add a TAP test covering sorted and buffered builds, insertions through skip
+groups, exact scan results, VACUUM page deletion, WAL consistency, standby
+replay, and crash recovery.
+
+Discussion: https://postgr.es/m/7780A07B-4D04-41E2-B228-166B41D07EEE%40yandex-team.ru
+---
+ src/backend/access/gist/README                |  30 ++
+ src/backend/access/gist/gist.c                | 373 +++++++++++++++++-
+ src/backend/access/gist/gistbuild.c           |  62 ++-
+ src/backend/access/gist/gistget.c             |  29 +-
+ src/backend/access/gist/gistutil.c            |  41 ++
+ src/backend/access/gist/gistvacuum.c          | 141 ++++++-
+ src/include/access/gist_private.h             |  34 +-
+ src/test/modules/Makefile                     |   1 +
+ src/test/modules/gist/.gitignore              |   2 +
+ src/test/modules/gist/Makefile                |  15 +
+ src/test/modules/gist/meson.build             |  12 +
+ .../modules/gist/t/001_intrapage_index.pl     | 109 +++++
+ src/test/modules/meson.build                  |   1 +
+ 13 files changed, 813 insertions(+), 37 deletions(-)
+ create mode 100644 src/test/modules/gist/.gitignore
+ create mode 100644 src/test/modules/gist/Makefile
+ create mode 100644 src/test/modules/gist/meson.build
+ create mode 100644 src/test/modules/gist/t/001_intrapage_index.pl
+
+diff --git a/src/backend/access/gist/README b/src/backend/access/gist/README
+index 75445b07455..7b846930ac0 100644
+--- a/src/backend/access/gist/README
++++ b/src/backend/access/gist/README
+@@ -115,6 +115,36 @@ cases where a parent page's downlink key is "enlarged" after we look at it.
+ Any such enlargement would be to add child items that we aren't interested
+ in returning anyway.
+ 
++Intrapage Indexing
++------------------
++
++Internal pages can contain a second, page-local level of GiST keys.  A skip
++tuple stores the Union key of a group and is followed immediately by the real
++downlinks covered by that key.  Its TID has InvalidBlockNumber, distinguishing
++it from real downlinks, and its offset field stores the number of following
++tuples in the group.  Groups do not overlap or contain other skip tuples.
++
++A scan first applies Consistent to the skip tuple.  If it does not match, the
++whole group can be skipped.  If it matches, the scan examines each real tuple
++normally.  Skip tuples are never followed as downlinks or returned as heap
++TIDs.  Ordered searches use the same rule: the group key only rejects a group
++and does not contribute a queue item or distance.
++
++Insertion uses the same page-local level while choosing a subtree.  Once a
++candidate downlink has established the best penalty for the first key column,
++a group whose union key has a worse penalty is skipped.  Otherwise Penalty is
++evaluated for each member as usual.  Later key columns continue to break ties
++between individual downlinks in the normal way.
++
++Skip tuples are derived metadata.  Removing them must leave an ordinary valid
++GiST page with exactly the same downlinks.  Page updates rebuild the affected
++group from its real tuples, while page splits and both build methods account
++for metadata space.  Before VACUUM deletes a downlink, it moves that downlink
++out of its group and decrements the group count.  Existing pages without skip
++tuples therefore need no conversion.  The current implementation creates skip
++tuples only on internal pages; adding them to leaf pages would also require
++maintaining group boundaries during tuple-level vacuuming and LP_DEAD cleanup.
++
+ 
+ Insert Algorithm
+ ----------------
+diff --git a/src/backend/access/gist/gist.c b/src/backend/access/gist/gist.c
+index 8565e225be7..b7e64f30ead 100644
+--- a/src/backend/access/gist/gist.c
++++ b/src/backend/access/gist/gist.c
+@@ -243,6 +243,30 @@ gistplacetopage(Relation rel, Size freespace, GISTSTATE *giststate,
+ 	bool		is_leaf = (GistPageIsLeaf(page)) ? true : false;
+ 	XLogRecPtr	recptr;
+ 	bool		is_split;
++	bool		has_skip = false;
++	OffsetNumber groupoff = InvalidOffsetNumber;
++	OffsetNumber *groupdeloffs = NULL;
++	int			ngroupdel = 0;
++	IndexTuple *groupwrite = NULL;
++	int			ngroupwrite = 0;
++
++	if (!is_leaf)
++	{
++		OffsetNumber maxoff = PageGetMaxOffsetNumber(page);
++
++		for (OffsetNumber off = FirstOffsetNumber; off <= maxoff;
++			 off = OffsetNumberNext(off))
++		{
++			IndexTuple	pageitup = (IndexTuple) PageGetItem(page,
++															PageGetItemId(page, off));
++
++			if (GistTupleIsSkip(pageitup))
++			{
++				has_skip = true;
++				break;
++			}
++		}
++	}
+ 
+ 	/*
+ 	 * Refuse to modify a page that's incompletely split. This should not
+@@ -283,6 +307,102 @@ gistplacetopage(Relation rel, Size freespace, GISTSTATE *giststate,
+ 		is_split = gistnospace(page, itup, ntup, oldoffnum, freespace);
+ 	}
+ 
++	/* Rebuild only the skip group containing the replaced downlink. */
++	if (has_skip && OffsetNumberIsValid(oldoffnum))
++	{
++		OffsetNumber maxoff = PageGetMaxOffsetNumber(page);
++		int			groupcount = 0;
++
++		for (OffsetNumber off = FirstOffsetNumber; off <= maxoff;
++			 off = OffsetNumberNext(off))
++		{
++			IndexTuple	pageitup = (IndexTuple) PageGetItem(page,
++															PageGetItemId(page, off));
++
++			if (GistTupleIsSkip(pageitup))
++			{
++				int			count = GistTupleGetSkipCount(pageitup);
++
++				if (count > maxoff - off)
++					ereport(ERROR,
++							(errcode(ERRCODE_INDEX_CORRUPTED),
++							 errmsg("index \"%s\" contains an invalid GiST skip tuple",
++									RelationGetRelationName(rel))));
++				if (oldoffnum > off && oldoffnum <= off + count)
++				{
++					groupoff = off;
++					groupcount = count;
++					break;
++				}
++				off += count;
++			}
++		}
++
++		if (OffsetNumberIsValid(groupoff))
++		{
++			IndexTuple *members;
++			int			nmembers = 0;
++			IndexTupleData *newlist;
++			int			newlenlist;
++			char	   *data;
++			Size		required = freespace;
++
++			members = palloc_array(IndexTuple, groupcount - 1 + ntup);
++			for (OffsetNumber off = OffsetNumberNext(groupoff);
++				 off <= groupoff + groupcount; off = OffsetNumberNext(off))
++			{
++				if (off == oldoffnum)
++				{
++					for (int i = 0; i < ntup; i++)
++						members[nmembers++] = itup[i];
++				}
++				else
++					members[nmembers++] = (IndexTuple) PageGetItem(page,
++																   PageGetItemId(page, off));
++			}
++			Assert(nmembers == groupcount - 1 + ntup);
++
++			if (nmembers > 0 &&
++				gistFormSkipGroups(rel, page, members, nmembers, giststate,
++								   &newlist, &newlenlist, &ngroupwrite))
++			{
++				data = (char *) newlist;
++				groupwrite = palloc_array(IndexTuple, ngroupwrite);
++				for (int i = 0; i < ngroupwrite; i++)
++				{
++					groupwrite[i] = (IndexTuple) data;
++					data += IndexTupleSize(groupwrite[i]);
++				}
++				is_split = false;
++			}
++			else
++				is_split = true;
++
++			groupdeloffs = palloc_array(OffsetNumber, groupcount + 1);
++			for (OffsetNumber off = groupoff;
++				 off <= groupoff + groupcount; off = OffsetNumberNext(off))
++				groupdeloffs[ngroupdel++] = off;
++
++			if (!is_split)
++			{
++				for (OffsetNumber off = FirstOffsetNumber; off <= maxoff;
++					 off = OffsetNumberNext(off))
++				{
++					IndexTuple	pageitup;
++
++					if (off >= groupoff && off <= groupoff + groupcount)
++						continue;
++					pageitup = (IndexTuple) PageGetItem(page,
++														PageGetItemId(page, off));
++					required += IndexTupleSize(pageitup) + sizeof(ItemIdData);
++				}
++				for (int i = 0; i < ngroupwrite; i++)
++					required += IndexTupleSize(groupwrite[i]) + sizeof(ItemIdData);
++				is_split = (required > GiSTPageSize);
++			}
++		}
++	}
++
+ 	if (is_split)
+ 	{
+ 		/* no space for insertion */
+@@ -303,17 +423,27 @@ gistplacetopage(Relation rel, Size freespace, GISTSTATE *giststate,
+ 		 * remove the old version from the vector.
+ 		 */
+ 		itvec = gistextractpage(page, &tlen);
+-		if (OffsetNumberIsValid(oldoffnum))
++		if (has_skip || OffsetNumberIsValid(oldoffnum))
+ 		{
+-			/* on inner page we should remove old tuple */
+-			int			pos = oldoffnum - FirstOffsetNumber;
++			int			dst = 0;
+ 
+-			tlen--;
+-			if (pos != tlen)
+-				memmove(itvec + pos, itvec + pos + 1, sizeof(IndexTuple) * (tlen - pos));
++			/* Remove derived metadata and the replaced real tuple. */
++			for (int src = 0; src < tlen; src++)
++			{
++				OffsetNumber off = src + FirstOffsetNumber;
++
++				if (GistTupleIsSkip(itvec[src]) || off == oldoffnum)
++					continue;
++				itvec[dst++] = itvec[src];
++			}
++			tlen = dst;
+ 		}
+ 		itvec = gistjoinvector(itvec, &tlen, itup, ntup);
+-		dist = gistSplit(rel, page, itvec, tlen, giststate);
++		if (is_leaf)
++			dist = gistSplit(rel, page, itvec, tlen, giststate, 0);
++		else
++			dist = gistSplitPageWithSkipGroups(rel, page, itvec, tlen,
++											   giststate, true);
+ 
+ 		/*
+ 		 * Check that split didn't produce too many pages.
+@@ -419,6 +549,41 @@ gistplacetopage(Relation rel, Size freespace, GISTSTATE *giststate,
+ 			}
+ 		}
+ 
++		/*
++		 * Add derived intrapage indexes to internal pages.  The metadata is
++		 * optional for correctness, so keep the ordinary representation when
++		 * its extra tuples would no longer fit.
++		 */
++		for (ptr = dist; ptr; ptr = ptr->next)
++		{
++			if (ptr->block.blkno == GIST_ROOT_BLKNO && ptr->block.num > 0)
++			{
++				IndexTuple *pagevec;
++				char	   *data = (char *) ptr->list;
++				IndexTupleData *newlist;
++				int			newlenlist;
++				int			newlen;
++
++				pagevec = palloc_array(IndexTuple, ptr->block.num);
++				for (int i = 0; i < ptr->block.num; i++)
++				{
++					IndexTuple	pageitup = (IndexTuple) data;
++
++					pagevec[i] = pageitup;
++					data += IndexTupleSize(pageitup);
++				}
++
++				if (gistFormSkipGroups(rel, ptr->page, pagevec,
++									   ptr->block.num, giststate,
++									   &newlist, &newlenlist, &newlen))
++				{
++					ptr->list = newlist;
++					ptr->lenlist = newlenlist;
++					ptr->block.num = newlen;
++				}
++			}
++		}
++
+ 		/*
+ 		 * Fill all pages. All the pages are new, ie. freshly allocated empty
+ 		 * pages, or a temporary copy of the old page.
+@@ -538,16 +703,39 @@ gistplacetopage(Relation rel, Size freespace, GISTSTATE *giststate,
+ 	}
+ 	else
+ 	{
++		IndexTuple *writetup = itup;
++		int			nwritetup = ntup;
++		OffsetNumber *deloffs = NULL;
++		int			ndeloffs = 0;
++
+ 		/*
+ 		 * Enough space.  We always get here if ntup==0.
+ 		 */
++		if (OffsetNumberIsValid(groupoff))
++		{
++			writetup = groupwrite;
++			nwritetup = ngroupwrite;
++			deloffs = groupdeloffs;
++			ndeloffs = ngroupdel;
++		}
++
++		/* A group rewrite registers one WAL data segment per new tuple. */
++		if (OffsetNumberIsValid(groupoff) && !is_build && RelationNeedsWAL(rel))
++			XLogEnsureRecordSpace(BufferIsValid(leftchildbuf) ? 2 : 1,
++								  2 + nwritetup);
++
+ 		START_CRIT_SECTION();
+ 
+ 		/*
+ 		 * Delete old tuple if any, then insert new tuple(s) if any.  If
+ 		 * possible, use the fast path of PageIndexTupleOverwrite.
+ 		 */
+-		if (OffsetNumberIsValid(oldoffnum))
++		if (OffsetNumberIsValid(groupoff))
++		{
++			PageIndexMultiDelete(page, deloffs, ndeloffs);
++			gistfillbuffer(page, writetup, nwritetup, InvalidOffsetNumber);
++		}
++		else if (OffsetNumberIsValid(oldoffnum))
+ 		{
+ 			if (ntup == 1)
+ 			{
+@@ -580,17 +768,19 @@ gistplacetopage(Relation rel, Size freespace, GISTSTATE *giststate,
+ 		{
+ 			if (RelationNeedsWAL(rel))
+ 			{
+-				OffsetNumber ndeloffs = 0,
+-							deloffs[1];
++				OffsetNumber local_deloffs[1];
+ 
+-				if (OffsetNumberIsValid(oldoffnum))
++				if (!OffsetNumberIsValid(groupoff) &&
++					OffsetNumberIsValid(oldoffnum))
+ 				{
+-					deloffs[0] = oldoffnum;
++					local_deloffs[0] = oldoffnum;
++					deloffs = local_deloffs;
+ 					ndeloffs = 1;
+ 				}
+ 
+ 				recptr = gistXLogUpdate(buffer,
+-										deloffs, ndeloffs, itup, ntup,
++										deloffs, ndeloffs,
++										writetup, nwritetup,
+ 										leftchildbuf);
+ 			}
+ 			else
+@@ -990,6 +1180,8 @@ gistFindPath(Relation r, BlockNumber child, OffsetNumber *downlinkoffnum)
+ 		{
+ 			iid = PageGetItemId(page, i);
+ 			idxtuple = (IndexTuple) PageGetItem(page, iid);
++			if (GistTupleIsSkip(idxtuple))
++				continue;
+ 			blkno = ItemPointerGetBlockNumber(&(idxtuple->t_tid));
+ 			if (blkno == child)
+ 			{
+@@ -1151,6 +1343,8 @@ gistformdownlink(Relation rel, Buffer buf, GISTSTATE *giststate,
+ 		IndexTuple	ituple = (IndexTuple)
+ 			PageGetItem(page, PageGetItemId(page, offset));
+ 
++		if (GistTupleIsSkip(ituple))
++			continue;
+ 		if (downlink == NULL)
+ 			downlink = CopyIndexTuple(ituple);
+ 		else
+@@ -1451,7 +1645,8 @@ gistSplit(Relation r,
+ 		  Page page,
+ 		  IndexTuple *itup,		/* contains compressed entry */
+ 		  int len,
+-		  GISTSTATE *giststate)
++		  GISTSTATE *giststate,
++		  int max_page_tuples)
+ {
+ 	IndexTuple *lvectup,
+ 			   *rvectup;
+@@ -1493,9 +1688,12 @@ gistSplit(Relation r,
+ 		rvectup[i] = itup[v.splitVector.spl_right[i] - 1];
+ 
+ 	/* finalize splitting (may need another split) */
+-	if (!gistfitpage(rvectup, v.splitVector.spl_nright))
++	if (!gistfitpage(rvectup, v.splitVector.spl_nright) ||
++		(max_page_tuples > 0 &&
++		 v.splitVector.spl_nright > max_page_tuples))
+ 	{
+-		res = gistSplit(r, page, rvectup, v.splitVector.spl_nright, giststate);
++		res = gistSplit(r, page, rvectup, v.splitVector.spl_nright,
++						giststate, max_page_tuples);
+ 	}
+ 	else
+ 	{
+@@ -1505,12 +1703,16 @@ gistSplit(Relation r,
+ 		res->itup = gistFormTuple(giststate, r, v.spl_rattr, v.spl_risnull, false);
+ 	}
+ 
+-	if (!gistfitpage(lvectup, v.splitVector.spl_nleft))
++	if (!gistfitpage(lvectup, v.splitVector.spl_nleft) ||
++		(max_page_tuples > 0 &&
++		 v.splitVector.spl_nleft > max_page_tuples))
+ 	{
+ 		SplitPageLayout *resptr,
+ 				   *subres;
+ 
+-		resptr = subres = gistSplit(r, page, lvectup, v.splitVector.spl_nleft, giststate);
++		resptr = subres = gistSplit(r, page, lvectup,
++									v.splitVector.spl_nleft, giststate,
++									max_page_tuples);
+ 
+ 		/* install on list's tail */
+ 		while (resptr->next)
+@@ -1530,6 +1732,141 @@ gistSplit(Relation r,
+ 	return res;
+ }
+ 
++/*
++ * Form an intrapage index over an ordinary tuple vector.
++ *
++ * Skip tuples are derived metadata: each one is a union key followed by the
++ * real tuples that it summarizes.  If the metadata would make the vector no
++ * longer fit on a page, leave the caller's ordinary representation alone.
++ */
++bool
++gistFormSkipGroups(Relation rel, Page page, IndexTuple *itvec, int len,
++				   GISTSTATE *giststate, IndexTupleData **list, int *lenlist,
++				   int *newlen)
++{
++	SplitPageLayout *groups;
++	SplitPageLayout *group;
++	IndexTuple *grouped;
++	int			ngroups = 0;
++	int			pos = 0;
++
++	Assert(len > 0);
++
++	if (len <= GIST_SKIP_GROUP_SIZE)
++	{
++		groups = palloc0_object(SplitPageLayout);
++		groups->block.num = len;
++		groups->list = gistfillitupvec(itvec, len, &groups->lenlist);
++		groups->itup = gistunion(rel, itvec, len, giststate);
++	}
++	else
++		groups = gistSplit(rel, page, itvec, len, giststate,
++						   GIST_SKIP_GROUP_SIZE);
++
++	for (group = groups; group != NULL; group = group->next)
++		ngroups++;
++
++	grouped = palloc_array(IndexTuple, len + ngroups);
++	for (group = groups; group != NULL; group = group->next)
++	{
++		char	   *data = (char *) group->list;
++
++		GistTupleSetSkip(group->itup, group->block.num);
++		grouped[pos++] = group->itup;
++		for (int i = 0; i < group->block.num; i++)
++		{
++			IndexTuple	itup = (IndexTuple) data;
++
++			grouped[pos++] = itup;
++			data += IndexTupleSize(itup);
++		}
++	}
++	Assert(pos == len + ngroups);
++
++	if (!gistfitpage(grouped, pos))
++		return false;
++
++	*list = gistfillitupvec(grouped, pos, lenlist);
++	*newlen = pos;
++	return true;
++}
++
++/*
++ * Partition an ordinary tuple vector into pages that include skip groups.
++ * Metadata space participates in the fit decision, so this can produce more
++ * pages than gistSplit() would for the same real tuples.
++ */
++SplitPageLayout *
++gistSplitPageWithSkipGroups(Relation rel, Page page, IndexTuple *itvec,
++							int len, GISTSTATE *giststate, bool force_split)
++{
++	IndexTupleData *list;
++	int			lenlist;
++	int			newlen;
++	SplitPageLayout *result;
++
++	Assert(len > 0);
++
++	if (!force_split &&
++		gistFormSkipGroups(rel, page, itvec, len, giststate,
++						   &list, &lenlist, &newlen))
++	{
++		result = palloc0_object(SplitPageLayout);
++		result->block.blkno = InvalidBlockNumber;
++		result->buffer = InvalidBuffer;
++		result->block.num = newlen;
++		result->list = list;
++		result->lenlist = lenlist;
++		result->itup = gistunion(rel, itvec, len, giststate);
++		return result;
++	}
++
++	/* A singleton page cannot be split further; omit useless metadata. */
++	if (len == 1)
++	{
++		Assert(!force_split);
++		result = palloc0_object(SplitPageLayout);
++		result->block.blkno = InvalidBlockNumber;
++		result->buffer = InvalidBuffer;
++		result->block.num = 1;
++		result->list = gistfillitupvec(itvec, 1, &result->lenlist);
++		result->itup = gistunion(rel, itvec, 1, giststate);
++		return result;
++	}
++	else
++	{
++		SplitPageLayout *halves;
++		SplitPageLayout *newresult = NULL;
++		SplitPageLayout *tail = NULL;
++
++		halves = gistSplit(rel, page, itvec, len, giststate, 0);
++		for (SplitPageLayout *half = halves; half != NULL; half = half->next)
++		{
++			IndexTuple *halfvec;
++			char	   *data = (char *) half->list;
++			SplitPageLayout *partition;
++
++			halfvec = palloc_array(IndexTuple, half->block.num);
++			for (int i = 0; i < half->block.num; i++)
++			{
++				halfvec[i] = (IndexTuple) data;
++				data += IndexTupleSize(halfvec[i]);
++			}
++
++			partition = gistSplitPageWithSkipGroups(rel, page, halfvec,
++													half->block.num, giststate,
++													false);
++			if (newresult == NULL)
++				newresult = partition;
++			else
++				tail->next = partition;
++			for (tail = partition; tail->next != NULL; tail = tail->next)
++				;
++		}
++		return newresult;
++	}
++}
++
+ /*
+  * Create a GISTSTATE and fill it with information about the index
+  */
+diff --git a/src/backend/access/gist/gistbuild.c b/src/backend/access/gist/gistbuild.c
+index 7f57c787f4c..49472c72169 100644
+--- a/src/backend/access/gist/gistbuild.c
++++ b/src/backend/access/gist/gistbuild.c
+@@ -520,18 +520,31 @@ gist_indexsortbuild_levelstate_flush(GISTBuildState *state,
+ 			pfree(itvec_local);
+ 		}
+ 
+-		/* Apply picksplit to list of all collected tuples */
+-		dist = gistSplit(state->indexrel, levelstate->pages[0], itvec, vect_len, state->giststate);
++		/* Apply picksplit to list of all collected tuples. */
++		if (isleaf)
++			dist = gistSplit(state->indexrel, levelstate->pages[0], itvec,
++							 vect_len, state->giststate, 0);
++		else
++			dist = gistSplitPageWithSkipGroups(state->indexrel,
++											   levelstate->pages[0], itvec,
++											   vect_len, state->giststate, false);
+ 	}
+ 	else
+ 	{
+-		/* Create split layout from single page */
+-		dist = palloc0_object(SplitPageLayout);
+-		union_tuple = gistunion(state->indexrel, itvec, vect_len,
+-								state->giststate);
+-		dist->itup = union_tuple;
+-		dist->list = gistfillitupvec(itvec, vect_len, &(dist->lenlist));
+-		dist->block.num = vect_len;
++		/* Create split layout from single page. */
++		if (isleaf)
++		{
++			dist = palloc0_object(SplitPageLayout);
++			union_tuple = gistunion(state->indexrel, itvec, vect_len,
++									state->giststate);
++			dist->itup = union_tuple;
++			dist->list = gistfillitupvec(itvec, vect_len, &(dist->lenlist));
++			dist->block.num = vect_len;
++		}
++		else
++			dist = gistSplitPageWithSkipGroups(state->indexrel,
++											   levelstate->pages[0], itvec,
++											   vect_len, state->giststate, false);
+ 	}
+ 
+ 	MemoryContextSwitchTo(oldCtx);
+@@ -1101,8 +1114,13 @@ gistbufferinginserttuples(GISTBuildState *buildstate, Buffer buffer, int level,
+ 			{
+ 				ItemId		iid = PageGetItemId(page, off);
+ 				IndexTuple	idxtuple = (IndexTuple) PageGetItem(page, iid);
+-				BlockNumber childblkno = ItemPointerGetBlockNumber(&(idxtuple->t_tid));
+-				Buffer		childbuf = ReadBuffer(buildstate->indexrel, childblkno);
++				BlockNumber childblkno;
++				Buffer		childbuf;
++
++				if (GistTupleIsSkip(idxtuple))
++					continue;
++				childblkno = ItemPointerGetBlockNumber(&(idxtuple->t_tid));
++				childbuf = ReadBuffer(buildstate->indexrel, childblkno);
+ 
+ 				LockBuffer(childbuf, GIST_SHARE);
+ 				gistMemorizeAllDownlinks(buildstate, childbuf);
+@@ -1439,7 +1457,7 @@ gistGetMaxLevel(Relation index)
+ 	{
+ 		Buffer		buffer;
+ 		Page		page;
+-		IndexTuple	itup;
++		IndexTuple	itup = NULL;
+ 
+ 		buffer = ReadBuffer(index, blkno);
+ 
+@@ -1462,8 +1480,18 @@ gistGetMaxLevel(Relation index)
+ 		 * matter which downlink we choose, the tree has the same depth
+ 		 * everywhere, so we just pick the first one.
+ 		 */
+-		itup = (IndexTuple) PageGetItem(page,
+-										PageGetItemId(page, FirstOffsetNumber));
++		for (OffsetNumber off = FirstOffsetNumber;
++			 off <= PageGetMaxOffsetNumber(page); off = OffsetNumberNext(off))
++		{
++			itup = (IndexTuple) PageGetItem(page, PageGetItemId(page, off));
++			if (!GistTupleIsSkip(itup))
++				break;
++		}
++		if (itup == NULL || GistTupleIsSkip(itup))
++			ereport(ERROR,
++					(errcode(ERRCODE_INDEX_CORRUPTED),
++					 errmsg("index \"%s\" contains an empty GiST internal page",
++							RelationGetRelationName(index))));
+ 		blkno = ItemPointerGetBlockNumber(&(itup->t_tid));
+ 		UnlockReleaseBuffer(buffer);
+ 
+@@ -1557,7 +1585,11 @@ gistMemorizeAllDownlinks(GISTBuildState *buildstate, Buffer parentbuf)
+ 	{
+ 		ItemId		iid = PageGetItemId(page, off);
+ 		IndexTuple	idxtuple = (IndexTuple) PageGetItem(page, iid);
+-		BlockNumber childblkno = ItemPointerGetBlockNumber(&(idxtuple->t_tid));
++		BlockNumber childblkno;
++
++		if (GistTupleIsSkip(idxtuple))
++			continue;
++		childblkno = ItemPointerGetBlockNumber(&(idxtuple->t_tid));
+ 
+ 		gistMemorizeParent(buildstate, childblkno, parentblkno);
+ 	}
+diff --git a/src/backend/access/gist/gistget.c b/src/backend/access/gist/gistget.c
+index e8a1e456287..112ff3768f0 100644
+--- a/src/backend/access/gist/gistget.c
++++ b/src/backend/access/gist/gistget.c
+@@ -450,7 +450,34 @@ gistScanPage(IndexScanDesc scan, GISTSearchItem *pageItem,
+ 		MemoryContextSwitchTo(oldcxt);
+ 		MemoryContextReset(so->giststate->tempCxt);
+ 
+-		/* Ignore tuple if it doesn't match */
++		if (GistTupleIsSkip(it))
++		{
++			OffsetNumber count = GistTupleGetSkipCount(it);
++
++			if (count > maxoff - i)
++				ereport(ERROR,
++						(errcode(ERRCODE_INDEX_CORRUPTED),
++						 errmsg("index \"%s\" contains an invalid GiST skip tuple",
++								RelationGetRelationName(r))));
++			for (OffsetNumber member = OffsetNumberNext(i);
++				 member <= i + count; member = OffsetNumberNext(member))
++			{
++				IndexTuple	member_itup = (IndexTuple) PageGetItem(page,
++																   PageGetItemId(page, member));
++
++				if (GistTupleIsSkip(member_itup))
++					ereport(ERROR,
++							(errcode(ERRCODE_INDEX_CORRUPTED),
++							 errmsg("index \"%s\" contains an invalid GiST skip tuple",
++									RelationGetRelationName(r))));
++			}
++
++			if (!match)
++				i += count;
++			continue;
++		}
++
++		/* Ignore ordinary tuple if it doesn't match. */
+ 		if (!match)
+ 			continue;
+ 
+diff --git a/src/backend/access/gist/gistutil.c b/src/backend/access/gist/gistutil.c
+index 0f58f61879f..85400fe6e72 100644
+--- a/src/backend/access/gist/gistutil.c
++++ b/src/backend/access/gist/gistutil.c
+@@ -441,6 +441,47 @@ gistchoose(Relation r, Page p, IndexTuple it,	/* it has compressed entry */
+ 		bool		zero_penalty;
+ 		int			j;
+ 
++		/*
++		 * A skip key summarizes the following downlinks.  Its penalty is a
++		 * lower-bound estimate for the penalties of the group members.  Once
++		 * a better first-column penalty has been found, none of those members
++		 * can improve the choice, so avoid evaluating them individually.
++		 */
++		if (GistTupleIsSkip(itup))
++		{
++			OffsetNumber count = GistTupleGetSkipCount(itup);
++			Datum		datum;
++			float		usize;
++			bool		IsNull;
++
++			if (count > maxoff - i)
++				ereport(ERROR,
++						(errcode(ERRCODE_INDEX_CORRUPTED),
++						 errmsg("index \"%s\" contains an invalid GiST skip tuple",
++								RelationGetRelationName(r))));
++			for (OffsetNumber member = OffsetNumberNext(i);
++				 member <= i + count; member = OffsetNumberNext(member))
++			{
++				IndexTuple	member_itup = (IndexTuple) PageGetItem(p,
++																   PageGetItemId(p, member));
++
++				if (GistTupleIsSkip(member_itup))
++					ereport(ERROR,
++							(errcode(ERRCODE_INDEX_CORRUPTED),
++							 errmsg("index \"%s\" contains an invalid GiST skip tuple",
++									RelationGetRelationName(r))));
++			}
++
++			datum = index_getattr(itup, 1, giststate->leafTupdesc, &IsNull);
++			gistdentryinit(giststate, 0, &entry, datum, r, p, i,
++						   false, IsNull);
++			usize = gistpenalty(giststate, 0, &entry, IsNull,
++								&identry[0], isnull[0]);
++			if (best_penalty[0] >= 0 && usize > best_penalty[0])
++				i += count;
++			continue;
++		}
++
+ 		zero_penalty = true;
+ 
+ 		/* Loop over index attributes. */
+diff --git a/src/backend/access/gist/gistvacuum.c b/src/backend/access/gist/gistvacuum.c
+index 686a0418054..0a7555e1539 100644
+--- a/src/backend/access/gist/gistvacuum.c
++++ b/src/backend/access/gist/gistvacuum.c
+@@ -51,6 +51,8 @@ static void gistvacuum_delete_empty_pages(IndexVacuumInfo *info,
+ static bool gistdeletepage(IndexVacuumInfo *info, IndexBulkDeleteResult *stats,
+ 						   Buffer parentBuffer, OffsetNumber downlink,
+ 						   Buffer leafBuffer);
++static void gistvacuumungroup(Relation rel, Buffer buffer,
++							  BlockNumber childblkno);
+ 
+ /*
+  * VACUUM bulkdelete stage: remove index entries.
+@@ -555,6 +557,8 @@ gistvacuum_delete_empty_pages(IndexVacuumInfo *info, GistVacState *vstate)
+ 			IndexTuple	idxtuple = (IndexTuple) PageGetItem(page, iid);
+ 			BlockNumber leafblk;
+ 
++			if (GistTupleIsSkip(idxtuple))
++				continue;
+ 			leafblk = ItemPointerGetBlockNumber(&(idxtuple->t_tid));
+ 			if (intset_is_member(vstate->empty_leaf_set, leafblk))
+ 			{
+@@ -670,8 +674,34 @@ gistdeletepage(IndexVacuumInfo *info, IndexBulkDeleteResult *stats,
+ 		return false;
+ 	}
+ 
+-	if (PageGetMaxOffsetNumber(parentPage) < downlink
+-		|| PageGetMaxOffsetNumber(parentPage) <= FirstOffsetNumber)
++	/*
++	 * Removing a group member would invalidate its skip count.  Move this
++	 * downlink out of its group in a separate WAL-logged update before
++	 * deleting it.  Keeping the downlink as an ordinary tuple makes a crash
++	 * between the two records safe.
++	 */
++	gistvacuumungroup(info->index, parentBuffer,
++					  BufferGetBlockNumber(leafBuffer));
++	parentPage = BufferGetPage(parentBuffer);
++
++	/* Re-find the downlink, because removing skip tuples changed offsets. */
++	downlink = InvalidOffsetNumber;
++	for (OffsetNumber off = FirstOffsetNumber;
++		 off <= PageGetMaxOffsetNumber(parentPage);
++		 off = OffsetNumberNext(off))
++	{
++		iid = PageGetItemId(parentPage, off);
++		idxtuple = (IndexTuple) PageGetItem(parentPage, iid);
++		if (BufferGetBlockNumber(leafBuffer) ==
++			ItemPointerGetBlockNumber(&(idxtuple->t_tid)))
++		{
++			downlink = off;
++			break;
++		}
++	}
++
++	if (!OffsetNumberIsValid(downlink) ||
++		PageGetMaxOffsetNumber(parentPage) <= FirstOffsetNumber)
+ 		return false;
+ 
+ 	iid = PageGetItemId(parentPage, downlink);
+@@ -715,3 +745,110 @@ gistdeletepage(IndexVacuumInfo *info, IndexBulkDeleteResult *stats,
+ 
+ 	return true;
+ }
++
++/* Move one downlink out of its skip group, leaving other groups intact. */
++static void
++gistvacuumungroup(Relation rel, Buffer buffer, BlockNumber childblkno)
++{
++	Page		page = BufferGetPage(buffer);
++	OffsetNumber maxoff = PageGetMaxOffsetNumber(page);
++	OffsetNumber groupoff = InvalidOffsetNumber;
++	int			groupcount = 0;
++	IndexTuple *toinsert;
++	OffsetNumber *todelete;
++	int			ntoinsert = 0;
++
++	Assert(!GistPageIsLeaf(page));
++
++	for (OffsetNumber off = FirstOffsetNumber; off <= maxoff;
++		 off = OffsetNumberNext(off))
++	{
++		IndexTuple	marker = (IndexTuple) PageGetItem(page,
++													  PageGetItemId(page, off));
++		int			count;
++
++		if (!GistTupleIsSkip(marker))
++			continue;
++		count = GistTupleGetSkipCount(marker);
++		if (count > maxoff - off)
++			ereport(ERROR,
++					(errcode(ERRCODE_INDEX_CORRUPTED),
++					 errmsg("index \"%s\" contains an invalid GiST skip tuple",
++							RelationGetRelationName(rel))));
++
++		for (OffsetNumber member = OffsetNumberNext(off);
++			 member <= off + count; member = OffsetNumberNext(member))
++		{
++			IndexTuple	member_itup = (IndexTuple) PageGetItem(page,
++															   PageGetItemId(page, member));
++
++			if (ItemPointerGetBlockNumber(&member_itup->t_tid) == childblkno)
++			{
++				groupoff = off;
++				groupcount = count;
++				break;
++			}
++		}
++		if (OffsetNumberIsValid(groupoff))
++			break;
++		off += count;
++	}
++
++	if (!OffsetNumberIsValid(groupoff))
++		return;
++
++	todelete = palloc_array(OffsetNumber, groupcount + 1);
++	toinsert = palloc_array(IndexTuple, groupcount + 1);
++
++	/* Keep the target as an ungrouped ordinary downlink. */
++	for (OffsetNumber off = OffsetNumberNext(groupoff);
++		 off <= groupoff + groupcount; off = OffsetNumberNext(off))
++	{
++		IndexTuple	member = (IndexTuple) PageGetItem(page,
++													  PageGetItemId(page, off));
++
++		if (ItemPointerGetBlockNumber(&member->t_tid) == childblkno)
++		{
++			toinsert[ntoinsert++] = CopyIndexTuple(member);
++			break;
++		}
++	}
++
++	/* Retain the old union key as a safe superset for the smaller group. */
++	if (groupcount > 1)
++	{
++		IndexTuple	marker = CopyIndexTuple((IndexTuple) PageGetItem(page,
++																	 PageGetItemId(page, groupoff)));
++
++		GistTupleSetSkip(marker, groupcount - 1);
++		toinsert[ntoinsert++] = marker;
++		for (OffsetNumber off = OffsetNumberNext(groupoff);
++			 off <= groupoff + groupcount; off = OffsetNumberNext(off))
++		{
++			IndexTuple	member = (IndexTuple) PageGetItem(page,
++														  PageGetItemId(page, off));
++
++			if (ItemPointerGetBlockNumber(&member->t_tid) != childblkno)
++				toinsert[ntoinsert++] = CopyIndexTuple(member);
++		}
++	}
++	Assert(ntoinsert == (groupcount > 1 ? groupcount + 1 : 1));
++
++	for (int i = 0; i <= groupcount; i++)
++		todelete[i] = groupoff + i;
++
++	START_CRIT_SECTION();
++	MarkBufferDirty(buffer);
++	PageIndexMultiDelete(page, todelete, groupcount + 1);
++	gistfillbuffer(page, toinsert, ntoinsert, InvalidOffsetNumber);
++	if (RelationNeedsWAL(rel))
++	{
++		XLogRecPtr	recptr = gistXLogUpdate(buffer, todelete, groupcount + 1,
++											toinsert, ntoinsert, InvalidBuffer);
++
++		PageSetLSN(page, recptr);
++	}
++	else
++		PageSetLSN(page, XLogGetFakeLSN(rel));
++	END_CRIT_SECTION();
++}
+diff --git a/src/include/access/gist_private.h b/src/include/access/gist_private.h
+index 44514f1cb8d..413f5706315 100644
+--- a/src/include/access/gist_private.h
++++ b/src/include/access/gist_private.h
+@@ -288,6 +288,26 @@ typedef struct
+ #define  GistTupleIsInvalid(itup)	( ItemPointerGetOffsetNumber( &((itup)->t_tid) ) == TUPLE_IS_INVALID )
+ #define  GistTupleSetValid(itup)	ItemPointerSetOffsetNumber( &((itup)->t_tid), TUPLE_IS_VALID )
+ 
++/*
++ * A skip tuple summarizes a group of real tuples that immediately follows it
++ * on the same page.  Real heap TIDs and downlinks always have a valid block
++ * number, so use InvalidBlockNumber as the marker and store the group size in
++ * ip_posid.  This avoids consuming INDEX_AM_RESERVED_BIT, which is better
++ * left available for annotations of ordinary index tuples.
++ */
++#define GistTupleIsSkip(itup) \
++	(ItemPointerGetBlockNumberNoCheck(&((itup)->t_tid)) == InvalidBlockNumber && \
++	 OffsetNumberIsValid(ItemPointerGetOffsetNumberNoCheck(&((itup)->t_tid))))
++
++#define GistTupleSetSkip(itup, count) \
++	do { \
++		ItemPointerSetInvalid(&((itup)->t_tid)); \
++		ItemPointerSetOffsetNumber(&((itup)->t_tid), (count)); \
++	} while (0)
++
++#define GistTupleGetSkipCount(itup) \
++	ItemPointerGetOffsetNumberNoCheck(&((itup)->t_tid))
++
+ 
+ 
+ 
+@@ -433,7 +453,16 @@ extern bool gistplacetopage(Relation rel, Size freespace, GISTSTATE *giststate,
+ 							bool is_build);
+ 
+ extern SplitPageLayout *gistSplit(Relation r, Page page, IndexTuple *itup,
+-								  int len, GISTSTATE *giststate);
++								  int len, GISTSTATE *giststate,
++								  int max_page_tuples);
++extern bool gistFormSkipGroups(Relation rel, Page page, IndexTuple *itvec,
++							   int len, GISTSTATE *giststate,
++							   IndexTupleData **list, int *lenlist,
++							   int *newlen);
++extern SplitPageLayout *gistSplitPageWithSkipGroups(Relation rel, Page page,
++													IndexTuple *itvec, int len,
++													GISTSTATE *giststate,
++													bool force_split);
+ 
+ /* gistxlog.c */
+ extern XLogRecPtr gistXLogPageDelete(Buffer buffer,
+@@ -477,6 +506,9 @@ extern void gistadjustmembers(Oid opfamilyoid,
+ #define GIST_MIN_FILLFACTOR			10
+ #define GIST_DEFAULT_FILLFACTOR		90
+ 
++/* Maximum number of real tuples summarized by one skip tuple. */
++#define GIST_SKIP_GROUP_SIZE			16
++
+ extern bytea *gistoptions(Datum reloptions, bool validate);
+ extern bool gistproperty(Oid index_oid, int attno,
+ 						 IndexAMProperty prop, const char *propname,
+diff --git a/src/test/modules/Makefile b/src/test/modules/Makefile
+index 098bb8142ae..37f2f568552 100644
+--- a/src/test/modules/Makefile
++++ b/src/test/modules/Makefile
+@@ -10,6 +10,7 @@ SUBDIRS = \
+ 		  delay_execution \
+ 		  dummy_index_am \
+ 		  dummy_seclabel \
++		  gist \
+ 		  index \
+ 		  libpq_pipeline \
+ 		  oauth_validator \
+diff --git a/src/test/modules/gist/.gitignore b/src/test/modules/gist/.gitignore
+new file mode 100644
+index 00000000000..716e17f5a2a
+--- /dev/null
++++ b/src/test/modules/gist/.gitignore
+@@ -0,0 +1,2 @@
++# Generated subdirectories
++/tmp_check/
+diff --git a/src/test/modules/gist/Makefile b/src/test/modules/gist/Makefile
+new file mode 100644
+index 00000000000..2b0103d53f7
+--- /dev/null
++++ b/src/test/modules/gist/Makefile
+@@ -0,0 +1,15 @@
++# src/test/modules/gist/Makefile
++
++EXTRA_INSTALL = contrib/pageinspect
++TAP_TESTS = 1
++
++ifdef USE_PGXS
++PG_CONFIG = pg_config
++PGXS := $(shell $(PG_CONFIG) --pgxs)
++include $(PGXS)
++else
++subdir = src/test/modules/gist
++top_builddir = ../../../..
++include $(top_builddir)/src/Makefile.global
++include $(top_srcdir)/contrib/contrib-global.mk
++endif
+diff --git a/src/test/modules/gist/meson.build b/src/test/modules/gist/meson.build
+new file mode 100644
+index 00000000000..9a47722fbaf
+--- /dev/null
++++ b/src/test/modules/gist/meson.build
+@@ -0,0 +1,12 @@
++# Copyright (c) 2026, PostgreSQL Global Development Group
++
++tests += {
++  'name': 'gist',
++  'sd': meson.current_source_dir(),
++  'bd': meson.current_build_dir(),
++  'tap': {
++    'tests': [
++      't/001_intrapage_index.pl',
++    ],
++  },
++}
+diff --git a/src/test/modules/gist/t/001_intrapage_index.pl b/src/test/modules/gist/t/001_intrapage_index.pl
+new file mode 100644
+index 00000000000..490aefad0ca
+--- /dev/null
++++ b/src/test/modules/gist/t/001_intrapage_index.pl
+@@ -0,0 +1,109 @@
++# Copyright (c) 2026, PostgreSQL Global Development Group
++
++use strict;
++use warnings FATAL => 'all';
++
++use PostgreSQL::Test::Cluster;
++use PostgreSQL::Test::Utils;
++use Test::More;
++
++sub marker_count
++{
++	my ($node, $index) = @_;
++
++	return $node->safe_psql(
++		'postgres',
++		qq[
++SELECT count(*)
++FROM generate_series(0,
++       (SELECT relpages - 1 FROM pg_class WHERE oid = '$index'::regclass)) AS b
++CROSS JOIN LATERAL
++     gist_page_items_bytea(get_raw_page('$index', b)) AS i
++WHERE i.ctid::text LIKE '(4294967295,%'
++]);
++}
++
++sub exact_result
++{
++	my ($node, $enable_seqscan) = @_;
++
++	return $node->safe_psql(
++		'postgres',
++		qq[
++SET enable_seqscan = $enable_seqscan;
++SET enable_bitmapscan = off;
++SELECT string_agg(id::text, ',' ORDER BY id)
++FROM gist_intrapage
++WHERE p <@ box(point(80, 80), point(20, 20));
++]);
++}
++
++my $primary = PostgreSQL::Test::Cluster->new('primary');
++$primary->init(allows_streaming => 1);
++$primary->append_conf('postgresql.conf', 'wal_consistency_checking = gist');
++$primary->start;
++$primary->safe_psql('postgres', 'CREATE EXTENSION pageinspect');
++
++my $backup_name = 'gist_intrapage_backup';
++$primary->backup($backup_name);
++my $standby = PostgreSQL::Test::Cluster->new('standby');
++$standby->init_from_backup($primary, $backup_name, has_streaming => 1);
++$standby->start;
++
++$primary->safe_psql(
++	'postgres', q[
++CREATE TABLE gist_intrapage AS
++SELECT i AS id, point(i % 200, i / 200) AS p
++FROM generate_series(1, 40000) AS i;
++
++CREATE INDEX gist_intrapage_sorted ON gist_intrapage USING gist (p);
++]);
++
++cmp_ok(marker_count($primary, 'gist_intrapage_sorted'), '>', 0,
++	'sorted build creates skip tuples');
++is(exact_result($primary, 'off'), exact_result($primary, 'on'),
++	'skip tuples preserve the exact scan result');
++
++$primary->safe_psql(
++	'postgres', q[
++CREATE INDEX gist_intrapage_buffered ON gist_intrapage USING gist (p)
++  WITH (buffering = on, fillfactor = 50);
++]);
++cmp_ok(marker_count($primary, 'gist_intrapage_buffered'), '>', 0,
++	'buffered build creates skip tuples');
++
++$primary->safe_psql(
++	'postgres', q[
++INSERT INTO gist_intrapage
++SELECT i AS id, point(i % 200, i / 200) AS p
++FROM generate_series(40001, 50000) AS i;
++]);
++is(exact_result($primary, 'off'), exact_result($primary, 'on'),
++	'inserting through skip groups preserves the exact scan result');
++cmp_ok(marker_count($primary, 'gist_intrapage_buffered'), '>', 0,
++	'inserting through skip groups preserves skip tuples');
++
++$primary->safe_psql(
++	'postgres', q[
++DROP INDEX gist_intrapage_sorted;
++DELETE FROM gist_intrapage WHERE id % 10 <> 0;
++VACUUM gist_intrapage;
++]);
++is(exact_result($primary, 'off'), exact_result($primary, 'on'),
++	'VACUUM and page deletion preserve the exact scan result');
++cmp_ok(marker_count($primary, 'gist_intrapage_buffered'), '>', 0,
++	'VACUUM page deletion preserves unaffected skip tuples');
++
++$primary->wait_for_replay_catchup($standby);
++is(marker_count($standby, 'gist_intrapage_buffered'),
++	marker_count($primary, 'gist_intrapage_buffered'),
++	'standby has the same skip tuples');
++is(exact_result($standby, 'off'), exact_result($primary, 'on'),
++	'standby replay preserves the exact scan result');
++
++$primary->stop('immediate');
++$primary->start;
++is(exact_result($primary, 'off'), exact_result($primary, 'on'),
++	'crash recovery preserves the exact scan result');
++
++done_testing();
+diff --git a/src/test/modules/meson.build b/src/test/modules/meson.build
+index 4bca42bb370..67714e1beaf 100644
+--- a/src/test/modules/meson.build
++++ b/src/test/modules/meson.build
+@@ -6,6 +6,7 @@ subdir('delay_execution')
+ subdir('dummy_index_am')
+ subdir('dummy_seclabel')
+ subdir('gin')
++subdir('gist')
+ subdir('index')
+ subdir('injection_points')
+ subdir('ldap_password_func')
+-- 
+2.50.1 (Apple Git-155)
+
