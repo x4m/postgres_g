@@ -19,6 +19,7 @@
 #include "access/nbtxlog.h"
 #include "access/tableam.h"
 #include "access/transam.h"
+#include "access/xact.h"
 #include "access/xloginsert.h"
 #include "common/int.h"
 #include "common/pg_prng.h"
@@ -27,6 +28,7 @@
 #include "storage/lmgr.h"
 #include "storage/predicate.h"
 #include "utils/injection_point.h"
+#include "utils/snapmgr.h"
 
 /* Minimum tree height for application of fastpath optimization */
 #define BTREE_FASTPATH_MIN_LEVEL	2
@@ -676,36 +678,63 @@ _bt_check_unique(Relation rel, BTInsertState insertstate, Relation heapRel,
 													RelationGetRelationName(rel))));
 					}
 				}
-				else if (all_dead && (!inposting ||
-									  (prevalldead &&
-									   curposti == BTreeTupleGetNPosting(curitup) - 1)))
+				else
 				{
 					/*
-					 * The conflicting tuple (or all HOT chains pointed to by
-					 * all posting list TIDs) is dead to everyone, so try to
-					 * mark the index entry killed. It's ok if we're not
-					 * allowed to, this isn't required for correctness.
+					 * A unique check relies on a committed deletion when it
+					 * decides that this index tuple is no longer a conflict.
+					 * SnapshotDirty cannot participate in SSI.  If the tuple is
+					 * still visible to our transaction snapshot, relying on its
+					 * deletion could produce a serialization anomaly, so force a
+					 * retry.
 					 */
-					Buffer		buf;
-
-					/* Be sure to operate on the proper buffer */
-					if (nbuf != InvalidBuffer)
-						buf = nbuf;
-					else
-						buf = insertstate->buf;
-
-					/*
-					 * Use the hint bit infrastructure to check if we can
-					 * update the page while just holding a share lock.
-					 *
-					 * Can't use BufferSetHintBits16() here as we update two
-					 * different locations.
-					 */
-					if (BufferBeginSetHintBits(buf))
+					if (checkUnique != UNIQUE_CHECK_EXISTING &&
+						IsolationIsSerializable() && ActiveSnapshotSet() &&
+						SerializableXactHasConflictOut())
 					{
-						ItemIdMarkDead(curitemid);
-						opaque->btpo_flags |= BTP_HAS_GARBAGE;
-						BufferFinishSetHintBits(buf, true, true);
+						ItemPointerData conflict_htid = htid;
+
+						if (table_index_fetch_tuple_check(heapRel,
+														  &conflict_htid,
+														  GetActiveSnapshot(), NULL))
+							ereport(ERROR,
+									(errcode(ERRCODE_T_R_SERIALIZATION_FAILURE),
+									 errmsg("could not serialize access due to read/write dependencies among transactions"),
+									 errdetail_internal("Reason code: Canceled because a unique check relied on a concurrent deletion."),
+									 errhint("The transaction might succeed if retried.")));
+					}
+
+					if (all_dead && (!inposting ||
+									 (prevalldead &&
+									  curposti == BTreeTupleGetNPosting(curitup) - 1)))
+					{
+						/*
+						 * The conflicting tuple (or all HOT chains pointed to by
+						 * all posting list TIDs) is dead to everyone, so try to
+						 * mark the index entry killed. It's ok if we're not
+						 * allowed to, this isn't required for correctness.
+						 */
+						Buffer		buf;
+
+						/* Be sure to operate on the proper buffer */
+						if (nbuf != InvalidBuffer)
+							buf = nbuf;
+						else
+							buf = insertstate->buf;
+
+						/*
+						 * Use the hint bit infrastructure to check if we can
+						 * update the page while just holding a share lock.
+						 *
+						 * Can't use BufferSetHintBits16() here as we update two
+						 * different locations.
+						 */
+						if (BufferBeginSetHintBits(buf))
+						{
+							ItemIdMarkDead(curitemid);
+							opaque->btpo_flags |= BTP_HAS_GARBAGE;
+							BufferFinishSetHintBits(buf, true, true);
+						}
 					}
 				}
 

@@ -3936,6 +3936,25 @@ CheckForSerializableConflictOutNeeded(Relation relation, Snapshot snapshot)
 }
 
 /*
+ * Return whether the current serializable transaction has an rw-conflict out.
+ */
+bool
+SerializableXactHasConflictOut(void)
+{
+	bool		result;
+
+	if (MySerializableXact == InvalidSerializableXact)
+		return false;
+
+	LWLockAcquire(SerializableXactHashLock, LW_SHARED);
+	result = SxactHasSummaryConflictOut(MySerializableXact) ||
+		!dlist_is_empty(&MySerializableXact->outConflicts);
+	LWLockRelease(SerializableXactHashLock);
+
+	return result;
+}
+
+/*
  * CheckForSerializableConflictOut
  *		A table AM is reading a tuple that has been modified.  If it determines
  *		that the tuple version it is reading is not visible to us, it should

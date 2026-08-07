@@ -63,6 +63,7 @@ extern void ReleasePredicateLocks(bool isCommit, bool isReadOnlySafe);
 
 /* conflict detection (may also trigger rollback) */
 extern bool CheckForSerializableConflictOutNeeded(Relation relation, Snapshot snapshot);
+extern bool SerializableXactHasConflictOut(void);
 extern void CheckForSerializableConflictOut(Relation relation, TransactionId xid, Snapshot snapshot);
 extern void CheckForSerializableConflictIn(Relation relation, const ItemPointerData *tid, BlockNumber blkno);
 extern void CheckTableForSerializableConflictIn(Relation relation);
