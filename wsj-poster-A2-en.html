@@ -1,0 +1,377 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8">
+<title>WAL Street Journal - July 2026</title>
+<link href="https://fonts.googleapis.com/css2?family=UnifrakturMaguntia&display=swap" rel="stylesheet">
+<style>
+/* PRINT: A2 (420x594mm). For white paper (saves toner),
+   set --paper below to #fff. */
+:root{--paper:#f4f1e8;--ink:#1a1a1a;--acc:#8b2513;--rule:#000}
+@page{size:420mm 594mm;margin:0}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{background:var(--paper);color:var(--ink)}
+body{width:420mm;min-height:594mm;padding:11mm 12mm 8mm;
+  font:9pt/1.34 Georgia,"Times New Roman",serif;
+  -webkit-print-color-adjust:exact;print-color-adjust:exact}
+@media screen{body{margin:20px auto;box-shadow:0 0 30px rgba(0,0,0,.4)}}
+
+/* ---- masthead ---- */
+.mast{border-bottom:3px solid var(--rule);padding-bottom:3mm;margin-bottom:4mm}
+.mast .r1{border-top:1px solid var(--rule);border-bottom:1px solid var(--rule);
+  padding:1mm 0;display:flex;justify-content:space-between;
+  font:7.5pt/1 Georgia,serif;letter-spacing:.22em;text-transform:uppercase}
+.mast h1{font:400 74pt/.92 "UnifrakturMaguntia",Georgia,serif;text-align:center;
+  margin:3mm 0 2mm;letter-spacing:.01em}
+.mast .motto{text-align:center;font-style:italic;font-size:10pt;color:var(--acc);margin-bottom:2.5mm}
+.mast .r2{border-top:2px solid var(--rule);border-bottom:1px solid var(--rule);
+  padding:1.4mm 0;display:flex;justify-content:space-between;
+  font:8pt/1 Georgia,serif;letter-spacing:.16em;text-transform:uppercase}
+
+/* ---- grid ---- */
+.grid{display:grid;grid-template-columns:repeat(6,1fr);gap:0}
+.blk{padding:3mm 3.5mm;border-right:1px solid #b9b3a4;border-bottom:1px solid #b9b3a4}
+.blk:nth-child(6n),.blk.last{border-right:none}
+.s2{grid-column:span 2}.s3{grid-column:span 3}.s6{grid-column:span 6}
+
+h2{font:700 15pt/1.05 Georgia,serif;margin-bottom:1.5mm;letter-spacing:-.01em}
+h2.acc{color:var(--acc)}
+.kick{font:700 7pt/1 Georgia,serif;letter-spacing:.2em;text-transform:uppercase;
+  color:var(--acc);border-bottom:1px solid var(--acc);padding-bottom:.8mm;margin-bottom:2mm}
+.dek{font-style:italic;font-size:8.5pt;color:#4a4438;margin-bottom:2mm}
+p{margin-bottom:1.8mm;text-align:justify;hyphens:auto}
+.by{font:700 7.5pt/1 Georgia,serif;letter-spacing:.1em;text-transform:uppercase;margin-bottom:1.5mm}
+.drop::first-letter{float:left;font:700 30pt/.78 Georgia,serif;color:var(--acc);
+  margin:1mm 1.5mm 0 0}
+code,pre{font-family:"SF Mono",Menlo,Consolas,monospace}
+pre{font-size:6.6pt;line-height:1.28;background:#e9e4d6;border-left:2px solid var(--acc);
+  padding:1.6mm 2mm;margin:1.5mm 0;white-space:pre;overflow:hidden}
+code{font-size:7.4pt;background:#e9e4d6;padding:0 .5mm}
+ul{margin:0 0 1.8mm 4mm}li{margin-bottom:.7mm}
+.tag{display:inline-block;font:700 6.5pt/1 Georgia,serif;letter-spacing:.08em;
+  background:var(--ink);color:var(--paper);padding:.9mm 1.4mm;text-transform:uppercase}
+
+/* ---- charts ---- */
+.bar{display:grid;grid-template-columns:26mm 1fr 8mm;gap:1.5mm;align-items:center;
+  font-size:7pt;margin-bottom:1.1mm}
+.bar .t{height:2.7mm;background:var(--ink)}
+.bar .t.a{background:var(--acc)}
+.bar .v{text-align:right;font-weight:700;font-size:7pt}
+.big{display:grid;grid-template-columns:1fr 1fr;gap:2mm 3mm;margin:1mm 0}
+.big div{border-top:1px solid var(--rule);padding-top:1mm}
+.big b{display:block;font:700 20pt/1 Georgia,serif;color:var(--acc)}
+.big span{font-size:6.8pt;letter-spacing:.09em;text-transform:uppercase}
+.obit{border:3px double var(--rule);padding:3mm;text-align:center}
+.obit h2{font-size:17pt;margin-bottom:1mm}
+.foot{border-top:3px solid var(--rule);margin-top:3mm;padding-top:2mm;
+  display:flex;justify-content:space-between;font-size:7.2pt;letter-spacing:.06em}
+</style></head>
+<body>
+
+<header class="mast">
+  <div class="r1"><span>Vol. XX &middot; No. 1</span><span>PostgreSQL 20, first commitfest</span><span>Price: free</span></div>
+  <h1>WAL Street Journal</h1>
+  <div class="motto">&ldquo;Everything written to the log is already history&rdquo;</div>
+  <div class="r2"><span>master @ 20devel</span><span>July 2026</span><span>324 commits &middot; 28 committers</span></div>
+</header>
+
+<main class="grid">
+<section class="blk s2">
+  <div class="kick">Front page &middot; June 29</div>
+  <h2>&ldquo;Let the hacking begin ...&rdquo;</h2>
+  <div class="dek">Four words, an ellipsis, and master stops being version 19</div>
+  <p class="drop">Every year in late June one of the committers types this sentence. This year the honour fell to <b>Joe Conway</b>. Along with the version bump in <code>configure</code>, <code>meson.build</code> and <code>version_stamp.pl</code> came the cycle's central ritual sacrifice.</p>
+<pre>commit a281a3e6dbb45d5cca41ea5f7b746724eb3ca70d
+Author: Joe Conway
+Date:   Mon Jun 29 16:29:11 2026 -0400
+
+    Stamp HEAD as 20devel.
+
+    Let the hacking begin ...
+
+ doc/src/sgml/release-19.sgml | 3330 -------------
+ doc/src/sgml/release-20.sgml |   16 +</pre>
+  <p><b>3,330 lines</b> of release notes for v19 went off to <code>REL_19_STABLE</code>, replaced by a 16-line empty template. That template became July's canvas.</p>
+  <p>The first patches landed forty minutes after the stamp. By August 1 the template was no longer empty.</p>
+</section>
+
+<section class="blk s2">
+  <div class="kick">The month in numbers</div>
+  <h2 class="acc">July, counted</h2>
+  <div class="big">
+    <div><b>324</b><span>commits after the stamp</span></div>
+    <div><b>302</b><span>in July proper</span></div>
+    <div><b>+24,656</b><span>lines added</span></div>
+    <div><b>&minus;10,946</b><span>lines removed</span></div>
+    <div><b>736</b><span>files touched</span></div>
+    <div><b>28</b><span>committers at the wheel</span></div>
+    <div><b>182</b><span>names in trailers</span></div>
+    <div><b>5</b><span>reverts</span></div>
+  </div>
+  <p style="margin-top:2mm"><span class="tag">74 of 324</span> commits in July start with the word <code>Fix</code>. Nearly a quarter of the month went to repairing what the previous cycle shipped. A first commitfest is always half housekeeping.</p>
+  <p>More changes landed in tests than anywhere else: <b>253</b> file touches under <code>src/test/</code> against <b>152</b> in <code>src/bin/</code> and <b>123</b> in <code>contrib/</code>. A portrait of a first commitfest &mdash; last cycle's features growing their coverage.</p>
+</section>
+
+<section class="blk s2 last">
+  <div class="kick">July's pulse</div>
+  <h2>When the tree shakes</h2>
+  <div class="dek">Commits per week</div>
+  <div class="bar"><span>wk 27 &middot; Jun 29&ndash;Jul 5</span><span class="t" style="width:84%"></span><span class="v">74</span></div>
+  <div class="bar"><span>wk 28 &middot; Jul 6&ndash;12</span><span class="t a" style="width:100%"></span><span class="v">88</span></div>
+  <div class="bar"><span>wk 29 &middot; Jul 13&ndash;19</span><span class="t" style="width:82%"></span><span class="v">72</span></div>
+  <div class="bar"><span>wk 30 &middot; Jul 20&ndash;26</span><span class="t" style="width:45%"></span><span class="v">40</span></div>
+  <div class="bar"><span>wk 31 &middot; Jul 27&ndash;31</span><span class="t" style="width:57%"></span><span class="v">50</span></div>
+  <div class="dek" style="margin-top:3mm">By day of week</div>
+  <div class="bar"><span>Monday</span><span class="t" style="width:51%"></span><span class="v">42</span></div>
+  <div class="bar"><span>Tuesday</span><span class="t" style="width:72%"></span><span class="v">59</span></div>
+  <div class="bar"><span>Wednesday</span><span class="t a" style="width:100%"></span><span class="v">82</span></div>
+  <div class="bar"><span>Thursday</span><span class="t" style="width:71%"></span><span class="v">58</span></div>
+  <div class="bar"><span>Friday</span><span class="t" style="width:74%"></span><span class="v">61</span></div>
+  <div class="bar"><span>Saturday</span><span class="t" style="width:17%"></span><span class="v">14</span></div>
+  <div class="bar"><span>Sunday</span><span class="t" style="width:10%"></span><span class="v">8</span></div>
+  <p style="margin-top:2mm">Weekends are sacred: 22 commits out of 324, or 6.8%. Wednesday shakes the tree four times harder than both weekend days combined.</p>
+</section>
+<section class="blk s3">
+  <div class="kick">Headline patch &middot; July 9 &middot; commit 86ab7f4c721</div>
+  <h2>JSON_TABLE PLAN: a four-year saga</h2>
+  <div class="dek">+2,017 / &minus;112 lines &middot; 13 files &middot; 7 co-authors &middot; 11 reviewers &middot; discussion dating to 2022</div>
+  <p class="by">Alexander Korotkov</p>
+  <p>If July has one flagship patch, this is it. <code>JSON_TABLE</code> arrived in PostgreSQL 17 without the <code>PLAN</code> clause, and the debt to the SQL/JSON standard has been outstanding ever since.</p>
+  <p><b>What PLAN solves.</b> <code>JSON_TABLE</code> unrolls nested paths through <code>NESTED PATH</code>. The question is how to join rows coming from several of them. Until July the answer was hardcoded &mdash; parent to child via <code>LEFT OUTER</code>, sibling to sibling via <code>UNION</code>. Now you choose.</p>
+<pre>              ┌──────────────────────────────┐
+              │  row pattern  '$'  AS root   │
+              └──────────────┬───────────────┘
+                             │ INNER / OUTER  ← parent↔child
+             ┌───────────────┴────────────────┐
+  ┌──────────▼──────────┐         ┌──────────▼──────────┐
+  │ NESTED '$.phones'   │  UNION  │ NESTED '$.emails'   │
+  │        AS ph        │◄───────►│        AS em        │
+  └─────────────────────┘  CROSS  └─────────────────────┘
+                             ▲
+       siblings: UNION (one row per sibling) ─┘
+                 or CROSS (cartesian product)</pre>
+<pre>[ PLAN ( json_table_plan )
+| PLAN DEFAULT ( { INNER | OUTER } [ , { CROSS | UNION } ]
+               | { CROSS | UNION } [ , { INNER | OUTER } ] ) ]</pre>
+  <p><b>Departing from the standard.</b> SQL/JSON requires that when a <code>PLAN</code> is present, every <code>NESTED PATH</code> carry an explicit <code>AS</code> name. PostgreSQL decided otherwise &mdash; unnamed paths get a generated name. But that generated name has a price:</p>
+<pre>-- works: PLAN DEFAULT with an unnamed NESTED path
+SELECT * FROM JSON_TABLE(
+    jsonb '[]', '$' AS path1
+    COLUMNS ( NESTED PATH '$' COLUMNS ( foo int PATH '$' ) )
+    PLAN DEFAULT (UNION)
+) jt;
+
+-- fails: an explicit PLAN() refers to paths by name,
+-- and a generated name cannot be spelled out
+SELECT * FROM JSON_TABLE(
+    jsonb '[]', '$' AS path1
+    COLUMNS ( NESTED PATH '$' COLUMNS ( foo int PATH '$' ) )
+    PLAN (path1)
+) jt;
+ERROR:  nested path not covered by the plan</pre>
+  <p><b>The landing.</b> Big patches never land clean. Within two weeks: a forgotten <code>catversion</code> bump; a revert of cascading <code>ON ERROR</code>; parentheses lost when deparsing nested joins; generated path names colliding; documentation fixes; removal of redundant re-evaluation of nested paths; an unreachable error check deleted. Twelve commits in July carry &ldquo;JSON&rdquo; in the subject &mdash; the classic descent curve of a large feature.</p>
+</section>
+<section class="blk s3 last">
+  <div class="kick">Second page &middot; July 2 &middot; commit a5918fddf10</div>
+  <h2>Replication conflicts, now in a table</h2>
+  <div class="dek">+1,451 / &minus;40 lines &middot; 31 files</div>
+  <p class="by">Amit Kapila</p>
+  <p>Until now a logical replication conflict went to <code>postgresql.log</code> as plain text. Want to analyse it? Parse logs with regexes. Conflicts can now be written to a table instead.</p>
+<pre>CREATE SUBSCRIPTION sub
+  CONNECTION 'host=pub dbname=app' PUBLICATION pub
+  WITH (conflict_log_destination = 'table');
+  --  'log' | 'table' | 'all'</pre>
+<pre>   apply worker
+        │  conflict detected
+        ▼  (insert_exists / update_origin_differs / …)
+  ┌────────────────────────────┐
+  │  conflict_log_destination  │
+  └──────┬──────────────┬──────┘
+     'log'│              │'table'
+         ▼              ▼
+  postgresql.log   pg_conflict schema (system-managed)
+                   └── pg_conflict_log_&lt;subid&gt;
+                         ▲ internal dependency
+                   DROP SUBSCRIPTION → table disappears</pre>
+  <p><b>The log schema</b>, straight from <code>ConflictLogSchema[]</code>:</p>
+<pre>{"relid",OID} {"schemaname",TEXT} {"relname",TEXT}
+{"conflict_type",TEXT} {"remote_xid",XID}
+{"remote_commit_lsn",LSN} {"remote_commit_ts",TIMESTAMPTZ}
+{"remote_origin",TEXT} {"replica_identity_full",BOOL}
+{"replica_identity",JSON} {"remote_tuple",JSON}
+{"local_conflicts",JSONARRAY}</pre>
+  <p><b>Note: <code>json</code>, not <code>jsonb</code>.</b> The code comment states the reason outright &mdash; this is an exact audit snapshot, and <code>jsonb</code> would normalize it: reorder keys, collapse duplicates, lose number formatting. Nobody intends to search by tuple; the scalar columns get indexed, while the json fields are payload to inspect after the fact.</p>
+  <p><b>The table is locked down.</b> Forbidden: <code>ALTER</code>, <code>DROP</code>, <code>CREATE INDEX</code>, triggers, rules, policies, extended statistics, use as an inheritance parent or foreign-key target, and manual <code>INSERT</code>, <code>UPDATE</code>, <code>MERGE</code> or row locking. Exactly two operations remain &mdash; <code>DELETE</code> and <code>TRUNCATE</code>, so old rows can be pruned.</p>
+  <p>Conflict tables are also excluded from publications, including <code>FOR ALL TABLES</code>. Otherwise: a cheerful infinite loop.</p>
+</section>
+<section class="blk s2">
+  <div class="kick">Who held the hammer</div>
+  <h2>Top committers, July</h2>
+  <div class="bar"><span>Peter Eisentraut</span><span class="t a" style="width:100%"></span><span class="v">45</span></div>
+  <div class="bar"><span>Michael Paquier</span><span class="t" style="width:87%"></span><span class="v">39</span></div>
+  <div class="bar"><span>Fujii Masao</span><span class="t" style="width:80%"></span><span class="v">36</span></div>
+  <div class="bar"><span>Tom Lane</span><span class="t" style="width:67%"></span><span class="v">30</span></div>
+  <div class="bar"><span>Heikki Linnakangas</span><span class="t" style="width:38%"></span><span class="v">17</span></div>
+  <div class="bar"><span>Daniel Gustafsson</span><span class="t" style="width:36%"></span><span class="v">16</span></div>
+  <div class="bar"><span>Amit Kapila</span><span class="t" style="width:36%"></span><span class="v">16</span></div>
+  <div class="bar"><span>Alexander Korotkov</span><span class="t" style="width:31%"></span><span class="v">14</span></div>
+  <div class="bar"><span>Nathan Bossart</span><span class="t" style="width:29%"></span><span class="v">13</span></div>
+  <div class="bar"><span>Richard Guo</span><span class="t" style="width:27%"></span><span class="v">12</span></div>
+  <div class="bar"><span>Masahiko Sawada</span><span class="t" style="width:24%"></span><span class="v">11</span></div>
+  <div class="bar"><span>&Aacute;lvaro Herrera</span><span class="t" style="width:22%"></span><span class="v">10</span></div>
+  <div class="bar"><span>Jeff Davis</span><span class="t" style="width:22%"></span><span class="v">10</span></div>
+  <div class="bar"><span>Peter Geoghegan</span><span class="t" style="width:20%"></span><span class="v">9</span></div>
+  <div class="bar"><span>Melanie Plageman</span><span class="t" style="width:18%"></span><span class="v">8</span></div>
+  <div class="bar"><span>Robert Haas</span><span class="t" style="width:16%"></span><span class="v">7</span></div>
+  <div class="bar"><span>David Rowley</span><span class="t" style="width:13%"></span><span class="v">6</span></div>
+  <p style="margin-top:2mm">&hellip;and eleven more committers. The month's outright champion is <b>Peter Eisentraut</b> with 45 commits, almost all of it type hygiene: <code>read()</code>, <code>write()</code>, <code>readlink()</code>, <code>copy_file_range()</code>, <code>ssize_t</code>, <code>off_t</code>, <code>const</code> correctness, C11 <code>alignas</code> in place of <code>pg_attribute_aligned</code>, and <code>_Generic</code> in place of <code>__builtin_types_compatible_p</code>.</p>
+  <p>That last one is what killed Visual Studio 2019.</p>
+</section>
+
+<section class="blk s2">
+  <div class="kick">Obituary</div>
+  <div class="obit">
+    <div style="font-size:7pt;letter-spacing:.2em;margin-bottom:1mm">&dagger; IN MEMORIAM &dagger;</div>
+    <h2>GROUP BY ALL</h2>
+    <div style="font-style:italic;font-size:9pt;margin-bottom:2mm">2026 &mdash; 2026</div>
+    <div style="font-size:7.5pt;letter-spacing:.1em">survived one cycle</div>
+  </div>
+  <p style="margin-top:2.5mm"><b>Commit a32733d8f10, Tom Lane, July 17.</b> The feature that let you write <code>GROUP BY ALL</code> instead of spelling out every non-aggregate expression has been reverted &mdash; and <b>out of branch 19 as well</b> (<code>Backpatch-through: 19</code>).</p>
+<pre>ef38a4d9756  "Add GROUP BY ALL"            ← life
+2ce745836    "comment improvements"
+    …
+a32733d8f10  Revert "Add GROUP BY ALL"     ← death</pre>
+  <p>The reason, from the commit message: post-commit review found it missed the special handling for entries that also appear in <code>ORDER BY</code>. The query returned <b>wrong results</b> when <code>ORDER BY</code> specified non-default equality semantics.</p>
+  <p>Fixable with refactoring &mdash; but &ldquo;too much code churn for late beta&rdquo;. The classic PostgreSQL calculus: wrong results plus late beta equals revert, no debate.</p>
+  <p>Reported by Chao Li. The promise &mdash; &ldquo;<i>We'll revert and try again in v20</i>&rdquo; &mdash; is on the table. One line up in the July log sits <code>Update GROUP BY ALL comments about window functions</code>, committed on July 8, nine days before the funeral.</p>
+</section>
+
+<section class="blk s2 last">
+  <div class="kick">The great cleanup</div>
+  <h2>July took out the trash</h2>
+  <p><b>Goodbye to everything older than v10.</b> Four commits from Nathan Bossart on July 2 removed support for pre-v10 servers from <code>pg_dump</code>/<code>pg_dumpall</code>, <code>pg_upgrade</code> and <code>psql</code>. Late in the month, from <code>AdjustUpgrade.pm</code> too.</p>
+<pre>Old-server support in pg_dump/pg_upgrade/psql:
+
+2021, for v15:  9.2 ─────────────────────────► 15
+2026, for v20:                  10 ──────────► 20
+                                ▲ new floor</pre>
+  <p>Project policy is to support at least 10 prior major versions. The floor was last raised in 2021. <code>pg_restore</code>'s ability to read old archives is untouched &mdash; though, as the commit honestly notes, it is &ldquo;<i>fair to wonder how that might be tested nowadays</i>&rdquo;.</p>
+  <p><b>refint, forty years on.</b> Sample code from the pre-<code>FOREIGN KEY</code> era, deleted after <b>six</b> consecutive fix commits. The verdict: &ldquo;<i>the code has more issues than its sample-code value justifies</i>&rdquo;.</p>
+  <p><b>The toolchain floor rises.</b> Visual Studio 2022 minimum &mdash; VS 2019 nominally supports <code>_Generic</code> but is, quoting the commit, &ldquo;<i>just broken for that</i>&rdquo;. ICU 55 minimum, since RHEL 7 is no longer supported. A requirement for Tcl 8.6 lasted less than a day before being reverted.</p>
+  <p><b>Other casualties:</b> <code>pg_spin_delay()</code>, RADIUS among initdb's auth methods, the SQL function <code>getpgusername()</code>, <code>WaitEventCustomCounterData</code>, a &ldquo;sketchy&rdquo; <code>TerminateThread()</code> call on Ctrl-C under Windows, and the apparent support for <code>SECURITY LABEL ON PROPERTY GRAPH</code> that never actually existed.</p>
+</section>
+<section class="blk s2">
+  <div class="kick">The planner</div>
+  <h2>The missing switch</h2>
+  <p><b>e01b23b84e4, Richard Guo, July 9.</b> We have had <code>enable_hashagg</code> for twenty years, but no symmetric knob for sorted grouping.</p>
+<pre>SET enable_groupagg = off;   -- on by default</pre>
+  <p>It covers <code>GroupAggregate</code>, <code>Group</code>, the sort-based <code>Unique</code> step used for <code>DISTINCT</code> and semijoin unique-ification, and the sorted mode of <code>SetOp</code>. Not a hard switch &mdash; it only bumps <code>disabled_nodes</code>.</p>
+  <p>A side effect worth noting: several tests had been turning off <code>enable_sort</code> purely to force a hashed plan. They now say <code>enable_groupagg</code> instead. In <code>union.sql</code> that finally opened a path to testing <b>hashed UNION</b>, which had been unreachable before.</p>
+  <h2 style="margin-top:3mm;font-size:13pt">Hash Join meets NULL</h2>
+  <p><b>60826a352d4, David Rowley, July 31.</b> A three-commit detective story. <code>adf97c156</code> taught expression evaluation to hash; <code>9ca67658d</code> fixed memory stomping there &mdash; and left a gap.</p>
+<pre>key ──► EEOP_HASHDATUM_FIRST_STRICT ──► interim hash
+             │ key = NULL → jump to jumpdone
+             ▼
+       ┌─────────────┐
+       │  jumpdone   │ expects: resnull / resvalue
+       └─────────────┘ reality:  NOT SET ✗
+             ▼
+   rows enter the hash table that can never
+   match a join partner</pre>
+  <p>Not a wrong answer &mdash; just burnt CPU and memory. Hash Agg and hashed subplans were unaffected: neither uses the STRICT steps.</p>
+  <p><b>Elsewhere in the optimizer:</b> a better row-count estimate for <code>UNION</code>; <code>stadistinct</code> now propagates through <code>GROUP BY</code>/<code>DISTINCT</code> in subqueries and CTEs; a trilogy on <code>nullingrels</code>; a pruning fix for <code>RANGE</code> <code>DEFAULT</code> partitions; nullability and strictness for <code>ScalarArrayOpExpr</code>.</p>
+</section>
+
+<section class="blk s2">
+  <div class="kick">Statistics &middot; Michael Paquier's month</div>
+  <h2>Locks, per backend</h2>
+  <p>Of Paquier's 39 commits the lion's share concern <code>pgstat</code>. Twenty-five commits in July touch statistics one way or another.</p>
+  <p><b>8c579bdc366</b> (authored by Bertrand Drouvot). There was <code>pg_stat_lock</code>, cluster-wide. Now there is a per-backend view too:</p>
+<pre>SELECT a.pid, a.state, l.locktype, l.waits,
+       l.wait_time, l.fastpath_exceeded
+FROM   pg_stat_activity a
+CROSS JOIN LATERAL pg_stat_get_backend_lock(a.pid) l
+WHERE  l.waits &gt; 0
+ORDER BY l.wait_time DESC;</pre>
+  <p><code>fastpath_exceeded</code> counts how often a backend spilled past fast-path locking. In the same month Paquier added an entire new documentation section on fast-path locking. Read them together.</p>
+  <p>A detail for perfectionists: <code>stat_lock.wait_time</code> changed type twice in one month &mdash; first to <code>double precision</code>, then a fix for precision loss in <code>pg_stat_us_to_ms()</code>, then a typo caught in the same function. Microseconds to milliseconds proved harder than it looks.</p>
+  <h2 style="margin-top:3mm;font-size:13pt">A cap on logged SQL</h2>
+  <p><b>c8bd8387c27, Fujii Masao, July 3.</b> A pain familiar to every DBA: an application sends an <code>INSERT</code> with a 40 MB literal, <code>log_min_duration_statement</code> is on, and the logs balloon.</p>
+<pre>SET log_statement_max_length = 1024;  -- bytes
+--  0 — log an empty statement body
+-- -1 — previous behaviour (the default)</pre>
+  <p>Truncation is byte-based, but clips on multibyte character boundaries so the log never contains broken UTF-8.</p>
+</section>
+
+<section class="blk s2 last">
+  <div class="kick">Crime blotter</div>
+  <h2>What got caught</h2>
+  <ul>
+    <li><b>Data corruption on day one:</b> <code>Fix unlogged sequence corruption after standby promotion</code>, June 30.</li>
+    <li><b>A race in the heart of the buffer manager:</b> <code>bufmgr: Fix race in LockBufferForCleanup()</code>.</li>
+    <li><b>Visibility map without WAL:</b> Melanie Plageman, a block of four commits &mdash; the VM was cleared without properly registering blocks in WAL. A direct route to divergence after recovery.</li>
+    <li><b>Isolation leak:</b> <code>Prevent access to other sessions' empty temp tables</code>.</li>
+    <li><b>Crash from SQL:</b> <code>satisfies_hash_partition</code> fell over on <code>VARIADIC NULL</code>.</li>
+    <li><b>A triple coincidence:</b> <code>RETURNING OLD</code> plus a BEFORE trigger plus a concurrent update.</li>
+    <li><b>A stuck summarizer:</b> Robert Haas &mdash; <code>walsummarizer</code> hung at a timeline switch.</li>
+    <li><b>Unicode:</b> Jeff Davis &mdash; defences against truncated UTF-8, the final sigma, missing <code>unsigned char</code> casts.</li>
+    <li><b>An SSI race in nbtree:</b> Peter Geoghegan, plus four commits of new coverage.</li>
+  </ul>
+  <p><b>Stabilising PG 19</b> was the month's second-largest seam: sequence synchronization (13 commits, including a revert and a redo), online checksum enabling (7), <code>REPACK CONCURRENTLY</code> (6), <code>FOR PORTION OF</code> (6), property graph / SQL&#47;PGQ (9), dynamic logical decoding (6).</p>
+<pre>PostgreSQL 20: the cycle
+
+Jun 29 2026  ┃ "Let the hacking begin…"   ✔
+July 2026    ┃ CF1 — this issue           ✔
+Sep 2026     ┃ CF2                        ←
+Nov 2026     ┃ CF3
+Jan 2027     ┃ CF4
+Mar 2027     ┃ CF5 — feature freeze
+~ May 2027   ┃ beta 1
+~ Sep 2027   ┃ PostgreSQL 20 GA</pre>
+</section>
+<section class="blk s4" style="border-bottom:none">
+  <div class="kick">Small things that please</div>
+  <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:0 4mm">
+    <div>
+      <p><b>min() and max() for uuid.</b> The <code>uuid</code> type has long had a full set of comparison operators and a btree opclass &mdash; it is totally ordered. Only the aggregates were missing. <code>uuid_larger()</code> and <code>uuid_smaller()</code> fill the gap. A lovely detail from the commit message: values compare lexicographically across all 128 bits, and in <b>UUIDv7</b> the high bits encode a Unix timestamp. So <code>min()</code> and <code>max()</code> over UUIDv7 genuinely return the oldest and newest values.</p>
+      <p><b>Index names for expression indexes</b> became meaningful &mdash; two commits from Tom Lane. A small thing, wanted for years.</p>
+    </div>
+    <div>
+      <p><b>An MD5 warning.</b> Password authentication against an MD5-hashed password now emits a warning. MD5 itself was not removed &mdash; but the hint could hardly be broader.</p>
+      <p><b>psql:</b> the <code>pg_read_all_stats</code> role can finally see database size in <code>\l+</code>; tab completion for <code>\df</code> works for procedures; pager selection is fixed for wrapped expanded output.</p>
+      <p><b>pg_recvlogical</b> sends a final feedback message on <code>SIGINT</code>/<code>SIGTERM</code>, so progress is no longer lost on a clean shutdown.</p>
+    </div>
+    <div>
+      <p><b>Prefix operators return.</b> Commit <code>2f094e7ac</code> made <code>|</code> and <code>-&gt;</code> built-in operator names, correctly giving them precedence and adding infix productions &mdash; but forgot <b>prefix</b> ones. At least one extension relied on that. Bug #19558, reported by Pierre Senellart.</p>
+      <p><b>Syntax corners closed:</b> set-returning functions are now disallowed inside <code>OVER</code>; renaming a rule to <code>_RETURN</code> is forbidden; <code>io_min_workers</code> exceeding <code>io_max_workers</code> now warns.</p>
+    </div>
+  </div>
+</section>
+
+<section class="blk s2 last" style="border-bottom:none">
+  <div class="kick">Invisible labour</div>
+  <h2>Who read the patches</h2>
+  <div class="dek">332 Reviewed-by trailers from 98 people &mdash; against 28 committers</div>
+  <div class="bar"><span>Fujii Masao</span><span class="t a" style="width:100%"></span><span class="v">21</span></div>
+  <div class="bar"><span>Tom Lane</span><span class="t" style="width:81%"></span><span class="v">17</span></div>
+  <div class="bar"><span>Daniel Gustafsson</span><span class="t" style="width:76%"></span><span class="v">16</span></div>
+  <div class="bar"><span>Michael Paquier</span><span class="t" style="width:67%"></span><span class="v">14</span></div>
+  <div class="bar"><span>Heikki Linnakangas</span><span class="t" style="width:62%"></span><span class="v">13</span></div>
+  <div class="bar"><span>Amit Kapila</span><span class="t" style="width:57%"></span><span class="v">12</span></div>
+  <div class="bar"><span>Hayato Kuroda</span><span class="t" style="width:48%"></span><span class="v">10</span></div>
+  <div class="bar"><span>Ewan Young</span><span class="t" style="width:48%"></span><span class="v">10</span></div>
+  <div class="bar"><span>Chao Li</span><span class="t" style="width:48%"></span><span class="v">10</span></div>
+  <div class="bar"><span>Ayush Tiwari</span><span class="t" style="width:48%"></span><span class="v">10</span></div>
+  <div class="bar"><span>Andrey Borodin</span><span class="t" style="width:43%"></span><span class="v">9</span></div>
+  <div class="bar"><span>Zsolt Parragi</span><span class="t" style="width:38%"></span><span class="v">8</span></div>
+  <div class="bar"><span>Tristan Partin</span><span class="t" style="width:38%"></span><span class="v">8</span></div>
+  <div class="bar"><span>Ashutosh Bapat</span><span class="t" style="width:33%"></span><span class="v">7</span></div>
+  <p style="margin-top:2mm">The top rows are committers reading other people's work on top of their own. Below them begins the part of the project that release notes never mention: names that reach the tree only as a <code>Reviewed-by</code> line.</p>
+  <p><b>The median reviewer in July read one patch.</b> The tail is long &mdash; 98 people across 332 trailers. It is that tail, not the two dozen committers, that sets how many patches the project can absorb per cycle.</p>
+</section>
+</main>
+
+<div class="foot">
+  <span>Compiled from <code>git log a281a3e6dbb..origin/master --until=2026-08-01</code></span>
+  <span>324 commits &middot; 736 files &middot; 182 names in trailers</span>
+  <span><i>&ldquo;Sleep is for those who have already fsynced&rdquo;</i></span>
+</div>
+</body></html>
