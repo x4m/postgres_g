@@ -1,0 +1,377 @@
+<!DOCTYPE html>
+<html lang="ru"><head><meta charset="utf-8">
+<title>WAL Street Journal — июль 2026</title>
+<link href="https://fonts.googleapis.com/css2?family=UnifrakturMaguntia&display=swap" rel="stylesheet">
+<style>
+/* ПЕЧАТЬ: A2 (420x594mm). Чтобы бумага была белой (экономия тонера),
+   удалите строку с --paper ниже и поставьте #fff. */
+:root{--paper:#f4f1e8;--ink:#1a1a1a;--acc:#8b2513;--rule:#000}
+@page{size:420mm 594mm;margin:0}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{background:var(--paper);color:var(--ink)}
+body{width:420mm;min-height:594mm;padding:11mm 12mm 8mm;
+  font:9pt/1.34 Georgia,"Times New Roman",serif;
+  -webkit-print-color-adjust:exact;print-color-adjust:exact}
+@media screen{body{margin:20px auto;box-shadow:0 0 30px rgba(0,0,0,.4)}}
+
+/* ---- шапка ---- */
+.mast{border-bottom:3px solid var(--rule);padding-bottom:3mm;margin-bottom:4mm}
+.mast .r1{border-top:1px solid var(--rule);border-bottom:1px solid var(--rule);
+  padding:1mm 0;display:flex;justify-content:space-between;
+  font:7.5pt/1 Georgia,serif;letter-spacing:.22em;text-transform:uppercase}
+.mast h1{font:400 74pt/.92 "UnifrakturMaguntia",Georgia,serif;text-align:center;
+  margin:3mm 0 2mm;letter-spacing:.01em}
+.mast .motto{text-align:center;font-style:italic;font-size:10pt;color:var(--acc);margin-bottom:2.5mm}
+.mast .r2{border-top:2px solid var(--rule);border-bottom:1px solid var(--rule);
+  padding:1.4mm 0;display:flex;justify-content:space-between;
+  font:8pt/1 Georgia,serif;letter-spacing:.16em;text-transform:uppercase}
+
+/* ---- сетка ---- */
+.grid{display:grid;grid-template-columns:repeat(6,1fr);gap:0}
+.blk{padding:3mm 3.5mm;border-right:1px solid #b9b3a4;border-bottom:1px solid #b9b3a4}
+.blk:nth-child(6n),.blk.last{border-right:none}
+.s2{grid-column:span 2}.s3{grid-column:span 3}.s6{grid-column:span 6}
+
+h2{font:700 15pt/1.05 Georgia,serif;margin-bottom:1.5mm;letter-spacing:-.01em}
+h2.acc{color:var(--acc)}
+.kick{font:700 7pt/1 Georgia,serif;letter-spacing:.2em;text-transform:uppercase;
+  color:var(--acc);border-bottom:1px solid var(--acc);padding-bottom:.8mm;margin-bottom:2mm}
+.dek{font-style:italic;font-size:8.5pt;color:#4a4438;margin-bottom:2mm}
+p{margin-bottom:1.8mm;text-align:justify;hyphens:auto}
+.by{font:700 7.5pt/1 Georgia,serif;letter-spacing:.1em;text-transform:uppercase;margin-bottom:1.5mm}
+.drop::first-letter{float:left;font:700 30pt/.78 Georgia,serif;color:var(--acc);
+  margin:1mm 1.5mm 0 0}
+code,pre{font-family:"SF Mono",Menlo,Consolas,monospace}
+pre{font-size:6.6pt;line-height:1.28;background:#e9e4d6;border-left:2px solid var(--acc);
+  padding:1.6mm 2mm;margin:1.5mm 0;white-space:pre;overflow:hidden}
+code{font-size:7.4pt;background:#e9e4d6;padding:0 .5mm}
+ul{margin:0 0 1.8mm 4mm}li{margin-bottom:.7mm}
+.tag{display:inline-block;font:700 6.5pt/1 Georgia,serif;letter-spacing:.08em;
+  background:var(--ink);color:var(--paper);padding:.9mm 1.4mm;text-transform:uppercase}
+
+/* ---- диаграммы ---- */
+.bar{display:grid;grid-template-columns:26mm 1fr 8mm;gap:1.5mm;align-items:center;
+  font-size:7pt;margin-bottom:1.1mm}
+.bar .t{height:2.7mm;background:var(--ink)}
+.bar .t.a{background:var(--acc)}
+.bar .v{text-align:right;font-weight:700;font-size:7pt}
+.big{display:grid;grid-template-columns:1fr 1fr;gap:2mm 3mm;margin:1mm 0}
+.big div{border-top:1px solid var(--rule);padding-top:1mm}
+.big b{display:block;font:700 20pt/1 Georgia,serif;color:var(--acc)}
+.big span{font-size:6.8pt;letter-spacing:.09em;text-transform:uppercase}
+.obit{border:3px double var(--rule);padding:3mm;text-align:center}
+.obit h2{font-size:17pt;margin-bottom:1mm}
+.foot{border-top:3px solid var(--rule);margin-top:3mm;padding-top:2mm;
+  display:flex;justify-content:space-between;font-size:7.2pt;letter-spacing:.06em}
+</style></head>
+<body>
+
+<header class="mast">
+  <div class="r1"><span>Vol. XX · № 1</span><span>Первый коммитфест PostgreSQL 20</span><span>Цена: 0 ₽</span></div>
+  <h1>WAL Street Journal</h1>
+  <div class="motto">«Всё, что записано в журнал, — уже история»</div>
+  <div class="r2"><span>master @ 20devel</span><span>Июль 2026</span><span>324 коммита · 28 коммиттеров</span></div>
+</header>
+
+<main class="grid">
+<section class="blk s2">
+  <div class="kick">Передовица · 29 июня</div>
+  <h2>«Let the hacking begin ...»</h2>
+  <div class="dek">Три слова, многоточие — и дерево master перестаёт быть версией 19</div>
+  <p class="drop">Каждый год в конце июня один из коммиттеров печатает эту фразу. В этом году честь выпала <b>Джо Конвею</b>. Вместе с бампом версии в <code>configure</code>, <code>meson.build</code> и <code>version_stamp.pl</code> произошло главное ритуальное жертвоприношение цикла.</p>
+<pre>commit a281a3e6dbb45d5cca41ea5f7b746724eb3ca70d
+Author: Joe Conway
+Date:   Mon Jun 29 16:29:11 2026 -0400
+
+    Stamp HEAD as 20devel.
+
+    Let the hacking begin ...
+
+ doc/src/sgml/release-19.sgml | 3330 -------------
+ doc/src/sgml/release-20.sgml |   16 +</pre>
+  <p><b>3330 строк</b> заметок о релизе 19 ушли в ветку <code>REL_19_STABLE</code>, а на их месте появился пустой файл-заготовка на 16 строк. Он и стал холстом июля.</p>
+  <p>Первые патчи пошли в дерево через сорок минут после стампа. К первому августа заготовка перестала быть пустой.</p>
+</section>
+
+<section class="blk s2">
+  <div class="kick">Цифры номера</div>
+  <h2 class="acc">Итог месяца</h2>
+  <div class="big">
+    <div><b>324</b><span>коммита после стампа</span></div>
+    <div><b>302</b><span>строго в июле</span></div>
+    <div><b>+24 656</b><span>строк добавлено</span></div>
+    <div><b>−10 946</b><span>строк удалено</span></div>
+    <div><b>736</b><span>файлов затронуто</span></div>
+    <div><b>28</b><span>коммиттеров у руля</span></div>
+    <div><b>182</b><span>имени в трейлерах</span></div>
+    <div><b>5</b><span>revert'ов</span></div>
+  </div>
+  <p style="margin-top:2mm"><span class="tag">74 из 324</span> коммитов июля начинаются со слова <code>Fix</code>. Почти четверть месяца ушла на починку того, что успели сломать в предыдущем цикле. Первый коммитфест — это всегда наполовину уборка после беты.</p>
+  <p>Тестов правили больше, чем всего остального: <b>253</b> касания в <code>src/test/</code> против <b>152</b> в <code>src/bin/</code> и <b>123</b> в <code>contrib/</code>. Портрет первого коммитфеста — фичи прошлого цикла обрастают покрытием.</p>
+</section>
+
+<section class="blk s2 last">
+  <div class="kick">Пульс июля</div>
+  <h2>Когда трясёт дерево</h2>
+  <div class="dek">Коммитов по неделям</div>
+  <div class="bar"><span>нед. 27 · 29.06–05.07</span><span class="t" style="width:84%"></span><span class="v">74</span></div>
+  <div class="bar"><span>нед. 28 · 06.07–12.07</span><span class="t a" style="width:100%"></span><span class="v">88</span></div>
+  <div class="bar"><span>нед. 29 · 13.07–19.07</span><span class="t" style="width:82%"></span><span class="v">72</span></div>
+  <div class="bar"><span>нед. 30 · 20.07–26.07</span><span class="t" style="width:45%"></span><span class="v">40</span></div>
+  <div class="bar"><span>нед. 31 · 27.07–31.07</span><span class="t" style="width:57%"></span><span class="v">50</span></div>
+  <div class="dek" style="margin-top:3mm">По дням недели</div>
+  <div class="bar"><span>понедельник</span><span class="t" style="width:51%"></span><span class="v">42</span></div>
+  <div class="bar"><span>вторник</span><span class="t" style="width:72%"></span><span class="v">59</span></div>
+  <div class="bar"><span>среда</span><span class="t a" style="width:100%"></span><span class="v">82</span></div>
+  <div class="bar"><span>четверг</span><span class="t" style="width:71%"></span><span class="v">58</span></div>
+  <div class="bar"><span>пятница</span><span class="t" style="width:74%"></span><span class="v">61</span></div>
+  <div class="bar"><span>суббота</span><span class="t" style="width:17%"></span><span class="v">14</span></div>
+  <div class="bar"><span>воскресенье</span><span class="t" style="width:10%"></span><span class="v">8</span></div>
+  <p style="margin-top:2mm">Выходные священны: 22 коммита из 324 — 6.8%. Зато среда трясёт дерево вчетверо сильнее, чем оба выходных вместе.</p>
+</section>
+<section class="blk s3">
+  <div class="kick">Главная фича · 9 июля · коммит 86ab7f4c721</div>
+  <h2>JSON_TABLE PLAN: сага длиной в четыре года</h2>
+  <div class="dek">+2017 / −112 строк · 13 файлов · 7 соавторов · 11 ревьюеров · обсуждение с 2022 года</div>
+  <p class="by">Александр Коротков</p>
+  <p>Если у июля есть один флагманский патч — это он. <code>JSON_TABLE</code> приехал в PostgreSQL 17 без клаузы <code>PLAN</code>, и всё это время висел долг перед стандартом SQL/JSON.</p>
+  <p><b>Что решает PLAN.</b> <code>JSON_TABLE</code> разворачивает вложенные пути через <code>NESTED PATH</code>. Вопрос: как склеивать строки от нескольких вложенных путей? До июля ответ был зашит наглухо — родитель с детьми через <code>LEFT OUTER</code>, братья между собой через <code>UNION</code>. Теперь это управляется.</p>
+<pre>              ┌──────────────────────────────┐
+              │  row pattern  '$'  AS root   │
+              └──────────────┬───────────────┘
+                             │ INNER / OUTER  ← родитель↔ребёнок
+             ┌───────────────┴────────────────┐
+  ┌──────────▼──────────┐         ┌──────────▼──────────┐
+  │ NESTED '$.phones'   │  UNION  │ NESTED '$.emails'   │
+  │        AS ph        │◄───────►│        AS em        │
+  └─────────────────────┘  CROSS  └─────────────────────┘
+                             ▲
+       братья: UNION (по строке на каждого) ─┘
+                или CROSS (декартово произведение)</pre>
+<pre>[ PLAN ( json_table_plan )
+| PLAN DEFAULT ( { INNER | OUTER } [ , { CROSS | UNION } ]
+               | { CROSS | UNION } [ , { INNER | OUTER } ] ) ]</pre>
+  <p><b>Отступление от стандарта.</b> SQL/JSON требует: если есть <code>PLAN</code>, то каждый <code>NESTED PATH</code> обязан иметь имя через <code>AS</code>. PostgreSQL решил иначе — безымянным путям имя генерируется автоматически. Но у сгенерированного имени есть цена:</p>
+<pre>-- работает: PLAN DEFAULT с безымянным NESTED path
+SELECT * FROM JSON_TABLE(
+    jsonb '[]', '$' AS path1
+    COLUMNS ( NESTED PATH '$' COLUMNS ( foo int PATH '$' ) )
+    PLAN DEFAULT (UNION)
+) jt;
+
+-- упадёт: явный PLAN() ссылается на пути по имени,
+-- а сгенерированное имя назвать невозможно
+SELECT * FROM JSON_TABLE(
+    jsonb '[]', '$' AS path1
+    COLUMNS ( NESTED PATH '$' COLUMNS ( foo int PATH '$' ) )
+    PLAN (path1)
+) jt;
+ERROR:  nested path not covered by the plan</pre>
+  <p><b>Хроника посадки.</b> Большие патчи не приземляются чисто. За две недели следом: забытый <code>catversion bump</code>; откат каскадирования <code>ON ERROR</code>; потерянные скобки при <code>deparse</code> вложенных join'ов; столкновения автоимён путей; правка документации; устранение повторного вычисления вложенных путей; удаление недостижимой проверки ошибки. Итого <b>12 коммитов</b> месяца с «JSON» в заголовке — классическая кривая посадки большой фичи.</p>
+</section>
+<section class="blk s3 last">
+  <div class="kick">Вторая полоса · 2 июля · коммит a5918fddf10</div>
+  <h2>Конфликты репликации — теперь в таблице</h2>
+  <div class="dek">+1451 / −40 строк · 31 файл</div>
+  <p class="by">Амит Капила</p>
+  <p>Раньше конфликт логической репликации отправлялся в <code>postgresql.log</code> простым текстом. Хочешь проанализировать — парси логи регулярками. Теперь конфликты можно писать в таблицу.</p>
+<pre>CREATE SUBSCRIPTION sub
+  CONNECTION 'host=pub dbname=app' PUBLICATION pub
+  WITH (conflict_log_destination = 'table');
+  --  'log' | 'table' | 'all'</pre>
+<pre>   apply worker
+        │  обнаружен конфликт
+        ▼  (insert_exists / update_origin_differs / …)
+  ┌────────────────────────────┐
+  │  conflict_log_destination  │
+  └──────┬──────────────┬──────┘
+     'log'│              │'table'
+         ▼              ▼
+  postgresql.log   схема pg_conflict (системная)
+                   └── pg_conflict_log_&lt;subid&gt;
+                         ▲ internal dependency
+                   DROP SUBSCRIPTION → таблица исчезает</pre>
+  <p><b>Схема журнала</b> — прямо из <code>ConflictLogSchema[]</code>:</p>
+<pre>{"relid",OID} {"schemaname",TEXT} {"relname",TEXT}
+{"conflict_type",TEXT} {"remote_xid",XID}
+{"remote_commit_lsn",LSN} {"remote_commit_ts",TIMESTAMPTZ}
+{"remote_origin",TEXT} {"replica_identity_full",BOOL}
+{"replica_identity",JSON} {"remote_tuple",JSON}
+{"local_conflicts",JSONARRAY}</pre>
+  <p><b>Обратите внимание: <code>json</code>, а не <code>jsonb</code>.</b> Комментарий в коде объясняет выбор прямо — это точный аудиторский снимок, а <code>jsonb</code> его нормализовал бы: переупорядочил ключи, схлопнул дубликаты, потерял форматирование чисел. Искать по кортежам никто не собирается; индексируют скалярные колонки, а json-поля — payload для разбора постфактум.</p>
+  <p><b>Таблица под замком.</b> Запрещено: <code>ALTER</code>, <code>DROP</code>, <code>CREATE INDEX</code>, триггеры, правила, политики, расширенная статистика, наследование, использование как FK-цель, а также <code>INSERT</code>, <code>UPDATE</code>, <code>MERGE</code> и блокировка строк вручную. Разрешено ровно два действия — <code>DELETE</code> и <code>TRUNCATE</code>, чтобы чистить старьё.</p>
+  <p>Плюс: таблицы конфликтов исключены из публикаций, даже из <code>FOR ALL TABLES</code>. Иначе — весёлый бесконечный цикл.</p>
+</section>
+<section class="blk s2">
+  <div class="kick">Кто держал молоток</div>
+  <h2>Топ коммиттеров июля</h2>
+  <div class="bar"><span>Peter Eisentraut</span><span class="t a" style="width:100%"></span><span class="v">45</span></div>
+  <div class="bar"><span>Michael Paquier</span><span class="t" style="width:87%"></span><span class="v">39</span></div>
+  <div class="bar"><span>Fujii Masao</span><span class="t" style="width:80%"></span><span class="v">36</span></div>
+  <div class="bar"><span>Tom Lane</span><span class="t" style="width:67%"></span><span class="v">30</span></div>
+  <div class="bar"><span>Heikki Linnakangas</span><span class="t" style="width:38%"></span><span class="v">17</span></div>
+  <div class="bar"><span>Daniel Gustafsson</span><span class="t" style="width:36%"></span><span class="v">16</span></div>
+  <div class="bar"><span>Amit Kapila</span><span class="t" style="width:36%"></span><span class="v">16</span></div>
+  <div class="bar"><span>Alexander Korotkov</span><span class="t" style="width:31%"></span><span class="v">14</span></div>
+  <div class="bar"><span>Nathan Bossart</span><span class="t" style="width:29%"></span><span class="v">13</span></div>
+  <div class="bar"><span>Richard Guo</span><span class="t" style="width:27%"></span><span class="v">12</span></div>
+  <div class="bar"><span>Masahiko Sawada</span><span class="t" style="width:24%"></span><span class="v">11</span></div>
+  <div class="bar"><span>Álvaro Herrera</span><span class="t" style="width:22%"></span><span class="v">10</span></div>
+  <div class="bar"><span>Jeff Davis</span><span class="t" style="width:22%"></span><span class="v">10</span></div>
+  <div class="bar"><span>Peter Geoghegan</span><span class="t" style="width:20%"></span><span class="v">9</span></div>
+  <div class="bar"><span>Melanie Plageman</span><span class="t" style="width:18%"></span><span class="v">8</span></div>
+  <div class="bar"><span>Robert Haas</span><span class="t" style="width:16%"></span><span class="v">7</span></div>
+  <div class="bar"><span>David Rowley</span><span class="t" style="width:13%"></span><span class="v">6</span></div>
+  <p style="margin-top:2mm">…и ещё 11 коммиттеров. Абсолютный чемпион месяца — <b>Питер Айзентраут</b> с 45 коммитами типовой гигиены: <code>read()</code>, <code>write()</code>, <code>readlink()</code>, <code>copy_file_range()</code>, <code>ssize_t</code>, <code>off_t</code>, <code>const</code>-корректность, C11 <code>alignas</code> вместо <code>pg_attribute_aligned</code> и <code>_Generic</code> вместо <code>__builtin_types_compatible_p</code>.</p>
+  <p>Последнее и убило Visual Studio 2019.</p>
+</section>
+
+<section class="blk s2">
+  <div class="kick">Некролог</div>
+  <div class="obit">
+    <div style="font-size:7pt;letter-spacing:.2em;margin-bottom:1mm">† ПАМЯТИ †</div>
+    <h2>GROUP BY ALL</h2>
+    <div style="font-style:italic;font-size:9pt;margin-bottom:2mm">2026 — 2026</div>
+    <div style="font-size:7.5pt;letter-spacing:.1em">прожил один цикл</div>
+  </div>
+  <p style="margin-top:2.5mm"><b>Коммит a32733d8f10, Том Лейн, 17 июля.</b> Фича, позволявшая писать <code>GROUP BY ALL</code> вместо перечисления неагрегатных выражений, откачена — причём <b>из ветки 19 тоже</b> (<code>Backpatch-through: 19</code>).</p>
+<pre>ef38a4d9756  «Add GROUP BY ALL»            ← жизнь
+2ce745836    «comment improvements»
+    …
+a32733d8f10  Revert "Add GROUP BY ALL"     ← смерть</pre>
+  <p>Причина, из коммит-сообщения: постревью обнаружило, что <code>GROUP BY ALL</code> не учитывал специальную обработку элементов, которые заодно фигурируют в <code>ORDER BY</code>. Запрос возвращал <b>неверные результаты</b>, когда <code>ORDER BY</code> задаёт нестандартную семантику равенства.</p>
+  <p>Чинится рефакторингом — но «too much code churn for late beta». Классический постгресовый расклад: неправильные результаты плюс поздняя бета равно откат, без обсуждений.</p>
+  <p>Репортёр — Chao Li. Обещание «<i>We'll revert and try again in v20</i>» лежит на столе. Строчкой ниже в июльском логе — коммит <code>Update GROUP BY ALL comments about window functions</code> от 8 июля, попавший в дерево за девять дней до похорон.</p>
+</section>
+
+<section class="blk s2 last">
+  <div class="kick">Великая чистка</div>
+  <h2>Июль выносил мусор</h2>
+  <p><b>Прощай, всё, что старше v10.</b> Четыре коммита Натана Боссарта 2 июля: удалена поддержка серверов до v10 в <code>pg_dump</code>/<code>pg_dumpall</code>, <code>pg_upgrade</code> и <code>psql</code>. В конце месяца — и в <code>AdjustUpgrade.pm</code>.</p>
+<pre>Поддержка старых серверов в pg_dump/pg_upgrade/psql:
+
+2021, для v15:  9.2 ─────────────────────────► 15
+2026, для v20:                  10 ──────────► 20
+                                ▲ новая граница</pre>
+  <p>Политика проекта — держать минимум 10 предыдущих мажорных версий. Прошлый раз планку двигали в 2021 году. Способность <code>pg_restore</code> читать старые архивы не тронута — хотя, как честно замечено в коммите, «<i>fair to wonder how that might be tested nowadays</i>».</p>
+  <p><b>refint: сорок лет спустя.</b> Учебный пример из эпохи до <code>FOREIGN KEY</code> удалён после <b>шести</b> подряд коммитов-починок. Вердикт: «<i>the code has more issues than its sample-code value justifies</i>».</p>
+  <p><b>Планка тулчейна поднята.</b> Visual Studio 2022 минимум — VS 2019 формально поддерживает <code>_Generic</code>, но, цитата, «<i>is just broken for that</i>». ICU 55 минимум — RHEL 7 больше не поддерживается. Требование Tcl 8.6 продержалось меньше суток и было откачено.</p>
+  <p><b>Прочие жертвы:</b> <code>pg_spin_delay()</code>, RADIUS из методов initdb, SQL-функция <code>getpgusername()</code>, <code>WaitEventCustomCounterData</code>, «sketchy» вызов <code>TerminateThread()</code> на Ctrl-C в Windows, а также «поддержка» <code>SECURITY LABEL ON PROPERTY GRAPH</code>, которой на самом деле не было.</p>
+</section>
+<section class="blk s2">
+  <div class="kick">Планировщик</div>
+  <h2>Недостающий выключатель</h2>
+  <p><b>e01b23b84e4, Ричард Го, 9 июля.</b> Двадцать лет был <code>enable_hashagg</code>, а симметричного тумблера для сортированной группировки не было.</p>
+<pre>SET enable_groupagg = off;   -- по умолчанию on</pre>
+  <p>Накрывает <code>GroupAggregate</code>, <code>Group</code>, сортировочный <code>Unique</code> (для <code>DISTINCT</code> и уникализации полусоединений) и сортированный режим <code>SetOp</code>. Не жёсткий запрет — лишь увеличивает <code>disabled_nodes</code>.</p>
+  <p>Побочный эффект: в тестах куча мест выключала <code>enable_sort</code> только ради хешированного плана. Теперь там честный <code>enable_groupagg</code>. И в <code>union.sql</code> это впервые открыло дорогу к тестированию <b>хешированного UNION</b> — до июля путь был недостижим.</p>
+  <h2 style="margin-top:3mm;font-size:13pt">Hash Join и NULL</h2>
+  <p><b>60826a352d4, Дэвид Роули, 31 июля.</b> Детектив на три коммита. <code>adf97c156</code> научил вычисление выражений хешировать, <code>9ca67658d</code> починил там затирание памяти — и в починке осталась щель.</p>
+<pre>ключ ──► EEOP_HASHDATUM_FIRST_STRICT ──► промеж. хеш
+              │ ключ = NULL → jump to jumpdone
+              ▼
+        ┌─────────────┐
+        │  jumpdone   │ ждёт: resnull / resvalue
+        └─────────────┘ реальность: НЕ ЗАПОЛНЕНЫ ✗
+              ▼
+   в хеш-таблицу летит запись, которая
+   никогда ни с чем не сматчится</pre>
+  <p>Не неправильный ответ — просто сожжённые CPU и память. Hash Agg и хешированные подпланы не пострадали: они не используют STRICT-шаги.</p>
+  <p><b>Ещё в оптимизаторе:</b> улучшена оценка строк на выходе <code>UNION</code>; <code>stadistinct</code> протекает сквозь <code>GROUP BY</code>/<code>DISTINCT</code> в подзапросах и CTE; трилогия про <code>nullingrels</code>; починка pruning для <code>DEFAULT</code>-партиции при <code>RANGE</code>; nullability/strictness для <code>ScalarArrayOpExpr</code>.</p>
+</section>
+
+<section class="blk s2">
+  <div class="kick">Статистика · месяц Мишеля Паке</div>
+  <h2>Блокировки по бэкендам</h2>
+  <p>Из 39 коммитов Паке львиная доля — про <code>pgstat</code>. Всего 25 коммитов месяца трогают статистику.</p>
+  <p><b>8c579bdc366</b> (автор — Бертран Друво). Была <code>pg_stat_lock</code>, общая по кластеру. Стала ещё и персональная:</p>
+<pre>SELECT a.pid, a.state, l.locktype, l.waits,
+       l.wait_time, l.fastpath_exceeded
+FROM   pg_stat_activity a
+CROSS JOIN LATERAL pg_stat_get_backend_lock(a.pid) l
+WHERE  l.waits &gt; 0
+ORDER BY l.wait_time DESC;</pre>
+  <p><code>fastpath_exceeded</code> — сколько раз бэкенд вылетел за пределы fast-path блокировок. В том же месяце Паке дописал в документацию целый новый раздел про fast-path locking. Читать вместе.</p>
+  <p>Штрих для перфекционистов: <code>stat_lock.wait_time</code> за месяц дважды меняли тип — сначала на <code>double precision</code>, потом чинили потерю точности в <code>pg_stat_us_to_ms()</code>, потом ловили там опечатку. Микросекунды в миллисекунды оказались сложнее, чем выглядят.</p>
+  <h2 style="margin-top:3mm;font-size:13pt">Ограничитель логов</h2>
+  <p><b>c8bd8387c27, Фудзии Масао, 3 июля.</b> Знакомая любому DBA боль: приложение шлёт <code>INSERT</code> с литералом на 40 МБ, включён <code>log_min_duration_statement</code>, логи растут как на дрожжах.</p>
+<pre>SET log_statement_max_length = 1024;  -- байт
+--  0 — логировать пустое тело запроса
+-- -1 — прежнее поведение (по умолчанию)</pre>
+  <p>Обрезка байтовая, но режет по границам многобайтных символов — чтобы в логе не оказалось битого UTF-8.</p>
+</section>
+
+<section class="blk s2 last">
+  <div class="kick">Криминальная хроника</div>
+  <h2>Что поймали за месяц</h2>
+  <ul>
+    <li><b>Порча данных в первый же день:</b> <code>Fix unlogged sequence corruption after standby promotion</code> — 30 июня.</li>
+    <li><b>Гонка в сердце буфер-менеджера:</b> <code>bufmgr: Fix race in LockBufferForCleanup()</code>.</li>
+    <li><b>Карта видимости без WAL:</b> Мелани Плагеман, блок из четырёх коммитов — VM очищалась без корректной регистрации блоков в WAL. Прямой путь к рассинхрону после восстановления.</li>
+    <li><b>Утечка изоляции:</b> <code>Prevent access to other sessions' empty temp tables</code>.</li>
+    <li><b>Краш из SQL:</b> <code>satisfies_hash_partition</code> падал на <code>VARIADIC NULL</code>.</li>
+    <li><b>Тройное совпадение:</b> <code>RETURNING OLD</code> + BEFORE-триггер + конкурентный апдейт.</li>
+    <li><b>Зависший суммаризатор:</b> Роберт Хаас — <code>walsummarizer</code> застревал на переключении таймлайна.</li>
+    <li><b>Юникод:</b> Джефф Дэвис — защита от обрезанного UTF-8, финальная сигма, приведения к <code>unsigned char</code>.</li>
+    <li><b>SSI-гонка в nbtree:</b> Питер Гейган — плюс четыре коммита нового покрытия.</li>
+  </ul>
+  <p><b>Стабилизация PG 19</b> — второй по объёму пласт месяца: синхронизация последовательностей (13 коммитов, включая revert и переделку), онлайн-включение контрольных сумм (7), <code>REPACK CONCURRENTLY</code> (6), <code>FOR PORTION OF</code> (6), property graph / SQL&#47;PGQ (9), динамическое логическое декодирование (6).</p>
+<pre>PostgreSQL 20: карта цикла
+
+29 июня 2026  ┃ «Let the hacking begin…»   ✔
+июль 2026     ┃ CF1 — этот номер           ✔
+сентябрь 2026 ┃ CF2                        ←
+ноябрь 2026   ┃ CF3
+январь 2027   ┃ CF4
+март 2027     ┃ CF5 — feature freeze
+~ май 2027    ┃ beta 1
+~ сент 2027   ┃ PostgreSQL 20 GA</pre>
+</section>
+<section class="blk s4" style="border-bottom:none">
+  <div class="kick">Мелочи, которые порадуют</div>
+  <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:0 4mm">
+    <div>
+      <p><b>min() и max() для uuid.</b> У типа <code>uuid</code> давно был полный набор операторов сравнения и btree-класс — то есть он полностью упорядочен. Не хватало только агрегатов. Добавили <code>uuid_larger()</code> и <code>uuid_smaller()</code>. Красивая деталь из коммит-сообщения: значения сравниваются лексикографически по всем 128 битам, а у <b>UUIDv7</b> старшие биты — это Unix-timestamp. Значит <code>min()</code>/<code>max()</code> по UUIDv7 честно возвращают самое старое и самое новое значение.</p>
+      <p><b>Имена индексов на выражениях</b> стали осмысленными — два коммита Тома Лейна. Мелочь, но её ждали годами.</p>
+    </div>
+    <div>
+      <p><b>Предупреждение про MD5.</b> Аутентификация паролем с MD5-хешем теперь выдаёт warning. Сам MD5 не удалили — но намекнули очень прозрачно.</p>
+      <p><b>psql:</b> роль <code>pg_read_all_stats</code> наконец видит размер базы в <code>\l+</code>; починено автодополнение <code>\df</code> для процедур; исправлен выбор пейджера для перенесённого расширенного вывода.</p>
+      <p><b>pg_recvlogical</b> шлёт финальный feedback при <code>SIGINT</code>/<code>SIGTERM</code> — больше не теряется прогресс при аккуратной остановке.</p>
+    </div>
+    <div>
+      <p><b>Возвращение префиксных операторов.</b> Коммит <code>2f094e7ac</code> сделал <code>|</code> и <code>-&gt;</code> встроенными именами операторов, корректно дав им приоритет и добавив инфиксные продукции — но забыл про <b>префиксные</b>. Как минимум одно расширение на это рассчитывало. Bug #19558, репортёр — Пьер Сенелляр.</p>
+      <p><b>Закрытые уголки синтаксиса:</b> запрещены set-returning функции внутри <code>OVER</code>; запрещено переименование правила в <code>_RETURN</code>; <code>io_min_workers</code> больше <code>io_max_workers</code> теперь выдаёт warning.</p>
+    </div>
+  </div>
+</section>
+
+<section class="blk s2 last" style="border-bottom:none">
+  <div class="kick">Невидимый труд</div>
+  <h2>Кто читал патчи</h2>
+  <div class="dek">332 трейлера Reviewed-by от 98 человек — против 28 коммиттеров</div>
+  <div class="bar"><span>Fujii Masao</span><span class="t a" style="width:100%"></span><span class="v">21</span></div>
+  <div class="bar"><span>Tom Lane</span><span class="t" style="width:81%"></span><span class="v">17</span></div>
+  <div class="bar"><span>Daniel Gustafsson</span><span class="t" style="width:76%"></span><span class="v">16</span></div>
+  <div class="bar"><span>Michael Paquier</span><span class="t" style="width:67%"></span><span class="v">14</span></div>
+  <div class="bar"><span>Heikki Linnakangas</span><span class="t" style="width:62%"></span><span class="v">13</span></div>
+  <div class="bar"><span>Amit Kapila</span><span class="t" style="width:57%"></span><span class="v">12</span></div>
+  <div class="bar"><span>Hayato Kuroda</span><span class="t" style="width:48%"></span><span class="v">10</span></div>
+  <div class="bar"><span>Ewan Young</span><span class="t" style="width:48%"></span><span class="v">10</span></div>
+  <div class="bar"><span>Chao Li</span><span class="t" style="width:48%"></span><span class="v">10</span></div>
+  <div class="bar"><span>Ayush Tiwari</span><span class="t" style="width:48%"></span><span class="v">10</span></div>
+  <div class="bar"><span>Andrey Borodin</span><span class="t" style="width:43%"></span><span class="v">9</span></div>
+  <div class="bar"><span>Zsolt Parragi</span><span class="t" style="width:38%"></span><span class="v">8</span></div>
+  <div class="bar"><span>Tristan Partin</span><span class="t" style="width:38%"></span><span class="v">8</span></div>
+  <div class="bar"><span>Ashutosh Bapat</span><span class="t" style="width:33%"></span><span class="v">7</span></div>
+  <p style="margin-top:2mm">Верхние строки — коммиттеры, читающие чужое сверх своего. Ниже начинается часть проекта, которой нет в release notes: имя попадает в дерево только строкой <code>Reviewed-by</code>.</p>
+  <p><b>Медианный ревьюер июля прочитал один патч.</b> Хвост длинный — 98 человек на 332 трейлера. Именно он, а не два десятка коммиттеров, определяет, сколько патчей проект способен принять за цикл.</p>
+</section>
+</main>
+
+<div class="foot">
+  <span>Составлено по <code>git log a281a3e6dbb..origin/master --until=2026-08-01</code></span>
+  <span>324 коммита · 736 файлов · 182 имени в трейлерах</span>
+  <span><i>«И вечный fsync, покой нам только снится»</i></span>
+</div>
+</body></html>

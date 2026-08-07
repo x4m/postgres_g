@@ -1,0 +1,211 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8">
+<title>WAL Street Journal — LinkedIn carousel</title>
+<link href="https://fonts.googleapis.com/css2?family=UnifrakturMaguntia&display=swap" rel="stylesheet">
+<style>
+/* LinkedIn document post. 11 square slides, 254mm = 1080px @ 108dpi.
+   EXPORT: Firefox -> Cmd+P -> Save to PDF -> Margins: None
+                             -> check "Print backgrounds" -> Save. */
+:root{--paper:#f4f1e8;--ink:#1a1a1a;--acc:#8b2513;--mute:#6b6355}
+@page{size:254mm 254mm;margin:0}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:#555;font:20pt/1.4 Georgia,"Times New Roman",serif;color:var(--ink);
+  -webkit-print-color-adjust:exact;print-color-adjust:exact}
+.s{width:254mm;height:254mm;background:var(--paper);padding:20mm;
+  display:flex;flex-direction:column;position:relative;overflow:hidden;
+  page-break-after:always;break-after:page}
+.s:last-child{page-break-after:auto;break-after:auto}
+@media screen{.s{margin:0 auto 14px;box-shadow:0 0 24px rgba(0,0,0,.5)}}
+
+.eyebrow{font:700 13pt/1 Georgia,serif;letter-spacing:.26em;text-transform:uppercase;
+  color:var(--acc);border-bottom:1.5pt solid var(--acc);padding-bottom:3mm;margin-bottom:9mm}
+h1{font:400 60pt/1.02 "UnifrakturMaguntia",Georgia,serif;text-align:center}
+h2{font:700 46pt/1.02 Georgia,serif;letter-spacing:-.02em;margin-bottom:7mm}
+h2.sm{font-size:36pt}
+p{margin-bottom:5mm}
+.mute{color:var(--mute)}
+.acc{color:var(--acc)}
+.grow{flex:1}
+.num{font:700 13pt/1 Georgia,serif;letter-spacing:.2em;color:var(--mute);
+  position:absolute;bottom:11mm;right:20mm}
+.brand{font:700 12pt/1 Georgia,serif;letter-spacing:.2em;text-transform:uppercase;
+  color:var(--mute);position:absolute;bottom:11mm;left:20mm}
+.swipe{font:700 15pt/1 Georgia,serif;letter-spacing:.2em;text-transform:uppercase;color:var(--acc)}
+pre{font:15pt/1.45 "SF Mono",Menlo,Consolas,monospace;background:#e9e4d6;
+  border-left:4pt solid var(--acc);padding:7mm 8mm;white-space:pre;margin-bottom:6mm}
+pre.sm{font-size:11.5pt;line-height:1.4}
+code{font:.88em "SF Mono",Menlo,Consolas,monospace;background:#e9e4d6;padding:0 1mm}
+ul{list-style:none}
+li{padding-left:10mm;text-indent:-10mm;margin-bottom:5mm}
+li::before{content:"— ";color:var(--acc);font-weight:700}
+.stat{display:flex;align-items:baseline;gap:6mm;border-top:1.5pt solid var(--ink);
+  padding-top:4mm;margin-bottom:5mm}
+.stat b{font:700 52pt/.9 Georgia,serif;color:var(--acc);min-width:78mm;text-align:right}
+.stat span{font-size:19pt;letter-spacing:.02em}
+.bar{display:grid;grid-template-columns:62mm 1fr 20mm;gap:5mm;align-items:center;
+  font-size:17pt;margin-bottom:4.5mm}
+.bar .t{height:7mm;background:var(--ink)}
+.bar .t.a{background:var(--acc)}
+.bar .v{text-align:right;font-weight:700}
+.huge{font:700 150pt/.9 Georgia,serif;color:var(--acc);text-align:center;letter-spacing:-.04em}
+.rule{border:0;border-top:1.5pt solid var(--ink);margin:7mm 0}
+.obit{border:5pt double var(--ink);padding:14mm 10mm;text-align:center}
+</style></head>
+<body>
+<section class="s">
+  <div class="eyebrow">Vol. XX · No. 1 · July 2026</div>
+  <div class="grow" style="display:flex;flex-direction:column;justify-content:center">
+    <h1>WAL Street<br>Journal</h1>
+    <hr class="rule" style="margin:10mm 0">
+    <h2 style="text-align:center;font-size:40pt;margin-bottom:5mm">Let the hacking begin</h2>
+    <p style="text-align:center;font-size:23pt" class="mute">PostgreSQL 20, first commitfest<br>324 commits, counted one by one</p>
+  </div>
+  <div class="swipe" style="text-align:center">Swipe →</div>
+  <div class="brand">WSJ</div><div class="num">1 / 11</div>
+</section>
+
+<section class="s">
+  <div class="eyebrow">June 29, 2026</div>
+  <h2>Four words start a release.</h2>
+  <pre>commit a281a3e6dbb45d5cca41ea5f7b746724eb3ca70d
+Author: Joe Conway
+
+    Stamp HEAD as 20devel.
+
+    Let the hacking begin ...</pre>
+  <p>The same commit deleted <b>3,330 lines</b> of release notes for v19 and replaced them with a 16-line empty template.</p>
+  <p class="grow">July filled it. The first patch landed forty minutes later.</p>
+  <div class="brand">WSJ</div><div class="num">2 / 11</div>
+</section>
+
+<section class="s">
+  <div class="eyebrow">The month in numbers</div>
+  <div class="stat"><b>324</b><span>commits after the stamp</span></div>
+  <div class="stat"><b>+24,656</b><span>lines added</span></div>
+  <div class="stat"><b>−10,946</b><span>lines removed</span></div>
+  <div class="stat"><b>736</b><span>files touched</span></div>
+  <div class="stat"><b>28</b><span>committers</span></div>
+  <div class="stat"><b>182</b><span>distinct names in trailers</span></div>
+  <div class="grow"></div>
+  <div class="brand">WSJ</div><div class="num">3 / 11</div>
+</section>
+
+<section class="s">
+  <div class="eyebrow">The tell</div>
+  <div class="huge" style="margin-top:14mm">74</div>
+  <p style="text-align:center;font-size:26pt;margin-top:4mm">of 324 commits start with the word</p>
+  <pre style="text-align:center;font-size:30pt;margin-top:6mm">Fix</pre>
+  <div class="grow"></div>
+  <p style="font-size:24pt;line-height:1.35">Nearly a quarter of the month went to repairing what the previous cycle shipped.</p>
+  <p class="acc" style="font-size:24pt;font-style:italic">A first commitfest is always half housekeeping.</p>
+  <div class="brand">WSJ</div><div class="num">4 / 11</div>
+</section>
+<section class="s">
+  <div class="eyebrow">Where the work went</div>
+  <h2 class="sm">More test changes<br>than anything else.</h2>
+  <div class="bar"><span>src/test/</span><span class="t a" style="width:100%"></span><span class="v">253</span></div>
+  <div class="bar"><span>src/bin/</span><span class="t" style="width:60%"></span><span class="v">152</span></div>
+  <div class="bar"><span>contrib/</span><span class="t" style="width:49%"></span><span class="v">123</span></div>
+  <div class="bar"><span>backend/utils/</span><span class="t" style="width:40%"></span><span class="v">101</span></div>
+  <div class="bar"><span>include/</span><span class="t" style="width:40%"></span><span class="v">100</span></div>
+  <div class="bar"><span>doc/</span><span class="t" style="width:38%"></span><span class="v">97</span></div>
+  <div class="bar"><span>backend/access/</span><span class="t" style="width:23%"></span><span class="v">57</span></div>
+  <div class="bar"><span>backend/commands/</span><span class="t" style="width:16%"></span><span class="v">41</span></div>
+  <div class="bar"><span>backend/replication/</span><span class="t" style="width:15%"></span><span class="v">39</span></div>
+  <div class="grow"></div>
+  <p style="font-size:22pt">Last cycle's features growing their coverage.</p>
+  <div class="brand">WSJ</div><div class="num">5 / 11</div>
+</section>
+
+<section class="s">
+  <div class="eyebrow">The headline patch · July 9</div>
+  <h2>JSON_TABLE<br>PLAN landed.</h2>
+  <hr class="rule">
+  <div class="stat" style="border:0;padding:0"><b>+2,017</b><span>lines</span></div>
+  <div class="stat" style="border:0;padding:0"><b>7</b><span>co-authors</span></div>
+  <div class="stat" style="border:0;padding:0"><b>11</b><span>reviewers</span></div>
+  <div class="grow"></div>
+  <p style="font-size:24pt">Discussion links in the commit message go back to <b>2022</b>.</p>
+  <p style="font-size:24pt" class="mute">JSON_TABLE shipped in PostgreSQL 17 without the PLAN clause. The debt came due.</p>
+  <div class="brand">WSJ</div><div class="num">6 / 11</div>
+</section>
+
+<section class="s">
+  <div class="eyebrow">What PLAN actually does</div>
+  <p style="font-size:22pt">How do you join rows coming from several <code>NESTED PATH</code> clauses? Until July the answer was hardcoded.</p>
+<pre class="sm">        ┌──────────────────────────────┐
+        │  row pattern  '$'  AS root   │
+        └──────────────┬───────────────┘
+                       │  INNER / OUTER
+       ┌───────────────┴───────────────┐
+┌──────▼───────┐               ┌───────▼──────┐
+│ NESTED       │  UNION/CROSS  │ NESTED       │
+│ '$.phones'   │◄─────────────►│ '$.emails'   │
+└──────────────┘               └──────────────┘</pre>
+  <pre style="font-size:16pt">PLAN DEFAULT (INNER, CROSS)</pre>
+  <div class="grow"></div>
+  <p style="font-size:21pt">Parent to child: <b>INNER</b> or <b>OUTER</b>.<br>Sibling to sibling: <b>UNION</b> or <b>CROSS</b>.</p>
+  <div class="brand">WSJ</div><div class="num">7 / 11</div>
+</section>
+
+<section class="s">
+  <div class="eyebrow">The obituary</div>
+  <div class="obit" style="margin-top:6mm">
+    <div style="font-size:15pt;letter-spacing:.3em;margin-bottom:6mm">† IN MEMORIAM †</div>
+    <h2 style="font-size:52pt;margin-bottom:4mm">GROUP BY ALL</h2>
+    <div style="font-size:24pt;font-style:italic">2026 — 2026</div>
+  </div>
+  <div class="grow" style="display:flex;flex-direction:column;justify-content:center">
+    <p style="font-size:23pt">Post-commit review found it missed the special handling for entries that also appear in <code>ORDER BY</code> — <b>wrong results</b> under non-default equality semantics.</p>
+    <p style="font-size:23pt">Fixable with refactoring. But the calendar said late beta.</p>
+    <p class="acc" style="font-size:26pt;font-style:italic">Reverted. Backpatched out of 19 too.</p>
+  </div>
+  <div class="brand">WSJ</div><div class="num">8 / 11</div>
+</section>
+<section class="s">
+  <div class="eyebrow">The great cleanup</div>
+  <h2 class="sm">July took out<br>the trash.</h2>
+  <ul style="font-size:22pt">
+    <li>Pre-v10 server support removed from <code>pg_dump</code>, <code>pg_upgrade</code>, <code>psql</code></li>
+    <li>The <code>refint</code> extension deleted after six straight fix commits</li>
+    <li>Minimum toolchain raised to Visual Studio 2022 and ICU 55</li>
+    <li><code>pg_spin_delay()</code>, <code>getpgusername()</code>, RADIUS in initdb — gone</li>
+  </ul>
+  <div class="grow"></div>
+  <p style="font-size:21pt">VS 2019 died an interesting death: a commit swapped <code>__builtin_types_compatible_p</code> for C11 <code>_Generic</code>, and VS 2019 turned out to be, quoting the commit, <i>"just broken for that."</i></p>
+  <div class="brand">WSJ</div><div class="num">9 / 11</div>
+</section>
+
+<section class="s">
+  <div class="eyebrow">The invisible half</div>
+  <h2 class="sm">28 committers.<br>98 reviewers.</h2>
+  <div class="stat"><b>332</b><span><code>Reviewed-by</code> trailers in July</span></div>
+  <div class="stat"><b>98</b><span>distinct people behind them</span></div>
+  <div class="stat"><b>1</b><span>patch read by the median reviewer</span></div>
+  <div class="grow"></div>
+  <p style="font-size:22pt">The long tail — not the two dozen committers — sets how many patches the project can absorb per cycle.</p>
+  <p style="font-size:22pt" class="mute">Most of these names never appear in a release note.</p>
+  <div class="brand">WSJ</div><div class="num">10 / 11</div>
+</section>
+
+<section class="s">
+  <div class="eyebrow">What happens next</div>
+  <pre class="sm" style="font-size:17pt">Jun 29 2026  │ Let the hacking begin ...   ✔
+July 2026    │ CF1 — this issue            ✔
+Sep 2026     │ CF2                         ←
+Nov 2026     │ CF3
+Jan 2027     │ CF4
+Mar 2027     │ CF5 — feature freeze
+~ May 2027   │ beta 1
+~ Sep 2027   │ PostgreSQL 20 GA</pre>
+  <div class="grow" style="display:flex;flex-direction:column;justify-content:center">
+    <p style="font-size:23pt">Four commitfests to go. <code>GROUP BY ALL</code> has an open invitation to try again.</p>
+    <hr class="rule">
+    <p style="font-size:20pt">Reproduce every number in this deck:</p>
+    <pre style="font-size:13.5pt">git log a281a3e6dbb..origin/master \
+        --until=2026-08-01</pre>
+    <p style="font-size:19pt" class="mute">No cherry-picking. Full write-up linked in the comments.</p>
+  </div>
+  <div class="brand">WSJ</div><div class="num">11 / 11</div>
+</section>
+</body></html>
