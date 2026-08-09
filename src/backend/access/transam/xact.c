@@ -65,6 +65,7 @@
 #include "utils/builtins.h"
 #include "utils/combocid.h"
 #include "utils/guc.h"
+#include "utils/injection_point.h"
 #include "utils/inval.h"
 #include "utils/memutils.h"
 #include "utils/relmapper.h"
@@ -5197,6 +5198,15 @@ CommitSubTransaction(void)
 	/* Post-commit cleanup */
 	if (FullTransactionIdIsValid(s->fullTransactionId))
 		AtSubCommit_childXids();
+
+	/*
+	 * Injection point to model a failure occurring after the subtransaction's
+	 * XID has been transferred into the parent's committed-children array but
+	 * before the subcommit finishes.  Any error here longjmps into
+	 * AbortSubTransaction() with the XID already in the parent's list.
+	 */
+	INJECTION_POINT("subxact-after-childxids-transfer", NULL);
+
 	AfterTriggerEndSubXact(true);
 	AtSubCommit_Portals(s->subTransactionId,
 						s->parent->subTransactionId,
