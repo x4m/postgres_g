@@ -167,6 +167,8 @@ ginDeletePostingPage(GinVacuumState *gvs, Buffer dBuffer, Buffer lBuffer,
 	page = BufferGetPage(dBuffer);
 	rightlink = GinPageGetOpaque(page)->rightlink;
 
+	Assert(GinPageGetOpaque(BufferGetPage(lBuffer))->rightlink == deleteBlkno);
+
 	/*
 	 * Any insert which would have gone on the leaf block will now go to its
 	 * right sibling.
@@ -334,10 +336,20 @@ ginScanPostingTreeToDelete(GinVacuumState *gvs, DataPageDeleteStack *myStackItem
 	if (isempty)
 	{
 		/*
-		 * Proceed to the ginDeletePostingPage() if that's not the leftmost or
-		 * the rightmost page.
+		 * Proceed to the ginDeletePostingPage() if target page is not the
+		 * leftmost or the rightmost page.
+		 *
+		 * We cannot delete an empty target page whose left sibling is
+		 * incompletely split; ginDeletePostingPage expects to find and remove
+		 * such a target page's downlink, but there isn't any yet (there won't
+		 * be until an inserter finishes the incomplete split).  We also avoid
+		 * deleting an empty target page that is itself incompletely split;
+		 * allowing that case would make it impossible for us to detect that
+		 * it's unsafe to delete the target's right sibling page later on.
 		 */
-		if (BufferIsValid(myStackItem->leftBuffer) && !GinPageRightMost(page))
+		if (BufferIsValid(myStackItem->leftBuffer) && !GinPageRightMost(page) &&
+			!GinPageIsIncompleteSplit(page) &&
+			!GinPageIsIncompleteSplit(BufferGetPage(myStackItem->leftBuffer)))
 		{
 			Assert(!myStackItem->isRoot);
 			ginDeletePostingPage(gvs, buffer, myStackItem->leftBuffer,
