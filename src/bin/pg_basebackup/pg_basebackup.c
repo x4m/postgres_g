@@ -608,36 +608,16 @@ LogStreamerMain(logstreamer_param *param)
 }
 
 /*
- * Initiate background process for receiving xlog during the backup.
- * The background stream will use its own database connection so we can
- * stream the logfile in parallel with the backups.
+ * Open the connection to be used for WAL streaming and create the replication
+ * slot, if requested.  This must happen before the starting checkpoint, so
+ * that the slot protects the backup's starting WAL location.
  */
-static void
-StartLogStreamer(char *startpos, uint32 timeline, char *sysidentifier,
-				 pg_compress_algorithm wal_compress_algorithm,
-				 int wal_compress_level)
+static logstreamer_param *
+PrepareLogStreamer(void)
 {
 	logstreamer_param *param;
-	char		statusdir[MAXPGPATH];
 
 	param = pg_malloc0_object(logstreamer_param);
-	param->timeline = timeline;
-	param->sysidentifier = sysidentifier;
-	param->wal_compress_algorithm = wal_compress_algorithm;
-	param->wal_compress_level = wal_compress_level;
-
-	/* Convert the starting position */
-	if (!pg_parse_lsn(startpos, &param->startptr))
-		pg_fatal("could not parse write-ahead log location \"%s\"",
-				 startpos);
-	/* Round off to even segment position */
-	param->startptr -= XLogSegmentOffset(param->startptr, WalSegSz);
-
-#ifndef WIN32
-	/* Create our background pipe */
-	if (pipe(bgpipe) < 0)
-		pg_fatal("could not create pipe for background process: %m");
-#endif
 
 	/* Get a second connection */
 	param->bgconn = GetConnection();
@@ -678,6 +658,40 @@ StartLogStreamer(char *startpos, uint32 timeline, char *sysidentifier,
 							replication_slot);
 		}
 	}
+
+	return param;
+}
+
+/*
+ * Initiate background process for receiving xlog during the backup.
+ * The background stream will use its own database connection so we can
+ * stream the logfile in parallel with the backups.
+ */
+static void
+StartLogStreamer(logstreamer_param *param, char *startpos, uint32 timeline,
+				 char *sysidentifier,
+				 pg_compress_algorithm wal_compress_algorithm,
+				 int wal_compress_level)
+{
+	char		statusdir[MAXPGPATH];
+
+	param->timeline = timeline;
+	param->sysidentifier = sysidentifier;
+	param->wal_compress_algorithm = wal_compress_algorithm;
+	param->wal_compress_level = wal_compress_level;
+
+	/* Convert the starting position */
+	if (!pg_parse_lsn(startpos, &param->startptr))
+		pg_fatal("could not parse write-ahead log location \"%s\"",
+				 startpos);
+	/* Round off to even segment position */
+	param->startptr -= XLogSegmentOffset(param->startptr, WalSegSz);
+
+#ifndef WIN32
+	/* Create our background pipe */
+	if (pipe(bgpipe) < 0)
+		pg_fatal("could not create pipe for background process: %m");
+#endif
 
 	if (format == 'p')
 	{
@@ -1754,6 +1768,7 @@ BaseBackup(char *compression_algorithm, char *compression_detail,
 	int			writing_to_stdout;
 	bool		use_new_option_syntax = false;
 	PQExpBufferData buf;
+	logstreamer_param *logstreamer = NULL;
 
 	Assert(conn != NULL);
 	initPQExpBuffer(&buf);
@@ -1970,6 +1985,9 @@ BaseBackup(char *compression_algorithm, char *compression_detail,
 									  compression_detail);
 	}
 
+	if (includewal == STREAM_WAL)
+		logstreamer = PrepareLogStreamer();
+
 	if (verbose)
 		pg_log_info("initiating base backup, waiting for checkpoint to complete");
 
@@ -2100,7 +2118,7 @@ BaseBackup(char *compression_algorithm, char *compression_detail,
 			wal_compress_level = 0;
 		}
 
-		StartLogStreamer(xlogstart, starttli, sysidentifier,
+		StartLogStreamer(logstreamer, xlogstart, starttli, sysidentifier,
 						 wal_compress_algorithm,
 						 wal_compress_level);
 	}
