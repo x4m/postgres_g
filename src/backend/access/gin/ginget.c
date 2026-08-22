@@ -20,6 +20,7 @@
 #include "miscadmin.h"
 #include "storage/predicate.h"
 #include "utils/datum.h"
+#include "utils/injection_point.h"
 #include "utils/memutils.h"
 #include "utils/rel.h"
 
@@ -787,6 +788,14 @@ entryLoadMoreItems(GinState *ginstate, GinScanEntry entry,
 				}
 				else
 					LockBuffer(entry->buffer, GIN_UNLOCK);
+
+				/*
+				 * We return holding only a pin on entry->buffer.  The next
+				 * call reads this page's rightlink to step right, so the page
+				 * has to still be the one we left behind.
+				 */
+				if (BufferIsValid(entry->buffer))
+					INJECTION_POINT("gin-entry-load-more-items-pinned", NULL);
 				return;
 			}
 		}

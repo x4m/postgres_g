@@ -16,7 +16,9 @@
 
 #include "access/gin_private.h"
 #include "access/ginxlog.h"
+#include "access/gist_private.h"
 #include "access/reloptions.h"
+#include "access/table.h"
 #include "access/xloginsert.h"
 #include "catalog/pg_collation.h"
 #include "catalog/pg_type.h"
@@ -326,7 +328,45 @@ GinNewBuffer(Relation index)
 		if (ConditionalLockBuffer(buffer))
 		{
 			if (GinPageIsRecyclable(BufferGetPage(buffer)))
+			{
+				Page		page = BufferGetPage(buffer);
+
+				if (XLogStandbyInfoActive() && RelationNeedsWAL(index) &&
+					GinPageGetDeleteXid(page) != InvalidTransactionId)
+				{
+					FullTransactionId nextfxid = ReadNextFullTransactionId();
+					FullTransactionId deletefxid;
+					Relation	heaprel;
+
+					/*
+					 * Legacy GIN pages only store the low 32 bits of the
+					 * deletion XID.  Interpret those as the latest occurrence
+					 * not later than nextFullXid.  This can give a conservative
+					 * result for a page that survived an entire XID epoch, but
+					 * avoids weakening recovery conflict handling.
+					 */
+					deletefxid = FullTransactionIdFromAllowableAt(
+						nextfxid, GinPageGetDeleteXid(page));
+
+					heaprel = table_open(index->rd_index->indrelid, NoLock);
+
+					/*
+					 * Use GiST's page-reuse record to make this backpatchable.
+					 * The record is independent of the index AM and is already
+					 * understood by older minor releases, so a patched primary
+					 * can stream it to an unpatched standby.
+					 *
+					 * XXX Page reuse should eventually have a common WAL facility
+					 * shared by nbtree, GiST, and GIN.
+					 */
+					gistXLogPageReuse(index, heaprel,
+								  BufferGetBlockNumber(buffer),
+								  deletefxid);
+					table_close(heaprel, NoLock);
+				}
+
 				return buffer;	/* OK to use */
+			}
 
 			LockBuffer(buffer, GIN_UNLOCK);
 		}
