@@ -332,21 +332,28 @@ GinNewBuffer(Relation index)
 				Page		page = BufferGetPage(buffer);
 
 				if (XLogStandbyInfoActive() && RelationNeedsWAL(index) &&
-					GinPageGetDeleteXid(page) != InvalidTransactionId)
+					(GinPageHasFullDeleteXid(page) ||
+					 TransactionIdIsValid(GinPageGetDeleteXid(page))))
 				{
-					FullTransactionId nextfxid = ReadNextFullTransactionId();
 					FullTransactionId deletefxid;
 					Relation	heaprel;
 
-					/*
-					 * Legacy GIN pages only store the low 32 bits of the
-					 * deletion XID.  Interpret those as the latest occurrence
-					 * not later than nextFullXid.  This can give a conservative
-					 * result for a page that survived an entire XID epoch, but
-					 * avoids weakening recovery conflict handling.
-					 */
-					deletefxid = FullTransactionIdFromAllowableAt(
-						nextfxid, GinPageGetDeleteXid(page));
+					if (GinPageHasFullDeleteXid(page))
+						deletefxid = GinPageGetDeleteFullXid(page);
+					else
+					{
+						FullTransactionId nextfxid = ReadNextFullTransactionId();
+
+						/*
+						 * Legacy GIN pages only store the low 32 bits of the
+						 * deletion XID.  Interpret those as the latest occurrence
+						 * not later than nextFullXid.  This can give a conservative
+						 * result for a page that survived an entire XID epoch, but
+						 * avoids weakening recovery conflict handling.
+						 */
+						deletefxid = FullTransactionIdFromAllowableAt(
+							nextfxid, GinPageGetDeleteXid(page));
+					}
 
 					heaprel = table_open(index->rd_index->indrelid, NoLock);
 

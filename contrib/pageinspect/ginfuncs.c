@@ -148,8 +148,11 @@ gin_page_opaque_info(PG_FUNCTION_ARGS)
 		flags[nflags++] = CStringGetTextDatum("incomplete_split");
 	if (flagbits & GIN_COMPRESSED)
 		flags[nflags++] = CStringGetTextDatum("compressed");
+	if (flagbits & GIN_DELETED_FULL_XID)
+		flags[nflags++] = CStringGetTextDatum("deleted_full_xid");
 	flagbits &= ~(GIN_DATA | GIN_LEAF | GIN_DELETED | GIN_META | GIN_LIST |
-				  GIN_LIST_FULLROW | GIN_INCOMPLETE_SPLIT | GIN_COMPRESSED);
+				  GIN_LIST_FULLROW | GIN_INCOMPLETE_SPLIT | GIN_COMPRESSED |
+				  GIN_DELETED_FULL_XID);
 	if (flagbits)
 	{
 		/* any flags we don't recognize are printed in hex */

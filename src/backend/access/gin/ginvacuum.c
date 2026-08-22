@@ -204,8 +204,7 @@ ginDeletePostingPage(GinVacuumState *gvs, Buffer dBuffer, Buffer lBuffer,
 	 * Mark page as deleted, and remember last xid which could know its
 	 * address.
 	 */
-	GinPageSetDeleted(page);
-	GinPageSetDeleteXid(page, ReadNextTransactionId());
+	GinPageSetDeleteFullXid(page, ReadNextFullTransactionId());
 
 	MarkBufferDirty(pBuffer);
 	MarkBufferDirty(lBuffer);
@@ -231,7 +230,7 @@ ginDeletePostingPage(GinVacuumState *gvs, Buffer dBuffer, Buffer lBuffer,
 
 		data.parentOffset = myoff;
 		data.rightLink = GinPageGetOpaque(page)->rightlink;
-		data.deleteXid = GinPageGetDeleteXid(page);
+		data.deleteXid = GinPageGetDeleteFullXid(page);
 
 		XLogRegisterData(&data, sizeof(ginxlogDeletePage));
 
@@ -896,22 +895,22 @@ ginvacuumcleanup(IndexVacuumInfo *info, IndexBulkDeleteResult *stats)
 bool
 GinPageIsRecyclable(Page page)
 {
-	TransactionId delete_xid;
-
 	if (PageIsNew(page))
 		return true;
 
 	if (!GinPageIsDeleted(page))
 		return false;
 
-	delete_xid = GinPageGetDeleteXid(page);
+	if (GinPageHasFullDeleteXid(page))
+		return GlobalVisCheckRemovableFullXid(NULL,
+										 GinPageGetDeleteFullXid(page));
 
-	if (!TransactionIdIsValid(delete_xid))
+	if (!TransactionIdIsValid(GinPageGetDeleteXid(page)))
 		return true;
 
 	/*
 	 * If no backend still could view delete_xid as in running, all scans
 	 * concurrent with ginDeletePostingPage() must have finished.
 	 */
-	return GlobalVisCheckRemovableXid(NULL, delete_xid);
+	return GlobalVisCheckRemovableXid(NULL, GinPageGetDeleteXid(page));
 }

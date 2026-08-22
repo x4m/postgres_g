@@ -499,8 +499,7 @@ ginRedoDeletePage(XLogReaderState *record)
 	{
 		page = BufferGetPage(dbuffer);
 		Assert(GinPageIsData(page));
-		GinPageSetDeleted(page);
-		GinPageSetDeleteXid(page, data->deleteXid);
+		GinPageSetDeleteFullXid(page, data->deleteXid);
 		PageSetLSN(page, lsn);
 		MarkBufferDirty(dbuffer);
 	}
@@ -804,7 +803,9 @@ gin_mask(char *pagedata, BlockNumber blkno)
 	 * the whole page content.  For other pages, mask the hole if pd_lower
 	 * appears to have been set correctly.
 	 */
-	if (opaque->flags & GIN_DELETED)
+	if (opaque->flags & GIN_DELETED_FULL_XID)
+		mask_unused_space(page);
+	else if (opaque->flags & GIN_DELETED)
 		mask_page_content(page);
 	else if (pagehdr->pd_lower > SizeOfPageHeaderData)
 		mask_unused_space(page);

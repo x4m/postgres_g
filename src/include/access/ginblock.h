@@ -47,6 +47,7 @@ typedef GinPageOpaqueData *GinPageOpaque;
 #define GIN_INCOMPLETE_SPLIT (1 << 6)	/* page was split, but parent not
 										 * updated */
 #define GIN_COMPRESSED	  (1 << 7)
+#define GIN_DELETED_FULL_XID (1 << 8) /* deleted page stores a full XID */
 
 /* Page numbers of fixed-location pages */
 #define GIN_METAPAGE_BLKNO	(0)
@@ -126,6 +127,7 @@ typedef struct GinMetaPageData
 #define GinPageSetDeleted(page)    ( GinPageGetOpaque(page)->flags |= GIN_DELETED)
 #define GinPageSetNonDeleted(page) ( GinPageGetOpaque(page)->flags &= ~GIN_DELETED)
 #define GinPageIsIncompleteSplit(page) ( (GinPageGetOpaque(page)->flags & GIN_INCOMPLETE_SPLIT) != 0 )
+#define GinPageHasFullDeleteXid(page) ( (GinPageGetOpaque(page)->flags & GIN_DELETED_FULL_XID) != 0 )
 
 #define GinPageRightMost(page) ( GinPageGetOpaque(page)->rightlink == InvalidBlockNumber)
 
@@ -134,7 +136,29 @@ typedef struct GinMetaPageData
  * its deletion is over.
  */
 #define GinPageGetDeleteXid(page) ( ((PageHeader) (page))->pd_prune_xid )
-#define GinPageSetDeleteXid(page, xid) ( ((PageHeader) (page))->pd_prune_xid = xid)
+
+typedef struct GINDeletedPageContents
+{
+	FullTransactionId deleteXid;
+} GINDeletedPageContents;
+
+static inline FullTransactionId
+GinPageGetDeleteFullXid(Page page)
+{
+	Assert(GinPageIsDeleted(page));
+	Assert(GinPageHasFullDeleteXid(page));
+
+	return ((GINDeletedPageContents *) PageGetContents(page))->deleteXid;
+}
+
+static inline void
+GinPageSetDeleteFullXid(Page page, FullTransactionId deleteXid)
+{
+	GinPageGetOpaque(page)->flags |= GIN_DELETED | GIN_DELETED_FULL_XID;
+	((PageHeader) page)->pd_lower =
+		MAXALIGN(SizeOfPageHeaderData) + sizeof(GINDeletedPageContents);
+	((GINDeletedPageContents *) PageGetContents(page))->deleteXid = deleteXid;
+}
 extern bool GinPageIsRecyclable(Page page);
 
 /*
