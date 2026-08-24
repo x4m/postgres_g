@@ -324,6 +324,12 @@ perform_base_backup(basebackup_options *opt, bbsink *sink,
 			state.bytes_total_is_valid = true;
 		}
 
+		/*
+		 * The startpoint has been selected, but the client does not know it
+		 * yet and therefore cannot have created the requested slot.
+		 */
+		INJECTION_POINT("basebackup-before-send-startpoint", NULL);
+
 		/* notify basebackup sink about start of backup */
 		bbsink_begin_backup(sink, &state, SINK_BUFFER_LENGTH);
 
