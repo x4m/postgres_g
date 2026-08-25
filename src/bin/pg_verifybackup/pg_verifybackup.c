@@ -22,7 +22,9 @@
 #include "access/xlog_internal.h"
 #include "common/logging.h"
 #include "common/parse_manifest.h"
+#include "common/pg_parse_lsn.h"
 #include "fe_utils/simple_list.h"
+#include "fe_utils/timeline.h"
 #include "getopt_long.h"
 #include "pg_verifybackup.h"
 #include "pgtime.h"
@@ -98,6 +100,10 @@ static void verify_file_checksum(verifier_context *context,
 static void parse_required_wal(verifier_context *context,
 							   char *pg_waldump_path,
 							   char *wal_path);
+static void verify_recovery_target(verifier_context *context,
+								   char *pg_waldump_path, char *wal_path,
+								   TimeLineID target_tli,
+								   XLogRecPtr target_lsn);
 static astreamer *create_archive_verifier(verifier_context *context,
 										  char *archive_name,
 										  Oid tblspc_oid,
@@ -121,6 +127,11 @@ static uint64 done_size = 0;
 int
 main(int argc, char **argv)
 {
+	enum
+	{
+		OPTION_TARGET_LSN = 1,
+		OPTION_TARGET_TIMELINE
+	};
 	static struct option long_options[] = {
 		{"exit-on-error", no_argument, NULL, 'e'},
 		{"ignore", required_argument, NULL, 'i'},
@@ -130,6 +141,8 @@ main(int argc, char **argv)
 		{"progress", no_argument, NULL, 'P'},
 		{"quiet", no_argument, NULL, 'q'},
 		{"skip-checksums", no_argument, NULL, 's'},
+		{"target-lsn", required_argument, NULL, OPTION_TARGET_LSN},
+		{"target-timeline", required_argument, NULL, OPTION_TARGET_TIMELINE},
 		{"wal-path", required_argument, NULL, 'w'},
 		{"wal-directory", required_argument, NULL, 'w'},	/* deprecated */
 		{NULL, 0, NULL, 0}
@@ -144,6 +157,8 @@ main(int argc, char **argv)
 	char	   *base_archive_path = NULL;
 	char	   *wal_archive_path = NULL;
 	char	   *pg_waldump_path = NULL;
+	TimeLineID	target_tli = 0;
+	XLogRecPtr	target_lsn = InvalidXLogRecPtr;
 	DIR		   *dir;
 
 	pg_logging_init(argv[0]);
@@ -227,6 +242,25 @@ main(int argc, char **argv)
 			case 's':
 				context.skip_checksums = true;
 				break;
+			case OPTION_TARGET_LSN:
+				if (!pg_parse_lsn(optarg, &target_lsn))
+					pg_fatal("invalid target LSN: \"%s\"", optarg);
+				break;
+			case OPTION_TARGET_TIMELINE:
+				{
+					char	   *endptr;
+					unsigned long parsed_tli;
+
+					errno = 0;
+					parsed_tli = strtoul(optarg, &endptr, 0);
+					while (*endptr != '\0' && isspace((unsigned char) *endptr))
+						endptr++;
+					if (*endptr != '\0' || errno == ERANGE ||
+						parsed_tli < 1 || parsed_tli > UINT_MAX)
+						pg_fatal("invalid target timeline: \"%s\"", optarg);
+					target_tli = parsed_tli;
+					break;
+				}
 			case 'w':
 				wal_path = pstrdup(optarg);
 				canonicalize_path(wal_path);
@@ -261,6 +295,12 @@ main(int argc, char **argv)
 	if (show_progress && quiet)
 		pg_fatal("cannot specify both %s and %s",
 				 "-P/--progress", "-q/--quiet");
+	if ((target_tli != 0) != XLogRecPtrIsValid(target_lsn))
+		pg_fatal("options %s and %s must be specified together",
+				 "--target-timeline", "--target-lsn");
+	if (no_parse_wal && target_tli != 0)
+		pg_fatal("cannot specify %s with %s",
+				 "--no-parse-wal", "--target-timeline");
 
 	/* Unless --no-parse-wal was specified, we will need pg_waldump. */
 	if (!no_parse_wal)
@@ -388,7 +428,12 @@ main(int argc, char **argv)
 	 * not to do so.
 	 */
 	if (!no_parse_wal)
+	{
 		parse_required_wal(&context, pg_waldump_path, wal_path);
+		if (target_tli != 0)
+			verify_recovery_target(&context, pg_waldump_path, wal_path,
+								   target_tli, target_lsn);
+	}
 
 	/*
 	 * If everything looks OK, tell the user this, unless we were asked to
@@ -1222,6 +1267,27 @@ verify_file_checksum(verifier_context *context, manifest_file *m,
 							relpath);
 }
 
+static void
+parse_wal_range(verifier_context *context, char *pg_waldump_path,
+				char *wal_path, TimeLineID tli, XLogRecPtr start_lsn,
+				XLogRecPtr end_lsn)
+{
+	char	   *pg_waldump_cmd;
+
+	if (start_lsn == end_lsn)
+		return;
+
+	pg_waldump_cmd = psprintf("\"%s\" --quiet --path=\"%s\" --timeline=%u --start=%X/%08X --end=%X/%08X\n",
+							  pg_waldump_path, wal_path, tli,
+							  LSN_FORMAT_ARGS(start_lsn),
+							  LSN_FORMAT_ARGS(end_lsn));
+	fflush(NULL);
+	if (system(pg_waldump_cmd) != 0)
+		report_backup_error(context,
+							"WAL parsing failed for timeline %u", tli);
+	pfree(pg_waldump_cmd);
+}
+
 /*
  * Attempt to parse the WAL files required to restore from backup using
  * pg_waldump.
@@ -1230,24 +1296,134 @@ static void
 parse_required_wal(verifier_context *context, char *pg_waldump_path,
 				   char *wal_path)
 {
-	manifest_data *manifest = context->manifest;
-	manifest_wal_range *this_wal_range = manifest->first_wal_range;
+	manifest_wal_range *range = context->manifest->first_wal_range;
 
-	while (this_wal_range != NULL)
+	while (range != NULL)
 	{
-		char	   *pg_waldump_cmd;
+		parse_wal_range(context, pg_waldump_path, wal_path, range->tli,
+						range->start_lsn, range->end_lsn);
+		range = range->next;
+	}
+}
 
-		pg_waldump_cmd = psprintf("\"%s\" --quiet --path=\"%s\" --timeline=%u --start=%X/%08X --end=%X/%08X\n",
-								  pg_waldump_path, wal_path, this_wal_range->tli,
-								  LSN_FORMAT_ARGS(this_wal_range->start_lsn),
-								  LSN_FORMAT_ARGS(this_wal_range->end_lsn));
-		fflush(NULL);
-		if (system(pg_waldump_cmd) != 0)
+/*
+ * Verify that WAL is available from the end of the backup to an explicitly
+ * requested recovery target.
+ */
+static void
+verify_recovery_target(verifier_context *context, char *pg_waldump_path,
+					   char *wal_path, TimeLineID target_tli,
+					   XLogRecPtr target_lsn)
+{
+	manifest_wal_range *terminal = context->manifest->first_wal_range;
+	TimeLineID	backup_tli;
+	XLogRecPtr	backup_end;
+
+	if (terminal == NULL)
+	{
+		report_backup_error(context, "backup manifest contains no WAL ranges");
+		return;
+	}
+
+	/* WAL ranges are stored newest first in the backup manifest. */
+	backup_tli = terminal->tli;
+	backup_end = terminal->end_lsn;
+
+	if (target_tli == backup_tli)
+	{
+		if (target_lsn < backup_end)
+		{
 			report_backup_error(context,
-								"WAL parsing failed for timeline %u",
-								this_wal_range->tli);
+								"target LSN %X/%08X precedes backup end %X/%08X on timeline %u",
+								LSN_FORMAT_ARGS(target_lsn),
+								LSN_FORMAT_ARGS(backup_end), backup_tli);
+			return;
+		}
+		parse_wal_range(context, pg_waldump_path, wal_path, target_tli,
+						backup_end, target_lsn);
+		return;
+	}
+	else
+	{
+		char		history_filename[MAXFNAMELEN];
+		char		history_path[MAXPGPATH];
+		char	   *buffer;
+		struct stat statbuf;
+		FILE	   *file;
+		TimeLineHistoryEntry *history;
+		int			nentries;
+		int			backup_index = -1;
+		int			i;
 
-		this_wal_range = this_wal_range->next;
+		if (stat(wal_path, &statbuf) != 0 || !S_ISDIR(statbuf.st_mode))
+			pg_fatal("recovery target verification requires WAL path to be a directory");
+
+		TLHistoryFileName(history_filename, target_tli);
+		join_path_components(history_path, wal_path, history_filename);
+		file = fopen(history_path, "rb");
+		if (file == NULL)
+		{
+			report_backup_error(context, "could not open file \"%s\": %m",
+								history_path);
+			return;
+		}
+		if (fstat(fileno(file), &statbuf) != 0)
+			pg_fatal("could not stat file \"%s\": %m", history_path);
+		buffer = pg_malloc(statbuf.st_size + 1);
+		if (fread(buffer, 1, statbuf.st_size, file) != statbuf.st_size)
+			pg_fatal("could not read file \"%s\": %m", history_path);
+		buffer[statbuf.st_size] = '\0';
+		if (fclose(file) != 0)
+			pg_fatal("could not close file \"%s\": %m", history_path);
+
+		history = parseTimeLineHistory(buffer, target_tli, &nentries);
+		pg_free(buffer);
+
+		for (i = 0; i < nentries; i++)
+		{
+			TimeLineHistoryEntry *entry = &history[i];
+
+			if (entry->tli == backup_tli &&
+				(!XLogRecPtrIsValid(entry->begin) ||
+				 entry->begin <= backup_end - 1) &&
+				(!XLogRecPtrIsValid(entry->end) ||
+				 backup_end - 1 < entry->end))
+			{
+				backup_index = i;
+				break;
+			}
+		}
+
+		if (backup_index < 0)
+		{
+			report_backup_error(context,
+								"target timeline %u does not descend from backup end %X/%08X on timeline %u",
+								target_tli, LSN_FORMAT_ARGS(backup_end),
+								backup_tli);
+			pg_free(history);
+			return;
+		}
+		if (target_lsn < history[nentries - 1].begin)
+		{
+			report_backup_error(context,
+								"target LSN %X/%08X precedes start of timeline %u at %X/%08X",
+								LSN_FORMAT_ARGS(target_lsn), target_tli,
+								LSN_FORMAT_ARGS(history[nentries - 1].begin));
+			pg_free(history);
+			return;
+		}
+
+		for (i = backup_index; i < nentries; i++)
+		{
+			XLogRecPtr	start_lsn = (i == backup_index) ?
+				backup_end : history[i].begin;
+			XLogRecPtr	end_lsn = (i == nentries - 1) ?
+				target_lsn : history[i].end;
+
+			parse_wal_range(context, pg_waldump_path, wal_path,
+							history[i].tli, start_lsn, end_lsn);
+		}
+		pg_free(history);
 	}
 }
 
@@ -1406,6 +1582,8 @@ usage(void)
 	printf(_("  -P, --progress              show progress information\n"));
 	printf(_("  -q, --quiet                 do not print any output, except for errors\n"));
 	printf(_("  -s, --skip-checksums        skip checksum verification\n"));
+	printf(_("      --target-lsn=LSN        verify WAL through this recovery target\n"));
+	printf(_("      --target-timeline=TLI   timeline for --target-lsn\n"));
 	printf(_("  -w, --wal-path=PATH         use specified path for WAL files\n"));
 	printf(_("      --wal-directory=PATH    (same as --wal-path, deprecated)\n"));
 	printf(_("  -V, --version               output version information, then exit\n"));

@@ -62,6 +62,23 @@ command_fails_like(
 	qr{cannot specify both -P/--progress and -q/--quiet},
 	'cannot use --progress and --quiet at the same time');
 
+command_fails_like(
+	[ 'pg_verifybackup', '--target-timeline' => '2', $backup_path ],
+	qr/options --target-timeline and --target-lsn must be specified together/,
+	'--target-timeline requires --target-lsn');
+command_fails_like(
+	[ 'pg_verifybackup', '--target-lsn' => '0/100', $backup_path ],
+	qr/options --target-timeline and --target-lsn must be specified together/,
+	'--target-lsn requires --target-timeline');
+command_fails_like(
+	[
+		'pg_verifybackup', '--no-parse-wal',
+		'--target-timeline' => '1', '--target-lsn' => '0/100',
+		$backup_path
+	],
+	qr/cannot specify --no-parse-wal with --target-timeline/,
+	'cannot skip WAL parsing when verifying a recovery target');
+
 # Corrupt the PG_VERSION file.
 my $version_pathname = "$backup_path/PG_VERSION";
 my $version_contents = slurp_file($version_pathname);

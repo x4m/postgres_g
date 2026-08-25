@@ -257,6 +257,34 @@ PostgreSQL documentation
      </varlistentry>
 
      <varlistentry>
+      <term><option>--target-lsn=<replaceable class="parameter">lsn</replaceable></option></term>
+      <listitem>
+       <para>
+        In addition to checking the WAL ranges required to make the backup
+        consistent, verify that WAL can be parsed from the end of the backup
+        through the specified recovery target.  This option must be used with
+        <option>--target-timeline</option> and cannot be used with
+        <option>--no-parse-wal</option>.
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term><option>--target-timeline=<replaceable class="parameter">timeline</replaceable></option></term>
+      <listitem>
+       <para>
+        Timeline containing the recovery target specified by
+        <option>--target-lsn</option>.  If this differs from the timeline on
+        which the backup ended, the target timeline history file must be
+        present in the directory specified by <option>--wal-path</option>.
+        The history is used to verify that the target timeline descends from
+        the end of the backup and to identify the WAL ranges to parse on each
+        intervening timeline.
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
       <term><option>-w <replaceable class="parameter">path</replaceable></option></term>
       <term><option>--wal-path=<replaceable class="parameter">path</replaceable></option></term>
       <term><option>--wal-directory=<replaceable class="parameter">path</replaceable></option> (deprecated)</term>
