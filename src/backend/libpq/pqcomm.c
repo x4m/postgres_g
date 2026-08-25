@@ -1335,7 +1335,7 @@ pq_get_compressed_message(StringInfo s)
 		if (PqDecompressionContext == NULL)
 			elog(ERROR, "could not create Zstandard decompression context");
 		result = ZSTD_DCtx_setParameter(PqDecompressionContext,
-									ZSTD_d_windowLogMax, 16);
+										ZSTD_d_windowLogMax, 16);
 		if (ZSTD_isError(result))
 			elog(ERROR, "could not configure Zstandard decompression context: %s",
 				 ZSTD_getErrorName(result));
@@ -1764,6 +1764,8 @@ socket_putmessage(char msgtype, const char *s, size_t len)
 		}
 		else
 		{
+			if (PqCompressionContext == NULL)
+				socket_compression_init();
 			PqCompressionActive = true;
 			PqCompressionFrameStarted = true;
 			n32 = pg_hton32((uint32) (len + 4));
@@ -1814,8 +1816,6 @@ socket_putmessage(char msgtype, const char *s, size_t len)
 #ifdef USE_ZSTD
 	if (PqCompressionNegotiated && msgtype == PqMsg_ReadyForQuery)
 	{
-		if (PqCompressionContext == NULL)
-			socket_compression_init();
 		PqCompressionStarted = true;
 		PqCompressionActive = false;
 		PqCompressionFrameStarted = false;
