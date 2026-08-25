@@ -8,7 +8,6 @@ pg_rewind_sources = files(
   'local_source.c',
   'parsexlog.c',
   'pg_rewind.c',
-  'timeline.c',
 )
 
 pg_rewind_sources += xlogreader_sources

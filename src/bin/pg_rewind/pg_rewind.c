@@ -894,7 +894,7 @@ getTimelineHistory(TimeLineID tli, bool is_source, int *nentries)
 		else
 			histfile = slurpFile(datadir_target, path, NULL);
 
-		history = rewind_parseTimeLineHistory(histfile, tli, nentries);
+		history = parseTimeLineHistory(histfile, tli, nentries);
 		pg_free(histfile);
 	}
 

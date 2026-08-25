@@ -38,6 +38,7 @@ OBJS = \
 	recovery_gen.o \
 	simple_list.o \
 	string_utils.o \
+	timeline.o \
 	version.o
 
 ifeq ($(PORTNAME), win32)

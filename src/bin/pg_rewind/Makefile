@@ -27,7 +27,6 @@ OBJS = \
 	local_source.o \
 	parsexlog.o \
 	pg_rewind.o \
-	timeline.o \
 	xlogreader.o
 
 EXTRA_CLEAN = xlogreader.c

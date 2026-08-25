@@ -1,32 +1,28 @@
 /*-------------------------------------------------------------------------
  *
  * timeline.c
- *	  timeline-related functions.
+ *	  Frontend support for timeline history files.
  *
  * Portions Copyright (c) 1996-2026, PostgreSQL Global Development Group
+ *
+ * src/fe_utils/timeline.c
  *
  *-------------------------------------------------------------------------
  */
 #include "postgres_fe.h"
 
-#include "access/timeline.h"
+#include "common/logging.h"
 #include "common/pg_parse_lsn.h"
-#include "pg_rewind.h"
+#include "fe_utils/timeline.h"
 
 /*
- * This is copy-pasted from the backend readTimeLineHistory, modified to
- * return a malloc'd array and to work without backend functions.
- */
-/*
- * Try to read a timeline's history file.
+ * Parse a timeline history file.
  *
- * If successful, return the list of component TLIs (the given TLI followed by
- * its ancestor TLIs).  If we can't find the history file, assume that the
- * timeline has no parents, and return a list of just the specified timeline
- * ID.
+ * The result is a malloc'd array in chronological order, ending with an
+ * entry for targetTLI.  The input buffer is modified in place.
  */
 TimeLineHistoryEntry *
-rewind_parseTimeLineHistory(char *buffer, TimeLineID targetTLI, int *nentries)
+parseTimeLineHistory(char *buffer, TimeLineID targetTLI, int *nentries)
 {
 	char	   *fline;
 	TimeLineHistoryEntry *entry;
@@ -37,9 +33,6 @@ rewind_parseTimeLineHistory(char *buffer, TimeLineID targetTLI, int *nentries)
 	char	   *bufptr;
 	bool		lastline = false;
 
-	/*
-	 * Parse the file...
-	 */
 	prevend = InvalidXLogRecPtr;
 	bufptr = buffer;
 	while (!lastline)
@@ -61,7 +54,7 @@ rewind_parseTimeLineHistory(char *buffer, TimeLineID targetTLI, int *nentries)
 		else
 			*bufptr++ = '\0';
 
-		/* skip leading whitespace and check for # comment */
+		/* Skip leading whitespace and check for a comment. */
 		for (ptr = fline; *ptr; ptr++)
 		{
 			if (!isspace((unsigned char) *ptr))
@@ -72,23 +65,16 @@ rewind_parseTimeLineHistory(char *buffer, TimeLineID targetTLI, int *nentries)
 
 		if (sscanf(fline, "%u%n", &tli, &nchars) != 1)
 		{
-			/* expect a numeric timeline ID as first field of line */
 			pg_log_error("syntax error in history file: %s", fline);
 			pg_log_error_detail("Expected a numeric timeline ID.");
 			exit(1);
 		}
 
-		/* the switchpoint location follows, separated by whitespace */
 		ptr = fline + nchars;
 		nspaces = strspn(ptr, " \t\n\r\f\v");
 		if (nspaces > 0)
 		{
 			ptr += nspaces;
-
-			/*
-			 * isolate the location from the rest of the line before parsing
-			 * it
-			 */
 			token_end = ptr + strcspn(ptr, " \t\n\r\f\v");
 			save = *token_end;
 			*token_end = '\0';
@@ -110,17 +96,13 @@ rewind_parseTimeLineHistory(char *buffer, TimeLineID targetTLI, int *nentries)
 		}
 
 		lasttli = tli;
-
 		nlines++;
 		entries = pg_realloc_array(entries, TimeLineHistoryEntry, nlines);
-
 		entry = &entries[nlines - 1];
 		entry->tli = tli;
 		entry->begin = prevend;
 		entry->end = switchpoint;
 		prevend = entry->end;
-
-		/* we ignore the remainder of each line */
 	}
 
 	if (entries && targetTLI <= lasttli)
@@ -130,10 +112,6 @@ rewind_parseTimeLineHistory(char *buffer, TimeLineID targetTLI, int *nentries)
 		exit(1);
 	}
 
-	/*
-	 * Create one more entry for the "tip" of the timeline, which has no entry
-	 * in the history file.
-	 */
 	nlines++;
 	if (entries)
 		entries = pg_realloc_array(entries, TimeLineHistoryEntry, nlines);
