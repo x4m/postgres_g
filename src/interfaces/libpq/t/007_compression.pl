@@ -43,6 +43,20 @@ is($copy_in_stderr, '', 'compressed COPY IN produced no errors');
 like($copy_in_stdout, qr/2000\|1\|2000/,
 	'compressed COPY IN loaded all rows');
 
+my $dump_file = $node->basedir . '/copy_in_test.dump';
+$node->command_ok(
+	[ 'pg_dump', '--format=custom', '--file', $dump_file,
+	  '--table=copy_in_test', $node->connstr('postgres') ],
+	'created archive for compressed pg_restore');
+$node->safe_psql('postgres', 'DROP TABLE copy_in_test');
+$node->command_ok(
+	[ 'pg_restore', '--dbname',
+	  $node->connstr('postgres') . ' compression=zstd', $dump_file ],
+	'pg_restore uses compressed COPY IN');
+is($node->safe_psql('postgres',
+	'SELECT count(*), min(id), max(id) FROM copy_in_test'),
+	'2000|1|2000', 'compressed pg_restore loaded all rows');
+
 my (undef, $invalid_stderr) = run_command(
 	[ 'psql', '-XAt', '--dbname', $node->connstr('postgres') . ' compression=invalid',
 	  '-c', 'SELECT 1' ]);
