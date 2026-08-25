@@ -74,6 +74,7 @@
 #endif
 
 #include "common/ip.h"
+#include "common/int.h"
 #include "libpq/libpq.h"
 #include "miscadmin.h"
 #include "port/pg_bswap.h"
@@ -1729,17 +1730,45 @@ static void
 socket_putmessage_noblock(char msgtype, const char *s, size_t len)
 {
 	int			res PG_USED_FOR_ASSERTS_ONLY;
-	int			required;
+	Size		required;
 
 	/*
 	 * Ensure we have enough space in the output buffer for the message header
 	 * as well as the message itself.
 	 */
-	required = PqSendPointer + 1 + 4 + len;
+	if (pg_add_size_overflow(PqSendPointer, 5, &required) ||
+		pg_add_size_overflow(required, len, &required))
+		ereport(ERROR,
+				(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+				 errmsg("message is too long")));
+#ifdef USE_ZSTD
+	if (PqCompressionStarted)
+	{
+		Size		pending = PqCompressionInput.len;
+		Size		compression_space;
+
+		if ((msgtype == PqMsg_DataRow || msgtype == PqMsg_CopyData) &&
+			(pg_add_size_overflow(pending, 5, &pending) ||
+			 pg_add_size_overflow(pending, len, &pending)))
+			ereport(ERROR,
+					(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+					 errmsg("message is too long")));
+		compression_space = ZSTD_compressBound(pending) +
+			ZSTD_CStreamOutSize() + 64 + 9;
+		if (pg_add_size_overflow(required, compression_space, &required))
+			ereport(ERROR,
+					(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+					 errmsg("message is too long")));
+	}
+#endif
+	if (!AllocSizeIsValid(required))
+		ereport(ERROR,
+				(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+				 errmsg("message is too long")));
 	if (required > PqSendBufferSize)
 	{
 		PqSendBuffer = repalloc(PqSendBuffer, required);
-		PqSendBufferSize = required;
+		PqSendBufferSize = (int) required;
 	}
 	res = socket_putmessage(msgtype, s, len);
 	Assert(res == 0);			/* should not fail when the message fits in
