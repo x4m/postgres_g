@@ -146,7 +146,10 @@ static bool PqCompressionFrameStarted;
 static size_t PqCompressionSmallBytes;
 static StringInfoData PqCompressionInput;
 static ZSTD_CCtx *PqCompressionContext;
+static ZSTD_DCtx *PqDecompressionContext;
 #endif
+
+int			protocol_compression = PROTOCOL_COMPRESSION_OFF;
 
 
 /* Internal functions */
@@ -159,7 +162,7 @@ static bool socket_is_send_pending(void);
 static int	socket_putmessage(char msgtype, const char *s, size_t len);
 static void socket_putmessage_noblock(char msgtype, const char *s, size_t len);
 #ifdef USE_ZSTD
-static int socket_compression_flush(ZSTD_EndDirective directive);
+static int	socket_compression_flush(ZSTD_EndDirective directive);
 #endif
 static inline int internal_putbytes(const void *b, size_t len);
 static inline int internal_flush(void);
@@ -1289,6 +1292,112 @@ pq_getmessage(StringInfo s, int maxlen)
 	return 0;
 }
 
+#ifdef USE_ZSTD
+/* Read one client-to-server CompressedData wrapper. */
+int
+pq_get_compressed_message(StringInfo s)
+{
+	StringInfoData compressed;
+	uint32		n32;
+	int			uncompressed_size;
+	char	   *output;
+	ZSTD_inBuffer input;
+	ZSTD_outBuffer out;
+	size_t		result = 1;
+	uint32		message_length;
+
+	if (!PqCompressionNegotiated)
+		ereport(FATAL,
+				(errcode(ERRCODE_PROTOCOL_VIOLATION),
+				 errmsg("received compressed data without negotiated compression")));
+
+	initStringInfo(&compressed);
+	if (pq_getmessage(&compressed, PQ_LARGE_MESSAGE_LIMIT))
+	{
+		pfree(compressed.data);
+		return EOF;
+	}
+	if (compressed.len < 4)
+		ereport(FATAL,
+				(errcode(ERRCODE_PROTOCOL_VIOLATION),
+				 errmsg("compressed protocol message is too short")));
+
+	memcpy(&n32, compressed.data, 4);
+	uncompressed_size = (int) pg_ntoh32(n32);
+	if (uncompressed_size < 0 || uncompressed_size > 16 * 1024 * 1024)
+		ereport(FATAL,
+				(errcode(ERRCODE_PROTOCOL_VIOLATION),
+				 errmsg("invalid uncompressed protocol message size")));
+
+	if (PqDecompressionContext == NULL)
+	{
+		PqDecompressionContext = ZSTD_createDCtx();
+		if (PqDecompressionContext == NULL)
+			elog(ERROR, "could not create Zstandard decompression context");
+		result = ZSTD_DCtx_setParameter(PqDecompressionContext,
+										ZSTD_d_windowLogMax, 23);
+		if (ZSTD_isError(result))
+			elog(ERROR, "could not configure Zstandard decompression context: %s",
+				 ZSTD_getErrorName(result));
+	}
+
+	output = palloc((Size) uncompressed_size + 1);
+	input.src = compressed.data + 4;
+	input.size = compressed.len - 4;
+	input.pos = 0;
+	out.dst = output;
+	out.size = (size_t) uncompressed_size + 1;
+	out.pos = 0;
+	while (input.pos < input.size)
+	{
+		size_t		old_input_pos = input.pos;
+		size_t		old_output_pos = out.pos;
+
+		result = ZSTD_decompressStream(PqDecompressionContext, &out, &input);
+		if (ZSTD_isError(result) || out.pos > (size_t) uncompressed_size ||
+			(input.pos == old_input_pos && out.pos == old_output_pos))
+			ereport(FATAL,
+					(errcode(ERRCODE_PROTOCOL_VIOLATION),
+					 errmsg("invalid compressed protocol message")));
+	}
+	if (out.pos != (size_t) uncompressed_size)
+		ereport(FATAL,
+				(errcode(ERRCODE_PROTOCOL_VIOLATION),
+				 errmsg("compressed protocol message produced %zu bytes, expected %d",
+						out.pos, uncompressed_size)));
+
+	if (uncompressed_size == 0)
+	{
+		if (result != 0)
+			ereport(FATAL,
+					(errcode(ERRCODE_PROTOCOL_VIOLATION),
+					 errmsg("compressed protocol stream did not end")));
+		pfree(output);
+		pfree(compressed.data);
+		return 0;
+	}
+
+	if (result == 0 || uncompressed_size < 5 ||
+		output[0] != PqMsg_CopyData)
+		ereport(FATAL,
+				(errcode(ERRCODE_PROTOCOL_VIOLATION),
+				 errmsg("compressed protocol message contains invalid messages")));
+	memcpy(&message_length, output + 1, 4);
+	message_length = pg_ntoh32(message_length);
+	if (message_length < 4 || message_length + 1 != (uint32) uncompressed_size)
+		ereport(FATAL,
+				(errcode(ERRCODE_PROTOCOL_VIOLATION),
+				 errmsg("compressed protocol message contains invalid messages")));
+
+	resetStringInfo(s);
+	appendBinaryStringInfo(s, output + 5, uncompressed_size - 5);
+	s->cursor = 0;
+	pfree(output);
+	pfree(compressed.data);
+	return PqMsg_CopyData;
+}
+#endif
+
 
 static inline int
 internal_putbytes(const void *b, size_t len)
@@ -1533,7 +1642,7 @@ socket_compression_init(void)
 	if (PqCompressionContext == NULL)
 		elog(ERROR, "could not create Zstandard compression context");
 	result = ZSTD_CCtx_setParameter(PqCompressionContext,
-									 ZSTD_c_compressionLevel, 1);
+									ZSTD_c_compressionLevel, 1);
 	if (ZSTD_isError(result))
 		elog(ERROR, "could not configure Zstandard compression context: %s",
 			 ZSTD_getErrorName(result));
@@ -1680,7 +1789,7 @@ socket_putmessage(char msgtype, const char *s, size_t len)
 	{
 		PqCommBusy = true;
 		if (socket_compression_flush(msgtype == PqMsg_ReadyForQuery ?
-								 ZSTD_e_end : ZSTD_e_flush))
+									 ZSTD_e_end : ZSTD_e_flush))
 		{
 			PqCommBusy = false;
 			return EOF;

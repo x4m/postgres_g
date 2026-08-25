@@ -33,6 +33,12 @@ typedef struct WaitEventSet WaitEventSet;
 #define PQ_SMALL_MESSAGE_LIMIT	10000
 #define PQ_LARGE_MESSAGE_LIMIT	(MaxAllocSize - 1)
 
+typedef enum ProtocolCompressionMethod
+{
+	PROTOCOL_COMPRESSION_OFF,
+	PROTOCOL_COMPRESSION_ZSTD
+}			ProtocolCompressionMethod;
+
 typedef struct
 {
 	void		(*comm_reset) (void);
@@ -101,7 +107,9 @@ extern ssize_t secure_raw_write(Port *port, const void *ptr, size_t len);
 
 #ifdef USE_ZSTD
 extern void pq_enable_protocol_compression(void);
+extern int	pq_get_compressed_message(StringInfo s);
 #endif
+extern PGDLLIMPORT int protocol_compression;
 
 /*
  * declarations for variables defined in be-secure.c

@@ -2172,7 +2172,8 @@ pqConnectOptions2(PGconn *conn)
 
 	if (conn->compression && strcmp(conn->compression, "off") != 0)
 	{
-		if (strcmp(conn->compression, "zstd") != 0)
+		if (strcmp(conn->compression, "zstd") != 0 &&
+			strcmp(conn->compression, "prefer") != 0)
 		{
 			conn->status = CONNECTION_BAD;
 			libpq_append_conn_error(conn, "invalid %s value: \"%s\"",
@@ -2180,10 +2181,13 @@ pqConnectOptions2(PGconn *conn)
 			return false;
 		}
 #ifndef USE_ZSTD
-		conn->status = CONNECTION_BAD;
-		libpq_append_conn_error(conn,
-							"compression method \"zstd\" is not supported by this build");
-		return false;
+		if (strcmp(conn->compression, "zstd") == 0)
+		{
+			conn->status = CONNECTION_BAD;
+			libpq_append_conn_error(conn,
+									"compression method \"zstd\" is not supported by this build");
+			return false;
+		}
 #endif
 	}
 

@@ -816,7 +816,11 @@ retry:
 							(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
 							 errmsg("invalid value for protocol option \"%s\": \"%s\"",
 									nameptr, valptr)));
-				pq_enable_protocol_compression();
+				if (protocol_compression == PROTOCOL_COMPRESSION_ZSTD)
+					pq_enable_protocol_compression();
+				else
+					unrecognized_protocol_options =
+						lappend(unrecognized_protocol_options, pstrdup(nameptr));
 #else
 				unrecognized_protocol_options =
 					lappend(unrecognized_protocol_options, pstrdup(nameptr));

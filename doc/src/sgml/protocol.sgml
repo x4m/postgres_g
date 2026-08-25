@@ -350,8 +350,9 @@
        <entry><literal>zstd</literal></entry>
        <entry>Client and server</entry>
        <entry>Enables Zstandard compression of server-to-client
-        <literal>DataRow</literal> and <literal>CopyData</literal> messages
-        after authentication.  See
+        <literal>DataRow</literal> and <literal>CopyData</literal> messages,
+        and client-to-server <literal>CopyData</literal> messages during
+        <command>COPY FROM</command>, after authentication.  See
         <xref linkend="protocol-message-formats-CompressedData"/>.</entry>
       </row>
      </tbody>
@@ -4661,7 +4662,7 @@ psql "dbname=postgres replication=database" -c "IDENTIFY_SYSTEM;"
    </varlistentry>
 
    <varlistentry id="protocol-message-formats-CompressedData">
-    <term>CompressedData (B)</term>
+    <term>CompressedData (F &amp; B)</term>
     <listitem>
      <variablelist>
       <varlistentry>
@@ -4698,8 +4699,10 @@ psql "dbname=postgres replication=database" -c "IDENTIFY_SYSTEM;"
        <listitem>
         <para>
          A flushed segment of a Zstandard stream.  Decompression must produce
-         exactly the number of bytes declared above, containing only complete
-         <literal>DataRow</literal> or <literal>CopyData</literal> messages.
+         exactly the number of bytes declared above.  A backend segment may
+         contain complete <literal>DataRow</literal> or
+         <literal>CopyData</literal> messages.  A frontend segment may contain
+         one complete <literal>CopyData</literal> message.
         </para>
        </listitem>
       </varlistentry>
@@ -4708,11 +4711,11 @@ psql "dbname=postgres replication=database" -c "IDENTIFY_SYSTEM;"
      <para>
       The compression context is retained between CompressedData messages.
       Ordinary uncompressed control messages may occur between them and do not
-      change the context.  The Zstandard frame must end before each
-      <literal>ReadyForQuery</literal>, which resets the compression context.
-      An empty CompressedData message may carry the frame epilogue.  No
-      CompressedData message may be sent before the first ReadyForQuery of the
-      connection.
+      change the context.  A backend Zstandard frame must end before each
+      <literal>ReadyForQuery</literal>.  A frontend frame must end before
+      <literal>CopyDone</literal> or <literal>CopyFail</literal>.  An empty
+      CompressedData message may carry the frame epilogue.  No CompressedData
+      message may be sent before the first ReadyForQuery of the connection.
      </para>
     </listitem>
    </varlistentry>

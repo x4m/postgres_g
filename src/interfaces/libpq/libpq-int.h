@@ -424,7 +424,7 @@ struct pg_conn
 	char	   *gssdelegation;	/* Try to delegate GSS credentials? (0 or 1) */
 	char	   *min_protocol_version;	/* minimum used protocol version */
 	char	   *max_protocol_version;	/* maximum used protocol version */
-	char	   *compression;		/* protocol compression method */
+	char	   *compression;	/* protocol compression method */
 	char	   *ssl_min_protocol_version;	/* minimum TLS protocol version */
 	char	   *ssl_max_protocol_version;	/* maximum TLS protocol version */
 	char	   *target_session_attrs;	/* desired session properties */
@@ -582,9 +582,12 @@ struct pg_conn
 	int			inEnd;			/* offset to first position after avail data */
 #ifdef USE_ZSTD
 	void	   *compression_dctx;	/* experimental protocol decompressor */
+	void	   *compression_cctx;	/* experimental protocol compressor */
 	bool		compression_in_frame;
 	bool		compression_frame_ended;
 	bool		compression_ready;
+	bool		compression_rejected;
+	bool		compression_copy_started;
 #endif
 
 	/* Buffer for data not yet sent to backend */
@@ -821,6 +824,11 @@ extern int	pqGetInt(int *result, size_t bytes, PGconn *conn);
 extern int	pqPutInt(int value, size_t bytes, PGconn *conn);
 extern int	pqPutMsgStart(char msg_type, PGconn *conn);
 extern int	pqPutMsgEnd(PGconn *conn);
+#ifdef USE_ZSTD
+extern int	pqPutCompressedCopyData(PGconn *conn, const char *buffer,
+									int nbytes);
+extern int	pqEndCompressedCopyData(PGconn *conn);
+#endif
 extern int	pqReadData(PGconn *conn);
 extern int	pqFlush(PGconn *conn);
 extern int	pqWait(int forRead, int forWrite, PGconn *conn);

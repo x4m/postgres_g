@@ -2256,17 +2256,20 @@ postgresql://%2Fvar%2Flib%2Fpostgresql/dbname
       <listitem>
        <para>
         Enables compression of data-bearing messages sent by the server.
-        The supported values are <literal>off</literal>, the default, and
-        <literal>zstd</literal>.  If <literal>zstd</literal> is requested but
-        the server does not support the corresponding protocol extension, the
-        connection fails.
+        The supported values are <literal>off</literal>, the default,
+        <literal>prefer</literal>, and <literal>zstd</literal>.
+        <literal>prefer</literal> requests Zstandard compression and continues
+        without compression if the server rejects the protocol extension.
+        <literal>zstd</literal> requires compression and fails the connection
+        if the server rejects it.
        </para>
 
        <para>
         Compression starts only after authentication.  It currently applies
         to <literal>DataRow</literal> and <literal>CopyData</literal> messages
-        sent by the server; control messages and client-to-server traffic are
-        not compressed.
+        sent by the server, and to <literal>CopyData</literal> sent by the
+        client during <command>COPY FROM</command>.  Queries, bind parameters,
+        and control messages are not compressed.
        </para>
 
        <warning>

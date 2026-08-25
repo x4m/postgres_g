@@ -75,6 +75,11 @@ pqCompressionFree(PGconn *conn)
 		ZSTD_freeDCtx((ZSTD_DCtx *) conn->compression_dctx);
 		conn->compression_dctx = NULL;
 	}
+	if (conn->compression_cctx != NULL)
+	{
+		ZSTD_freeCCtx((ZSTD_CCtx *) conn->compression_cctx);
+		conn->compression_cctx = NULL;
+	}
 }
 
 /* Replace one CompressedData wrapper with the ordinary messages it contains. */
@@ -121,8 +126,8 @@ pqDecompressData(PGconn *conn, int msgLength)
 		if (ZSTD_isError(result))
 		{
 			libpq_append_conn_error(conn,
-								"could not configure Zstandard decompressor: %s",
-								ZSTD_getErrorName(result));
+									"could not configure Zstandard decompressor: %s",
+									ZSTD_getErrorName(result));
 			return 1;
 		}
 	}
@@ -156,7 +161,7 @@ pqDecompressData(PGconn *conn, int msgLength)
 		if (ZSTD_isError(result))
 		{
 			libpq_append_conn_error(conn, "Zstandard decompression failed: %s",
-								ZSTD_getErrorName(result));
+									ZSTD_getErrorName(result));
 			free(output);
 			return 1;
 		}
@@ -164,7 +169,7 @@ pqDecompressData(PGconn *conn, int msgLength)
 			(input.pos == old_input_pos && out.pos == old_output_pos))
 		{
 			libpq_append_conn_error(conn,
-								"compressed protocol message has invalid size");
+									"compressed protocol message has invalid size");
 			free(output);
 			return 1;
 		}
@@ -172,8 +177,8 @@ pqDecompressData(PGconn *conn, int msgLength)
 	if (out.pos != (size_t) uncompressed_size)
 	{
 		libpq_append_conn_error(conn,
-							"compressed protocol message produced %zu bytes, expected %d",
-							out.pos, uncompressed_size);
+								"compressed protocol message produced %zu bytes, expected %d",
+								out.pos, uncompressed_size);
 		free(output);
 		return 1;
 	}
@@ -216,9 +221,121 @@ pqDecompressData(PGconn *conn, int msgLength)
 
 invalid_contents:
 	libpq_append_conn_error(conn,
-						"compressed protocol message contains invalid messages");
+							"compressed protocol message contains invalid messages");
 	free(output);
 	return 1;
+}
+
+/* Write one flushed segment of the client-to-server COPY stream. */
+static int
+pqPutCompressedCopySegment(PGconn *conn, const char *buffer, int nbytes,
+						   ZSTD_EndDirective directive)
+{
+	ZSTD_CCtx  *cctx = (ZSTD_CCtx *) conn->compression_cctx;
+	ZSTD_inBuffer input;
+	ZSTD_outBuffer output;
+	char	   *source = NULL;
+	char	   *compressed = NULL;
+	size_t		source_size = nbytes > 0 ? (size_t) nbytes + 5 : 0;
+	size_t		compressed_size;
+	size_t		result = 0;
+	uint32		n32;
+
+	if (cctx == NULL)
+	{
+		cctx = ZSTD_createCCtx();
+		if (cctx == NULL)
+			goto oom;
+		conn->compression_cctx = cctx;
+		result = ZSTD_CCtx_setParameter(cctx, ZSTD_c_compressionLevel, 1);
+		if (ZSTD_isError(result))
+			goto zstd_error;
+		result = ZSTD_CCtx_setParameter(cctx, ZSTD_c_windowLog, 23);
+		if (ZSTD_isError(result))
+			goto zstd_error;
+	}
+
+	compressed_size = ZSTD_compressBound(source_size) +
+		ZSTD_CStreamOutSize() + 64;
+	if (compressed_size > INT_MAX - conn->outCount - 9 ||
+		pqCheckOutBufferSpace(conn->outCount + 9 + compressed_size, conn))
+		return EOF;
+
+	if (source_size > 0)
+	{
+		source = (char *) malloc(source_size);
+		if (source == NULL)
+			goto oom;
+		source[0] = PqMsg_CopyData;
+		n32 = pg_hton32((uint32) nbytes + 4);
+		memcpy(source + 1, &n32, 4);
+		memcpy(source + 5, buffer, nbytes);
+	}
+	compressed = (char *) malloc(compressed_size);
+	if (compressed == NULL)
+		goto oom;
+
+	input.src = source;
+	input.size = source_size;
+	input.pos = 0;
+	output.dst = compressed;
+	output.size = compressed_size;
+	output.pos = 0;
+	while (input.pos < input.size)
+	{
+		result = ZSTD_compressStream2(cctx, &output, &input,
+									  ZSTD_e_continue);
+		if (ZSTD_isError(result))
+			goto zstd_error;
+	}
+	do
+	{
+		result = ZSTD_compressStream2(cctx, &output, &input, directive);
+		if (ZSTD_isError(result))
+			goto zstd_error;
+	} while (result != 0);
+
+	if (pqPutMsgStart(PqMsg_CompressedData, conn) < 0 ||
+		pqPutInt(source_size, 4, conn) < 0 ||
+		pqPutnchar(compressed, output.pos, conn) < 0 ||
+		pqPutMsgEnd(conn) < 0)
+		goto fail;
+
+	free(source);
+	free(compressed);
+	return 0;
+
+oom:
+	libpq_append_conn_error(conn, "out of memory");
+	goto fail;
+
+zstd_error:
+	libpq_append_conn_error(conn, "Zstandard compression failed: %s",
+							ZSTD_getErrorName(result));
+fail:
+	free(source);
+	free(compressed);
+	return EOF;
+}
+
+int
+pqPutCompressedCopyData(PGconn *conn, const char *buffer, int nbytes)
+{
+	if (pqPutCompressedCopySegment(conn, buffer, nbytes, ZSTD_e_flush) < 0)
+		return EOF;
+	conn->compression_copy_started = true;
+	return 0;
+}
+
+int
+pqEndCompressedCopyData(PGconn *conn)
+{
+	if (!conn->compression_copy_started)
+		return 0;
+	if (pqPutCompressedCopySegment(conn, NULL, 0, ZSTD_e_end) < 0)
+		return EOF;
+	conn->compression_copy_started = false;
+	return 0;
 }
 #endif
 
@@ -298,11 +415,10 @@ pqParseInput3(PGconn *conn)
 #ifdef USE_ZSTD
 		if (id == PqMsg_CompressedData)
 		{
-			if (!conn->compression_ready || conn->compression == NULL ||
-				strcmp(conn->compression, "zstd") != 0)
+			if (!conn->compression_ready)
 			{
 				libpq_append_conn_error(conn,
-									"received compressed data without negotiated compression");
+										"received compressed data without negotiated compression");
 				handleFatalError(conn);
 				return;
 			}
@@ -316,7 +432,7 @@ pqParseInput3(PGconn *conn)
 		if (id == PqMsg_ReadyForQuery && conn->compression_in_frame)
 		{
 			libpq_append_conn_error(conn,
-								"compressed protocol stream was not terminated before ReadyForQuery");
+									"compressed protocol stream was not terminated before ReadyForQuery");
 			handleFatalError(conn);
 			return;
 		}
@@ -419,8 +535,9 @@ pqParseInput3(PGconn *conn)
 					if (getReadyForQuery(conn))
 						return;
 #ifdef USE_ZSTD
-					if (conn->compression &&
-						strcmp(conn->compression, "zstd") == 0)
+					if (conn->compression && !conn->compression_rejected &&
+						(strcmp(conn->compression, "zstd") == 0 ||
+						 strcmp(conn->compression, "prefer") == 0))
 						conn->compression_ready = true;
 #endif
 					if (conn->pipelineStatus != PQ_PIPELINE_OFF)
@@ -1724,7 +1841,8 @@ pqGetNegotiateProtocolVersion3(PGconn *conn)
 	found_test_protocol_negotiation = false;
 	expect_test_protocol_negotiation = (conn->max_pversion == PG_PROTOCOL_GREASE);
 	requested_compression = conn->compression &&
-		strcmp(conn->compression, "zstd") == 0;
+		(strcmp(conn->compression, "zstd") == 0 ||
+		 strcmp(conn->compression, "prefer") == 0);
 
 	for (int i = 0; i < num; i++)
 	{
@@ -1747,10 +1865,15 @@ pqGetNegotiateProtocolVersion3(PGconn *conn)
 		else if (requested_compression &&
 				 strcmp(conn->workBuffer.data, "_pq_.compression") == 0)
 		{
-			libpq_append_conn_error(conn,
-								"server does not support protocol compression method \"zstd\"");
-			need_grease_info = false;
-			goto failure;
+			if (strcmp(conn->compression, "prefer") == 0)
+				conn->compression_rejected = true;
+			else
+			{
+				libpq_append_conn_error(conn,
+										"server does not support protocol compression method \"zstd\"");
+				need_grease_info = false;
+				goto failure;
+			}
 		}
 		else
 		{
@@ -2096,11 +2219,10 @@ getCopyDataMessage(PGconn *conn)
 #ifdef USE_ZSTD
 		if (id == PqMsg_CompressedData)
 		{
-			if (!conn->compression_ready || conn->compression == NULL ||
-				strcmp(conn->compression, "zstd") != 0)
+			if (!conn->compression_ready)
 			{
 				libpq_append_conn_error(conn,
-									"received compressed data without negotiated compression");
+										"received compressed data without negotiated compression");
 				handleFatalError(conn);
 				return -2;
 			}
@@ -2765,8 +2887,12 @@ build_startup_packet(const PGconn *conn, char *packet,
 
 	if (conn->client_encoding_initial && conn->client_encoding_initial[0])
 		ADD_STARTUP_OPTION("client_encoding", conn->client_encoding_initial);
-	if (conn->compression && strcmp(conn->compression, "zstd") == 0)
+#ifdef USE_ZSTD
+	if (conn->compression &&
+		(strcmp(conn->compression, "zstd") == 0 ||
+		 strcmp(conn->compression, "prefer") == 0))
 		ADD_STARTUP_OPTION("_pq_.compression", "zstd");
+#endif
 
 	/*
 	 * Add the test_protocol_negotiation option when greasing, to test that

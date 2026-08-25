@@ -64,6 +64,7 @@
                                         # defaults to 'localhost'; use '*' for all
                                         # (change requires restart)
 #port = 5432                            # (change requires restart)
+#protocol_compression = off             # off, zstd
 #max_connections = 100                  # (change requires restart)
 #reserved_connections = 0               # (change requires restart)
 #superuser_reserved_connections = 3     # (change requires restart)

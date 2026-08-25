@@ -786,15 +786,30 @@ HandleUploadManifestPacket(StringInfo buf, off_t *offset,
 {
 	int			mtype;
 	int			maxmsglen;
+	bool		message_body_read = false;
 
 	HOLD_CANCEL_INTERRUPTS();
 
+read_message:
 	pq_startmsgread();
 	mtype = pq_getbyte();
 	if (mtype == EOF)
 		ereport(ERROR,
 				(errcode(ERRCODE_CONNECTION_FAILURE),
 				 errmsg("unexpected EOF on client connection with an open transaction")));
+
+#ifdef USE_ZSTD
+	if (mtype == PqMsg_CompressedData)
+	{
+		mtype = pq_get_compressed_message(buf);
+		if (mtype == 0)
+		{
+			RESUME_CANCEL_INTERRUPTS();
+			goto read_message;
+		}
+		message_body_read = true;
+	}
+#endif
 
 	switch (mtype)
 	{
@@ -817,7 +832,7 @@ HandleUploadManifestPacket(StringInfo buf, off_t *offset,
 	}
 
 	/* Now collect the message body */
-	if (pq_getmessage(buf, maxmsglen))
+	if (!message_body_read && pq_getmessage(buf, maxmsglen))
 		ereport(ERROR,
 				(errcode(ERRCODE_CONNECTION_FAILURE),
 				 errmsg("unexpected EOF on client connection with an open transaction")));
