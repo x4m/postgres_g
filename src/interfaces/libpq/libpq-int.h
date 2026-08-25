@@ -579,6 +579,10 @@ struct pg_conn
 	int			inStart;		/* offset to first unconsumed data in buffer */
 	int			inCursor;		/* next byte to tentatively consume */
 	int			inEnd;			/* offset to first position after avail data */
+#ifdef USE_ZSTD
+	void	   *compression_dctx;	/* experimental protocol decompressor */
+	bool		compression_in_frame;
+#endif
 
 	/* Buffer for data not yet sent to backend */
 	char	   *outBuffer;		/* currently allocated buffer */
@@ -771,6 +775,9 @@ extern PGresult *PQnfn(PGconn *conn, int fnid, int *result_buf, int buf_size,
 extern char *pqBuildStartupPacket3(PGconn *conn, int *packetlen,
 								   const PQEnvironmentOption *options);
 extern void pqParseInput3(PGconn *conn);
+#ifdef USE_ZSTD
+extern void pqCompressionFree(PGconn *conn);
+#endif
 extern int	pqGetErrorNotice3(PGconn *conn, bool isError);
 extern void pqBuildErrorMessage3(PQExpBuffer msg, const PGresult *res,
 								 PGVerbosity verbosity, PGContextVisibility show_context);

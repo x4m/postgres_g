@@ -5174,6 +5174,9 @@ freePGconn(PGconn *conn)
 	release_conn_addrinfo(conn);
 	free(conn->scram_client_key_binary);
 	free(conn->scram_server_key_binary);
+#ifdef USE_ZSTD
+	pqCompressionFree(conn);
+#endif
 	/* if this is a cancel connection, be_cancel_key may still be allocated */
 	free(conn->be_cancel_key);
 	free(conn->inBuffer);

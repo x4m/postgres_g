@@ -69,6 +69,10 @@
 #include <mstcpip.h>
 #endif
 
+#ifdef USE_ZSTD
+#include <zstd.h>
+#endif
+
 #include "common/ip.h"
 #include "libpq/libpq.h"
 #include "miscadmin.h"
@@ -132,6 +136,17 @@ static int	PqRecvLength;		/* End of data available in PqRecvBuffer */
 static bool PqCommBusy;			/* busy sending data to the client */
 static bool PqCommReadingMsg;	/* in the middle of reading a message */
 
+#ifdef USE_ZSTD
+/* Experimental server-to-client protocol compression. */
+static bool PqCompressionChecked;
+static bool PqCompressionEnabled;
+static bool PqCompressionStarted;
+static bool PqCompressionActive;
+static size_t PqCompressionSmallBytes;
+static StringInfoData PqCompressionInput;
+static ZSTD_CCtx *PqCompressionContext;
+#endif
+
 
 /* Internal functions */
 static void socket_comm_reset(void);
@@ -142,6 +157,9 @@ static int	socket_flush_if_writable(void);
 static bool socket_is_send_pending(void);
 static int	socket_putmessage(char msgtype, const char *s, size_t len);
 static void socket_putmessage_noblock(char msgtype, const char *s, size_t len);
+#ifdef USE_ZSTD
+static int socket_compression_flush(ZSTD_EndDirective directive);
+#endif
 static inline int internal_putbytes(const void *b, size_t len);
 static inline int internal_flush(void);
 static pg_noinline int internal_flush_buffer(const char *buf, size_t *start,
@@ -1330,6 +1348,13 @@ socket_flush(void)
 	if (PqCommBusy)
 		return 0;
 	PqCommBusy = true;
+#ifdef USE_ZSTD
+	if (PqCompressionStarted && socket_compression_flush(ZSTD_e_flush))
+	{
+		PqCommBusy = false;
+		return EOF;
+	}
+#endif
 	socket_set_nonblocking(false);
 	res = internal_flush();
 	PqCommBusy = false;
@@ -1435,7 +1460,11 @@ socket_flush_if_writable(void)
 	int			res;
 
 	/* Quick exit if nothing to do */
-	if (PqSendPointer == PqSendStart)
+	if (PqSendPointer == PqSendStart
+#ifdef USE_ZSTD
+		&& (!PqCompressionStarted || PqCompressionInput.len == 0)
+#endif
+		)
 		return 0;
 
 	/* No-op if reentrant call */
@@ -1446,6 +1475,13 @@ socket_flush_if_writable(void)
 	socket_set_nonblocking(true);
 
 	PqCommBusy = true;
+#ifdef USE_ZSTD
+	if (PqCompressionStarted && socket_compression_flush(ZSTD_e_flush))
+	{
+		PqCommBusy = false;
+		return EOF;
+	}
+#endif
 	res = internal_flush();
 	PqCommBusy = false;
 	return res;
@@ -1458,6 +1494,10 @@ socket_flush_if_writable(void)
 static bool
 socket_is_send_pending(void)
 {
+#ifdef USE_ZSTD
+	if (PqCompressionStarted && PqCompressionInput.len > 0)
+		return true;
+#endif
 	return (PqSendStart < PqSendPointer);
 }
 
@@ -1465,6 +1505,104 @@ socket_is_send_pending(void)
  * Message-level I/O routines begin here.
  * --------------------------------
  */
+
+#ifdef USE_ZSTD
+static void
+socket_compression_init(void)
+{
+	const char *enabled = getenv("PG_WIRE_COMPRESSION");
+	size_t		result;
+
+	PqCompressionChecked = true;
+	if (enabled == NULL || strcmp(enabled, "1") != 0)
+		return;
+
+	initStringInfo(&PqCompressionInput);
+	PqCompressionContext = ZSTD_createCCtx();
+	if (PqCompressionContext == NULL)
+		elog(ERROR, "could not create Zstandard compression context");
+	result = ZSTD_CCtx_setParameter(PqCompressionContext,
+									 ZSTD_c_compressionLevel, 1);
+	if (ZSTD_isError(result))
+		elog(ERROR, "could not configure Zstandard compression context: %s",
+			 ZSTD_getErrorName(result));
+	result = ZSTD_CCtx_setParameter(PqCompressionContext, ZSTD_c_windowLog, 23);
+	if (ZSTD_isError(result))
+		elog(ERROR, "could not configure Zstandard compression window: %s",
+			 ZSTD_getErrorName(result));
+	PqCompressionEnabled = true;
+}
+
+/* Emit one completely flushed segment of the persistent stream. */
+static int
+socket_compression_flush(ZSTD_EndDirective directive)
+{
+	size_t		output_size;
+	char	   *output;
+	ZSTD_inBuffer input;
+	ZSTD_outBuffer out;
+	size_t		result;
+	uint32		n32;
+
+	if (PqCompressionInput.len == 0 && directive == ZSTD_e_flush)
+		return 0;
+
+	output_size = ZSTD_compressBound(PqCompressionInput.len) +
+		ZSTD_CStreamOutSize() + 64;
+	output = palloc(output_size);
+	input.src = PqCompressionInput.data;
+	input.size = PqCompressionInput.len;
+	input.pos = 0;
+	out.dst = output;
+	out.size = output_size;
+	out.pos = 0;
+
+	while (input.pos < input.size)
+	{
+		result = ZSTD_compressStream2(PqCompressionContext, &out, &input,
+									  ZSTD_e_continue);
+		if (ZSTD_isError(result))
+			elog(ERROR, "Zstandard compression failed: %s",
+				 ZSTD_getErrorName(result));
+		if (out.pos == out.size && input.pos < input.size)
+			elog(ERROR, "Zstandard compression output buffer is too small");
+	}
+	do
+	{
+		result = ZSTD_compressStream2(PqCompressionContext, &out, &input,
+									  directive);
+		if (ZSTD_isError(result))
+			elog(ERROR, "Zstandard compression flush failed: %s",
+				 ZSTD_getErrorName(result));
+		if (out.pos == out.size && result != 0)
+			elog(ERROR, "Zstandard compression output buffer is too small");
+	} while (result != 0);
+
+	if (out.pos > 0)
+	{
+		char		msgtype = PqMsg_CompressedData;
+
+		if (internal_putbytes(&msgtype, 1))
+			goto fail;
+		n32 = pg_hton32((uint32) (out.pos + 8));
+		if (internal_putbytes(&n32, 4))
+			goto fail;
+		n32 = pg_hton32((uint32) PqCompressionInput.len);
+		if (internal_putbytes(&n32, 4))
+			goto fail;
+		if (internal_putbytes(output, out.pos))
+			goto fail;
+	}
+
+	resetStringInfo(&PqCompressionInput);
+	pfree(output);
+	return 0;
+
+fail:
+	pfree(output);
+	return EOF;
+}
+#endif
 
 
 /* --------------------------------
@@ -1492,6 +1630,54 @@ socket_putmessage(char msgtype, const char *s, size_t len)
 
 	Assert(msgtype != 0);
 
+#ifdef USE_ZSTD
+	if (!PqCompressionChecked)
+		socket_compression_init();
+
+	if (PqCompressionStarted && msgtype == PqMsg_DataRow)
+	{
+		size_t		message_size = len + 5;
+
+		if (!PqCompressionActive && len + 4 < 60)
+		{
+			PqCompressionSmallBytes += message_size;
+			if (PqCompressionSmallBytes >= 1024)
+				PqCompressionActive = true;
+		}
+		else
+		{
+			PqCompressionActive = true;
+			n32 = pg_hton32((uint32) (len + 4));
+			appendStringInfoCharMacro(&PqCompressionInput, msgtype);
+			appendBinaryStringInfo(&PqCompressionInput, (char *) &n32, 4);
+			appendBinaryStringInfo(&PqCompressionInput, s, len);
+			if (PqCompressionInput.len >= PQ_SEND_BUFFER_SIZE)
+			{
+				PqCommBusy = true;
+				if (socket_compression_flush(ZSTD_e_flush))
+				{
+					PqCommBusy = false;
+					return EOF;
+				}
+				PqCommBusy = false;
+			}
+			return 0;
+		}
+	}
+
+	if (PqCompressionStarted && msgtype != PqMsg_DataRow)
+	{
+		PqCommBusy = true;
+		if (socket_compression_flush(msgtype == PqMsg_ReadyForQuery ?
+								 ZSTD_e_end : ZSTD_e_flush))
+		{
+			PqCommBusy = false;
+			return EOF;
+		}
+		PqCommBusy = false;
+	}
+#endif
+
 	if (PqCommBusy)
 		return 0;
 	PqCommBusy = true;
@@ -1505,6 +1691,14 @@ socket_putmessage(char msgtype, const char *s, size_t len)
 	if (internal_putbytes(s, len))
 		goto fail;
 	PqCommBusy = false;
+#ifdef USE_ZSTD
+	if (PqCompressionEnabled && msgtype == PqMsg_ReadyForQuery)
+	{
+		PqCompressionStarted = true;
+		PqCompressionActive = false;
+		PqCompressionSmallBytes = 0;
+	}
+#endif
 	return 0;
 
 fail:

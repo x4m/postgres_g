@@ -18,6 +18,10 @@
 #include <fcntl.h>
 #include <limits.h>
 
+#ifdef USE_ZSTD
+#include <zstd.h>
+#endif
+
 #ifdef WIN32
 #include "win32.h"
 #else
@@ -37,6 +41,7 @@
  */
 #define VALID_LONG_MESSAGE_TYPE(id) \
 	((id) == PqMsg_CopyData || \
+	 (id) == PqMsg_CompressedData || \
 	 (id) == PqMsg_DataRow || \
 	 (id) == PqMsg_ErrorResponse || \
 	 (id) == PqMsg_FunctionCallResponse || \
@@ -60,6 +65,154 @@ static void reportErrorPosition(PQExpBuffer msg, const char *query,
 								int loc, int encoding);
 static size_t build_startup_packet(const PGconn *conn, char *packet,
 								   const PQEnvironmentOption *options);
+
+#ifdef USE_ZSTD
+void
+pqCompressionFree(PGconn *conn)
+{
+	if (conn->compression_dctx != NULL)
+	{
+		ZSTD_freeDCtx((ZSTD_DCtx *) conn->compression_dctx);
+		conn->compression_dctx = NULL;
+	}
+}
+
+/* Replace one CompressedData wrapper with the ordinary messages it contains. */
+static int
+pqDecompressData(PGconn *conn, int msgLength)
+{
+	uint32		n32;
+	int			uncompressed_size;
+	int			outer_size = msgLength + 5;
+	int			tail_size;
+	int			new_end;
+	int			position;
+	char	   *output;
+	ZSTD_inBuffer input;
+	ZSTD_outBuffer out;
+	ZSTD_DCtx  *dctx;
+	size_t		result;
+
+	if (msgLength < 4)
+	{
+		libpq_append_conn_error(conn, "compressed protocol message is too short");
+		return 1;
+	}
+
+	memcpy(&n32, conn->inBuffer + conn->inCursor, 4);
+	uncompressed_size = (int) pg_ntoh32(n32);
+	if (uncompressed_size < 0 || uncompressed_size > 16 * 1024 * 1024 ||
+		uncompressed_size > INT_MAX - conn->inEnd)
+	{
+		libpq_append_conn_error(conn, "invalid uncompressed protocol message size");
+		return 1;
+	}
+
+	if (conn->compression_dctx == NULL)
+	{
+		dctx = ZSTD_createDCtx();
+		if (dctx == NULL)
+		{
+			libpq_append_conn_error(conn, "out of memory");
+			return 1;
+		}
+		conn->compression_dctx = dctx;
+		result = ZSTD_DCtx_setParameter(dctx, ZSTD_d_windowLogMax, 23);
+		if (ZSTD_isError(result))
+		{
+			libpq_append_conn_error(conn,
+								"could not configure Zstandard decompressor: %s",
+								ZSTD_getErrorName(result));
+			return 1;
+		}
+	}
+	dctx = (ZSTD_DCtx *) conn->compression_dctx;
+
+	output = (char *) malloc((size_t) uncompressed_size + 1);
+	if (output == NULL)
+	{
+		libpq_append_conn_error(conn, "out of memory");
+		return 1;
+	}
+	input.src = conn->inBuffer + conn->inCursor + 4;
+	input.size = msgLength - 4;
+	input.pos = 0;
+	out.dst = output;
+	out.size = (size_t) uncompressed_size + 1;
+	out.pos = 0;
+
+	while (input.pos < input.size)
+	{
+		size_t		old_input_pos = input.pos;
+		size_t		old_output_pos = out.pos;
+
+		result = ZSTD_decompressStream(dctx, &out, &input);
+		if (ZSTD_isError(result))
+		{
+			libpq_append_conn_error(conn, "Zstandard decompression failed: %s",
+								ZSTD_getErrorName(result));
+			free(output);
+			return 1;
+		}
+		if (out.pos > (size_t) uncompressed_size ||
+			(input.pos == old_input_pos && out.pos == old_output_pos))
+		{
+			libpq_append_conn_error(conn,
+								"compressed protocol message has invalid size");
+			free(output);
+			return 1;
+		}
+	}
+	if (out.pos != (size_t) uncompressed_size)
+	{
+		libpq_append_conn_error(conn,
+							"compressed protocol message produced %zu bytes, expected %d",
+							out.pos, uncompressed_size);
+		free(output);
+		return 1;
+	}
+	conn->compression_in_frame = (result != 0);
+
+	/* This prototype permits only complete DataRow messages in the stream. */
+	position = 0;
+	while (position < uncompressed_size)
+	{
+		uint32		message_length;
+
+		if (uncompressed_size - position < 5 ||
+			output[position] != PqMsg_DataRow)
+			goto invalid_contents;
+		memcpy(&message_length, output + position + 1, 4);
+		message_length = pg_ntoh32(message_length);
+		if (message_length < 4 ||
+			message_length > (uint32) (uncompressed_size - position - 1))
+			goto invalid_contents;
+		position += message_length + 1;
+	}
+
+	tail_size = conn->inEnd - conn->inStart - outer_size;
+	new_end = conn->inEnd - outer_size + uncompressed_size;
+	if (pqCheckInBufferSpace(new_end, conn))
+	{
+		free(output);
+		return 1;
+	}
+	new_end = conn->inEnd - outer_size + uncompressed_size;
+	memmove(conn->inBuffer + conn->inStart + uncompressed_size,
+			conn->inBuffer + conn->inStart + outer_size, tail_size);
+	memcpy(conn->inBuffer + conn->inStart, output, uncompressed_size);
+	conn->inEnd = new_end;
+	conn->inCursor = conn->inStart;
+	free(output);
+	return 0;
+
+invalid_contents:
+	libpq_append_conn_error(conn,
+						"compressed protocol message contains invalid messages");
+	free(output);
+	return 1;
+}
+#endif
 
 
 /*
@@ -133,6 +286,25 @@ pqParseInput3(PGconn *conn)
 			}
 			return;
 		}
+
+#ifdef USE_ZSTD
+		if (id == PqMsg_CompressedData)
+		{
+			if (pqDecompressData(conn, msgLength))
+			{
+				handleFatalError(conn);
+				return;
+			}
+			continue;
+		}
+		if (id == PqMsg_ReadyForQuery && conn->compression_in_frame)
+		{
+			libpq_append_conn_error(conn,
+								"compressed protocol stream was not terminated before ReadyForQuery");
+			handleFatalError(conn);
+			return;
+		}
+#endif
 
 		/*
 		 * NOTIFY and NOTICE messages can happen in any state; always process
