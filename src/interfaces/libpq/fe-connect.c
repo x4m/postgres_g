@@ -347,6 +347,10 @@ static const internalPQconninfoOption PQconninfoOptions[] = {
 		"Max-Protocol-Version", "", 6,	/* sizeof("latest") = 6 */
 	offsetof(struct pg_conn, max_protocol_version)},
 
+	{"compression", "PGCOMPRESSION", "off", NULL,
+		"Protocol-Compression", "", 4,
+	offsetof(struct pg_conn, compression)},
+
 	{"ssl_min_protocol_version", "PGSSLMINPROTOCOLVERSION", "TLSv1.2", NULL,
 		"SSL-Minimum-Protocol-Version", "", 8,	/* sizeof("TLSv1.x") == 8 */
 	offsetof(struct pg_conn, ssl_min_protocol_version)},
@@ -2164,6 +2168,23 @@ pqConnectOptions2(PGconn *conn)
 		conn->status = CONNECTION_BAD;
 		libpq_append_conn_error(conn, "\"%s\" is greater than \"%s\"", "min_protocol_version", "max_protocol_version");
 		return false;
+	}
+
+	if (conn->compression && strcmp(conn->compression, "off") != 0)
+	{
+		if (strcmp(conn->compression, "zstd") != 0)
+		{
+			conn->status = CONNECTION_BAD;
+			libpq_append_conn_error(conn, "invalid %s value: \"%s\"",
+									"compression", conn->compression);
+			return false;
+		}
+#ifndef USE_ZSTD
+		conn->status = CONNECTION_BAD;
+		libpq_append_conn_error(conn,
+							"compression method \"zstd\" is not supported by this build");
+		return false;
+#endif
 	}
 
 	/*
@@ -5152,6 +5173,7 @@ freePGconn(PGconn *conn)
 	free(conn->gssdelegation);
 	free(conn->min_protocol_version);
 	free(conn->max_protocol_version);
+	free(conn->compression);
 	free(conn->ssl_min_protocol_version);
 	free(conn->ssl_max_protocol_version);
 	free(conn->target_session_attrs);

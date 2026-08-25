@@ -99,6 +99,10 @@ extern ssize_t secure_write(Port *port, const void *ptr, size_t len);
 extern ssize_t secure_raw_read(Port *port, void *ptr, size_t len);
 extern ssize_t secure_raw_write(Port *port, const void *ptr, size_t len);
 
+#ifdef USE_ZSTD
+extern void pq_enable_protocol_compression(void);
+#endif
+
 /*
  * declarations for variables defined in be-secure.c
  */

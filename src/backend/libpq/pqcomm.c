@@ -138,10 +138,10 @@ static bool PqCommReadingMsg;	/* in the middle of reading a message */
 
 #ifdef USE_ZSTD
 /* Experimental server-to-client protocol compression. */
-static bool PqCompressionChecked;
-static bool PqCompressionEnabled;
 static bool PqCompressionStarted;
+static bool PqCompressionNegotiated;
 static bool PqCompressionActive;
+static bool PqCompressionFrameStarted;
 static size_t PqCompressionSmallBytes;
 static StringInfoData PqCompressionInput;
 static ZSTD_CCtx *PqCompressionContext;
@@ -1507,17 +1507,27 @@ socket_is_send_pending(void)
  */
 
 #ifdef USE_ZSTD
+void
+pq_enable_protocol_compression(void)
+{
+	if (PqCompressionNegotiated)
+		ereport(FATAL,
+				(errcode(ERRCODE_PROTOCOL_VIOLATION),
+				 errmsg("protocol compression option specified more than once")));
+	PqCompressionNegotiated = true;
+}
+
 static void
 socket_compression_init(void)
 {
-	const char *enabled = getenv("PG_WIRE_COMPRESSION");
+	MemoryContext oldcontext;
 	size_t		result;
 
-	PqCompressionChecked = true;
-	if (enabled == NULL || strcmp(enabled, "1") != 0)
-		return;
-
+	Assert(PqCompressionNegotiated);
+	Assert(PqCompressionContext == NULL);
+	oldcontext = MemoryContextSwitchTo(TopMemoryContext);
 	initStringInfo(&PqCompressionInput);
+	MemoryContextSwitchTo(oldcontext);
 	PqCompressionContext = ZSTD_createCCtx();
 	if (PqCompressionContext == NULL)
 		elog(ERROR, "could not create Zstandard compression context");
@@ -1530,7 +1540,6 @@ socket_compression_init(void)
 	if (ZSTD_isError(result))
 		elog(ERROR, "could not configure Zstandard compression window: %s",
 			 ZSTD_getErrorName(result));
-	PqCompressionEnabled = true;
 }
 
 /* Emit one completely flushed segment of the persistent stream. */
@@ -1544,7 +1553,8 @@ socket_compression_flush(ZSTD_EndDirective directive)
 	size_t		result;
 	uint32		n32;
 
-	if (PqCompressionInput.len == 0 && directive == ZSTD_e_flush)
+	/* Do not create an empty frame for a result that was kept uncompressed. */
+	if (!PqCompressionFrameStarted)
 		return 0;
 
 	output_size = ZSTD_compressBound(PqCompressionInput.len) +
@@ -1631,10 +1641,8 @@ socket_putmessage(char msgtype, const char *s, size_t len)
 	Assert(msgtype != 0);
 
 #ifdef USE_ZSTD
-	if (!PqCompressionChecked)
-		socket_compression_init();
-
-	if (PqCompressionStarted && msgtype == PqMsg_DataRow)
+	if (PqCompressionStarted &&
+		(msgtype == PqMsg_DataRow || msgtype == PqMsg_CopyData))
 	{
 		size_t		message_size = len + 5;
 
@@ -1647,6 +1655,7 @@ socket_putmessage(char msgtype, const char *s, size_t len)
 		else
 		{
 			PqCompressionActive = true;
+			PqCompressionFrameStarted = true;
 			n32 = pg_hton32((uint32) (len + 4));
 			appendStringInfoCharMacro(&PqCompressionInput, msgtype);
 			appendBinaryStringInfo(&PqCompressionInput, (char *) &n32, 4);
@@ -1665,7 +1674,8 @@ socket_putmessage(char msgtype, const char *s, size_t len)
 		}
 	}
 
-	if (PqCompressionStarted && msgtype != PqMsg_DataRow)
+	if (PqCompressionStarted &&
+		msgtype != PqMsg_DataRow && msgtype != PqMsg_CopyData)
 	{
 		PqCommBusy = true;
 		if (socket_compression_flush(msgtype == PqMsg_ReadyForQuery ?
@@ -1692,10 +1702,13 @@ socket_putmessage(char msgtype, const char *s, size_t len)
 		goto fail;
 	PqCommBusy = false;
 #ifdef USE_ZSTD
-	if (PqCompressionEnabled && msgtype == PqMsg_ReadyForQuery)
+	if (PqCompressionNegotiated && msgtype == PqMsg_ReadyForQuery)
 	{
+		if (PqCompressionContext == NULL)
+			socket_compression_init();
 		PqCompressionStarted = true;
 		PqCompressionActive = false;
+		PqCompressionFrameStarted = false;
 		PqCompressionSmallBytes = 0;
 	}
 #endif

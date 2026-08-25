@@ -93,7 +93,7 @@ pqDecompressData(PGconn *conn, int msgLength)
 	ZSTD_DCtx  *dctx;
 	size_t		result;
 
-	if (msgLength < 4)
+	if (msgLength <= 4)
 	{
 		libpq_append_conn_error(conn, "compressed protocol message is too short");
 		return 1;
@@ -127,6 +127,12 @@ pqDecompressData(PGconn *conn, int msgLength)
 		}
 	}
 	dctx = (ZSTD_DCtx *) conn->compression_dctx;
+	if (conn->compression_frame_ended)
+	{
+		libpq_append_conn_error(conn,
+								"received data after the compressed protocol stream ended");
+		return 1;
+	}
 
 	output = (char *) malloc((size_t) uncompressed_size + 1);
 	if (output == NULL)
@@ -172,15 +178,17 @@ pqDecompressData(PGconn *conn, int msgLength)
 		return 1;
 	}
 	conn->compression_in_frame = (result != 0);
+	conn->compression_frame_ended = (result == 0);
 
-	/* This prototype permits only complete DataRow messages in the stream. */
+	/* Only complete data-bearing messages are allowed in the stream. */
 	position = 0;
 	while (position < uncompressed_size)
 	{
 		uint32		message_length;
 
 		if (uncompressed_size - position < 5 ||
-			output[position] != PqMsg_DataRow)
+			(output[position] != PqMsg_DataRow &&
+			 output[position] != PqMsg_CopyData))
 			goto invalid_contents;
 		memcpy(&message_length, output + position + 1, 4);
 		message_length = pg_ntoh32(message_length);
@@ -290,6 +298,14 @@ pqParseInput3(PGconn *conn)
 #ifdef USE_ZSTD
 		if (id == PqMsg_CompressedData)
 		{
+			if (!conn->compression_ready || conn->compression == NULL ||
+				strcmp(conn->compression, "zstd") != 0)
+			{
+				libpq_append_conn_error(conn,
+									"received compressed data without negotiated compression");
+				handleFatalError(conn);
+				return;
+			}
 			if (pqDecompressData(conn, msgLength))
 			{
 				handleFatalError(conn);
@@ -304,6 +320,8 @@ pqParseInput3(PGconn *conn)
 			handleFatalError(conn);
 			return;
 		}
+		if (id == PqMsg_ReadyForQuery)
+			conn->compression_frame_ended = false;
 #endif
 
 		/*
@@ -400,6 +418,11 @@ pqParseInput3(PGconn *conn)
 				case PqMsg_ReadyForQuery:
 					if (getReadyForQuery(conn))
 						return;
+#ifdef USE_ZSTD
+					if (conn->compression &&
+						strcmp(conn->compression, "zstd") == 0)
+						conn->compression_ready = true;
+#endif
 					if (conn->pipelineStatus != PQ_PIPELINE_OFF)
 					{
 						conn->result = PQmakeEmptyPGresult(conn,
@@ -1619,6 +1642,7 @@ pqGetNegotiateProtocolVersion3(PGconn *conn)
 	int			num;
 	bool		found_test_protocol_negotiation;
 	bool		expect_test_protocol_negotiation;
+	bool		requested_compression;
 
 	/*
 	 * During 19beta only, if protocol grease is in use, assume that it's the
@@ -1699,6 +1723,8 @@ pqGetNegotiateProtocolVersion3(PGconn *conn)
 	 */
 	found_test_protocol_negotiation = false;
 	expect_test_protocol_negotiation = (conn->max_pversion == PG_PROTOCOL_GREASE);
+	requested_compression = conn->compression &&
+		strcmp(conn->compression, "zstd") == 0;
 
 	for (int i = 0; i < num; i++)
 	{
@@ -1717,6 +1743,14 @@ pqGetNegotiateProtocolVersion3(PGconn *conn)
 			strcmp(conn->workBuffer.data, "_pq_.test_protocol_negotiation") == 0)
 		{
 			found_test_protocol_negotiation = true;
+		}
+		else if (requested_compression &&
+				 strcmp(conn->workBuffer.data, "_pq_.compression") == 0)
+		{
+			libpq_append_conn_error(conn,
+								"server does not support protocol compression method \"zstd\"");
+			need_grease_info = false;
+			goto failure;
 		}
 		else
 		{
@@ -2058,6 +2092,26 @@ getCopyDataMessage(PGconn *conn)
 			}
 			return 0;
 		}
+
+#ifdef USE_ZSTD
+		if (id == PqMsg_CompressedData)
+		{
+			if (!conn->compression_ready || conn->compression == NULL ||
+				strcmp(conn->compression, "zstd") != 0)
+			{
+				libpq_append_conn_error(conn,
+									"received compressed data without negotiated compression");
+				handleFatalError(conn);
+				return -2;
+			}
+			if (pqDecompressData(conn, msgLength - 4))
+			{
+				handleFatalError(conn);
+				return -2;
+			}
+			continue;
+		}
+#endif
 
 		/*
 		 * If it's a legitimate async message type, process it.  (NOTIFY
@@ -2711,6 +2765,8 @@ build_startup_packet(const PGconn *conn, char *packet,
 
 	if (conn->client_encoding_initial && conn->client_encoding_initial[0])
 		ADD_STARTUP_OPTION("client_encoding", conn->client_encoding_initial);
+	if (conn->compression && strcmp(conn->compression, "zstd") == 0)
+		ADD_STARTUP_OPTION("_pq_.compression", "zstd");
 
 	/*
 	 * Add the test_protocol_negotiation option when greasing, to test that
