@@ -1335,7 +1335,7 @@ pq_get_compressed_message(StringInfo s)
 		if (PqDecompressionContext == NULL)
 			elog(ERROR, "could not create Zstandard decompression context");
 		result = ZSTD_DCtx_setParameter(PqDecompressionContext,
-										ZSTD_d_windowLogMax, 23);
+									ZSTD_d_windowLogMax, 16);
 		if (ZSTD_isError(result))
 			elog(ERROR, "could not configure Zstandard decompression context: %s",
 				 ZSTD_getErrorName(result));
@@ -1646,7 +1646,7 @@ socket_compression_init(void)
 	if (ZSTD_isError(result))
 		elog(ERROR, "could not configure Zstandard compression context: %s",
 			 ZSTD_getErrorName(result));
-	result = ZSTD_CCtx_setParameter(PqCompressionContext, ZSTD_c_windowLog, 23);
+	result = ZSTD_CCtx_setParameter(PqCompressionContext, ZSTD_c_windowLog, 16);
 	if (ZSTD_isError(result))
 		elog(ERROR, "could not configure Zstandard compression window: %s",
 			 ZSTD_getErrorName(result));

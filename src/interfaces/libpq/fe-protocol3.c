@@ -122,7 +122,7 @@ pqDecompressData(PGconn *conn, int msgLength)
 			return 1;
 		}
 		conn->compression_dctx = dctx;
-		result = ZSTD_DCtx_setParameter(dctx, ZSTD_d_windowLogMax, 23);
+		result = ZSTD_DCtx_setParameter(dctx, ZSTD_d_windowLogMax, 16);
 		if (ZSTD_isError(result))
 		{
 			libpq_append_conn_error(conn,
@@ -250,7 +250,7 @@ pqPutCompressedCopySegment(PGconn *conn, const char *buffer, int nbytes,
 		result = ZSTD_CCtx_setParameter(cctx, ZSTD_c_compressionLevel, 1);
 		if (ZSTD_isError(result))
 			goto zstd_error;
-		result = ZSTD_CCtx_setParameter(cctx, ZSTD_c_windowLog, 23);
+		result = ZSTD_CCtx_setParameter(cctx, ZSTD_c_windowLog, 16);
 		if (ZSTD_isError(result))
 			goto zstd_error;
 	}
