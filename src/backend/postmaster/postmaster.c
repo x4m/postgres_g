@@ -2156,8 +2156,16 @@ process_pm_shutdown_request(void)
 				connsAllowed = false;
 			else if (pmState == PM_STARTUP || pmState == PM_RECOVERY)
 			{
-				/* There should be no clients, so proceed to stop children */
-				UpdatePMState(PM_STOP_BACKENDS);
+				if (FatalError)
+				{
+					/* Crash recovery in progress; see the FastShutdown case */
+					HandleFatalError(PMQUIT_FOR_STOP, false);
+				}
+				else
+				{
+					/* No clients, so proceed to stop children */
+					UpdatePMState(PM_STOP_BACKENDS);
+				}
 			}
 
 			/*
@@ -2190,8 +2198,27 @@ process_pm_shutdown_request(void)
 
 			if (pmState == PM_STARTUP || pmState == PM_RECOVERY)
 			{
-				/* Just shut down background processes silently */
-				UpdatePMState(PM_STOP_BACKENDS);
+				if (FatalError)
+				{
+					/*
+					 * We are reinitializing after a crash, and the shutdown
+					 * request arrived before the startup process signalled
+					 * PMSIGNAL_RECOVERY_STARTED, which is when FatalError
+					 * would have been cleared.  The auxiliary processes
+					 * relaunched for crash recovery expect crash-style
+					 * signalling: in particular the checkpointer ignores
+					 * SIGTERM, so the regular PM_STOP_BACKENDS path would
+					 * wait for it forever.  There is no consistent state to
+					 * save mid-recovery anyway, so terminate the children the
+					 * same way the crash path does and head for exit.
+					 */
+					HandleFatalError(PMQUIT_FOR_STOP, false);
+				}
+				else
+				{
+					/* Just shut down background processes silently */
+					UpdatePMState(PM_STOP_BACKENDS);
+				}
 			}
 			else if (pmState == PM_RUN ||
 					 pmState == PM_HOT_STANDBY)
