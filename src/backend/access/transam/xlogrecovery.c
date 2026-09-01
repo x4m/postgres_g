@@ -63,6 +63,7 @@
 #include "utils/fmgrprotos.h"
 #include "utils/guc.h"
 #include "utils/guc_hooks.h"
+#include "utils/injection_point.h"
 #include "utils/pgstat_internal.h"
 #include "utils/pg_lsn.h"
 #include "utils/ps_status.h"
@@ -1662,7 +1663,10 @@ PerformWalRecovery(void)
 	 * archiver if necessary.
 	 */
 	if (IsUnderPostmaster)
+	{
+		INJECTION_POINT("recovery-before-signal-recovery-started", NULL);
 		SendPostmasterSignal(PMSIGNAL_RECOVERY_STARTED);
+	}
 
 	/*
 	 * Allow read-only connections immediately if we're consistent already.
