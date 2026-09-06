@@ -673,13 +673,45 @@ jobs:
       - *ccache_save_step
 
       - name: Test world
-        env:
-          MTEST_TARGET: --slice ${{ matrix.slice}}/${{ matrix.num_slices}} ${{env.MTEST_TARGET}}
         shell: *su_postgres_shell
-        run: *meson_test_world_cmd
+        run: |
+          ulimit -c unlimited
+
+          echo ::group::test_setup
+          meson test ${{env.MTEST_ARGS}} --suite setup --logbase setup || exit 1
+          echo ::endgroup::
+
+          # The system Meson is older than 1.8, which introduced --slice.
+          # Emulate its round-robin slicing using the test list instead.
+          readarray -t test_names < <(
+            meson test ${{env.MTEST_ARGS}} --list --no-suite setup |
+            awk -F ' - ' \
+              -v slice=${{ matrix.slice}} \
+              -v slices=${{ matrix.num_slices}} \
+              '(NR - 1) % slices == slice - 1 {
+                 name = $NF
+                 sub(/:[^ ]+ \/ /, ":", name)
+                 print name
+               }'
+          )
+          meson test ${{env.MTEST_ARGS}} \
+            --num-processes ${{env.TEST_JOBS}} \
+            --no-suite setup "${test_names[@]}"
 
       - *linux_collect_cores_step
-      - *upload_logs_step
+      - name: Upload logs
+        if: failure() && !cancelled()
+        uses: actions/upload-artifact@v7
+        with:
+          name: logs-${{ github.job }}-${{ matrix.slice }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+              **/*.log
+              **/*.diffs
+              **/regress_log_*
+              **/crashlog-*.txt
+              build/meson-logs/**
+              **/config.log
+          if-no-files-found: ignore
 
 
   # Job: macOS - Meson
