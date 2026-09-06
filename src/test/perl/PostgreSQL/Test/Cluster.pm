@@ -916,6 +916,10 @@ By default, the backup is assumed to be plain format.  To restore from
 a tar-format backup, pass the name of the tar program to use in the
 keyword parameter tar_program.
 
+To move a plain-format backup into the new node instead of copying it, pass
+move_backup => 1.  This consumes the backup and cannot be combined with
+combine_with_prior, tar_program, or tablespace_map.
+
 If there are tablespace present in the backup, include tablespace_map as
 a keyword parameter whose values is a hash. When combine_with_prior is used,
 the hash keys are the tablespace pathnames used in the backup; otherwise,
@@ -936,8 +940,9 @@ default.
 If has_restoring is used, standby mode is used by default.  To use
 recovery mode instead, pass the keyword parameter standby => 0.
 
-The backup is copied, leaving the original unmodified. pg_hba.conf is
-unconditionally set to enable replication connections.
+Unless move_backup is specified, the backup is copied, leaving the original
+unmodified. pg_hba.conf is unconditionally set to enable replication
+connections.
 
 =cut
 
@@ -953,6 +958,11 @@ sub init_from_backup
 	$params{has_streaming} = 0 unless defined $params{has_streaming};
 	$params{has_restoring} = 0 unless defined $params{has_restoring};
 	$params{standby} = 1 unless defined $params{standby};
+	croak "move_backup cannot be combined with format or mapping options"
+	  if $params{move_backup}
+	  && (defined $params{combine_with_prior}
+		|| defined $params{tar_program}
+		|| defined $params{tablespace_map});
 
 	print
 	  "# Initializing node \"$node_name\" from backup \"$backup_name\" of node \"$root_name\"\n";
@@ -1034,6 +1044,15 @@ sub init_from_backup
 
 		# Close tablespace_map.
 		close($tsmap);
+	}
+	elsif ($params{move_backup})
+	{
+		if (-d $data_path)
+		{
+			rmdir($data_path) || croak "rmdir $data_path: $!";
+		}
+		rename($backup_path, $data_path)
+		  || croak "rename $backup_path to $data_path: $!";
 	}
 	else
 	{

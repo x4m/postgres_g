@@ -171,7 +171,8 @@ sub create_standby
 	  PostgreSQL::Test::Cluster->new(
 		'standby' . ($extra_name ? "_${extra_name}" : ''));
 	$node_primary->backup('my_backup');
-	$node_standby->init_from_backup($node_primary, 'my_backup');
+	$node_standby->init_from_backup($node_primary, 'my_backup',
+		move_backup => 1);
 	my $connstr_primary = $node_primary->connstr();
 
 	$node_standby->append_conf(
