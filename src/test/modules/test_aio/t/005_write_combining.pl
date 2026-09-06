@@ -164,9 +164,10 @@ sub dirty_blocks
 
 sub run_bgwriter_cleaner
 {
-	my $psql = shift;
+	my ($psql, $lru_maxpages) = @_;
+	$lru_maxpages //= 1000;
 
-	$psql->query_safe('SELECT run_bgwriter_cleaner(1000)');
+	$psql->query_safe("SELECT run_bgwriter_cleaner($lru_maxpages)");
 	$psql->query_safe('SELECT pg_stat_force_next_flush()');
 }
 
@@ -455,6 +456,18 @@ sub test_bgwriter_combines_writes
 	dirty_blocks($psql, 'wc_bgwriter', '0,1,2,3,4,5');
 	assert_blocks_dirty($node, 'wc_bgwriter', '0,1,2,3,4,5', 't',
 		'contiguous buffers are dirty before bgwriter cleaner');
+
+	# The per-round limit must also limit an individual combined write.
+	flush_and_reset_io_stats($node, $psql);
+	run_bgwriter_cleaner($psql, 1);
+	assert_writes($node, 'limited bgwriter cleaner', 'client backend',
+		'normal', 1, $block_size);
+	assert_any_blocks_dirty($node, 'wc_bgwriter', '0,1,2,3,4,5', 't',
+		'bgwriter cleaner honored the per-round limit');
+
+	# Clean the rest, then make the complete contiguous range dirty again.
+	run_bgwriter_cleaner($psql);
+	dirty_blocks($psql, 'wc_bgwriter', '0,1,2,3,4,5');
 
 	flush_and_reset_io_stats($node, $psql);
 	run_bgwriter_cleaner($psql);

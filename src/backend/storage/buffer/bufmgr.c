@@ -681,6 +681,7 @@ static uint32 MaxWriteBuffers(void);
 static uint32 CurrentMaxWriteBuffers(uint32 max_batch_size);
 static uint32 InitWriteBuffersOperation(BufferDesc *required_bufhdr, IOContext io_context,
 										WriteBuffersOperation *batch,
+										uint32 max_batch_size,
 										BlockNumber *scan_start, BlockNumber *scan_end);
 static Buffer GetVictimBuffer(BufferAccessStrategy strategy, IOContext io_context);
 static void FlushUnlockedBuffer(BufferDesc *buf, SMgrRelation reln,
@@ -694,6 +695,7 @@ static BufferDesc *PrepareOrRejectEagerWriteBuffer(Buffer bufnum,
 static void WriteBuffers(WriteBuffersOperation *batch);
 static void GatherContiguousDirtyBuffers(BufferDesc *required_bufhdr,
 										 IOContext io_context,
+										 uint32 max_batch_size,
 										 WriteBuffersOperation *batch);
 static Buffer LookupBufferForTag(BufferTag *tag);
 static void CompleteWriteBuffers(WriteBuffersOperation *batch,
@@ -2628,7 +2630,7 @@ WriteBufferAndNeighbors(Buffer bufnum, BufferDesc *buf_hdr, IOContext io_context
 	 * and the victim buffer's block's preceding and/or following blocks are
 	 * eligible for eager flushing, combine them into a batch.
 	 */
-	GatherContiguousDirtyBuffers(buf_hdr, io_context, &batch);
+	GatherContiguousDirtyBuffers(buf_hdr, io_context, MaxWriteBuffers(), &batch);
 	WriteBuffers(&batch);
 	CompleteWriteBuffers(&batch, wb_context);
 }
@@ -4176,10 +4178,12 @@ BgwriterWriteBuffers(int lru_maxpages, WritebackContext *wb_context,
 	uint32		passes = *next_passes;
 	int			reusable = *reusable_buffers;
 
+	Assert(lru_maxpages > 0);
+
 	*maxwritten_clean = false;
 
 	/* Execute the LRU scan */
-	for (; to_scan > 0; to_scan--, clean_idx++)
+	while (to_scan > 0)
 	{
 		uint64		buf_state;
 		StartBufferIOResult status;
@@ -4190,13 +4194,14 @@ BgwriterWriteBuffers(int lru_maxpages, WritebackContext *wb_context,
 		if (reusable >= upcoming_alloc_est)
 			break;
 
-		if (clean_idx >= NBuffers)
+		bufHdr = GetBufferDescriptor(clean_idx);
+		to_scan--;
+		if (++clean_idx >= NBuffers)
 		{
 			clean_idx = 0;
 			passes++;
 		}
 
-		bufHdr = GetBufferDescriptor(clean_idx);
 		buf_state = pg_atomic_read_u64(&bufHdr->state);
 		if (BUF_STATE_GET_REFCOUNT(buf_state) != 0 ||
 			BUF_STATE_GET_USAGECOUNT(buf_state) != 0)
@@ -4244,7 +4249,10 @@ BgwriterWriteBuffers(int lru_maxpages, WritebackContext *wb_context,
 		 * well would overestimate the number of reusable buffers (and could
 		 * even count buffers behind the clock hand that we won't hand out).
 		 */
-		GatherContiguousDirtyBuffers(bufHdr, IOCONTEXT_NORMAL, &batch);
+		GatherContiguousDirtyBuffers(bufHdr, IOCONTEXT_NORMAL,
+									 Min(MaxWriteBuffers(),
+										 (uint32) (lru_maxpages - num_written)),
+									 &batch);
 		WriteBuffers(&batch);
 		CompleteWriteBuffers(&batch, wb_context);
 		num_written += batch.n;
@@ -4988,12 +4996,13 @@ LookupBufferForTag(BufferTag *tag)
  * Given a required bufhdr, set up a batch that will include it and may
  * include blocks from its same segment, preceding and/or following. Returns
  * the current maximum number of blocks that can be in this batch given the
- * location of the block in the file, the current available pins, and various
- * configuration GUCs.
+ * caller's limit, the location of the block in the file, the current
+ * available pins, and various configuration GUCs.
  */
 static uint32
 InitWriteBuffersOperation(BufferDesc *required_bufhdr, IOContext io_context,
 						  WriteBuffersOperation *batch,
+						  uint32 max_batch_size,
 						  BlockNumber *scan_start, BlockNumber *scan_end)
 {
 	uint32		batch_limit;
@@ -5014,7 +5023,8 @@ InitWriteBuffersOperation(BufferDesc *required_bufhdr, IOContext io_context,
 
 	batch->n = 0;
 
-	batch_limit = CurrentMaxWriteBuffers(MaxWriteBuffers());
+	Assert(max_batch_size > 0);
+	batch_limit = CurrentMaxWriteBuffers(max_batch_size);
 
 	/* If we can only write out the required buffer, do that */
 	if (batch_limit <= 1)
@@ -5176,6 +5186,7 @@ reject_buffer:
 static void
 GatherContiguousDirtyBuffers(BufferDesc *required_bufhdr,
 							 IOContext io_context,
+							 uint32 max_batch_size,
 							 WriteBuffersOperation *batch)
 {
 	BufferDesc *left_bufhdrs[MAX_IO_COMBINE_LIMIT];
@@ -5192,7 +5203,7 @@ GatherContiguousDirtyBuffers(BufferDesc *required_bufhdr,
 	Assert(BufferIsLockedByMe(BufferDescriptorGetBuffer(required_bufhdr)));
 
 	batch_limit = InitWriteBuffersOperation(required_bufhdr, io_context,
-											batch,
+											batch, max_batch_size,
 											&scan_start, &scan_end);
 	if (batch_limit <= 1)
 		return;
