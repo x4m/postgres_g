@@ -4115,8 +4115,20 @@ CheckPointBuffers(int flags)
 		 * (This will check for barrier events even if it doesn't sleep.)
 		 */
 		Assert(batch.n == 0);
-		CheckpointWriteDelay(flags, (double) num_processed / num_to_scan,
-							 processed);
+		Assert(processed > 0);
+		if (flags & CHECKPOINT_FAST)
+			CheckpointWriteDelay(flags,
+								 (double) num_processed / num_to_scan,
+								 processed);
+		else
+		{
+			/* Preserve per-buffer pacing after combining the physical writes. */
+			for (int remaining = processed; remaining > 0; remaining--)
+				CheckpointWriteDelay(flags,
+									 (double) (num_processed - remaining + 1) /
+									 num_to_scan,
+									 1);
+		}
 	}
 
 	/*

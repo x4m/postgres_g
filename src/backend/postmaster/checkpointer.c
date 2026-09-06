@@ -781,11 +781,10 @@ FastCheckpointRequested(void)
 /*
  * CheckpointWriteDelay -- control rate of checkpoint
  *
- * This function is called after each batch of page writes performed by
- * CheckPointBuffers(); npages is the number of pages the call represents
- * (including pages that were scanned but did not need writing). It is
- * responsible for throttling the checkpoint's write rate to hit
- * checkpoint_completion_target.
+ * This function is called as CheckPointBuffers() makes progress; npages is
+ * the number of pages the call represents (including pages that were scanned
+ * but did not need writing). It is responsible for throttling the
+ * checkpoint's write rate to hit checkpoint_completion_target.
  *
  * The checkpoint request flags should be passed in; currently the only one
  * examined is CHECKPOINT_FAST, which disables delays between writes.
