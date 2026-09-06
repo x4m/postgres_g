@@ -628,13 +628,19 @@ jobs:
   # - Uses io_method=io_uring
   # - Uses meson feature autodetection
   linux-meson-64:
-    name: Linux - Meson (64-bit)
+    name: Linux - Meson (64-bit) - Slice ${{ matrix.slice}}/${{ matrix.num_slices}}
     needs: [setup, sanity-check]
     if: *linux_job_if
     runs-on: *linux_runs_on
     container: *linux_ci_container
     timeout-minutes: 60
     env: *linux_env
+
+    strategy:
+      fail-fast: false
+      matrix:
+        num_slices: [2]
+        slice: [1, 2]
 
     steps:
       - name: Update Environment
@@ -667,6 +673,8 @@ jobs:
       - *ccache_save_step
 
       - name: Test world
+        env:
+          MTEST_TARGET: --slice ${{ matrix.slice}}/${{ matrix.num_slices}} ${{env.MTEST_TARGET}}
         shell: *su_postgres_shell
         run: *meson_test_world_cmd
 
