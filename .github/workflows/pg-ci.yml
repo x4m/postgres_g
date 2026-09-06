@@ -441,10 +441,7 @@ jobs:
   linux-autoconf:
     name: Linux - Autoconf
     needs: [setup, sanity-check]
-    if: &linux_job_if |
-      !cancelled() &&
-      needs.setup.outputs.linux == 'true' &&
-      needs.sanity-check.result != 'failure'
+    if: false # benchmark-only: run just the ASAN job
     runs-on: *linux_runs_on
     container: *linux_ci_container
     timeout-minutes: 60
@@ -538,7 +535,7 @@ jobs:
   linux-meson-32:
     name: Linux - Meson (32-bit)
     needs: [setup, sanity-check]
-    if: *linux_job_if
+    if: false # benchmark-only: run just the ASAN job
     runs-on: *linux_runs_on
     container: *linux_ci_container
     timeout-minutes: 60
@@ -630,7 +627,10 @@ jobs:
   linux-meson-64:
     name: Linux - Meson (64-bit)
     needs: [setup, sanity-check]
-    if: *linux_job_if
+    if: |
+      !cancelled() &&
+      needs.setup.outputs.linux == 'true' &&
+      needs.sanity-check.result != 'failure'
     runs-on: *linux_runs_on
     container: *linux_ci_container
     timeout-minutes: 60
