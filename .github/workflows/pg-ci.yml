@@ -666,9 +666,46 @@ jobs:
       - *ccache_decide_save_step
       - *ccache_save_step
 
-      - name: Test world
+      - name: Compare affected tests
         shell: *su_postgres_shell
-        run: *meson_test_world_cmd
+        run: |
+          ulimit -c unlimited
+
+          echo ::group::test_setup
+          meson test ${{env.MTEST_ARGS}} --suite setup --logbase setup || exit 1
+          echo ::endgroup::
+
+          compare_files=(
+            src/bin/pg_rewind/t/RewindTest.pm
+            src/bin/pg_upgrade/t/006_transfer_modes.pl
+            src/test/perl/PostgreSQL/Test/Cluster.pm
+          )
+          compare_tests=(
+            'postgresql:pg_rewind/*'
+            'postgresql:pg_upgrade/006_transfer_modes'
+          )
+
+          run_variant()
+          {
+            label=$1
+            revision=$2
+            git checkout "$revision" -- "${compare_files[@]}"
+            start=$SECONDS
+            meson test ${{env.MTEST_ARGS}} \
+              --num-processes ${{env.TEST_JOBS}} \
+              --no-suite setup --logbase "$label" "${compare_tests[@]}"
+            elapsed=$((SECONDS - start))
+            echo "::notice title=CI benchmark::$label: $elapsed seconds"
+          }
+
+          run_variant baseline-1 HEAD^
+          run_variant patched-1 HEAD
+          run_variant patched-2 HEAD
+          run_variant baseline-2 HEAD^
+          run_variant baseline-3 HEAD^
+          run_variant patched-3 HEAD
+
+          git checkout HEAD -- "${compare_files[@]}"
 
       - *linux_collect_cores_step
       - *upload_logs_step

@@ -9,6 +9,10 @@ use PostgreSQL::Test::Cluster;
 use PostgreSQL::Test::Utils;
 use Test::More;
 
+# Extension availability is installation-wide, so probe each installation
+# only once for all transfer modes.
+my ($old_has_dummy_seclabel, $new_has_dummy_seclabel);
+
 sub test_mode
 {
 	my ($mode) = @_;
@@ -32,25 +36,31 @@ sub test_mode
 	$new->append_conf('postgresql.conf', "allow_in_place_tablespaces = true");
 	$old->append_conf('postgresql.conf', "allow_in_place_tablespaces = true");
 
-	# We can only test security labels if both the old and new installations
-	# have dummy_seclabel.
-	my $test_seclabel = 1;
 	$old->start;
-	if (!$old->check_extension('dummy_seclabel'))
+	if (!defined $old_has_dummy_seclabel)
 	{
-		$test_seclabel = 0;
+		$old_has_dummy_seclabel =
+		  $old->check_extension('dummy_seclabel');
 	}
-	$old->stop;
-	$new->start;
-	if (!$new->check_extension('dummy_seclabel'))
+	if (!defined $new_has_dummy_seclabel)
 	{
-		$test_seclabel = 0;
+		if (defined($ENV{oldinstall}))
+		{
+			$new->start;
+			$new_has_dummy_seclabel =
+			  $new->check_extension('dummy_seclabel');
+			$new->stop;
+		}
+		else
+		{
+			$new_has_dummy_seclabel = $old_has_dummy_seclabel;
+		}
 	}
-	$new->stop;
+	my $test_seclabel =
+	  $old_has_dummy_seclabel && $new_has_dummy_seclabel;
 
 	# Create a small variety of simple test objects in the old cluster.  We'll
 	# check that these reach the new version after upgrading.
-	$old->start;
 	$old->safe_psql('postgres',
 		"CREATE TABLE test1 AS SELECT generate_series(1, 100)");
 	$old->safe_psql('postgres', "CREATE DATABASE testdb1");
