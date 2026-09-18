@@ -1209,7 +1209,19 @@ heap_page_prune_and_freeze(PruneFreezeParams *params,
 		GlobalVisTestXidConsideredRunning(prstate.vistest,
 										  prstate.newest_live_xid,
 										  true))
+	{
 		prstate.set_all_visible = prstate.set_all_frozen = false;
+
+		/*
+		 * Preserve an opportunity to set the VM on-access once the newest
+		 * live xmin is visible to everyone. Retain any earlier pruning
+		 * opportunity already recorded, so that we can still reclaim dead
+		 * tuples sooner.
+		 */
+		if (!TransactionIdIsValid(prstate.new_prune_xid) ||
+			TransactionIdPrecedes(prstate.newest_live_xid, prstate.new_prune_xid))
+			prstate.new_prune_xid = prstate.newest_live_xid;
+	}
 
 	/*
 	 * If checksums are enabled, calling heap_prune_satisfies_vacuum() while
