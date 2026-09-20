@@ -663,7 +663,7 @@ ginbulkdelete(IndexVacuumInfo *info, IndexBulkDeleteResult *stats,
 	 * empty the pending list.  This is still safe; concurrent inserters
 	 * cannot insert new tuples whose TIDs VACUUM needs us to remove.
 	 */
-	ginInsertCleanup(&gvs.ginstate, !AmAutoVacuumWorkerProcess(),
+	ginInsertCleanup(&gvs.ginstate, !info->is_autovacuum,
 					 false, true, stats);
 
 	/* we'll re-count the tuples each time */
@@ -775,7 +775,7 @@ ginvacuumcleanup(IndexVacuumInfo *info, IndexBulkDeleteResult *stats)
 	 */
 	if (info->analyze_only)
 	{
-		if (AmAutoVacuumWorkerProcess())
+		if (info->is_autovacuum)
 		{
 			initGinState(&ginstate, index);
 			ginInsertCleanup(&ginstate, false, true, true, stats);
@@ -791,7 +791,7 @@ ginvacuumcleanup(IndexVacuumInfo *info, IndexBulkDeleteResult *stats)
 	{
 		stats = palloc0_object(IndexBulkDeleteResult);
 		initGinState(&ginstate, index);
-		ginInsertCleanup(&ginstate, !AmAutoVacuumWorkerProcess(),
+		ginInsertCleanup(&ginstate, !info->is_autovacuum,
 						 false, true, stats);
 	}
 
