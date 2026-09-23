@@ -23,6 +23,33 @@
 #include "storage/standby.h"
 
 /*
+ * Clear visibility map bits for a heap block when the WAL record clearing it
+ * did not register the VM block. This handles cases where the VM is
+ * out-of-sync between the primary and standby (for instance, CREATE DATABASE
+ * STRATEGY WAL_LOG historically could cause this).
+ *
+ * This is not fully resilient: the VM page is modified without a full-page
+ * image, so a torn write during a crash could leave it inconsistent until the
+ * page is next repaired. That is considered acceptable since the VM is zeroed
+ * on error when reading it.
+ */
+static void
+heap_xlog_vm_clear_unregistered(RelFileLocator rlocator, BlockNumber heap_blkno,
+								uint8 flags)
+{
+	Buffer		vmbuffer = InvalidBuffer;
+
+	if (xlog_visibilitymap_get_status(rlocator, heap_blkno, &vmbuffer) & flags)
+	{
+		LockBuffer(vmbuffer, BUFFER_LOCK_EXCLUSIVE);
+		visibilitymap_clear(rlocator, heap_blkno, vmbuffer, flags);
+		UnlockReleaseBuffer(vmbuffer);
+	}
+	else if (BufferIsValid(vmbuffer))
+		ReleaseBuffer(vmbuffer);
+}
+
+/*
  * Clear visibility map bits for a single heap block during heap redo.
  *
  * Used by records that modify one heap block and, at most, its corresponding
@@ -46,7 +73,10 @@ heap_xlog_vm_clear(XLogReaderState *record,
 	Buffer		vmbuffer = InvalidBuffer;
 
 	if (!XLogRecHasBlockRef(record, wal_vm_block_id))
+	{
+		heap_xlog_vm_clear_unregistered(target_locator, heap_blkno, flags);
 		return;
+	}
 
 	/*
 	 * If the vmbuffer was registered, use the recovery-specific routines to

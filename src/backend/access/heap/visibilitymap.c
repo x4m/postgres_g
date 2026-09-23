@@ -12,6 +12,7 @@
  *
  * INTERFACE ROUTINES
  *		visibilitymap_clear  - clear bits for one page in the visibility map
+ *		xlog_visibilitymap_get_status - get status of bits during WAL replay
  *		visibilitymap_pin	 - pin a map page for setting a bit
  *		visibilitymap_pin_ok - check whether correct map page is already pinned
  *		visibilitymap_set	 - set bit(s) in a previously pinned page
@@ -187,6 +188,36 @@ visibilitymap_clear(RelFileLocator rlocator, BlockNumber heapBlk,
 	}
 
 	return cleared;
+}
+
+/*
+ * Like visibilitymap_get_status(), but uses a RelFileLocator instead of a
+ * Relation, so it needs no relcache entry and can be used by redo routines.
+ *
+ * On return *vmbuf holds the pinned (but unlocked) map page; the caller is
+ * responsible for releasing it. A caller that goes on to clear bits must lock
+ * it first.
+ */
+uint8
+xlog_visibilitymap_get_status(RelFileLocator rlocator, BlockNumber heapBlk,
+							  Buffer *vmbuf)
+{
+	BlockNumber mapBlock = HEAPBLK_TO_MAPBLOCK(heapBlk);
+	uint32		mapByte = HEAPBLK_TO_MAPBYTE(heapBlk);
+	uint8		mapOffset = HEAPBLK_TO_OFFSET(heapBlk);
+	char	   *map;
+
+	Assert(InRecovery);
+
+	*vmbuf = XLogReadBufferExtended(rlocator, VISIBILITYMAP_FORKNUM, mapBlock,
+									RBM_ZERO_ON_ERROR, InvalidBuffer);
+	if (!BufferIsValid(*vmbuf))
+		return 0;
+
+	map = PageGetContents(BufferGetPage(*vmbuf));
+
+	/* A single byte read is atomic (see visibilitymap_get_status()). */
+	return ((map[mapByte] >> mapOffset) & VISIBILITYMAP_VALID_BITS);
 }
 
 /*
