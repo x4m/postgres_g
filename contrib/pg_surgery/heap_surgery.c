@@ -155,6 +155,7 @@ heap_force_common(FunctionCallInfo fcinfo, HeapTupleForceOption heap_force_opt)
 		int			i;
 		bool		did_modify_page = false;
 		bool		did_modify_vm = false;
+		bool		all_visible_cleared = false;
 
 		CHECK_FOR_INTERRUPTS();
 
@@ -277,6 +278,7 @@ heap_force_common(FunctionCallInfo fcinfo, HeapTupleForceOption heap_force_opt)
 						did_modify_vm = true;
 
 					PageClearAllVisible(page);
+					all_visible_cleared = true;
 				}
 			}
 			else
@@ -332,9 +334,15 @@ heap_force_common(FunctionCallInfo fcinfo, HeapTupleForceOption heap_force_opt)
 
 				XLogBeginInsert();
 				XLogRegisterBuffer(0, buf, REGBUF_STANDARD | REGBUF_FORCE_IMAGE);
-				/* Include the VM page if it was modified */
-				if (did_modify_vm)
-					XLogRegisterBuffer(1, vmbuf, REGBUF_FORCE_IMAGE);
+				/*
+				 * Include the VM image whenever we cleared PD_ALL_VISIBLE, even
+				 * if its bits were already clear on the primary. A standby may
+				 * still have them set and must clear them along with the heap
+				 * hint. If the VM was unchanged, leave its LSN alone below.
+				 */
+				if (all_visible_cleared)
+					XLogRegisterBuffer(1, vmbuf, REGBUF_FORCE_IMAGE |
+									   (did_modify_vm ? 0 : REGBUF_NO_CHANGE));
 				recptr = XLogInsert(RM_XLOG_ID, XLOG_FPI);
 				if (did_modify_vm)
 					PageSetLSN(BufferGetPage(vmbuf), recptr);

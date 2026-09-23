@@ -64,6 +64,7 @@ static XLogRecPtr log_heap_update(Relation reln, Buffer oldbuf,
 								  Buffer vmbuffer_new, HeapTuple oldtup,
 								  HeapTuple newtup, HeapTuple old_key_tuple,
 								  bool all_visible_cleared, bool new_all_visible_cleared,
+								  bool vmbuffer_old_modified, bool vmbuffer_new_modified,
 								  bool walLogical);
 #ifdef USE_ASSERT_CHECKING
 static void check_lock_if_inplace_updateable_rel(Relation relation,
@@ -2174,8 +2175,15 @@ heap_insert(Relation relation, HeapTuple tup, CommandId cid,
 		/* filtering by origin on a row level is much more efficient */
 		XLogSetRecordFlags(XLOG_INCLUDE_ORIGIN);
 
-		if (vmbuffer_modified)
-			XLogRegisterBuffer(HEAP_INSERT_BLKREF_VM, vmbuffer, 0);
+		/*
+		 * Register the VM buffer even if its bits were already clear, so redo
+		 * clears PD_ALL_VISIBLE's VM bits. Without this, a missing VM on
+		 * master would cause data corruption on the standby when we failed to
+		 * clear the VM there.
+		 */
+		if (clear_all_visible)
+			XLogRegisterBuffer(HEAP_INSERT_BLKREF_VM, vmbuffer,
+							   vmbuffer_modified ? 0 : REGBUF_NO_CHANGE);
 
 		recptr = XLogInsert(RM_HEAP_ID, info);
 
@@ -2486,11 +2494,14 @@ heap_multi_insert(Relation relation, TupleTableSlot **slots, int ntuples,
 		{
 			PageSetAllVisible(page);
 			PageClearPrunable(page);
-			(void) visibilitymap_set(BufferGetBlockNumber(buffer),
-									 vmbuffer,
-									 VISIBILITYMAP_ALL_VISIBLE |
-									 VISIBILITYMAP_ALL_FROZEN,
-									 relation->rd_locator);
+
+			if (visibilitymap_set(BufferGetBlockNumber(buffer),
+								  vmbuffer,
+								  VISIBILITYMAP_ALL_VISIBLE |
+								  VISIBILITYMAP_ALL_FROZEN,
+								  relation->rd_locator) !=
+				(VISIBILITYMAP_ALL_VISIBLE | VISIBILITYMAP_ALL_FROZEN))
+				vmbuffer_modified = true;
 		}
 
 		/*
@@ -2613,8 +2624,16 @@ heap_multi_insert(Relation relation, TupleTableSlot **slots, int ntuples,
 			XLogRegisterData(xlrec, tupledata - scratch.data);
 			XLogRegisterBuffer(HEAP_MULTI_INSERT_BLKREF_HEAP, buffer,
 							   REGBUF_STANDARD | bufflags);
-			if (all_frozen_set || vmbuffer_modified)
-				XLogRegisterBuffer(HEAP_MULTI_INSERT_BLKREF_VM, vmbuffer, 0);
+
+			/*
+			 * If the vmbuffer wasn't modified but we are clearing all-visible
+			 * (for example because the VM was lost), register it with
+			 * REGBUF_NO_CHANGE to keep the xlog system from complaining it
+			 * must be dirty.
+			 */
+			if (all_frozen_set || clear_all_visible)
+				XLogRegisterBuffer(HEAP_MULTI_INSERT_BLKREF_VM, vmbuffer,
+								   vmbuffer_modified ? 0 : REGBUF_NO_CHANGE);
 
 			XLogRegisterBufData(HEAP_MULTI_INSERT_BLKREF_HEAP, tupledata,
 								totaldatalen);
@@ -2625,7 +2644,7 @@ heap_multi_insert(Relation relation, TupleTableSlot **slots, int ntuples,
 			recptr = XLogInsert(RM_HEAP2_ID, info);
 
 			PageSetLSN(page, recptr);
-			if (all_frozen_set || vmbuffer_modified)
+			if (vmbuffer_modified)
 			{
 				Assert(BufferIsDirty(vmbuffer));
 				PageSetLSN(BufferGetPage(vmbuffer), recptr);
@@ -3144,8 +3163,15 @@ l1:
 		/* filtering by origin on a row level is much more efficient */
 		XLogSetRecordFlags(XLOG_INCLUDE_ORIGIN);
 
-		if (vmbuffer_modified)
-			XLogRegisterBuffer(HEAP_DELETE_BLKREF_VM, vmbuffer, 0);
+		/*
+		 * If the vmbuffer wasn't modified but we are clearing all-visible
+		 * (for example because the VM was lost), register it with
+		 * REGBUF_NO_CHANGE to keep the xlog system from complaining it must
+		 * be dirty.
+		 */
+		if (clear_all_visible)
+			XLogRegisterBuffer(HEAP_DELETE_BLKREF_VM, vmbuffer,
+							   vmbuffer_modified ? 0 : REGBUF_NO_CHANGE);
 
 		recptr = XLogInsert(RM_HEAP_ID, XLOG_HEAP_DELETE);
 
@@ -4276,14 +4302,25 @@ l2:
 			log_heap_new_cid(relation, heaptup);
 		}
 
+		/*
+		 * When both heap pages are all-visible and share a VM page, that page
+		 * is registered once as VM_NEW; pass the old slot as invalid to avoid
+		 * registering the same buffer twice.
+		 */
 		recptr = log_heap_update(relation, buffer,
-								 vmbuffer_modified ? vmbuffer : InvalidBuffer,
+								 (clear_all_visible &&
+								  !(clear_all_visible_new &&
+									vmbuffer == vmbuffer_new)) ?
+								 vmbuffer : InvalidBuffer,
 								 newbuf,
-								 vmbuffer_new_modified ? vmbuffer_new : InvalidBuffer,
+								 clear_all_visible_new ?
+								 vmbuffer_new : InvalidBuffer,
 								 &oldtup, heaptup,
 								 old_key_tuple,
 								 clear_all_visible,
 								 clear_all_visible_new,
+								 vmbuffer_modified,
+								 vmbuffer_new_modified,
 								 walLogical);
 		if (newbuf != buffer)
 		{
@@ -9023,6 +9060,7 @@ log_heap_update(Relation reln, Buffer oldbuf, Buffer vmbuffer_old,
 				HeapTuple oldtup, HeapTuple newtup,
 				HeapTuple old_key_tuple,
 				bool all_visible_cleared, bool new_all_visible_cleared,
+				bool vmbuffer_old_modified, bool vmbuffer_new_modified,
 				bool walLogical)
 {
 	xl_heap_update xlrec;
@@ -9235,15 +9273,21 @@ log_heap_update(Relation reln, Buffer oldbuf, Buffer vmbuffer_old,
 	 * same VM page and both their VM bits were cleared, the caller passes
 	 * only vmbuffer_new (mirroring the heap page convention where block 0 =
 	 * new is always registered).
+	 *
+	 * A buffer is registered even if its bits were already clear, so redo
+	 * clears PD_ALL_VISIBLE's VM bits (the VM can be out-of-sync across a
+	 * cluster); use REGBUF_NO_CHANGE when the page was not modified.
 	 */
 	Assert((BufferIsInvalid(vmbuffer_old) && BufferIsInvalid(vmbuffer_new)) ||
 		   (vmbuffer_old != vmbuffer_new));
 
 	if (BufferIsValid(vmbuffer_new))
-		XLogRegisterBuffer(HEAP_UPDATE_BLKREF_VM_NEW, vmbuffer_new, 0);
+		XLogRegisterBuffer(HEAP_UPDATE_BLKREF_VM_NEW, vmbuffer_new,
+						   vmbuffer_new_modified ? 0 : REGBUF_NO_CHANGE);
 
 	if (BufferIsValid(vmbuffer_old))
-		XLogRegisterBuffer(HEAP_UPDATE_BLKREF_VM_OLD, vmbuffer_old, 0);
+		XLogRegisterBuffer(HEAP_UPDATE_BLKREF_VM_OLD, vmbuffer_old,
+						   vmbuffer_old_modified ? 0 : REGBUF_NO_CHANGE);
 
 	/* filtering by origin on a row level is much more efficient */
 	XLogSetRecordFlags(XLOG_INCLUDE_ORIGIN);
