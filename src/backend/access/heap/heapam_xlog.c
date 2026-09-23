@@ -18,9 +18,45 @@
 #include "access/heapam.h"
 #include "access/visibilitymap.h"
 #include "access/xlog.h"
+#include "access/xlogrecovery.h"
 #include "access/xlogutils.h"
+#include "common/relpath.h"
 #include "storage/freespace.h"
 #include "storage/standby.h"
+
+/*
+ * Report a standby whose visibility map has the all-visible bit set over a
+ * heap page that is not marked all-visible. This can happen on the standby
+ * without having happened on the primary if the VM diverges across the
+ * cluster (e.g. because of VM truncation or historical CREATE DATABASE
+ * STRATEGY WAL_LOG bugs). This is the redo counterpart of the check in
+ * heap_page_fix_vm_corruption() that runs on the primary during VACUUM.
+ *
+ * heap_all_visible is the heap page's PD_ALL_VISIBLE as it stood before this
+ * record modified it; vm_oldbits is the VM status before this record touched
+ * it; lsn is the record's LSN; and action describes what redo is doing (e.g.
+ * "clearing the visibility map bits"), all reported in the errdetail.
+ */
+static void
+heap_xlog_warn_vm_corruption(bool heap_all_visible, uint8 vm_oldbits,
+							 XLogRecPtr lsn, const char *action,
+							 RelFileLocator rlocator, BlockNumber blkno)
+{
+	/*
+	 * Only report once recovery has reached consistency. During crash
+	 * recovery, and before the consistency point of archive recovery, the
+	 * heap and VM pages can sit at different points of the WAL stream, so a
+	 * transient mismatch is expected and finishing replay resolves it.
+	 */
+	if (reachedConsistency && !heap_all_visible &&
+		(vm_oldbits & VISIBILITYMAP_ALL_VISIBLE))
+		ereport(WARNING,
+				(errcode(ERRCODE_DATA_CORRUPTED),
+				 errmsg("page %u of relation %s is not marked all-visible but its visibility map bit is set",
+						blkno, relpathperm(rlocator, MAIN_FORKNUM).str),
+				 errdetail("Redo is %s; the visibility map status was 0x%02X at record LSN %X/%X.",
+						   action, vm_oldbits, LSN_FORMAT_ARGS(lsn))));
+}
 
 /*
  * Clear visibility map bits for a single heap block during heap redo.
@@ -35,8 +71,13 @@
  * 'heap_blkno' is the heap block whose VM bits should be cleared
  * 'wal_vm_block_id' is the WAL block reference id of the VM page
  * 'flags' specifies which visibility map bits to clear
+ *
+ * Returns the VM bits that were set for the block before this record cleared
+ * them, or 0 if we did not read them (no VM block reference, restored from a
+ * full-page image, or already up to date). Callers treat both the same: there
+ * is no evidence of divergence to report.
  */
-static void
+static uint8
 heap_xlog_vm_clear(XLogReaderState *record,
 				   RelFileLocator target_locator,
 				   BlockNumber heap_blkno,
@@ -44,9 +85,10 @@ heap_xlog_vm_clear(XLogReaderState *record,
 {
 	XLogRecPtr	lsn = record->EndRecPtr;
 	Buffer		vmbuffer = InvalidBuffer;
+	uint8		oldbits = 0;
 
 	if (!XLogRecHasBlockRef(record, wal_vm_block_id))
-		return;
+		return 0;
 
 	/*
 	 * If the vmbuffer was registered, use the recovery-specific routines to
@@ -63,12 +105,14 @@ heap_xlog_vm_clear(XLogReaderState *record,
 		if (PageIsNew(vmpage))
 			PageInit(vmpage, BLCKSZ, 0);
 
-		if (visibilitymap_clear(target_locator, heap_blkno, vmbuffer,
-								flags) & flags)
+		oldbits = visibilitymap_clear(target_locator, heap_blkno, vmbuffer, flags);
+		if (oldbits & flags)
 			PageSetLSN(vmpage, lsn);
 	}
 	if (BufferIsValid(vmbuffer))
 		UnlockReleaseBuffer(vmbuffer);
+
+	return oldbits;
 }
 
 /*
@@ -87,6 +131,13 @@ heap_xlog_prune_freeze(XLogReaderState *record)
 	uint8		vmflags = 0;
 	Size		freespace = 0;
 	bool		do_update_fsm = false;
+	XLogRedoAction heap_action;
+
+	/*
+	 * Whether the heap page was already marked all-visible before this
+	 * record. Only valid if heap_action is BLK_NEEDS_REDO.
+	 */
+	bool		heap_was_all_visible = false;
 
 	XLogRecGetBlockTag(record, 0, &rlocator, NULL, &blkno);
 	memcpy(&xlrec, maindataptr, SizeOfHeapPrune);
@@ -136,9 +187,10 @@ heap_xlog_prune_freeze(XLogReaderState *record)
 	 * If we have a full-page image of the heap block, restore it and we're
 	 * done with the heap block.
 	 */
-	if (XLogReadBufferForRedoExtended(record, 0, RBM_NORMAL,
-									  (xlrec.flags & XLHP_CLEANUP_LOCK) != 0,
-									  &buffer) == BLK_NEEDS_REDO)
+	heap_action = XLogReadBufferForRedoExtended(record, 0, RBM_NORMAL,
+												(xlrec.flags & XLHP_CLEANUP_LOCK) != 0,
+												&buffer);
+	if (heap_action == BLK_NEEDS_REDO)
 	{
 		Page		page = BufferGetPage(buffer);
 		OffsetNumber *redirected;
@@ -205,6 +257,8 @@ heap_xlog_prune_freeze(XLogReaderState *record)
 
 		/* There should be no more data */
 		Assert((char *) frz_offsets == dataptr + datalen);
+
+		heap_was_all_visible = PageIsAllVisible(page);
 
 		/*
 		 * The critical integrity requirement here is that we must never end
@@ -286,13 +340,31 @@ heap_xlog_prune_freeze(XLogReaderState *record)
 									  &vmbuffer) == BLK_NEEDS_REDO)
 	{
 		Page		vmpage = BufferGetPage(vmbuffer);
+		uint8		old_vmbits;
 
 		/* initialize the page if it was read as zeros */
 		if (PageIsNew(vmpage))
 			PageInit(vmpage, BLCKSZ, 0);
 
-		if (visibilitymap_set(blkno, vmbuffer, vmflags, rlocator) != vmflags)
+		old_vmbits = visibilitymap_set(blkno, vmbuffer, vmflags, rlocator);
+		if (old_vmbits != vmflags)
 			PageSetLSN(vmpage, lsn);
+
+		/*
+		 * If the all-visible bit was already set while the heap page was not
+		 * marked all-visible, the VM was corrupt on this standby. Redoing
+		 * this record has repaired it by marking the page all-visible; report
+		 * the pre-existing corruption.
+		 *
+		 * The VM block is read independently of the heap block and may need
+		 * redo even when the heap block was restored from a full-page image
+		 * or skipped by the LSN interlock. We only know the heap page's prior
+		 * state if we redid it.
+		 */
+		if (heap_action == BLK_NEEDS_REDO)
+			heap_xlog_warn_vm_corruption(heap_was_all_visible, old_vmbits, lsn,
+										 "marking the page all-visible",
+										 rlocator, blkno);
 	}
 
 	if (BufferIsValid(vmbuffer))
@@ -344,6 +416,7 @@ heap_xlog_delete(XLogReaderState *record)
 	BlockNumber blkno;
 	RelFileLocator target_locator;
 	ItemPointerData target_tid;
+	uint8		vm_oldbits = 0;
 
 	XLogRecGetBlockTag(record, HEAP_DELETE_BLKREF_HEAP, &target_locator, NULL,
 					   &blkno);
@@ -355,9 +428,9 @@ heap_xlog_delete(XLogReaderState *record)
 	 * already up-to-date.
 	 */
 	if (xlrec->flags & XLH_DELETE_ALL_VISIBLE_CLEARED)
-		heap_xlog_vm_clear(record, target_locator,
-						   blkno, HEAP_DELETE_BLKREF_VM,
-						   VISIBILITYMAP_VALID_BITS);
+		vm_oldbits = heap_xlog_vm_clear(record, target_locator,
+										blkno, HEAP_DELETE_BLKREF_VM,
+										VISIBILITYMAP_VALID_BITS);
 
 	if (XLogReadBufferForRedo(record, HEAP_DELETE_BLKREF_HEAP,
 							  &buffer) == BLK_NEEDS_REDO)
@@ -387,7 +460,12 @@ heap_xlog_delete(XLogReaderState *record)
 		PageSetPrunable(page, XLogRecGetXid(record));
 
 		if (xlrec->flags & XLH_DELETE_ALL_VISIBLE_CLEARED)
+		{
+			heap_xlog_warn_vm_corruption(PageIsAllVisible(page), vm_oldbits, lsn,
+										 "clearing the visibility map bits",
+										 target_locator, blkno);
 			PageClearAllVisible(page);
+		}
 
 		/* Make sure t_ctid is set correctly */
 		if (xlrec->flags & XLH_DELETE_IS_PARTITION_MOVE)
@@ -424,6 +502,7 @@ heap_xlog_insert(XLogReaderState *record)
 	BlockNumber blkno;
 	ItemPointerData target_tid;
 	XLogRedoAction action;
+	uint8		vm_oldbits = 0;
 
 	XLogRecGetBlockTag(record, HEAP_INSERT_BLKREF_HEAP, &target_locator, NULL,
 					   &blkno);
@@ -438,9 +517,9 @@ heap_xlog_insert(XLogReaderState *record)
 	 * already up-to-date.
 	 */
 	if (xlrec->flags & XLH_INSERT_ALL_VISIBLE_CLEARED)
-		heap_xlog_vm_clear(record, target_locator,
-						   blkno, HEAP_INSERT_BLKREF_VM,
-						   VISIBILITYMAP_VALID_BITS);
+		vm_oldbits = heap_xlog_vm_clear(record, target_locator,
+										blkno, HEAP_INSERT_BLKREF_VM,
+										VISIBILITYMAP_VALID_BITS);
 
 	/*
 	 * If we inserted the first and only tuple on the page, re-initialize the
@@ -503,7 +582,17 @@ heap_xlog_insert(XLogReaderState *record)
 		PageSetLSN(page, lsn);
 
 		if (xlrec->flags & XLH_INSERT_ALL_VISIBLE_CLEARED)
+		{
+			/*
+			 * A re-initialized page has no observable prior PD_ALL_VISIBLE,
+			 * so only check when we redid an existing page.
+			 */
+			if (!(XLogRecGetInfo(record) & XLOG_HEAP_INIT_PAGE))
+				heap_xlog_warn_vm_corruption(PageIsAllVisible(page), vm_oldbits, lsn,
+											 "clearing the visibility map bits",
+											 target_locator, blkno);
 			PageClearAllVisible(page);
+		}
 
 		MarkBufferDirty(buffer);
 	}
@@ -547,6 +636,7 @@ heap_xlog_multi_insert(XLogReaderState *record)
 	bool		isinit = (XLogRecGetInfo(record) & XLOG_HEAP_INIT_PAGE) != 0;
 	XLogRedoAction action;
 	Buffer		vmbuffer = InvalidBuffer;
+	uint8		vm_oldbits = 0;
 
 	/*
 	 * Insertion doesn't overwrite MVCC data, so no conflict processing is
@@ -570,9 +660,9 @@ heap_xlog_multi_insert(XLogReaderState *record)
 	 * all-visible in the VM while its PD_ALL_VISIBLE is clear.
 	 */
 	if (xlrec->flags & XLH_INSERT_ALL_VISIBLE_CLEARED)
-		heap_xlog_vm_clear(record, rlocator,
-						   blkno, HEAP_MULTI_INSERT_BLKREF_VM,
-						   VISIBILITYMAP_VALID_BITS);
+		vm_oldbits = heap_xlog_vm_clear(record, rlocator,
+										blkno, HEAP_MULTI_INSERT_BLKREF_VM,
+										VISIBILITYMAP_VALID_BITS);
 
 	if (isinit)
 	{
@@ -651,7 +741,13 @@ heap_xlog_multi_insert(XLogReaderState *record)
 		PageSetLSN(page, lsn);
 
 		if (xlrec->flags & XLH_INSERT_ALL_VISIBLE_CLEARED)
+		{
+			if (!isinit)
+				heap_xlog_warn_vm_corruption(PageIsAllVisible(page), vm_oldbits, lsn,
+											 "clearing the visibility map bits",
+											 rlocator, blkno);
 			PageClearAllVisible(page);
+		}
 
 		/*
 		 * XLH_INSERT_ALL_FROZEN_SET implies that all tuples are visible, so
@@ -772,6 +868,8 @@ heap_xlog_update(XLogReaderState *record, bool hot_update)
 				npage;
 	bool		has_vm_old,
 				has_vm_new;
+	uint8		vm_old_oldbits = 0;
+	uint8		vm_new_oldbits = 0;
 	OffsetNumber offnum;
 	ItemId		lp;
 	HeapTupleData oldtup;
@@ -847,18 +945,21 @@ heap_xlog_update(XLogReaderState *record, bool hot_update)
 			if (xlrec->flags & XLH_UPDATE_OLD_ALL_VISIBLE_CLEARED &&
 				visibilitymap_pin_ok(oldblk, vmbuffer_new))
 			{
-				if (visibilitymap_clear(rlocator, oldblk, vmbuffer_new,
-										VISIBILITYMAP_VALID_BITS))
+				vm_old_oldbits = visibilitymap_clear(rlocator, oldblk, vmbuffer_new,
+													 VISIBILITYMAP_VALID_BITS);
+				if (vm_old_oldbits)
 					PageSetLSN(BufferGetPage(vmbuffer_new), lsn);
 			}
 			/* If VM_NEW is registered, we are sure newblk is on VM_NEW */
-			if (visibilitymap_clear(rlocator, newblk, vmbuffer_new,
-									VISIBILITYMAP_VALID_BITS))
+			vm_new_oldbits = visibilitymap_clear(rlocator, newblk, vmbuffer_new,
+												 VISIBILITYMAP_VALID_BITS);
+			if (vm_new_oldbits)
 				PageSetLSN(BufferGetPage(vmbuffer_new), lsn);
 		}
 		if (BufferIsValid(vmbuffer_new))
 			UnlockReleaseBuffer(vmbuffer_new);
 	}
+
 	if (has_vm_old)
 	{
 		Buffer		vmbuffer_old = InvalidBuffer;
@@ -875,8 +976,9 @@ heap_xlog_update(XLogReaderState *record, bool hot_update)
 			if (PageIsNew(vmpage))
 				PageInit(vmpage, BLCKSZ, 0);
 
-			if (visibilitymap_clear(rlocator, oldblk, vmbuffer_old,
-									VISIBILITYMAP_VALID_BITS))
+			vm_old_oldbits = visibilitymap_clear(rlocator, oldblk, vmbuffer_old,
+												 VISIBILITYMAP_VALID_BITS);
+			if (vm_old_oldbits)
 				PageSetLSN(BufferGetPage(vmbuffer_old), lsn);
 		}
 		if (BufferIsValid(vmbuffer_old))
@@ -931,7 +1033,12 @@ heap_xlog_update(XLogReaderState *record, bool hot_update)
 		PageSetPrunable(opage, XLogRecGetXid(record));
 
 		if (xlrec->flags & XLH_UPDATE_OLD_ALL_VISIBLE_CLEARED)
+		{
+			heap_xlog_warn_vm_corruption(PageIsAllVisible(opage), vm_old_oldbits, lsn,
+										 "clearing the visibility map bits",
+										 rlocator, oldblk);
 			PageClearAllVisible(opage);
+		}
 
 		PageSetLSN(opage, lsn);
 		MarkBufferDirty(obuffer);
@@ -1053,7 +1160,19 @@ heap_xlog_update(XLogReaderState *record, bool hot_update)
 			elog(PANIC, "failed to add tuple");
 
 		if (xlrec->flags & XLH_UPDATE_NEW_ALL_VISIBLE_CLEARED)
+		{
+			/*
+			 * Skip the check when the new tuple went onto the old page (the
+			 * old-page check above covers it) or onto a re-initialized page
+			 * (no observable prior PD_ALL_VISIBLE).
+			 */
+			if (oldblk != newblk &&
+				!(XLogRecGetInfo(record) & XLOG_HEAP_INIT_PAGE))
+				heap_xlog_warn_vm_corruption(PageIsAllVisible(npage), vm_new_oldbits, lsn,
+											 "clearing the visibility map bits",
+											 rlocator, newblk);
 			PageClearAllVisible(npage);
+		}
 
 		/* needed to update FSM below */
 		freespace = PageGetHeapFreeSpace(npage);
