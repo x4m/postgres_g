@@ -51,6 +51,11 @@ typedef enum
 	RBM_ZERO_ON_ERROR,			/* Read, but return an all-zeros page on error */
 	RBM_NORMAL_NO_LOG,			/* Don't log page as invalid during WAL
 								 * replay; otherwise same as RBM_NORMAL */
+	RBM_ZERO_ON_MISSING,		/* During WAL replay, extend the fork with
+								 * zeroed pages if the block doesn't exist and
+								 * accept an all-zeroes page, rather than
+								 * treating either as invalid; otherwise same
+								 * as RBM_NORMAL */
 } ReadBufferMode;
 
 /*

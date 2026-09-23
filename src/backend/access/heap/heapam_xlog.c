@@ -53,11 +53,18 @@ heap_xlog_vm_clear(XLogReaderState *record,
 	 * read it. These will either apply an FPI or indicate that we should
 	 * clear the requested bits ourselves.
 	 */
-	if (XLogReadBufferForRedo(record, wal_vm_block_id,
-							  &vmbuffer) == BLK_NEEDS_REDO)
+	if (XLogReadBufferForRedoExtended(record, wal_vm_block_id,
+									  RBM_ZERO_ON_MISSING, false,
+									  &vmbuffer) == BLK_NEEDS_REDO)
 	{
+		Page		vmpage = BufferGetPage(vmbuffer);
+
+		/* initialize the page if it was extended as zeros */
+		if (PageIsNew(vmpage))
+			PageInit(vmpage, BLCKSZ, 0);
+
 		if (visibilitymap_clear(target_locator, heap_blkno, vmbuffer, flags))
-			PageSetLSN(BufferGetPage(vmbuffer), lsn);
+			PageSetLSN(vmpage, lsn);
 	}
 	if (BufferIsValid(vmbuffer))
 		UnlockReleaseBuffer(vmbuffer);
@@ -273,7 +280,7 @@ heap_xlog_prune_freeze(XLogReaderState *record)
 	 */
 	if ((vmflags & VISIBILITYMAP_VALID_BITS) &&
 		XLogReadBufferForRedoExtended(record, 1,
-									  RBM_ZERO_ON_ERROR,
+									  RBM_ZERO_ON_MISSING,
 									  false,
 									  &vmbuffer) == BLK_NEEDS_REDO)
 	{
@@ -727,7 +734,7 @@ heap_xlog_multi_insert(XLogReaderState *record)
 	 * heap_xlog_prune_freeze()).
 	 */
 	if ((xlrec->flags & XLH_INSERT_ALL_FROZEN_SET) &&
-		XLogReadBufferForRedoExtended(record, 1, RBM_ZERO_ON_ERROR, false,
+		XLogReadBufferForRedoExtended(record, 1, RBM_ZERO_ON_MISSING, false,
 									  &vmbuffer) == BLK_NEEDS_REDO)
 	{
 		Page		vmpage = BufferGetPage(vmbuffer);
@@ -812,9 +819,16 @@ heap_xlog_update(XLogReaderState *record, bool hot_update)
 
 		Assert(xlrec->flags & XLH_UPDATE_NEW_ALL_VISIBLE_CLEARED);
 
-		if (XLogReadBufferForRedo(record, HEAP_UPDATE_BLKREF_VM_NEW,
-								  &vmbuffer_new) == BLK_NEEDS_REDO)
+		if (XLogReadBufferForRedoExtended(record, HEAP_UPDATE_BLKREF_VM_NEW,
+										  RBM_ZERO_ON_MISSING, false,
+										  &vmbuffer_new) == BLK_NEEDS_REDO)
 		{
+			Page		vmpage = BufferGetPage(vmbuffer_new);
+
+			/* initialize the page if it was extended as zeros */
+			if (PageIsNew(vmpage))
+				PageInit(vmpage, BLCKSZ, 0);
+
 			/*
 			 * If both the old and new heap pages were all-visible and their
 			 * VM bits are on the same VM page, that single VM page is
@@ -850,9 +864,16 @@ heap_xlog_update(XLogReaderState *record, bool hot_update)
 
 		Assert(xlrec->flags & XLH_UPDATE_OLD_ALL_VISIBLE_CLEARED);
 
-		if (XLogReadBufferForRedo(record, HEAP_UPDATE_BLKREF_VM_OLD,
-								  &vmbuffer_old) == BLK_NEEDS_REDO)
+		if (XLogReadBufferForRedoExtended(record, HEAP_UPDATE_BLKREF_VM_OLD,
+										  RBM_ZERO_ON_MISSING, false,
+										  &vmbuffer_old) == BLK_NEEDS_REDO)
 		{
+			Page		vmpage = BufferGetPage(vmbuffer_old);
+
+			/* initialize the page if it was extended as zeros */
+			if (PageIsNew(vmpage))
+				PageInit(vmpage, BLCKSZ, 0);
+
 			if (visibilitymap_clear(rlocator, oldblk, vmbuffer_old,
 									VISIBILITYMAP_VALID_BITS))
 				PageSetLSN(BufferGetPage(vmbuffer_old), lsn);

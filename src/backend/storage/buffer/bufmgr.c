@@ -928,7 +928,8 @@ ReadBuffer(Relation reln, BlockNumber blockNum)
  * RBM_ZERO_AND_CLEANUP_LOCK is the same as RBM_ZERO_AND_LOCK, but acquires
  * a cleanup-strength lock on the page.
  *
- * RBM_NORMAL_NO_LOG mode is treated the same as RBM_NORMAL here.
+ * RBM_NORMAL_NO_LOG and RBM_ZERO_ON_MISSING modes are treated the same as
+ * RBM_NORMAL here.
  *
  * If strategy is not NULL, a nondefault buffer access strategy is used.
  * See buffer/README for details.

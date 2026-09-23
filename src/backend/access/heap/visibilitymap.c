@@ -592,9 +592,13 @@ vm_readbuf(Relation rel, BlockNumber blkno, bool extend)
 	}
 
 	/*
-	 * For reading we use ZERO_ON_ERROR mode, and initialize the page if
-	 * necessary. It's always safe to clear bits, so it's better to clear
-	 * corrupt pages than error out.
+	 * For reading we use ZERO_ON_MISSING mode, and initialize the page if
+	 * necessary. A block past the fork's end never reaches the read below: it
+	 * is either extended by vm_extend() or reported as missing. A corrupt
+	 * existing page throws an error rather than being automatically zeroed.
+	 * zero_damaged_pages can override this for the VM fork. DML changes and
+	 * corruption repairs register the VM in WAL, but truncation still has a
+	 * separate tail-clear path; see visibilitymap_prepare_truncate().
 	 *
 	 * We use the same path below to initialize pages when extending the
 	 * relation, as a concurrent extension can end up with vm_extend()
@@ -609,7 +613,7 @@ vm_readbuf(Relation rel, BlockNumber blkno, bool extend)
 	}
 	else
 		buf = ReadBufferExtended(rel, VISIBILITYMAP_FORKNUM, blkno,
-								 RBM_ZERO_ON_ERROR, NULL);
+								 RBM_ZERO_ON_MISSING, NULL);
 
 	/*
 	 * Initializing the page when needed is trickier than it looks, because of
@@ -649,7 +653,7 @@ vm_extend(Relation rel, BlockNumber vm_nblocks)
 							  EB_CREATE_FORK_IF_NEEDED |
 							  EB_CLEAR_SIZE_CACHE,
 							  vm_nblocks,
-							  RBM_ZERO_ON_ERROR);
+							  RBM_ZERO_ON_MISSING);
 
 	/*
 	 * Send a shared-inval message to force other backends to close any smgr
