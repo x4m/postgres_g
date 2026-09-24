@@ -196,6 +196,8 @@ typedef enum VMCorruptionType
 	VM_CORRUPT_LPDEAD,
 	/* Tuple not visible to all transactions on a page marked all-visible */
 	VM_CORRUPT_TUPLE_VISIBILITY,
+	/* Page marked all-frozen in the VM but not actually all-frozen */
+	VM_CORRUPT_STALE_ALL_FROZEN,
 } VMCorruptionType;
 
 /* Local functions */
@@ -944,6 +946,23 @@ heap_page_fix_vm_corruption(PruneState *prstate, OffsetNumber offnum,
 								relname, prstate->block)));
 			do_clear_vm = true;
 			break;
+
+		case VM_CORRUPT_STALE_ALL_FROZEN:
+
+			/*
+			 * We examined every tuple on the page and found that the page is
+			 * all-visible but not all-frozen, yet the VM marks it all-frozen.
+			 * The page-level PD_ALL_VISIBLE flag is still correct, so only
+			 * the VM is wrong. Clear both the VM bits. All-visible will be
+			 * set again through the normal path.
+			 */
+			ereport(WARNING,
+					(errcode(ERRCODE_DATA_CORRUPTED),
+					 errmsg("page marked all-frozen in the visibility map is not all-frozen"),
+					 errcontext("relation \"%s\", page %u",
+								relname, prstate->block)));
+			do_clear_vm = true;
+			break;
 	}
 
 	Assert(do_clear_heap || do_clear_vm);
@@ -1258,6 +1277,20 @@ heap_page_prune_and_freeze(PruneFreezeParams *params,
 	Assert(!prstate.set_all_frozen || prstate.set_all_visible);
 	Assert(!prstate.set_all_visible || prstate.attempt_set_vm);
 	Assert(!prstate.set_all_visible || (prstate.lpdead_items == 0));
+
+	/*
+	 * If we examined every tuple on the page and found that the page is
+	 * all-visible but not all-frozen, yet the VM marks it all-frozen, that
+	 * all-frozen bit is corrupt. Repair the VM. We will set it back to
+	 * all-visible later along with the other changes. Note that this must be
+	 * done after set_all_visible and set_all_frozen are finalized above to
+	 * account for dead items and unfrozen tuples.
+	 */
+	if (prstate.attempt_freeze && prstate.set_all_visible &&
+		!prstate.set_all_frozen &&
+		(prstate.old_vmbits & VISIBILITYMAP_ALL_FROZEN))
+		heap_page_fix_vm_corruption(&prstate, InvalidOffsetNumber,
+									VM_CORRUPT_STALE_ALL_FROZEN);
 
 	do_set_vm = heap_page_will_set_vm(&prstate, params->reason, do_prune, do_freeze);
 
