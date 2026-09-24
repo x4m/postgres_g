@@ -951,7 +951,7 @@ mdreadv(SMgrRelation reln, ForkNumber forknum, BlockNumber blocknum,
 				 * continuing to work in production builds). Afterwards we
 				 * plan to remove this code entirely.
 				 */
-				if (zero_damaged_pages || InRecovery)
+				if ((zero_damaged_pages_forks & (1 << forknum)) || InRecovery)
 				{
 					Assert(false);	/* see comment above */
 

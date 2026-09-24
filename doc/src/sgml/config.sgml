@@ -13334,7 +13334,7 @@ LOG:  CleanUpLock: deleting: lock(0xb7acd844) id(24688,24696,0,0,0,1)
      </varlistentry>
 
     <varlistentry id="guc-zero-damaged-pages" xreflabel="zero_damaged_pages">
-      <term><varname>zero_damaged_pages</varname> (<type>boolean</type>)
+      <term><varname>zero_damaged_pages</varname> (<type>string</type>)
       <indexterm>
        <primary><varname>zero_damaged_pages</varname> configuration parameter</primary>
       </indexterm>
@@ -13343,18 +13343,35 @@ LOG:  CleanUpLock: deleting: lock(0xb7acd844) id(24688,24696,0,0,0,1)
        <para>
         Detection of a damaged page header normally causes
         <productname>PostgreSQL</productname> to report an error, aborting the current
-        transaction.  Setting <varname>zero_damaged_pages</varname> to on causes
-        the system to instead report a warning, zero out the damaged
-        page in memory, and continue processing.  This behavior <emphasis>will destroy data</emphasis>,
-        namely all the rows on the damaged page.  However, it does allow you to get
+        transaction.  This parameter is a comma-separated list of the relation
+        forks for which the system instead reports a warning, zeroes out the
+        damaged page in memory, and continues processing.  The recognized fork
+        names are <literal>main</literal> (the table or index data),
+        <literal>fsm</literal> (the free space map), <literal>vm</literal>
+        (the visibility map), and <literal>init</literal> (the init fork).
+        <literal>all</literal> selects every fork.  The server always zeroes
+        damaged free space map pages regardless of this setting, and it does
+        not normally read init fork pages through shared buffers, so
+        <literal>fsm</literal> and <literal>init</literal> only affect
+        functions that read a specific fork directly, such as
+        <xref linkend="pageinspect"/>'s <function>get_raw_page()</function>.
+        For backward compatibility, <literal>on</literal> (every fork) and
+        <literal>off</literal> (no fork, the default) are also accepted, but
+        only on their own.
+       </para>
+       <para>
+        Zeroing a page <emphasis>will destroy data</emphasis>, namely all the
+        rows on the damaged page.  However, it does allow you to get
         past the error and retrieve rows from any undamaged pages that might
         be present in the table.  It is useful for recovering data if
         corruption has occurred due to a hardware or software error.  You should
-        generally not set this on until you have given up hope of recovering
-        data from the damaged pages of a table.  Zeroed-out pages are not
+        generally not enable this for a fork until you have given up hope of
+        recovering data from the damaged pages of a table.  Scoping the setting
+        to a single fork, such as <literal>vm</literal>, lets you recover from a
+        damaged auxiliary page without also disarming this protection for the
+        table's main data.  Zeroed-out pages are not
         forced to disk so it is recommended to recreate the table or
-        the index before turning this parameter off again.  The
-        default setting is <literal>off</literal>.
+        the index before turning this parameter off again.
         Only superusers and users with the appropriate <literal>SET</literal>
         privilege can change this setting.
        </para>

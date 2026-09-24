@@ -46,6 +46,7 @@
 #include "catalog/storage.h"
 #include "catalog/storage_xlog.h"
 #include "common/hashfn.h"
+#include "common/relpath.h"
 #include "executor/instrument.h"
 #include "lib/binaryheap.h"
 #include "miscadmin.h"
@@ -64,6 +65,8 @@
 #include "storage/read_stream.h"
 #include "storage/smgr.h"
 #include "storage/standby.h"
+#include "utils/guc.h"
+#include "utils/guc_hooks.h"
 #include "utils/memdebug.h"
 #include "utils/ps_status.h"
 #include "utils/rel.h"
@@ -186,7 +189,15 @@ typedef struct SMgrSortArray
 } SMgrSortArray;
 
 /* GUC variables */
-bool		zero_damaged_pages = false;
+
+/*
+ * zero_damaged_pages is a list of relation forks for which a damaged page
+ * header is zeroed (with a warning) instead of raising an error. The raw
+ * GUC string is parsed into zero_damaged_pages_forks, a bitmask indexed by
+ * ForkNumber (1 << forknum).
+ */
+char	   *zero_damaged_pages_string;
+int			zero_damaged_pages_forks = 0;
 int			bgwriter_lru_maxpages = 100;
 double		bgwriter_lru_multiplier = 2.0;
 bool		track_io_timing = false;
@@ -1987,7 +1998,7 @@ AsyncReadBuffers(ReadBuffersOperation *operation, int *nblocks_progress)
 	 * zero_damaged_pages, so we can report different log levels / error codes
 	 * for zero_damaged_pages and ZERO_ON_ERROR.
 	 */
-	if (zero_damaged_pages)
+	if (zero_damaged_pages_forks & (1 << forknum))
 		flags |= READ_BUFFERS_ZERO_ON_ERROR;
 
 	/*
@@ -9005,3 +9016,45 @@ const PgAioHandleCallbacks aio_local_buffer_readv_cb = {
 	.complete_local = local_buffer_readv_complete,
 	.report = buffer_readv_report,
 };
+
+/* Fork bitmask selecting every relation fork */
+#define ZERO_DAMAGED_PAGES_ALL_FORKS ((1 << (MAX_FORKNUM + 1)) - 1)
+
+/*
+ * GUC check_hook for zero_damaged_pages.
+ *
+ * The value is a comma-separated list of relation fork names ("main", "fsm",
+ * "vm", "init"), or "all", for which a damaged page header is zeroed instead
+ * of raising an error. The resulting fork bitmask is stashed in *extra for
+ * the assign hook.
+ *
+ * Prior to PostgreSQL 20, zero_damaged_pages was a boolean GUC; a boolean
+ * value meaning true selects every fork.
+ */
+bool
+check_zero_damaged_pages(char **newval, void **extra, GucSource source)
+{
+	static const struct config_enum_entry options[] = {
+		{"main", 1 << MAIN_FORKNUM},
+		{"fsm", 1 << FSM_FORKNUM},
+		{"vm", 1 << VISIBILITYMAP_FORKNUM},
+		{"init", 1 << INIT_FORKNUM},
+		{"all", ZERO_DAMAGED_PAGES_ALL_FORKS},
+		{NULL, 0}
+	};
+
+	StaticAssertDecl(lengthof(options) == MAX_FORKNUM + 3,
+					 "zero_damaged_pages must accept every fork name");
+
+	return check_flag_list_guc(newval, extra, "zero_damaged_pages", options,
+							   true, ZERO_DAMAGED_PAGES_ALL_FORKS);
+}
+
+/*
+ * GUC assign_hook for zero_damaged_pages.
+ */
+void
+assign_zero_damaged_pages(const char *newval, void *extra)
+{
+	zero_damaged_pages_forks = *((int *) extra);
+}

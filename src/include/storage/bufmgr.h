@@ -162,7 +162,8 @@ typedef struct WritebackContext WritebackContext;
 extern PGDLLIMPORT int NBuffers;
 
 /* in bufmgr.c */
-extern PGDLLIMPORT bool zero_damaged_pages;
+extern PGDLLIMPORT char *zero_damaged_pages_string;
+extern PGDLLIMPORT int zero_damaged_pages_forks;
 extern PGDLLIMPORT int bgwriter_lru_maxpages;
 extern PGDLLIMPORT double bgwriter_lru_multiplier;
 extern PGDLLIMPORT bool track_io_timing;
