@@ -63,7 +63,8 @@ heap_xlog_vm_clear(XLogReaderState *record,
 		if (PageIsNew(vmpage))
 			PageInit(vmpage, BLCKSZ, 0);
 
-		if (visibilitymap_clear(target_locator, heap_blkno, vmbuffer, flags))
+		if (visibilitymap_clear(target_locator, heap_blkno, vmbuffer,
+								flags) & flags)
 			PageSetLSN(vmpage, lsn);
 	}
 	if (BufferIsValid(vmbuffer))
