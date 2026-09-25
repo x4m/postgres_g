@@ -22,6 +22,7 @@
 #include "access/visibilitymap.h"
 #include "access/xlog.h"
 #include "access/xloginsert.h"
+#include "catalog/pg_control.h"
 #include "commands/vacuum.h"
 #include "executor/instrument.h"
 #include "miscadmin.h"
@@ -878,8 +879,8 @@ heap_page_will_freeze(bool did_tuple_hint_fpi,
  * the heap buffer is exclusively locked, ensuring that no other backend can
  * update the VM bits corresponding to this heap page.
  *
- * This function makes changes to the VM and, potentially, the heap page, but
- * it does not need to be done in a critical section.
+ * This function makes changes to the VM and, potentially, the heap page, and
+ * WAL-logs them in its own critical section.
  */
 static void
 heap_page_fix_vm_corruption(PruneState *prstate, OffsetNumber offnum,
@@ -967,21 +968,67 @@ heap_page_fix_vm_corruption(PruneState *prstate, OffsetNumber offnum,
 
 	Assert(do_clear_heap || do_clear_vm);
 
-	/* Avoid marking the buffer dirty if PD_ALL_VISIBLE is already clear */
+	if (do_clear_vm)
+		LockBuffer(prstate->vmbuffer, BUFFER_LOCK_EXCLUSIVE);
+
+	START_CRIT_SECTION();
+
 	if (do_clear_heap)
 	{
 		Assert(PageIsAllVisible(prstate->page));
 		PageClearAllVisible(prstate->page);
-		MarkBufferDirtyHint(prstate->buffer, true);
+		MarkBufferDirty(prstate->buffer);
 	}
 
 	if (do_clear_vm)
 	{
-		LockBuffer(prstate->vmbuffer, BUFFER_LOCK_EXCLUSIVE);
-		/* This VM clear is not WAL-logged, so its return value is not needed. */
 		(void) visibilitymap_clear(prstate->relation->rd_locator,
 								   prstate->block, prstate->vmbuffer,
 								   VISIBILITYMAP_VALID_BITS);
+
+		/*
+		 * The VM bits might already be clear even though PD_ALL_VISIBLE was
+		 * incorrectly set. Still WAL-log the VM image as the caller reported
+		 * a type of corruption that would normally require clearing the VM.
+		 * Logging it ensures the VM is also cleared on the standby. If we log
+		 * it, we have to mark it dirty.
+		 */
+		MarkBufferDirty(prstate->vmbuffer);
+	}
+
+	/*
+	 * WAL-log the repair so that standbys and crash recovery apply the same
+	 * fix and the VM stays in sync across a cluster.
+	 *
+	 * Rather than inventing a dedicated record type, just log full-page
+	 * images of the pages we changed. VM corruption is rare, so the extra WAL
+	 * does not matter.
+	 */
+	if (RelationNeedsWAL(prstate->relation))
+	{
+		XLogRecPtr	recptr;
+		uint8		block_id = 0;
+
+		XLogBeginInsert();
+		if (do_clear_heap)
+			XLogRegisterBuffer(block_id++, prstate->buffer,
+							   REGBUF_FORCE_IMAGE | REGBUF_STANDARD);
+		if (do_clear_vm)
+			XLogRegisterBuffer(block_id++, prstate->vmbuffer,
+							   REGBUF_FORCE_IMAGE);
+
+		recptr = XLogInsert(RM_XLOG_ID, XLOG_FPI);
+
+		if (do_clear_heap)
+			PageSetLSN(prstate->page, recptr);
+		if (do_clear_vm)
+			PageSetLSN(BufferGetPage(prstate->vmbuffer), recptr);
+	}
+
+	END_CRIT_SECTION();
+
+	if (do_clear_vm)
+	{
 		LockBuffer(prstate->vmbuffer, BUFFER_LOCK_UNLOCK);
 		prstate->old_vmbits = 0;
 	}
