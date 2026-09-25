@@ -1927,6 +1927,10 @@ lazy_scan_new_or_empty(LVRelState *vacrel, Buffer buf, BlockNumber blkno,
 
 	if (PageIsEmpty(page))
 	{
+		uint8		old_vmbits;
+		uint8		vmflags = VISIBILITYMAP_ALL_VISIBLE |
+			VISIBILITYMAP_ALL_FROZEN;
+
 		/*
 		 * It seems likely that caller will always be able to get a cleanup
 		 * lock on an empty page.  But don't take any chances -- escalate to
@@ -1952,7 +1956,21 @@ lazy_scan_new_or_empty(LVRelState *vacrel, Buffer buf, BlockNumber blkno,
 		 * Unlike new pages, empty pages are always set all-visible and
 		 * all-frozen.
 		 */
-		if (!PageIsAllVisible(page))
+		old_vmbits = visibilitymap_get_status(vacrel->rel, blkno, &vmbuffer);
+
+		/*
+		 * If the VM is set but PD_ALL_VISIBLE is clear, fix that corruption
+		 * first, so that we set both below in a single WAL-logged operation.
+		 */
+		if ((old_vmbits & VISIBILITYMAP_VALID_BITS) && !PageIsAllVisible(page))
+		{
+			heap_page_fix_vm_corruption(vacrel->rel, buf, vmbuffer,
+										InvalidOffsetNumber,
+										VM_CORRUPT_MISSING_PAGE_HINT);
+			old_vmbits = 0;
+		}
+
+		if (!PageIsAllVisible(page) || old_vmbits != vmflags)
 		{
 			/* Lock vmbuffer before entering critical section */
 			LockBuffer(vmbuffer, BUFFER_LOCK_EXCLUSIVE);
@@ -1964,11 +1982,10 @@ lazy_scan_new_or_empty(LVRelState *vacrel, Buffer buf, BlockNumber blkno,
 
 			PageSetAllVisible(page);
 			PageClearPrunable(page);
-			(void) visibilitymap_set(blkno,
-									 vmbuffer,
-									 VISIBILITYMAP_ALL_VISIBLE |
-									 VISIBILITYMAP_ALL_FROZEN,
-									 vacrel->rel->rd_locator);
+
+			old_vmbits = visibilitymap_set(blkno, vmbuffer, vmflags,
+										   vacrel->rel->rd_locator);
+			Assert(old_vmbits != vmflags);
 
 			/*
 			 * Emit WAL for setting PD_ALL_VISIBLE on the heap page and
@@ -1976,9 +1993,7 @@ lazy_scan_new_or_empty(LVRelState *vacrel, Buffer buf, BlockNumber blkno,
 			 */
 			if (RelationNeedsWAL(vacrel->rel))
 				log_heap_prune_and_freeze(vacrel->rel, buf,
-										  vmbuffer,
-										  VISIBILITYMAP_ALL_VISIBLE |
-										  VISIBILITYMAP_ALL_FROZEN,
+										  vmbuffer, vmflags,
 										  InvalidTransactionId, /* conflict xid */
 										  false,	/* cleanup lock */
 										  PRUNE_VACUUM_SCAN,	/* reason */
@@ -1991,9 +2006,15 @@ lazy_scan_new_or_empty(LVRelState *vacrel, Buffer buf, BlockNumber blkno,
 
 			LockBuffer(vmbuffer, BUFFER_LOCK_UNLOCK);
 
-			/* Count the newly all-frozen pages for logging */
-			vacrel->new_all_visible_pages++;
-			vacrel->new_all_visible_all_frozen_pages++;
+			/* Count only the VM bits that were newly set. */
+			if (!(old_vmbits & VISIBILITYMAP_ALL_VISIBLE))
+			{
+				vacrel->new_all_visible_pages++;
+				if (!(old_vmbits & VISIBILITYMAP_ALL_FROZEN))
+					vacrel->new_all_visible_all_frozen_pages++;
+			}
+			else if (!(old_vmbits & VISIBILITYMAP_ALL_FROZEN))
+				vacrel->new_all_frozen_pages++;
 		}
 
 		freespace = PageGetHeapFreeSpace(page);
