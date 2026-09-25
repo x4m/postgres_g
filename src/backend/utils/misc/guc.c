@@ -51,6 +51,7 @@
 #include "utils/guc_tables.h"
 #include "utils/memutils.h"
 #include "utils/timestamp.h"
+#include "utils/varlena.h"
 
 
 #define CONFIG_FILENAME "postgresql.conf"
@@ -2959,6 +2960,152 @@ config_enum_lookup_by_name(const struct config_enum *record, const char *value,
 
 	*retval = 0;
 	return false;
+}
+
+/*
+ * Helper for check_flag_list_guc(): compute the flags selected by 'elemlist',
+ * the listified value of the GUC. Returns false, with the GUC error detail
+ * set, if the list is invalid.
+ */
+static bool
+validate_flag_list_guc_options(List *elemlist,
+							   const struct config_enum_entry *options,
+							   bool boolean_compat, int on_value, int *flags)
+{
+	ListCell   *l;
+	char	   *item;
+
+	/*
+	 * For backwards compatibility with GUCs that used to be booleans, we
+	 * accept these tokens by themselves. A boolean GUC accepts any
+	 * unambiguous substring of 'true', 'false', 'yes', 'no', 'on', and 'off',
+	 * but here we only accept complete option strings.
+	 */
+	static const struct config_enum_entry compat_options[] = {
+		{"off", false},
+		{"false", false},
+		{"no", false},
+		{"0", false},
+		{"on", true},
+		{"true", true},
+		{"yes", true},
+		{"1", true},
+	};
+
+	*flags = 0;
+
+	/* If an empty string was passed, we're done */
+	if (list_length(elemlist) == 0)
+		return true;
+
+	/*
+	 * If the GUC used to be a boolean, check for the backwards compatibility
+	 * options. They must always be specified on their own, so we error out if
+	 * the first option is a backwards compatibility option and other options
+	 * are also specified.
+	 */
+	if (boolean_compat)
+	{
+		item = linitial(elemlist);
+
+		for (size_t i = 0; i < lengthof(compat_options); i++)
+		{
+			if (pg_strcasecmp(item, compat_options[i].name) != 0)
+				continue;
+
+			if (list_length(elemlist) > 1)
+			{
+				GUC_check_errdetail("Cannot specify option \"%s\" in a list with other options.",
+									item);
+				return false;
+			}
+
+			*flags = compat_options[i].val ? on_value : 0;
+			return true;
+		}
+	}
+
+	/* Now check the regular options. The empty string was already handled */
+	foreach(l, elemlist)
+	{
+		const struct config_enum_entry *option;
+
+		item = lfirst(l);
+		for (option = options; option->name; option++)
+		{
+			if (pg_strcasecmp(item, option->name) == 0)
+				break;
+		}
+
+		if (!option->name)
+		{
+			GUC_check_errdetail("Invalid option \"%s\".", item);
+			return false;
+		}
+
+		*flags |= option->val;
+	}
+
+	return true;
+}
+
+/*
+ * Check hook body for a list-valued GUC whose items are flags.
+ *
+ * *newval is a comma-separated list of option names from 'options', an array
+ * terminated by an entry with a NULL name. The flags of the listed options
+ * are ORed together and stored in *extra, as an int, for the GUC's assign
+ * hook.
+ *
+ * If 'boolean_compat' is true, for backwards compatibility with a GUC that
+ * used to be a boolean, a boolean value ('on', 'true', 'yes', '1', or their
+ * negations) is also accepted on its own, selecting 'on_value' or no flags
+ * respectively. Otherwise 'on_value' is ignored.
+ *
+ * 'name' is the GUC's name, for error messages.
+ */
+bool
+check_flag_list_guc(char **newval, void **extra, const char *name,
+					const struct config_enum_entry *options,
+					bool boolean_compat, int on_value)
+{
+	int			flags;
+	char	   *rawstring;
+	List	   *elemlist;
+	bool		success;
+
+	/* Need a modifiable copy of string */
+	rawstring = pstrdup(*newval);
+
+	if (!SplitIdentifierString(rawstring, ',', &elemlist))
+	{
+		GUC_check_errdetail("Invalid list syntax in parameter \"%s\".", name);
+		pfree(rawstring);
+		list_free(elemlist);
+		return false;
+	}
+
+	/* Validation logic is all in the helper */
+	success = validate_flag_list_guc_options(elemlist, options,
+											 boolean_compat, on_value, &flags);
+
+	/* Time for cleanup */
+	pfree(rawstring);
+	list_free(elemlist);
+
+	if (!success)
+		return false;
+
+	/*
+	 * We succeeded, so allocate `extra` and save the flags there for use by
+	 * the assign hook.
+	 */
+	*extra = guc_malloc(LOG, sizeof(int));
+	if (!*extra)
+		return false;
+	*((int *) *extra) = flags;
+
+	return true;
 }
 
 

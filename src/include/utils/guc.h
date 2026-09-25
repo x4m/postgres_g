@@ -444,6 +444,9 @@ extern bool parse_int(const char *value, int *result, int flags,
 					  const char **hintmsg);
 extern bool parse_real(const char *value, double *result, int flags,
 					   const char **hintmsg);
+extern bool check_flag_list_guc(char **newval, void **extra, const char *name,
+								const struct config_enum_entry *options,
+								bool boolean_compat, int on_value);
 extern int	set_config_option(const char *name, const char *value,
 							  GucContext context, GucSource source,
 							  GucAction action, bool changeVal, int elevel,
