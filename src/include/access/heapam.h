@@ -256,6 +256,24 @@ typedef enum
 } PruneReason;
 
 /*
+ * Type of visibility map corruption detected on a heap page and its
+ * associated VM page. Passed to heap_page_fix_vm_corruption() so the caller
+ * can specify what it found rather than having the function rederive the
+ * corruption from page state.
+ */
+typedef enum VMCorruptionType
+{
+	/* VM bits are set but the heap page-level PD_ALL_VISIBLE flag is not */
+	VM_CORRUPT_MISSING_PAGE_HINT,
+	/* LP_DEAD line pointers found on a page marked all-visible */
+	VM_CORRUPT_LPDEAD,
+	/* Tuple not visible to all transactions on a page marked all-visible */
+	VM_CORRUPT_TUPLE_VISIBILITY,
+	/* Page marked all-frozen in the VM but not actually all-frozen */
+	VM_CORRUPT_STALE_ALL_FROZEN,
+} VMCorruptionType;
+
+/*
  * Input parameters to heap_page_prune_and_freeze()
  */
 typedef struct PruneFreezeParams
@@ -448,6 +466,9 @@ extern void heap_page_prune_and_freeze(PruneFreezeParams *params,
 									   OffsetNumber *off_loc,
 									   TransactionId *new_relfrozen_xid,
 									   MultiXactId *new_relmin_mxid);
+extern void heap_page_fix_vm_corruption(Relation relation, Buffer buffer,
+										Buffer vmbuffer, OffsetNumber offnum,
+										VMCorruptionType corruption_type);
 extern void heap_page_prune_execute(Buffer buffer, bool lp_truncate_only,
 									OffsetNumber *redirected, int nredirected,
 									OffsetNumber *nowdead, int ndead,

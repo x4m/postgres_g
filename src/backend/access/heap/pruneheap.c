@@ -183,33 +183,12 @@ typedef struct
 	OffsetNumber *deadoffsets;	/* points directly to presult->deadoffsets */
 } PruneState;
 
-/*
- * Type of visibility map corruption detected on a heap page and its
- * associated VM page. Passed to heap_page_fix_vm_corruption() so the caller
- * can specify what it found rather than having the function rederive the
- * corruption from page state.
- */
-typedef enum VMCorruptionType
-{
-	/* VM bits are set but the heap page-level PD_ALL_VISIBLE flag is not */
-	VM_CORRUPT_MISSING_PAGE_HINT,
-	/* LP_DEAD line pointers found on a page marked all-visible */
-	VM_CORRUPT_LPDEAD,
-	/* Tuple not visible to all transactions on a page marked all-visible */
-	VM_CORRUPT_TUPLE_VISIBILITY,
-	/* Page marked all-frozen in the VM but not actually all-frozen */
-	VM_CORRUPT_STALE_ALL_FROZEN,
-} VMCorruptionType;
-
 /* Local functions */
 static void prune_freeze_setup(PruneFreezeParams *params,
 							   TransactionId *new_relfrozen_xid,
 							   MultiXactId *new_relmin_mxid,
 							   PruneFreezeResult *presult,
 							   PruneState *prstate);
-static void heap_page_fix_vm_corruption(PruneState *prstate,
-										OffsetNumber offnum,
-										VMCorruptionType corruption_type);
 static void prune_freeze_fast_path(PruneState *prstate,
 								   PruneFreezeResult *presult);
 static void prune_freeze_plan(PruneState *prstate,
@@ -871,26 +850,34 @@ heap_page_will_freeze(bool did_tuple_hint_fpi,
  * The caller specifies the type of corruption it has already detected via
  * corruption_type, so that we can emit the appropriate warning. All cases
  * result in the VM bits being cleared; corruption types where PD_ALL_VISIBLE
- * is incorrectly set also clear PD_ALL_VISIBLE.
+ * is incorrectly set also clear PD_ALL_VISIBLE. offnum identifies the
+ * offending tuple for the warning, or InvalidOffsetNumber if the corruption
+ * is not specific to a tuple.
  *
  * Must be called while holding an exclusive lock on the heap buffer. Dead
  * items and not all-visible tuples must have been discovered under that same
- * lock. Although we do not hold a lock on the VM buffer, it is pinned, and
- * the heap buffer is exclusively locked, ensuring that no other backend can
- * update the VM bits corresponding to this heap page.
+ * lock. vmbuffer must be pinned and contain the VM page for buffer's block.
+ * Although we do not hold a lock on the VM buffer, the heap buffer is
+ * exclusively locked, ensuring that no other backend can update the VM bits
+ * corresponding to this heap page.
  *
  * This function makes changes to the VM and, potentially, the heap page, and
- * WAL-logs them in its own critical section.
+ * WAL-logs them in its own critical section. Callers that cache the VM status
+ * of the page must discard it after calling this.
  */
-static void
-heap_page_fix_vm_corruption(PruneState *prstate, OffsetNumber offnum,
+void
+heap_page_fix_vm_corruption(Relation relation, Buffer buffer, Buffer vmbuffer,
+							OffsetNumber offnum,
 							VMCorruptionType corruption_type)
 {
-	const char *relname = RelationGetRelationName(prstate->relation);
+	const char *relname = RelationGetRelationName(relation);
+	Page		page = BufferGetPage(buffer);
+	BlockNumber block = BufferGetBlockNumber(buffer);
 	bool		do_clear_vm = false;
 	bool		do_clear_heap = false;
 
-	Assert(BufferIsLockedByMeInMode(prstate->buffer, BUFFER_LOCK_EXCLUSIVE));
+	Assert(BufferIsLockedByMeInMode(buffer, BUFFER_LOCK_EXCLUSIVE));
+	Assert(visibilitymap_pin_ok(block, vmbuffer));
 
 	switch (corruption_type)
 	{
@@ -899,7 +886,7 @@ heap_page_fix_vm_corruption(PruneState *prstate, OffsetNumber offnum,
 					(errcode(ERRCODE_DATA_CORRUPTED),
 					 errmsg("dead line pointer found on page marked all-visible"),
 					 errcontext("relation \"%s\", page %u, tuple %u",
-								relname, prstate->block, offnum)));
+								relname, block, offnum)));
 			do_clear_vm = true;
 			do_clear_heap = true;
 			break;
@@ -923,7 +910,7 @@ heap_page_fix_vm_corruption(PruneState *prstate, OffsetNumber offnum,
 					(errcode(ERRCODE_DATA_CORRUPTED),
 					 errmsg("tuple not visible to all transactions found on page marked all-visible"),
 					 errcontext("relation \"%s\", page %u, tuple %u",
-								relname, prstate->block, offnum)));
+								relname, block, offnum)));
 			do_clear_vm = true;
 			do_clear_heap = true;
 			break;
@@ -938,13 +925,14 @@ heap_page_fix_vm_corruption(PruneState *prstate, OffsetNumber offnum,
 			 * that we have the buffer lock before concluding that the VM is
 			 * corrupt.
 			 */
-			Assert(!PageIsAllVisible(prstate->page));
-			Assert(prstate->old_vmbits & VISIBILITYMAP_VALID_BITS);
+			Assert(!PageIsAllVisible(page));
+			Assert(visibilitymap_get_status(relation, block, &vmbuffer) &
+				   VISIBILITYMAP_VALID_BITS);
 			ereport(WARNING,
 					(errcode(ERRCODE_DATA_CORRUPTED),
 					 errmsg("page is not marked all-visible but visibility map bit is set"),
 					 errcontext("relation \"%s\", page %u",
-								relname, prstate->block)));
+								relname, block)));
 			do_clear_vm = true;
 			break;
 
@@ -961,7 +949,7 @@ heap_page_fix_vm_corruption(PruneState *prstate, OffsetNumber offnum,
 					(errcode(ERRCODE_DATA_CORRUPTED),
 					 errmsg("page marked all-frozen in the visibility map is not all-frozen"),
 					 errcontext("relation \"%s\", page %u",
-								relname, prstate->block)));
+								relname, block)));
 			do_clear_vm = true;
 			break;
 	}
@@ -969,21 +957,20 @@ heap_page_fix_vm_corruption(PruneState *prstate, OffsetNumber offnum,
 	Assert(do_clear_heap || do_clear_vm);
 
 	if (do_clear_vm)
-		LockBuffer(prstate->vmbuffer, BUFFER_LOCK_EXCLUSIVE);
+		LockBuffer(vmbuffer, BUFFER_LOCK_EXCLUSIVE);
 
 	START_CRIT_SECTION();
 
 	if (do_clear_heap)
 	{
-		Assert(PageIsAllVisible(prstate->page));
-		PageClearAllVisible(prstate->page);
-		MarkBufferDirty(prstate->buffer);
+		Assert(PageIsAllVisible(page));
+		PageClearAllVisible(page);
+		MarkBufferDirty(buffer);
 	}
 
 	if (do_clear_vm)
 	{
-		(void) visibilitymap_clear(prstate->relation->rd_locator,
-								   prstate->block, prstate->vmbuffer,
+		(void) visibilitymap_clear(relation->rd_locator, block, vmbuffer,
 								   VISIBILITYMAP_VALID_BITS);
 
 		/*
@@ -993,7 +980,7 @@ heap_page_fix_vm_corruption(PruneState *prstate, OffsetNumber offnum,
 		 * Logging it ensures the VM is also cleared on the standby. If we log
 		 * it, we have to mark it dirty.
 		 */
-		MarkBufferDirty(prstate->vmbuffer);
+		MarkBufferDirty(vmbuffer);
 	}
 
 	/*
@@ -1004,34 +991,30 @@ heap_page_fix_vm_corruption(PruneState *prstate, OffsetNumber offnum,
 	 * images of the pages we changed. VM corruption is rare, so the extra WAL
 	 * does not matter.
 	 */
-	if (RelationNeedsWAL(prstate->relation))
+	if (RelationNeedsWAL(relation))
 	{
 		XLogRecPtr	recptr;
 		uint8		block_id = 0;
 
 		XLogBeginInsert();
 		if (do_clear_heap)
-			XLogRegisterBuffer(block_id++, prstate->buffer,
+			XLogRegisterBuffer(block_id++, buffer,
 							   REGBUF_FORCE_IMAGE | REGBUF_STANDARD);
 		if (do_clear_vm)
-			XLogRegisterBuffer(block_id++, prstate->vmbuffer,
-							   REGBUF_FORCE_IMAGE);
+			XLogRegisterBuffer(block_id++, vmbuffer, REGBUF_FORCE_IMAGE);
 
 		recptr = XLogInsert(RM_XLOG_ID, XLOG_FPI);
 
 		if (do_clear_heap)
-			PageSetLSN(prstate->page, recptr);
+			PageSetLSN(page, recptr);
 		if (do_clear_vm)
-			PageSetLSN(BufferGetPage(prstate->vmbuffer), recptr);
+			PageSetLSN(BufferGetPage(vmbuffer), recptr);
 	}
 
 	END_CRIT_SECTION();
 
 	if (do_clear_vm)
-	{
-		LockBuffer(prstate->vmbuffer, BUFFER_LOCK_UNLOCK);
-		prstate->old_vmbits = 0;
-	}
+		LockBuffer(vmbuffer, BUFFER_LOCK_UNLOCK);
 }
 
 /*
@@ -1237,8 +1220,12 @@ heap_page_prune_and_freeze(PruneFreezeParams *params,
 	 */
 	if ((prstate.old_vmbits & VISIBILITYMAP_VALID_BITS) &&
 		!PageIsAllVisible(prstate.page))
-		heap_page_fix_vm_corruption(&prstate, InvalidOffsetNumber,
+	{
+		heap_page_fix_vm_corruption(prstate.relation, prstate.buffer,
+									prstate.vmbuffer, InvalidOffsetNumber,
 									VM_CORRUPT_MISSING_PAGE_HINT);
+		prstate.old_vmbits = 0;
+	}
 
 	/*
 	 * If the page is already all-frozen, or already all-visible when freezing
@@ -1336,8 +1323,12 @@ heap_page_prune_and_freeze(PruneFreezeParams *params,
 	if (prstate.attempt_freeze && prstate.set_all_visible &&
 		!prstate.set_all_frozen &&
 		(prstate.old_vmbits & VISIBILITYMAP_ALL_FROZEN))
-		heap_page_fix_vm_corruption(&prstate, InvalidOffsetNumber,
+	{
+		heap_page_fix_vm_corruption(prstate.relation, prstate.buffer,
+									prstate.vmbuffer, InvalidOffsetNumber,
 									VM_CORRUPT_STALE_ALL_FROZEN);
+		prstate.old_vmbits = 0;
+	}
 
 	do_set_vm = heap_page_will_set_vm(&prstate, params->reason, do_prune, do_freeze);
 
@@ -1838,8 +1829,12 @@ heap_prune_record_prunable(PruneState *prstate, TransactionId xid,
 	 * prunable items.
 	 */
 	if (PageIsAllVisible(prstate->page))
-		heap_page_fix_vm_corruption(prstate, offnum,
+	{
+		heap_page_fix_vm_corruption(prstate->relation, prstate->buffer,
+									prstate->vmbuffer, offnum,
 									VM_CORRUPT_TUPLE_VISIBILITY);
+		prstate->old_vmbits = 0;
+	}
 }
 
 /* Record line pointer to be redirected */
@@ -1931,7 +1926,12 @@ heap_prune_record_dead_or_unused(PruneState *prstate, OffsetNumber offnum,
 	 * cover tuples that are directly marked LP_UNUSED via mark_unused_now.
 	 */
 	if (PageIsAllVisible(prstate->page))
-		heap_page_fix_vm_corruption(prstate, offnum, VM_CORRUPT_LPDEAD);
+	{
+		heap_page_fix_vm_corruption(prstate->relation, prstate->buffer,
+									prstate->vmbuffer, offnum,
+									VM_CORRUPT_LPDEAD);
+		prstate->old_vmbits = 0;
+	}
 }
 
 /* Record line pointer to be marked unused */
@@ -2168,7 +2168,12 @@ heap_prune_record_unchanged_lp_dead(PruneState *prstate, OffsetNumber offnum)
 	 * items.
 	 */
 	if (PageIsAllVisible(prstate->page))
-		heap_page_fix_vm_corruption(prstate, offnum, VM_CORRUPT_LPDEAD);
+	{
+		heap_page_fix_vm_corruption(prstate->relation, prstate->buffer,
+									prstate->vmbuffer, offnum,
+									VM_CORRUPT_LPDEAD);
+		prstate->old_vmbits = 0;
+	}
 }
 
 /*
