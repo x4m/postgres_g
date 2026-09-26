@@ -300,6 +300,7 @@ extern void pgaio_io_start_readv(PgAioHandle *ioh,
 								 int fd, int iovcnt, uint64 offset);
 extern void pgaio_io_start_writev(PgAioHandle *ioh,
 								  int fd, int iovcnt, uint64 offset);
+extern void pgaio_io_complete_readv(PgAioHandle *ioh, int iovcnt, int result);
 
 /* functions in aio_target.c */
 extern void pgaio_io_set_target(PgAioHandle *ioh, PgAioTargetID targetid);

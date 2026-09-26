@@ -100,6 +100,29 @@ pgaio_io_start_writev(PgAioHandle *ioh,
 	pgaio_io_stage(ioh, PGAIO_OP_WRITEV);
 }
 
+/*
+ * Complete a read whose iovecs have already been filled by the caller, for
+ * example from a storage provider's cache or a synchronous remote request.
+ * This accepts a fresh handle, not one already passed to a start routine.
+ *
+ * The caller retains ownership of the buffers until this call, and must set
+ * the target, iovecs and callbacks just as for pgaio_io_start_readv().  Result
+ * has the usual readv meaning (bytes read or negative errno).  On return the
+ * handle may have been recycled and must no longer be used.
+ */
+void
+pgaio_io_complete_readv(PgAioHandle *ioh, int iovcnt, int result)
+{
+	pgaio_io_before_start(ioh);
+	Assert(iovcnt > 0 && iovcnt <= PG_IOV_MAX);
+
+	ioh->op_data.read.fd = -1;
+	ioh->op_data.read.offset = 0;
+	ioh->op_data.read.iov_length = iovcnt;
+
+	pgaio_io_complete_immediately(ioh, PGAIO_OP_READV, result);
+}
+
 
 
 /* --------------------------------------------------------------------------------

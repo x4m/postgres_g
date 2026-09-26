@@ -58,6 +58,7 @@ static void pgaio_io_wait_for_free(void);
 static PgAioHandle *pgaio_io_from_wref(PgAioWaitRef *iow, uint64 *ref_generation);
 static const char *pgaio_io_state_get_name(PgAioHandleState s);
 static void pgaio_io_wait(PgAioHandle *ioh, uint64 ref_generation);
+static void pgaio_io_define(PgAioHandle *ioh, PgAioOp op);
 
 
 /* Options for io_method. */
@@ -415,26 +416,14 @@ pgaio_io_resowner_register(PgAioHandle *ioh, struct ResourceOwnerData *resowner)
 	ioh->resowner = resowner;
 }
 
-/*
- * Stage IO for execution and, if appropriate, submit it immediately.
- *
- * Should only be called from pgaio_io_start_*().
- */
-void
-pgaio_io_stage(PgAioHandle *ioh, PgAioOp op)
+/* Common preparation for submitted and already completed IO. */
+static void
+pgaio_io_define(PgAioHandle *ioh, PgAioOp op)
 {
-	bool		needs_synchronous;
-
 	Assert(ioh->state == PGAIO_HS_HANDED_OUT);
 	Assert(pgaio_my_backend->handed_out_io == ioh);
 	Assert(pgaio_io_has_target(ioh));
-
-	/*
-	 * Otherwise an interrupt, in the middle of staging and possibly executing
-	 * the IO, could end up trying to wait for the IO, leading to state
-	 * confusion.
-	 */
-	HOLD_INTERRUPTS();
+	Assert(!INTERRUPTS_CAN_BE_PROCESSED());
 
 	ioh->op = op;
 	ioh->result = 0;
@@ -447,6 +436,21 @@ pgaio_io_stage(PgAioHandle *ioh, PgAioOp op)
 	pgaio_io_call_stage(ioh);
 
 	pgaio_io_update_state(ioh, PGAIO_HS_STAGED);
+}
+
+/*
+ * Stage IO for execution and, if appropriate, submit it immediately.
+ *
+ * Should only be called from pgaio_io_start_*().
+ */
+void
+pgaio_io_stage(PgAioHandle *ioh, PgAioOp op)
+{
+	bool		needs_synchronous;
+
+	/* An interrupt must not try to wait for a partially defined IO. */
+	HOLD_INTERRUPTS();
+	pgaio_io_define(ioh, op);
 
 	/*
 	 * Synchronous execution has to be executed, well, synchronously, so check
@@ -476,6 +480,24 @@ pgaio_io_stage(PgAioHandle *ioh, PgAioOp op)
 		pgaio_io_perform_synchronously(ioh);
 	}
 
+	RESUME_INTERRUPTS();
+}
+
+/*
+ * Publish an operation completed by its issuer, without submitting a system
+ * call.  Keep the ordinary stage and completion callbacks: they transfer
+ * resources and publish buffer validity, not just the result of disk I/O.
+ */
+void
+pgaio_io_complete_immediately(PgAioHandle *ioh, PgAioOp op, int result)
+{
+	HOLD_INTERRUPTS();
+	pgaio_io_set_flag(ioh, PGAIO_HF_SYNCHRONOUS);
+	pgaio_io_define(ioh, op);
+	pgaio_io_prepare_submit(ioh);
+	START_CRIT_SECTION();
+	pgaio_io_process_completion(ioh, result);
+	END_CRIT_SECTION();
 	RESUME_INTERRUPTS();
 }
 

@@ -339,6 +339,7 @@ typedef struct IoMethodOps
 /* aio.c */
 extern bool pgaio_io_was_recycled(PgAioHandle *ioh, uint64 ref_generation, PgAioHandleState *state);
 extern void pgaio_io_stage(PgAioHandle *ioh, PgAioOp op);
+extern void pgaio_io_complete_immediately(PgAioHandle *ioh, PgAioOp op, int result);
 extern void pgaio_io_process_completion(PgAioHandle *ioh, int result);
 extern void pgaio_io_prepare_submit(PgAioHandle *ioh);
 extern bool pgaio_io_needs_synchronous_execution(PgAioHandle *ioh);
