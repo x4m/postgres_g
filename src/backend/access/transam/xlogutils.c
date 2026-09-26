@@ -33,6 +33,8 @@
 /* GUC variable */
 bool		ignore_invalid_pages = false;
 
+redo_buffer_filter_hook_type redo_buffer_filter_hook = NULL;
+
 /*
  * Are we doing recovery from XLOG?
  *
@@ -391,6 +393,15 @@ XLogReadBufferForRedoExtended(XLogReaderState *record,
 		elog(PANIC, "block with WILL_INIT flag in WAL record must be zeroed by redo routine");
 	if (!willinit && zeromode)
 		elog(PANIC, "block to be initialized in redo routine must be marked with WILL_INIT flag in the WAL record");
+
+	if (redo_buffer_filter_hook && redo_buffer_filter_hook(record, block_id, mode))
+	{
+		if (zeromode)
+			elog(PANIC, "redo buffer filter cannot skip a buffer initialization");
+		XLogRecGetBlock(record, block_id)->redo_skipped = true;
+		*buf = InvalidBuffer;
+		return BLK_NOTFOUND;
+	}
 
 	/* If it has a full-page image and it should be restored, do it. */
 	if (XLogRecBlockImageApply(record, block_id))

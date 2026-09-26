@@ -78,6 +78,18 @@ typedef enum
 								 * need to be replayed) */
 } XLogRedoAction;
 
+/*
+ * An optional storage provider may skip a block whose state is reconstructible
+ * elsewhere.  It must synchronize that decision with buffer admission and
+ * preserve the record's non-page effects.  Returning true yields BLK_NOTFOUND;
+ * zero-and-lock callers must still receive a valid buffer and cannot be skipped.
+ * The provider must also exclude callers requiring BLK_RESTORED, such as redo
+ * of standalone full-page images.
+ */
+typedef bool (*redo_buffer_filter_hook_type) (XLogReaderState *record,
+											  uint8 block_id, ReadBufferMode mode);
+extern PGDLLIMPORT redo_buffer_filter_hook_type redo_buffer_filter_hook;
+
 /* Private data of the read_local_xlog_page_no_wait callback. */
 typedef struct ReadLocalXLogPageNoWaitPrivate
 {

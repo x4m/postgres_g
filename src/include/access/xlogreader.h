@@ -135,6 +135,7 @@ typedef struct
 	/* Information on full-page image, if any */
 	bool		has_image;		/* has image, even for consistency checking */
 	bool		apply_image;	/* has image that should be restored */
+	bool		redo_skipped;	/* filtered by a storage provider */
 	char	   *bkp_image;
 	uint16		hole_offset;
 	uint16		hole_length;

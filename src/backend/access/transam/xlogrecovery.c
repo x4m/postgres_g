@@ -2485,6 +2485,10 @@ verifyBackupPageConsistency(XLogReaderState *record)
 
 		Assert(XLogRecHasBlockImage(record, block_id));
 
+		/* No local redo result exists for a provider-filtered block. */
+		if (XLogRecGetBlock(record, block_id)->redo_skipped)
+			continue;
+
 		if (XLogRecBlockImageApply(record, block_id))
 		{
 			/*

@@ -1826,6 +1826,7 @@ DecodeXLogRecord(XLogReaderState *state,
 			blk = &decoded->blocks[block_id];
 			blk->in_use = true;
 			blk->apply_image = false;
+			blk->redo_skipped = false;
 
 			COPY_HEADER_FIELD(&fork_flags, sizeof(uint8));
 			blk->forknum = fork_flags & BKPBLOCK_FORK_MASK;
