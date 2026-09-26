@@ -61,3 +61,10 @@ AS 'MODULE_PATHNAME', 'test_page_store_history_status'
 LANGUAGE C STRICT VOLATILE PARALLEL UNSAFE;
 
 REVOKE ALL ON FUNCTION test_page_store_history_status() FROM PUBLIC;
+
+CREATE FUNCTION test_page_store_compute_status(
+    OUT active boolean, OUT completed pg_lsn, OUT skipped bigint,
+    OUT cached bigint, OUT fetches bigint, OUT startup_fetches bigint)
+RETURNS record
+AS 'MODULE_PATHNAME', 'test_page_store_compute_status'
+LANGUAGE C STRICT VOLATILE PARALLEL UNSAFE;

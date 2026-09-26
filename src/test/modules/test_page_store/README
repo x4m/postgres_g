@@ -30,6 +30,13 @@ WAL record: the old cut remains readable, the in-flight cut is unavailable.
 Restart revokes the volatile history.  Capacity exhaustion stops collection
 without changing older images or interrupting normal standby redo.
 
+The fourth test has a compute that follows WAL.  It skips cold heap main-fork
+redo, applies redo to cached pages, and fetches missing pages from retained
+storage history.  Its local heap file is unavailable throughout UPDATE,
+INSERT, pruning, truncation, and reextension.  Ordered result digests include
+physical TIDs.  The test also exercises both orders of buffer admission versus
+redo, storage lag, and snapshot conflicts when the heap is entirely cold.
+
 Run with an assertions/injection-points build:
 
     make -C src/test/modules/test_page_store check
@@ -76,6 +83,9 @@ test_page_store_history_status() reports the retained bounds, image/record
 counts, any reason collection stopped, and the startup process's in-flight
 LSN.  The latter is diagnostic, NOT a published read view.  Requests must use
 an exact completed record end, not an arbitrary byte position in WAL.
+The optional last argument of test_page_store_fetch(), wait_for_replay,
+waits up to five seconds for publication of that record.  It does not make
+an unavailable old cut available or permit a latest-page fallback.
 
 Pages are copied after ordinary redo and consistency checking, before the
 record is published as replayed.  File lifecycle changes are separate from
@@ -92,15 +102,56 @@ unpublished slots are inaccessible to readers.  Restart clears the history,
 and reinitialization cannot overwrite a live history.  This is fail-closed
 view loss, NOT durable historical recovery or a view-lease implementation.
 
+Following read-only compute experiment
+-------------------------------------
+
+Use a fresh copy of the seed backup, whose recovery starts before the retained
+baseline.  Configure the same locator, timeline, and baseline as above, plus:
+
+    test_page_store.follow = true
+
+Do not set a recovery target.  Compute activates as it replays the exact
+baseline record, then continues normal streaming recovery.  History collection
+and following compute must run on different nodes.  See 004_following_compute.pl
+for the complete disposable setup, including replication slots for both nodes.
+
+The admission handshake uses the buffer mapping partition lock.  A mapped but
+invalid buffer is an in-progress read, not an absent page: redo must wait and
+update it.  For an absent page, startup records the skipped record's end LSN
+before releasing the mapping lock.  A subsequent read cannot use an older cut
+and waits until compute has completed that record.  Eviction also preserves
+the discarded page's LSN.  Publication of completed replay is after all rmgr
+effects and consistency checks.  Storage can independently wait to catch up.
+
+Following mode limits I/O to one page per request.  Owning input I/O for a
+second page while waiting for a skipped record can deadlock with redo of that
+second page.  The test reproduces this with a two-page UPDATE if the limit is
+removed.  General asynchronous multi-page admission/completion is future work.
+
+Only heap main-fork paths have been audited.  Init-page redo and standalone
+full-page images always get a real buffer; other forks still receive ordinary
+local redo.  Snapshot conflicts are resolved even when page work is skipped.
+WAL consistency checking skips
+only those compute blocks for which no local redo result exists; the storage
+still performs and checks full redo.  test_page_store_compute_status() exposes
+the completed position and skip/cache/fetch counters for test orchestration.
+
+The per-page lower bounds are a bounded dense array, with no eviction, sized by
+test_page_store.follow_max_blocks (default 65536).  Unsupported rmgrs, a second
+visit to the same selected block within a record, or exceeding this bound cause
+an error.  Restart does not recover these markers; reuse requires a fresh seed
+and baseline.  Promotion and replacement of the selected relation are not
+supported.  These are explicit limits of this experiment, not a restart design.
+
 Important limitations:
 
-* This is not diskless compute.  Startup still performs full local redo;
-  all unselected relations, catalogs, SLRUs, and other state remain local.
-* Only the frozen read-only compute case is supported.  Storage can move
-  ahead when history is enabled.  Executor guards on compute reject
-  queries outside the configured cut, including cache-only queries after
-  promotion.  Do not resume replay, run mutating utility operations, or
-  treat this guard as a replacement for a storage lease.
+* This is not diskless compute.  Unselected relations, catalogs, SLRUs, and
+  other state remain local.  Following mode redirects only the selected
+  heap's main fork; frozen mode leaves startup redo unchanged.
+* Both compute modes are read-only.  Executor guards reject queries outside
+  the configured mode, including cache-only queries after promotion.  Do
+  not resume a frozen compute, run mutating utility operations, or treat
+  these guards as a replacement for a storage lease.
 * Hint writes for the selected relation are discarded.  Normal tuple or
   index writes cannot be treated this way on a live writer.
 * Requests use a persistent, nonblocking libpq connection, binary SQL
@@ -109,8 +160,9 @@ Important limitations:
   The deadline bounds socket waits, not external DNS resolution.  A worker
   transport with a safe cancellation lifetime remains to be implemented.
 * A binary physical service usable before database startup, durable page
-  history, selective redo, remote WAL durability, and restart without local
-  persistent state are not implemented.  No throughput claim is made.
+  history, general selective redo, remote WAL durability, and restart
+  without local persistent state are not implemented.  No throughput claim
+  is made.
 * The small test GUCs restrict the selected locator and timeline fields to
   signed-int range.  They are not a proposed configuration or wire format.
 

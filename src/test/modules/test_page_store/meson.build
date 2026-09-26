@@ -31,6 +31,7 @@ tests += {
       't/001_page_service.pl',
       't/002_remote_smgr.pl',
       't/003_page_history.pl',
+      't/004_following_compute.pl',
     ],
   },
 }
