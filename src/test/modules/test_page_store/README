@@ -74,6 +74,14 @@ scan.  It covers both VM admission orders, implicit creation, warm/cold
 clearing, truncation, reextension, and aborted insertion.  When all pages
 are visible, EXPLAIN ANALYZE must report no heap fetches.
 
+The eleventh test starts retention before taking the compute seed.  It removes
+the selected heap, B-tree and VM files before first startup.  Compute then
+bootstraps metadata at its recovery start, crashes before and after a new
+restartpoint, and restarts alongside storage.  Ordered values and physical
+TIDs, a transaction spanning the restartpoint, amcheck, and a real index-only
+scan check that neither local files nor the provider's latest state substitute
+for the required historical view.
+
 Run with an assertions/injection-points build:
 
     make -C src/test/modules/test_page_store check
@@ -173,21 +181,35 @@ Format version 2 adds fork identity and metadata; version 1 is not accepted.
 Keep history_pages large enough for the existing journal after restart.  There
 is no compaction, view GC, timeline transition, or backup protocol for the
 journal.  Its fsync cost and linear image searches are not representative of
-a mature provider.  Persistent storage history does not yet make the compute's
-per-page markers or its local catalogs recoverable after losing its disk.
+a mature provider.  Persistent storage history does not make the compute's
+local catalogs or other nonselected state recoverable after losing its disk.
 
 Following read-only compute experiment
 -------------------------------------
 
-Use a fresh copy of the seed backup, whose recovery starts before the retained
-baseline.  Configure the same locator, timeline, and baseline as above, plus:
+For a restartable compute, start storage history retention before taking the
+compute seed backup.  Retained history must cover the seed checkpoint's REDO
+point and every later compute restartpoint.  Configure the same locator,
+timeline, and retained baseline as above, plus:
 
     test_page_store.follow = true
 
-Do not set a recovery target.  Compute activates as it replays the exact
-baseline record, then continues normal streaming recovery.  History collection
-and following compute must run on different nodes.  See 004_following_compute.pl
-for the complete disposable setup, including replication slots for both nodes.
+Do not set a recovery target.  Before the first redo, startup asks storage for
+the last retained record end at or before its recovery start, then loads all
+selected files' metadata at that cut.  A REDO point can follow WAL padding, so
+it is not necessarily itself a retained record end.  Storage must have replayed
+through the requested position before choosing this predecessor; an arbitrary
+older or latest cut is not a substitute.
+
+Shared buffers and per-page markers start empty; normal redo reconstructs the
+markers without persistent local copies.  Missing history fails startup.  The
+new test 011_compute_restart.pl includes the full setup and process crashes.
+History collection and following compute must run on different nodes.
+
+The older tests also support a seed whose recovery starts before retention.
+That path uses local files until replay reaches the exact configured baseline.
+It cannot bootstrap without those files and must not be used as the restartable
+setup; moving files aside after activation was only an earlier test oracle.
 
 For several heaps or B-tree indexes, replace tablespace/database/relfilenumber
 with one list:
@@ -235,9 +257,9 @@ The per-page lower bounds are bounded dense arrays, with no eviction, sized by
 test_page_store.follow_max_blocks (default 65536) per selected relation fork.
 Unsupported rmgrs, a second
 visit to the same selected block within a record, or exceeding this bound cause
-an error.  Restart does not recover these markers; reuse requires a fresh seed
-and baseline.  Promotion and replacement of the selected relation are not
-supported.  These are explicit limits of this experiment, not a restart design.
+an error.  Restart reconstructs the markers from WAL only when retained history
+covers the recovery start as described above.  Promotion and replacement of
+the selected relation are not supported.
 
 Important limitations:
 

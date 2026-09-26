@@ -52,6 +52,7 @@
 PG_FUNCTION_INFO_V1(test_page_store_retain);
 PG_FUNCTION_INFO_V1(test_page_store_retain_relations);
 PG_FUNCTION_INFO_V1(test_page_store_history_status);
+PG_FUNCTION_INFO_V1(test_page_store_history_before);
 
 #define HISTORY_MAX_RECORDS 65536
 #define HISTORY_MAX_RELATIONS 16
@@ -851,6 +852,52 @@ history_wait_for_replay(XLogRecPtr lsn)
 		ConditionVariableTimedSleep(&history->changed, remaining, wait_event);
 	}
 	ConditionVariableCancelSleep();
+}
+
+/* Find the state immediately before a recovery start, including WAL padding. */
+Datum
+test_page_store_history_before(PG_FUNCTION_ARGS)
+{
+	char	   *expected_sysid = text_to_cstring(PG_GETARG_TEXT_PP(0));
+	int64		tli = PG_GETARG_INT64(1);
+	XLogRecPtr	start = PG_GETARG_LSN(2);
+	char		sysid[32];
+	uint32		low = 0;
+	uint32		high;
+	XLogRecPtr	result;
+
+	if (!superuser())
+		ereport(ERROR, (errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
+						errmsg("must be superuser to use page service prototype")));
+	if (!RecoveryInProgress() || !history)
+		elog(ERROR, "page history requires a configured standby");
+	snprintf(sysid, sizeof(sysid), UINT64_FORMAT, GetSystemIdentifier());
+	if (strcmp(sysid, expected_sysid) != 0)
+		elog(ERROR, "storage system identifier does not match");
+	if (tli <= 0 || tli > PG_UINT32_MAX || XLogRecPtrIsInvalid(start))
+		elog(ERROR, "invalid recovery start position");
+
+	/* Do not return an older cut merely because storage has not caught up. */
+	history_wait_for_replay(start);
+	LWLockAcquire(&history->lock, LW_SHARED);
+	if (history->nrecords == 0 || tli != history->tli ||
+		start < history_records[0].lsn ||
+		start > history_records[history->nrecords - 1].lsn)
+		elog(ERROR, "recovery start is outside retained page history");
+	high = history->nrecords;
+	while (low < high)
+	{
+		uint32		mid = low + (high - low) / 2;
+
+		if (history_records[mid].lsn <= start)
+			low = mid + 1;
+		else
+			high = mid;
+	}
+	Assert(low > 0);
+	result = history_records[low - 1].lsn;
+	LWLockRelease(&history->lock);
+	PG_RETURN_LSN(result);
 }
 
 bytea *

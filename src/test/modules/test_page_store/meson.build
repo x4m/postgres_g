@@ -38,6 +38,7 @@ tests += {
       't/008_following_btree.pl',
       't/009_history_forks.pl',
       't/010_following_vm.pl',
+      't/011_compute_restart.pl',
     ],
   },
 }

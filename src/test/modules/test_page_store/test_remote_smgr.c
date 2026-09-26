@@ -99,11 +99,13 @@ static ComputeControl *compute;
 static pg_atomic_uint64 *required_lsn;
 static RelFileLocator selected_locators[COMPUTE_MAX_RELATIONS];
 static int	nselected;
+static wal_replay_start_hook_type previous_replay_start_hook;
 static after_wal_replay_hook_type previous_replay_hook;
 static redo_buffer_filter_hook_type previous_filter_hook;
 
 static void compute_shmem_request(void *arg);
 static void compute_shmem_init(void *arg);
+static void compute_replay_start(XLogRecPtr start, TimeLineID tli);
 static void compute_after_replay(XLogReaderState *record, TimeLineID tli);
 static bool compute_redo_filter(XLogReaderState *record, uint8 block_id, ReadBufferMode mode);
 static bool compute_active(void);
@@ -137,6 +139,11 @@ static bool remote_relation(SMgrRelation reln, ForkNumber forknum);
 static bool remote_fetch(SMgrRelation reln, ForkNumber forknum,
 						 BlockNumber blocknum, void **buffers,
 						 BlockNumber count, BlockNumber *nblocks);
+static bool remote_fetch_at(RelFileLocator locator, ForkNumber forknum,
+							BlockNumber blocknum, void **buffers,
+							BlockNumber count, BlockNumber *nblocks,
+							XLogRecPtr lsn, TimestampTz deadline);
+static XLogRecPtr remote_history_before(XLogRecPtr start);
 static bool remote_exists(SMgrRelation reln, ForkNumber forknum, SmgrChainIndex next);
 static BlockNumber remote_nblocks(SMgrRelation reln, ForkNumber forknum, SmgrChainIndex next);
 static bool remote_prefetch(SMgrRelation reln, ForkNumber forknum, BlockNumber blocknum,
@@ -224,6 +231,8 @@ _PG_init(void)
 	if (follow_replay && nselected == 0)
 		elog(ERROR, "following compute needs at least one selected relation");
 	RegisterShmemCallbacks(&compute_callbacks);
+	previous_replay_start_hook = wal_replay_start_hook;
+	wal_replay_start_hook = compute_replay_start;
 	previous_replay_hook = after_wal_replay_hook;
 	after_wal_replay_hook = compute_after_replay;
 	previous_filter_hook = redo_buffer_filter_hook;
@@ -355,7 +364,7 @@ compute_active(void)
 {
 	if (!compute || pg_atomic_read_u32(&compute->active) == 0)
 		return false;
-	/* Pair with baseline publication in compute_after_replay(). */
+	/* Pair with publication in compute_replay_start()/compute_after_replay(). */
 	pg_read_barrier();
 	return true;
 }
@@ -434,10 +443,60 @@ compute_note_lsn(RelFileLocator locator, ForkNumber forknum, BlockNumber block, 
 }
 
 /*
- * Activate only at the configured baseline while replaying a fresh seed.
- * A restart that has already passed the baseline must not use stale local
- * files to reconstruct the missing marker state.
+ * Shared buffers are empty at startup, so replay can rebuild the per-page
+ * markers.  File metadata must describe the state just before the first redo
+ * record, not the provider's latest state.  The seed's checkpoint REDO point
+ * must therefore be covered by retained history.
  */
+static void
+compute_replay_start(XLogRecPtr start, TimeLineID tli)
+{
+	XLogRecPtr	cut;
+	XLogRecPtr	baseline;
+
+	if (previous_replay_start_hook)
+		previous_replay_start_hook(start, tli);
+	if (!compute)
+		return;
+	baseline = pg_lsn_in_safe(page_lsn, NULL);
+	/* Older fixtures replay their local seed up to an exact baseline. */
+	if (start < baseline)
+		return;
+	if (tli != page_tli)
+		elog(ERROR, "following page compute cannot change timeline");
+	cut = remote_history_before(start);
+	if (cut < baseline || cut > start)
+		elog(ERROR, "invalid page history recovery boundary");
+	for (int i = 0; i < nselected; i++)
+	{
+		SMgrRelation smgr = smgropen(selected_locators[i], INVALID_PROC_NUMBER);
+
+		for (ForkNumber forknum = MAIN_FORKNUM; forknum <= MAX_FORKNUM; forknum++)
+		{
+			bool		exists;
+			BlockNumber size;
+			TimestampTz deadline;
+
+			if (forknum != MAIN_FORKNUM && forknum != VISIBILITYMAP_FORKNUM)
+				continue;
+			deadline = TimestampTzPlusMilliseconds(GetCurrentTimestamp(), request_timeout);
+			exists = remote_fetch_at(selected_locators[i], forknum, 0, NULL, 0,
+									 &size, cut, deadline);
+			if (forknum == MAIN_FORKNUM && !exists)
+				elog(ERROR, "selected relation is absent from the retained recovery boundary");
+			if (size > follow_max_blocks)
+				elog(ERROR, "retained relation exceeds follow_max_blocks");
+			pg_atomic_write_u32(&compute->files[i][forknum].nblocks, size);
+			pg_atomic_write_u32(&compute->files[i][forknum].exists, exists);
+			smgr->smgr_cached_nblocks[forknum] = InvalidBlockNumber;
+		}
+	}
+	pg_atomic_write_u64(&compute->completed, cut);
+	pg_write_barrier();
+	pg_atomic_write_u32(&compute->active, 1);
+}
+
+/* Publish a completed record, or activate at a legacy local-seed baseline. */
 static void
 compute_after_replay(XLogReaderState *record, TimeLineID tli)
 {
@@ -681,19 +740,90 @@ remote_connect(TimestampTz deadline)
 		elog(ERROR, "could not set page service connection to nonblocking mode");
 }
 
+/* Caller owns the result and must disconnect if validation raises an error. */
+static void
+remote_query(const char *query, int nparams, const char *const *values,
+			 TimestampTz deadline)
+{
+	int			flushed;
+
+	Assert(page_result == NULL);
+	remote_connect(deadline);
+	if (!PQsendQueryParams(page_conn, query, nparams, NULL, values, NULL, NULL, 1))
+		elog(ERROR, "could not send page service request: %s", PQerrorMessage(page_conn));
+	while ((flushed = PQflush(page_conn)) > 0)
+		remote_wait(WL_SOCKET_WRITEABLE, deadline);
+	if (flushed < 0)
+		elog(ERROR, "could not flush page service request: %s", PQerrorMessage(page_conn));
+	for (;;)
+	{
+		PGresult   *result;
+
+		while (PQisBusy(page_conn))
+		{
+			remote_wait(WL_SOCKET_READABLE, deadline);
+			if (!PQconsumeInput(page_conn))
+				elog(ERROR, "could not receive page service response: %s", PQerrorMessage(page_conn));
+		}
+		result = PQgetResult(page_conn);
+		if (result == NULL)
+			break;
+		if (page_result)
+		{
+			PQclear(result);
+			elog(ERROR, "unexpected extra page service response");
+		}
+		page_result = result;
+	}
+	if (!page_result || PQresultStatus(page_result) != PGRES_TUPLES_OK)
+		elog(ERROR, "page service request failed: %s",
+			 page_result ? PQresultErrorMessage(page_result) : PQerrorMessage(page_conn));
+}
+
+static XLogRecPtr
+remote_history_before(XLogRecPtr start)
+{
+	char		params[3][32];
+	const char *values[3];
+	TimestampTz deadline = TimestampTzPlusMilliseconds(GetCurrentTimestamp(), request_timeout);
+	uint64		result = InvalidXLogRecPtr;
+
+	snprintf(params[0], 32, UINT64_FORMAT, GetSystemIdentifier());
+	snprintf(params[1], 32, "%d", page_tli);
+	snprintf(params[2], 32, "%X/%X", LSN_FORMAT_ARGS(start));
+	for (int i = 0; i < 3; i++)
+		values[i] = params[i];
+	PG_TRY();
+	{
+		remote_query("SELECT public.test_page_store_history_before("
+					 "$1::text, $2::bigint, $3::pg_lsn)", 3, values, deadline);
+		if (PQntuples(page_result) != 1 || PQnfields(page_result) != 1 ||
+			PQgetisnull(page_result, 0, 0) ||
+			PQgetlength(page_result, 0, 0) != sizeof(result))
+			elog(ERROR, "invalid page history recovery boundary response");
+		memcpy(&result, PQgetvalue(page_result, 0, 0), sizeof(result));
+		result = pg_ntoh64(result);
+		PQclear(page_result);
+		page_result = NULL;
+	}
+	PG_CATCH();
+	{
+		remote_disconnect(0, (Datum) 0);
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+	return result;
+}
+
 static bool
 remote_fetch(SMgrRelation reln, ForkNumber forknum, BlockNumber blocknum,
 			 void **buffers, BlockNumber count, BlockNumber *nblocks)
 {
 	XLogRecPtr	lsn = pg_lsn_in_safe(page_lsn, NULL);
 	TimestampTz deadline = TimestampTzPlusMilliseconds(GetCurrentTimestamp(), request_timeout);
-	char		params[10][32];
-	const char *values[10];
-	bool		exists = false;
-	uint64		size;
+	bool		exists;
 
 	Assert(!INTERRUPTS_CAN_BE_PROCESSED());
-	Assert(count <= TEST_PAGE_STORE_MAX_BLOCKS);
 	if (follow_replay)
 	{
 		lsn = compute_read_lsn(reln->smgr_rlocator.locator, forknum, blocknum, count, deadline);
@@ -708,9 +838,27 @@ remote_fetch(SMgrRelation reln, ForkNumber forknum, BlockNumber blocknum,
 		compute_check();
 	if (count > 0)
 		INJECTION_POINT("test-page-store-before-remote-fetch", NULL);
-	snprintf(params[0], 32, "%u", reln->smgr_rlocator.locator.spcOid);
-	snprintf(params[1], 32, "%u", reln->smgr_rlocator.locator.dbOid);
-	snprintf(params[2], 32, "%u", reln->smgr_rlocator.locator.relNumber);
+	exists = remote_fetch_at(reln->smgr_rlocator.locator, forknum, blocknum,
+							 buffers, count, nblocks, lsn, deadline);
+	compute_check();
+	return exists;
+}
+
+/* The explicit cut also allows metadata lookup before compute activation. */
+static bool
+remote_fetch_at(RelFileLocator locator, ForkNumber forknum, BlockNumber blocknum,
+				void **buffers, BlockNumber count, BlockNumber *nblocks,
+				XLogRecPtr lsn, TimestampTz deadline)
+{
+	char		params[10][32];
+	const char *values[10];
+	bool		exists = false;
+	uint64		size;
+
+	Assert(count <= TEST_PAGE_STORE_MAX_BLOCKS);
+	snprintf(params[0], 32, "%u", locator.spcOid);
+	snprintf(params[1], 32, "%u", locator.dbOid);
+	snprintf(params[2], 32, "%u", locator.relNumber);
 	snprintf(params[3], 32, "%d", forknum);
 	snprintf(params[4], 32, "%u", blocknum);
 	snprintf(params[5], 32, "%u", count);
@@ -723,42 +871,10 @@ remote_fetch(SMgrRelation reln, ForkNumber forknum, BlockNumber blocknum,
 
 	PG_TRY();
 	{
-		int			flushed;
-
-		remote_connect(deadline);
-		if (!PQsendQueryParams(page_conn,
-							   "SELECT fork_exists, nblocks, pages FROM public.test_page_store_fetch("
-							   "$1::oid, $2::oid, $3::oid, $4::int, $5::bigint, $6::int, "
-							   "$7::text, $8::bigint, $9::pg_lsn, $10::boolean)",
-							   10, NULL, values, NULL, NULL, 1))
-			elog(ERROR, "could not send page service request: %s", PQerrorMessage(page_conn));
-		while ((flushed = PQflush(page_conn)) > 0)
-			remote_wait(WL_SOCKET_WRITEABLE, deadline);
-		if (flushed < 0)
-			elog(ERROR, "could not flush page service request: %s", PQerrorMessage(page_conn));
-		for (;;)
-		{
-			PGresult   *result;
-
-			while (PQisBusy(page_conn))
-			{
-				remote_wait(WL_SOCKET_READABLE, deadline);
-				if (!PQconsumeInput(page_conn))
-					elog(ERROR, "could not receive page service response: %s", PQerrorMessage(page_conn));
-			}
-			result = PQgetResult(page_conn);
-			if (result == NULL)
-				break;
-			if (page_result)
-			{
-				PQclear(result);
-				elog(ERROR, "unexpected extra page service response");
-			}
-			page_result = result;
-		}
-		if (!page_result || PQresultStatus(page_result) != PGRES_TUPLES_OK)
-			elog(ERROR, "page service request failed: %s",
-				 page_result ? PQresultErrorMessage(page_result) : PQerrorMessage(page_conn));
+		remote_query("SELECT fork_exists, nblocks, pages FROM public.test_page_store_fetch("
+					 "$1::oid, $2::oid, $3::oid, $4::int, $5::bigint, $6::int, "
+					 "$7::text, $8::bigint, $9::pg_lsn, $10::boolean)",
+					 10, values, deadline);
 		if (PQntuples(page_result) != 1 || PQnfields(page_result) != 3 ||
 			PQgetisnull(page_result, 0, 0) || PQgetisnull(page_result, 0, 1) ||
 			PQgetisnull(page_result, 0, 2) ||
@@ -777,7 +893,6 @@ remote_fetch(SMgrRelation reln, ForkNumber forknum, BlockNumber blocknum,
 			memcpy(buffers[i], PQgetvalue(page_result, 0, 2) + i * BLCKSZ, BLCKSZ);
 		PQclear(page_result);
 		page_result = NULL;
-		compute_check();
 	}
 	PG_CATCH();
 	{

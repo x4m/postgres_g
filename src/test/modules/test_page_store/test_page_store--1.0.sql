@@ -76,3 +76,12 @@ CREATE FUNCTION test_page_store_compute_status(
 RETURNS record
 AS 'MODULE_PATHNAME', 'test_page_store_compute_status'
 LANGUAGE C STRICT VOLATILE PARALLEL UNSAFE;
+
+-- Resolve a recovery start to the preceding retained record boundary.
+CREATE FUNCTION test_page_store_history_before(text, bigint, pg_lsn)
+RETURNS pg_lsn
+AS 'MODULE_PATHNAME', 'test_page_store_history_before'
+LANGUAGE C STRICT VOLATILE PARALLEL UNSAFE;
+
+REVOKE ALL ON FUNCTION test_page_store_history_before(text, bigint, pg_lsn)
+FROM PUBLIC;
