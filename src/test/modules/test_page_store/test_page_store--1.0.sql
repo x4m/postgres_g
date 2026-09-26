@@ -43,3 +43,21 @@ AS 'MODULE_PATHNAME', 'test_page_store_read_smgr'
 LANGUAGE C STRICT VOLATILE PARALLEL UNSAFE;
 
 REVOKE ALL ON FUNCTION test_page_store_read_smgr(regclass, integer) FROM PUBLIC;
+
+-- Arm one main-fork history while recovery is paused.  Restart revokes it.
+CREATE FUNCTION test_page_store_retain(regclass)
+RETURNS pg_lsn
+AS 'MODULE_PATHNAME', 'test_page_store_retain'
+LANGUAGE C STRICT VOLATILE PARALLEL UNSAFE;
+
+REVOKE ALL ON FUNCTION test_page_store_retain(regclass) FROM PUBLIC;
+
+CREATE FUNCTION test_page_store_history_status(
+    OUT first_lsn pg_lsn, OUT last_lsn pg_lsn, OUT timeline bigint,
+    OUT pages integer, OUT records integer, OUT accepting boolean,
+    OUT stop_reason text, OUT replaying_lsn pg_lsn)
+RETURNS record
+AS 'MODULE_PATHNAME', 'test_page_store_history_status'
+LANGUAGE C STRICT VOLATILE PARALLEL UNSAFE;
+
+REVOKE ALL ON FUNCTION test_page_store_history_status() FROM PUBLIC;

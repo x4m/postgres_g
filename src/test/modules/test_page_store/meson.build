@@ -1,11 +1,12 @@
 # Copyright (c) 2026, PostgreSQL Global Development Group
 
-test_page_store_sources = files('test_page_store.c', 'test_remote_smgr.c')
+test_page_store_sources = files(
+  'test_page_store.c', 'test_page_history.c', 'test_remote_smgr.c')
 
 if host_system == 'windows'
   test_page_store_sources += rc_lib_gen.process(win32ver_rc, extra_args: [
     '--NAME', 'test_page_store',
-    '--FILEDESC', 'test_page_store - frozen-replay page service prototype',])
+    '--FILEDESC', 'test_page_store - replay page service prototype',])
 endif
 
 test_page_store = shared_module('test_page_store',
@@ -29,6 +30,7 @@ tests += {
     'tests': [
       't/001_page_service.pl',
       't/002_remote_smgr.pl',
+      't/003_page_history.pl',
     ],
   },
 }

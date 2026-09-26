@@ -4,10 +4,11 @@ MODULE_big = test_page_store
 OBJS = \
 	$(WIN32RES) \
 	test_page_store.o \
+	test_page_history.o \
 	test_remote_smgr.o
 PG_CPPFLAGS = -I$(libpq_srcdir)
 SHLIB_LINK_INTERNAL = $(libpq)
-PGFILEDESC = "test_page_store - frozen-replay page service prototype"
+PGFILEDESC = "test_page_store - replay page service prototype"
 
 EXTENSION = test_page_store
 DATA = test_page_store--1.0.sql

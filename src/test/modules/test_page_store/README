@@ -4,8 +4,8 @@ test_page_store
 This module is a design experiment for compute/storage separation, not a
 production page service.  It exposes a raw main-fork page from a standby
 paused at an explicitly identified system, timeline, and replay position.
-The position is checked again after the page copy.  No historical views
-are retained.
+The position is checked again after the page copy.  An optional, bounded
+history mode now retains main-fork versions while storage replay continues.
 
 The TAP test illustrates why ordinary redo cannot always reconstruct a
 live writer's evicted pages: heap command IDs and sequence state can differ
@@ -21,6 +21,14 @@ and AIO buffer completion.  It also tests a stalled request with an acquired
 AIO handle, reconnect after error, and loss of the configured read view.
 pg_buffercache eviction and a complete ordered result digest prevent a warm
 cache or local-file fallback from satisfying the main test.
+
+The third test uses retained versions.  Its compute stays at the baseline,
+but storage replays a multi-page UPDATE, VACUUM truncation, reextension, and
+DROP.  SQL on the older compute still returns its original result without a
+local relation file.  An injection point stops capture after one page of a
+WAL record: the old cut remains readable, the in-flight cut is unavailable.
+Restart revokes the volatile history.  Capacity exhaustion stops collection
+without changing older images or interrupting normal standby redo.
 
 Run with an assertions/injection-points build:
 
@@ -49,11 +57,47 @@ LSN after reaching the target, not the restore-point function's return
 value.  The test script is the exact reproducible setup.  Do not remove
 files from a real cluster: moving the file is only a test oracle.
 
+Retained-history experiment
+---------------------------
+
+On storage, preload test_page_store and set test_page_store.history_pages to
+the maximum number of retained page images (for example, 2048).  Start an
+ordinary streaming standby, catch up, and administratively pause replay with
+pg_wal_replay_pause().  While paused, call:
+
+    SELECT test_page_store_retain('the_table');
+
+The returned LSN is the baseline view.  Resume storage replay normally; a
+compute frozen at that baseline can keep using it through the same physical
+fetch endpoint.  Recovery-target pause is unsuitable for the storage node:
+resuming that pause finishes recovery instead of continuing as a standby.
+
+test_page_store_history_status() reports the retained bounds, image/record
+counts, any reason collection stopped, and the startup process's in-flight
+LSN.  The latter is diagnostic, NOT a published read view.  Requests must use
+an exact completed record end, not an arbitrary byte position in WAL.
+
+Pages are copied after ordinary redo and consistency checking, before the
+record is published as replayed.  File lifecycle changes are separate from
+page images.  In particular, a dropped relation is absent even if md retains
+an empty segment until checkpoint, and reextension must not expose an older
+image of the same block number.  Unknown special relation updates stop
+collection.  This prototype does not reproduce resource-manager redo.
+
+The journal is deliberately simple: one physical relation's main fork,
+append-only shared-memory images, at most 65536 record boundaries, and no
+garbage collection.  Reads search the image history linearly.  Do not use it
+for performance claims.  Only startup appends after baseline publication;
+unpublished slots are inaccessible to readers.  Restart clears the history,
+and reinitialization cannot overwrite a live history.  This is fail-closed
+view loss, NOT durable historical recovery or a view-lease implementation.
+
 Important limitations:
 
 * This is not diskless compute.  Startup still performs full local redo;
   all unselected relations, catalogs, SLRUs, and other state remain local.
-* Only the frozen read-only case is supported.  Executor guards reject
+* Only the frozen read-only compute case is supported.  Storage can move
+  ahead when history is enabled.  Executor guards on compute reject
   queries outside the configured cut, including cache-only queries after
   promotion.  Do not resume replay, run mutating utility operations, or
   treat this guard as a replacement for a storage lease.
@@ -64,7 +108,7 @@ Important limitations:
   still wait synchronously in the calling backend with interrupts held.
   The deadline bounds socket waits, not external DNS resolution.  A worker
   transport with a safe cancellation lifetime remains to be implemented.
-* A binary physical service usable before database startup, retained page
+* A binary physical service usable before database startup, durable page
   history, selective redo, remote WAL durability, and restart without local
   persistent state are not implemented.  No throughput claim is made.
 * The small test GUCs restrict the selected locator and timeline fields to

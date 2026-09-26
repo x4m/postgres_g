@@ -3,12 +3,11 @@
  * test_page_store.c
  *      Test-only page service using ordinary standby redo.
  *
- * This implements one frozen replay cut, not historical page reconstruction
- * or a compute storage manager.  It deliberately rejects a request instead
- * of substituting a page from a newer replay position.  A real service needs
- * a retained read view covering the entire operation, not an administrative
- * recovery pause.  Buffer content locks protect the copy; they do not freeze
- * replay globally.  Validate the replay position again after taking the copy.
+ * The original raw-page oracle requires one frozen replay cut.  Physical
+ * fetches can also use the bounded retained-history experiment.  Neither
+ * path substitutes a newer page for an unavailable cut.  For frozen reads,
+ * buffer locks protect the copy but do not freeze replay globally, so check
+ * the replay position again after taking the copy.
  *
  * Copyright (c) 2026, PostgreSQL Global Development Group
  *
@@ -198,9 +197,19 @@ test_page_store_fetch(PG_FUNCTION_ARGS)
 		ereport(ERROR,
 				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
 				 errmsg("storage system identifier does not match")));
-	test_page_store_check_cut((TimeLineID) tli, lsn);
 	if (get_call_result_type(fcinfo, NULL, &tupdesc) != TYPEFUNC_COMPOSITE)
 		elog(ERROR, "return type must be a row type");
+	if (test_page_store_history_enabled())
+	{
+		pages = test_page_store_history_fetch(locator, (ForkNumber) forknum,
+											  (BlockNumber) blkno, count,
+											  (TimeLineID) tli, lsn, &exists, &nblocks);
+		values[0] = BoolGetDatum(exists);
+		values[1] = Int64GetDatum(nblocks);
+		values[2] = PointerGetDatum(pages);
+		PG_RETURN_DATUM(HeapTupleGetDatum(heap_form_tuple(tupdesc, values, nulls)));
+	}
+	test_page_store_check_cut((TimeLineID) tli, lsn);
 
 	smgr = smgropen(locator, INVALID_PROC_NUMBER);
 	exists = smgrexists(smgr, (ForkNumber) forknum);

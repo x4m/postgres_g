@@ -1,4 +1,4 @@
-comment = 'test-only page service at a frozen recovery position'
+comment = 'test-only page service with replay positions and bounded history'
 default_version = '1.0'
 module_pathname = '$libdir/test_page_store'
 relocatable = true

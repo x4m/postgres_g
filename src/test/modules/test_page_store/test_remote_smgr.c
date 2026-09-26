@@ -128,6 +128,7 @@ _PG_init(void)
 	DefineCustomIntVariable("test_page_store.request_timeout", "Page request timeout.",
 							NULL, &request_timeout, 5000, 1, INT_MAX,
 							PGC_POSTMASTER, GUC_UNIT_MS, NULL, NULL, NULL);
+	test_page_store_history_init();
 	MarkGUCPrefixReserved("test_page_store");
 	smgr_register(&remote_smgr, 0);
 	read_callback = pgaio_io_register_callback_entry(&remote_read_callbacks,
