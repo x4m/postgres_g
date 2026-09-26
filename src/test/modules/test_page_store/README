@@ -1,0 +1,21 @@
+test_page_store
+===============
+
+This module is a design experiment for compute/storage separation, not a
+production page service.  It exposes a raw main-fork page from a standby
+paused at an explicitly identified system, timeline, and replay position.
+The position is checked again after the page copy.  No historical views
+are retained, and no compute I/O is redirected to this service.
+
+The TAP test illustrates why ordinary redo cannot always reconstruct a
+live writer's evicted pages: heap command IDs and sequence state can differ
+from the writer's runtime state.  This is expected recovery behavior, not
+a correctness bug in physical replication.  full_page_writes is disabled
+only to make the command-ID test exercise heap redo rather than an FPI.
+The sequence test assumes the current SEQ_LOG_VALS value.
+
+The test requires pageinspect.  With injection_points available it also
+checks a replay/view change during a page request.  These checks exercise
+the SQL test endpoint, not a remote SMgr, historical page reconstruction,
+selective redo, or remote durability.  This module is discussion scaffolding
+for those changes, not a proposed final public SQL interface.

@@ -1,0 +1,4 @@
+comment = 'test-only page service at a frozen recovery position'
+default_version = '1.0'
+module_pathname = '$libdir/test_page_store'
+relocatable = true

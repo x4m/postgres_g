@@ -40,6 +40,7 @@ SUBDIRS = \
 		  test_lwlock_tranches \
 		  test_misc \
 		  test_oat_hooks \
+		  test_page_store \
 		  test_parser \
 		  test_pg_dump \
 		  test_plan_advice \
