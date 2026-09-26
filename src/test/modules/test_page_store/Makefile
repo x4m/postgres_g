@@ -14,7 +14,7 @@ EXTENSION = test_page_store
 DATA = test_page_store--1.0.sql
 
 TAP_TESTS = 1
-EXTRA_INSTALL = contrib/pageinspect contrib/pg_buffercache \
+EXTRA_INSTALL = contrib/pageinspect contrib/pg_buffercache contrib/amcheck \
 	src/test/modules/injection_points src/test/modules/test_aio
 
 ifdef USE_PGXS

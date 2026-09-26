@@ -4,8 +4,8 @@
  *      Read-only SMgr consumers of the test page service.
  *
  * Frozen mode redirects selected physical relations on a paused standby.
- * Following mode redirects their main forks and replays heap WAL into cached
- * pages.
+ * Following mode redirects their main forks and replays heap and B-tree WAL
+ * into cached pages.
  * All other relations and forks still use md; neither mode is diskless compute.
  * SQL is a temporary transport to the independent test endpoint; the final
  * physical service must also work before database connections are possible.
@@ -18,6 +18,7 @@
 
 #include "access/heapam_xlog.h"
 #include "access/htup_details.h"
+#include "access/nbtxlog.h"
 #include "access/relation.h"
 #include "access/xlog.h"
 #include "access/xlogrecovery.h"
@@ -213,9 +214,9 @@ _PG_init(void)
 							NULL, &request_timeout, 5000, 1, INT_MAX,
 							PGC_POSTMASTER, GUC_UNIT_MS, NULL, NULL, NULL);
 	test_page_store_history_init();
-	DefineCustomBoolVariable("test_page_store.follow", "Follow WAL for remote heap main forks.",
+	DefineCustomBoolVariable("test_page_store.follow", "Follow WAL for remote main forks.",
 							 NULL, &follow_replay, false, PGC_POSTMASTER, 0, NULL, NULL, NULL);
-	DefineCustomIntVariable("test_page_store.follow_max_blocks", "Maximum tracked blocks per heap.",
+	DefineCustomIntVariable("test_page_store.follow_max_blocks", "Maximum tracked blocks per relation.",
 							NULL, &follow_max_blocks, 65536, 1, 1048576,
 							PGC_POSTMASTER, 0, NULL, NULL, NULL);
 	if (follow_replay && test_page_store_history_enabled())
@@ -422,7 +423,7 @@ compute_note_lsn(RelFileLocator locator, BlockNumber block, XLogRecPtr lsn)
 
 	Assert(relation >= 0);
 	if (block >= follow_max_blocks)
-		elog(ERROR, "remote heap exceeds follow_max_blocks");
+		elog(ERROR, "remote relation exceeds follow_max_blocks");
 	marker = &required_lsn[relation * follow_max_blocks + block];
 	old = pg_atomic_read_u64(marker);
 	while (old < lsn && !pg_atomic_compare_exchange_u64(marker, &old, lsn))
@@ -455,7 +456,7 @@ compute_after_replay(XLogReaderState *record, TimeLineID tli)
 			BlockNumber size;
 
 			if (!smgrexists(smgr, MAIN_FORKNUM))
-				elog(ERROR, "selected heap is absent from the compute seed");
+				elog(ERROR, "selected relation is absent from the compute seed");
 			size = smgrnblocks(smgr, MAIN_FORKNUM);
 			if (size > follow_max_blocks)
 				elog(ERROR, "compute seed exceeds follow_max_blocks");
@@ -493,10 +494,10 @@ compute_redo_filter(XLogReaderState *record, uint8 block_id, ReadBufferMode mode
 	if (!compute_active() || forknum != MAIN_FORKNUM || !selected_locator(locator))
 		return previous_filter_hook ? previous_filter_hook(record, block_id, mode) : false;
 	if (XLogRecGetRmid(record) != RM_HEAP_ID && XLogRecGetRmid(record) != RM_HEAP2_ID &&
-		XLogRecGetRmid(record) != RM_XLOG_ID)
-		elog(ERROR, "following compute currently supports heap main-fork redo only");
+		XLogRecGetRmid(record) != RM_BTREE_ID && XLogRecGetRmid(record) != RM_XLOG_ID)
+		elog(ERROR, "following compute supports heap and B-tree main-fork redo only");
 	if (block >= follow_max_blocks)
-		elog(ERROR, "remote heap exceeds follow_max_blocks");
+		elog(ERROR, "remote relation exceeds follow_max_blocks");
 	file = compute_file(locator);
 	InitBufferTag(&tag, &locator, forknum, block);
 	if (checked_record != record->ReadRecPtr)
@@ -506,9 +507,11 @@ compute_redo_filter(XLogReaderState *record, uint8 block_id, ReadBufferMode mode
 	}
 
 	/*
-	 * Audited heap paths visit each main block once.  A second visit could
-	 * otherwise wait for a backend whose read awaits this record's
-	 * completion.
+	 * Audited heap and B-tree paths visit each main block once.  A second
+	 * visit could otherwise wait for a backend whose read awaits this
+	 * record's completion.  Read-only B-tree descent and sibling walks drop
+	 * content locks before reading another page; split and unlink redo can
+	 * therefore retain their other page locks while a miss waits here.
 	 */
 	for (int i = 0; i < nchecked; i++)
 		if (BufferTagsEqual(&checked_blocks[i], &tag))
@@ -533,7 +536,12 @@ compute_redo_filter(XLogReaderState *record, uint8 block_id, ReadBufferMode mode
 	hash = BufTableHashCode(&tag);
 	lock = BufMappingPartitionLock(hash);
 	LWLockAcquire(lock, LW_SHARED);
-	/* A mapped but not-yet-valid buffer is an in-flight read, not absence. */
+
+	/*
+	 * A mapped but not-yet-valid buffer belongs to an admitted read, not an
+	 * absent page.  Startup might win input I/O ownership if the reader has
+	 * pinned it but not yet started I/O; otherwise it waits for the reader.
+	 */
 	skip = BufTableLookup(&tag, hash) < 0;
 	if (skip)
 		compute_note_lsn(locator, block, record->EndRecPtr);
@@ -545,6 +553,10 @@ compute_redo_filter(XLogReaderState *record, uint8 block_id, ReadBufferMode mode
 		if (XLogRecGetRmid(record) == RM_HEAP_ID &&
 			(XLogRecGetInfo(record) & XLOG_HEAP_OPMASK) == XLOG_HEAP_UPDATE)
 			INJECTION_POINT("test-page-store-after-update-skip", NULL);
+		if (XLogRecGetRmid(record) == RM_BTREE_ID && block_id == 0 &&
+			((XLogRecGetInfo(record) & ~XLR_INFO_MASK) == XLOG_BTREE_SPLIT_L ||
+			 (XLogRecGetInfo(record) & ~XLR_INFO_MASK) == XLOG_BTREE_SPLIT_R))
+			INJECTION_POINT("test-page-store-after-btree-split-skip", NULL);
 	}
 	else
 		pg_atomic_fetch_add_u64(&compute->cached, 1);
@@ -811,7 +823,7 @@ remote_zeroextend(SMgrRelation reln, ForkNumber forknum, BlockNumber block,
 			elog(ERROR, "only redo may extend the remote compute relation");
 		file = compute_file(reln->smgr_rlocator.locator);
 		if ((uint64) block + count > follow_max_blocks)
-			elog(ERROR, "remote heap exceeds follow_max_blocks");
+			elog(ERROR, "remote relation exceeds follow_max_blocks");
 		if (pg_atomic_read_u32(&file->nblocks) < block + count)
 			pg_atomic_write_u32(&file->nblocks, block + count);
 	}
@@ -885,7 +897,13 @@ remote_prefetch(SMgrRelation reln, ForkNumber forknum, BlockNumber blocknum,
 				int nblocks, SmgrChainIndex next)
 {
 	if (remote_relation(reln, forknum))
-		return false;
+	{
+		/*
+		 * Prefetch is advisory.  False means a missing file, not lack of
+		 * prefetch support, and makes WAL prefetching report an error.
+		 */
+		return true;
+	}
 	return smgr_prefetch_next(reln, forknum, blocknum, nblocks, next + 1);
 }
 

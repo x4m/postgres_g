@@ -54,12 +54,19 @@ after DROP.  Crashes before a journal frame's footer and after fsync but before
 publication preserve the previous cut.  A complete frame with a bad checksum
 is rejected, not mistaken for an incomplete append.
 
+The eighth test follows both a heap and its B-tree without local main-fork
+files.  It exercises warm/cold insertion, leaf and internal splits, a new
+root, page deletion, and page recycling.  Concurrent forward and backward
+scans cross split boundaries; a separate schedule reads a page after redo
+has skipped it.  Ordered value/TID digests use a sequential-scan oracle,
+and amcheck with heapallindexed supplements those comparisons.
+
 Run with an assertions/injection-points build:
 
     make -C src/test/modules/test_page_store check
 
-The tests require pageinspect, pg_buffercache, and test_aio.  Injection point
-schedules are skipped when injection_points is unavailable.  Autotools
+The tests require pageinspect, pg_buffercache, amcheck, and test_aio.  Injection
+point schedules are skipped when injection_points is unavailable.  Autotools
 EXTRA_INSTALL supplies these dependencies; Meson test lists include them.
 
 For a manual disposable experiment, use two standbys recovered from the
@@ -165,7 +172,8 @@ baseline record, then continues normal streaming recovery.  History collection
 and following compute must run on different nodes.  See 004_following_compute.pl
 for the complete disposable setup, including replication slots for both nodes.
 
-For several heaps, replace tablespace/database/relfilenumber with one list:
+For several heaps or B-tree indexes, replace tablespace/database/relfilenumber
+with one list:
 
     test_page_store.locators = '1663/5/16384, 1663/5/16385'
 
@@ -176,9 +184,10 @@ configuration, not a proposed user-facing placement policy.  The sixth test
 shows this setup with two independent following computes.
 
 The admission handshake uses the buffer mapping partition lock.  A mapped but
-invalid buffer is an in-progress read, not an absent page: redo must wait and
-update it.  For an absent page, startup records the skipped record's end LSN
-before releasing the mapping lock.  A subsequent read cannot use an older cut
+invalid buffer belongs to an admitted read, not an absent page.  Redo waits
+for its I/O, or performs the read itself if it wins input I/O ownership, then
+updates the buffer.  For an absent page, startup records the skipped record's
+end LSN before releasing the mapping lock.  A subsequent read cannot use an older cut
 and waits until compute has completed that record.  Eviction also preserves
 the discarded page's LSN.  Publication of completed replay is after all rmgr
 effects and consistency checks.  Storage can independently wait to catch up.
@@ -188,9 +197,14 @@ second page while waiting for a skipped record can deadlock with redo of that
 second page.  The test reproduces this with a two-page UPDATE if the limit is
 removed.  General asynchronous multi-page admission/completion is future work.
 
-Only heap main-fork paths have been audited.  Init-page redo and standalone
-full-page images always get a real buffer; other forks still receive ordinary
-local redo.  Snapshot conflicts are resolved even when page work is skipped.
+Only heap and B-tree main-fork paths have been audited.  Init-page redo and
+standalone full-page images always get a real buffer; this includes B-tree
+metapages, new split/root pages, and half-dead/deleted page initialization.
+B-tree split/unlink redo still retains its required sibling locks.  Read-only
+descent and sibling walks release the previous content lock before reading
+the next page.  Other forks still receive ordinary local redo.  Snapshot
+conflicts, including B-tree page-reuse conflicts, run even when page work is
+skipped.  Prefetch is an advisory no-op, not a missing-file indication.
 WAL consistency checking skips
 only those compute blocks for which no local redo result exists; the storage
 still performs and checks full redo.  test_page_store_compute_status() exposes
@@ -207,8 +221,8 @@ supported.  These are explicit limits of this experiment, not a restart design.
 Important limitations:
 
 * This is not diskless compute.  Unselected relations, catalogs, SLRUs, and
-  other state remain local.  Following mode redirects only selected heap
-  main forks; frozen mode leaves startup redo unchanged.
+  other state remain local.  Following mode redirects only selected heap and
+  B-tree main forks; frozen mode leaves startup redo unchanged.
 * Both compute modes are read-only.  Executor guards reject queries outside
   the configured mode, including cache-only queries after promotion.  Do
   not resume a frozen compute, run mutating utility operations, or treat
