@@ -141,7 +141,7 @@ typedef struct f_smgr
 extern SMgrId smgr_register(const f_smgr *smgr, Size smgrrelation_size);
 extern SMgrId smgr_lookup(const char *name);
 
-extern f_smgr *smgrsw;
+extern PGDLLIMPORT f_smgr *smgrsw;
 
 extern void smgrinit(void);
 extern SMgrRelation smgropen(RelFileLocator rlocator, ProcNumber backend);

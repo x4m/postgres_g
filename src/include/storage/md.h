@@ -24,7 +24,7 @@ extern PGDLLIMPORT PgAioHandleCallbacks aio_md_readv_cb;
 
 /* registration function for md storage manager */
 extern void mdsmgr_register(void);
-extern SMgrId MdSMgrId;
+extern PGDLLIMPORT SMgrId MdSMgrId;
 
 extern void ForgetDatabaseSyncRequests(Oid dbid);
 extern void DropRelationFiles(RelFileLocator *delrels, int ndelrels, bool isRedo);

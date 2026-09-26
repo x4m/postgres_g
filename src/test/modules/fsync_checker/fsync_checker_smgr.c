@@ -156,7 +156,7 @@ fsync_checker_shmem_startup(void)
 	LWLockAcquire(AddinShmemInitLock, LW_EXCLUSIVE);
 
 	volatile_relns = ShmemInitHash("fsync_checker volatile relns",
-								   1024, 1024, &ctl, HASH_BLOBS | HASH_ELEM);
+								   1024, &ctl, HASH_BLOBS | HASH_ELEM);
 	volatile_relns_lock = &GetNamedLWLockTranche("fsync_checker volatile relns lock")->lock;
 
 	LWLockRelease(AddinShmemInitLock);

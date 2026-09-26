@@ -668,6 +668,7 @@ SubPostmasterMain(int argc, char *argv[])
 	LocalProcessControlFile(false);
 
 	RegisterBuiltinShmemCallbacks();
+	register_builtin_dynamic_managers();
 
 	/*
 	 * Reload any libraries that were preloaded by the postmaster.  Since we
@@ -676,6 +677,7 @@ SubPostmasterMain(int argc, char *argv[])
 	 * non-EXEC_BACKEND behavior.
 	 */
 	process_shared_preload_libraries();
+	process_smgr_chain();
 
 	/* Restore basic shared memory pointers */
 	if (UsedShmemSegAddr != NULL)

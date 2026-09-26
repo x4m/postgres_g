@@ -1878,7 +1878,9 @@ process_smgr_chain(void)
 	uint8		idx = 0;
 
 	if (smgr_chain_string == NULL || smgr_chain_string[0] == '\0')
-		return;					/* nothing to do */
+		ereport(FATAL,
+				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+				 errmsg("smgr_chain must not be empty")));
 
 	/* Need a modifiable copy of string */
 	rawstring = pstrdup(smgr_chain_string);
@@ -1888,12 +1890,17 @@ process_smgr_chain(void)
 	{
 		/* syntax error in list */
 		pfree(rawstring);
-		ereport(LOG,
+		ereport(FATAL,
 				(errcode(ERRCODE_SYNTAX_ERROR),
 				 errmsg("invalid list syntax in parameter \"%s\"",
 						"smgr_chain")));
-		return;
 	}
+
+	if (list_length(elemlist) == 0 || list_length(elemlist) > MAX_SMGR_CHAIN)
+		ereport(FATAL,
+				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+				 errmsg("smgr_chain must contain between 1 and %d entries",
+						MAX_SMGR_CHAIN)));
 
 	foreach(l, elemlist)
 	{

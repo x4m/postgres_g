@@ -36,7 +36,7 @@ typedef struct PgAioHandleCallbacksEntry
  * handle.  See PgAioHandleCallbackID's definition for an explanation for why
  * callbacks are not identified by a pointer.
  */
-static PgAioHandleCallbacksEntry aio_handle_cbs[PGAIO_HCB_MAX] = {
+static PgAioHandleCallbacksEntry aio_handle_cbs[PGAIO_HCB_MAX + 1] = {
 #define CALLBACK_ENTRY(id, callback)  [id] = {.cb = &callback, .name = #callback}
 	CALLBACK_ENTRY(PGAIO_HCB_INVALID, aio_invalid_cb),
 
@@ -53,10 +53,19 @@ static PgAioHandleCallbackID aio_handle_max_cb_id = PGAIO_HCB_LOCAL_BUFFER_READV
 PgAioHandleCallbackID
 pgaio_io_register_callback_entry(const PgAioHandleCallbacks *callback, const char *name)
 {
-	PgAioHandleCallbackID cb_id = ++aio_handle_max_cb_id;
+	PgAioHandleCallbackID cb_id;
 
-	if (cb_id > PGAIO_HCB_MAX)
-		elog(FATAL, "There can be at most %d AIO callback entries", PGAIO_HCB_MAX);
+	/* All backends, including EXEC_BACKEND children, need the same IDs. */
+	if (!process_shared_preload_libraries_in_progress)
+		elog(ERROR, "AIO callbacks must be registered during shared preload");
+	if (aio_handle_max_cb_id == PGAIO_HCB_MAX)
+		ereport(ERROR,
+				(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+				 errmsg("too many AIO callbacks registered")));
+	if (callback == NULL || name == NULL || name[0] == '\0')
+		elog(ERROR, "invalid AIO callback registration");
+
+	cb_id = ++aio_handle_max_cb_id;
 
 	aio_handle_cbs[cb_id].cb = callback;
 	aio_handle_cbs[cb_id].name = name;
@@ -100,11 +109,11 @@ void
 pgaio_io_register_callbacks(PgAioHandle *ioh, PgAioHandleCallbackID cb_id,
 							uint8 cb_data)
 {
-	const PgAioHandleCallbacksEntry *ce = &aio_handle_cbs[cb_id];
+	const PgAioHandleCallbacksEntry *ce;
 
-	Assert(cb_id <= PGAIO_HCB_MAX);
-	if (cb_id >= lengthof(aio_handle_cbs))
-		elog(ERROR, "callback %d is out of range", cb_id);
+	if (cb_id <= PGAIO_HCB_INVALID || cb_id > aio_handle_max_cb_id)
+		elog(ERROR, "callback %d is not registered", cb_id);
+	ce = &aio_handle_cbs[cb_id];
 	if (aio_handle_cbs[cb_id].cb->complete_shared == NULL &&
 		aio_handle_cbs[cb_id].cb->complete_local == NULL)
 		elog(ERROR, "callback %d does not have a completion callback", cb_id);

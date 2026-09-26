@@ -11601,6 +11601,30 @@ SET XML OPTION { DOCUMENT | CONTENT };
       </listitem>
      </varlistentry>
 
+     <varlistentry id="guc-smgr-chain" xreflabel="smgr_chain">
+      <term><varname>smgr_chain</varname> (<type>string</type>)
+       <indexterm>
+        <primary><varname>smgr_chain</varname> configuration parameter</primary>
+       </indexterm>
+      </term>
+      <listitem>
+       <para>
+        Specifies the storage managers used for relation I/O, as a
+        comma-separated list.  The last entry must provide storage; preceding
+        entries must be modifiers.  The default, <literal>md</literal>, uses
+        ordinary local files.  Additional managers must be registered by
+        libraries loaded through <xref linkend="guc-shared-preload-libraries"/>.
+        The list must contain between one and fifteen entries.  This parameter
+        can only be set at server start.
+       </para>
+       <para>
+        Selecting a different storage manager does not migrate existing data.
+        Follow the selected module's instructions for initialization and
+        compatibility with existing relation files.
+       </para>
+      </listitem>
+     </varlistentry>
+
      <varlistentry id="guc-jit-provider" xreflabel="jit_provider">
       <term><varname>jit_provider</varname> (<type>string</type>)
        <indexterm>

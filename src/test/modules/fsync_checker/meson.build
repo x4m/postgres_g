@@ -19,3 +19,12 @@ test_install_libs += fsync_checker
 test_install_data += files(
   'fsync_checker.control',
 )
+
+tests += {
+  'name': 'fsync_checker',
+  'sd': meson.current_source_dir(),
+  'bd': meson.current_build_dir(),
+  'tap': {
+    'tests': ['t/001_registration.pl'],
+  },
+}
