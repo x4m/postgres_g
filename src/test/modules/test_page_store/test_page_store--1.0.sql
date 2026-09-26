@@ -44,7 +44,7 @@ LANGUAGE C STRICT VOLATILE PARALLEL UNSAFE;
 
 REVOKE ALL ON FUNCTION test_page_store_read_smgr(regclass, integer) FROM PUBLIC;
 
--- Arm one main-fork history while recovery is paused.  Restart revokes it.
+-- Retain main/VM history while recovery is paused; durable mode survives restart.
 CREATE FUNCTION test_page_store_retain(regclass)
 RETURNS pg_lsn
 AS 'MODULE_PATHNAME', 'test_page_store_retain'
@@ -52,7 +52,7 @@ LANGUAGE C STRICT VOLATILE PARALLEL UNSAFE;
 
 REVOKE ALL ON FUNCTION test_page_store_retain(regclass) FROM PUBLIC;
 
--- Arm several main forks atomically at the same baseline.
+-- Retain several relations' main/VM forks atomically at the same baseline.
 CREATE FUNCTION test_page_store_retain_relations(regclass[])
 RETURNS pg_lsn
 AS 'MODULE_PATHNAME', 'test_page_store_retain_relations'

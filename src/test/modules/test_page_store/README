@@ -5,7 +5,8 @@ This module is a design experiment for compute/storage separation, not a
 production page service.  It exposes a raw main-fork page from a standby
 paused at an explicitly identified system, timeline, and replay position.
 The position is checked again after the page copy.  An optional, bounded
-history mode now retains main-fork versions while storage replay continues.
+history mode retains main-fork and visibility-map versions while storage
+replay continues.
 
 The TAP test illustrates why ordinary redo cannot always reconstruct a
 live writer's evicted pages: heap command IDs and sequence state can differ
@@ -61,11 +62,19 @@ scans cross split boundaries; a separate schedule reads a page after redo
 has skipped it.  Ordered value/TID digests use a sequential-scan oracle,
 and amcheck with heapallindexed supplements those comparisons.
 
+The ninth test retains VM history through setting and clearing bits, implicit
+fork creation, truncation, reextension, DROP, and storage restart.  Truncation
+can clear the last VM page without changing the file size or registering a
+WAL block reference.  Disable hint FPIs in this test so they cannot hide a
+missing capture of that change.  This does not yet redirect a following
+compute's VM reads or redo to the service.
+
 Run with an assertions/injection-points build:
 
     make -C src/test/modules/test_page_store check
 
-The tests require pageinspect, pg_buffercache, amcheck, and test_aio.  Injection
+The tests require pageinspect, pg_buffercache, pg_visibility, amcheck, and
+test_aio.  Injection
 point schedules are skipped when injection_points is unavailable.  Autotools
 EXTRA_INSTALL supplies these dependencies; Meson test lists include them.
 
@@ -104,8 +113,10 @@ To retain several relations at the same baseline, use one call instead:
         ARRAY['the_table', 'another_table', 'the_table_pkey']::regclass[]);
 
 The immutable registry accepts at most 16 physical relations.  Images include
-the registry entry as well as the block number; sizes and existence are per
-file.  Each record publishes all files' metadata and images together.
+the registry entry, fork, and block number; sizes and existence are per file.
+Main and VM forks share each published cut, including an absent VM that is
+later created by heap redo without a separate SMGR_CREATE record.  FSM is
+unlogged heuristic state and is not retained by this mechanism.
 
 The returned LSN is the baseline view.  Resume storage replay normally; a
 compute frozen at that baseline can keep using it through the same physical
@@ -127,7 +138,7 @@ an empty segment until checkpoint, and reextension must not expose an older
 image of the same block number.  Unknown special relation updates stop
 collection.  This prototype does not reproduce resource-manager redo.
 
-The journal is deliberately simple: a fixed set of physical main forks,
+The journal is deliberately simple: a fixed set of physical main and VM forks,
 append-only shared-memory images, at most 65536 record boundaries, and no
 garbage collection.  Reads search the image history linearly.  Do not use it
 for performance claims.  Only startup appends after baseline publication;
@@ -153,6 +164,7 @@ history.  This is tested with process crashes, not emulated power loss.
 
 This remains a bounded scaffold.  It reloads all retained images into shared
 memory, uses a native local format tied to this build, and syncs once per record.
+Format version 2 adds fork identity and metadata; version 1 is not accepted.
 Keep history_pages large enough for the existing journal after restart.  There
 is no compaction, view GC, timeline transition, or backup protocol for the
 journal.  Its fsync cost and linear image searches are not representative of

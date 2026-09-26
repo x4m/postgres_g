@@ -36,6 +36,7 @@ tests += {
       't/006_following_relations.pl',
       't/007_durable_history.pl',
       't/008_following_btree.pl',
+      't/009_history_forks.pl',
     ],
   },
 }

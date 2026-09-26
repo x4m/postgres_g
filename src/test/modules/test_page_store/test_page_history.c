@@ -4,8 +4,8 @@
  *      Bounded page history collected from ordinary standby redo.
  *
  * This is a correctness scaffold, not a complete storage engine.  Selected
- * main forks are retained from a paused, consistent baseline.  The startup
- * process then appends images after each complete WAL record.  Readers can
+ * main and visibility map forks are retained from a paused baseline.  Startup
+ * then appends images after each complete WAL record.  Readers can
  * only use published record boundaries; unpublished images are invisible.
  * Neither capacity exhaustion nor an unsupported record permits a latest-page
  * fallback.  History is volatile by default; an optional journal persists
@@ -58,11 +58,12 @@ PG_FUNCTION_INFO_V1(test_page_store_history_status);
 #define HISTORY_JOURNAL "test_page_store.history"
 #define HISTORY_JOURNAL_TEMP HISTORY_JOURNAL ".tmp"
 #define HISTORY_JOURNAL_MAGIC 0x50475348
-#define HISTORY_JOURNAL_VERSION 1
+#define HISTORY_JOURNAL_VERSION 2
 
 typedef struct HistoryPage
 {
 	uint32		relation;		/* index in the immutable locator registry */
+	ForkNumber	forknum;
 	BlockNumber block;
 	PGAlignedBlock image;
 } HistoryPage;
@@ -78,7 +79,7 @@ typedef struct HistoryRecord
 {
 	XLogRecPtr	lsn;
 	uint32		nimages;		/* cumulative count of published images */
-	HistoryFile files[HISTORY_MAX_RELATIONS];
+	HistoryFile files[HISTORY_MAX_RELATIONS][MAX_FORKNUM + 1];
 } HistoryRecord;
 
 /* Local prototype format, not a portable storage or wire protocol. */
@@ -132,6 +133,8 @@ static void history_replay(XLogReaderState *record, TimeLineID tli);
 static void history_journal_load(void);
 static void history_journal_save(const HistoryRecord *record, uint32 sequence);
 
+static const ForkNumber retained_forks[] = {MAIN_FORKNUM, VISIBILITYMAP_FORKNUM};
+
 static const ShmemCallbacks history_callbacks = {
 	.request_fn = history_request,
 	.init_fn = history_initialize,
@@ -141,7 +144,7 @@ void
 test_page_store_history_init(void)
 {
 	DefineCustomIntVariable("test_page_store.history_pages",
-							"Maximum retained main-fork page images.",
+							"Maximum retained page images.",
 							NULL, &history_capacity, 0, 0, 131072,
 							PGC_POSTMASTER, 0, NULL, NULL, NULL);
 	DefineCustomBoolVariable("test_page_store.history_durable",
@@ -288,12 +291,19 @@ history_journal_load(void)
 			elog(ERROR, "page history journal checksum mismatch at record %u", nrecords);
 		for (uint32 i = nimages; i < frame.record.nimages; i++)
 			if (history_pages[i].relation >= header.nrelations ||
+				(history_pages[i].forknum != MAIN_FORKNUM &&
+				 history_pages[i].forknum != VISIBILITYMAP_FORKNUM) ||
 				history_pages[i].block == InvalidBlockNumber)
 				elog(ERROR, "invalid page identity in history journal");
 		for (uint32 i = 0; i < header.nrelations; i++)
-			if (frame.record.files[i].floor > frame.record.nimages ||
-				(!frame.record.files[i].exists && frame.record.files[i].nblocks != 0))
-				elog(ERROR, "invalid file metadata in history journal");
+			for (ForkNumber forknum = MAIN_FORKNUM; forknum <= MAX_FORKNUM; forknum++)
+			{
+				HistoryFile *file = &frame.record.files[i][forknum];
+
+				if (file->floor > frame.record.nimages ||
+					(!file->exists && file->nblocks != 0))
+					elog(ERROR, "invalid file metadata in history journal");
+			}
 		history_records[nrecords++] = frame.record;
 		nimages = frame.record.nimages;
 		complete = offset;
@@ -390,17 +400,18 @@ history_journal_save(const HistoryRecord *record, uint32 sequence)
 
 /* The destination must not be in any published record's image range. */
 static void
-history_copy_page(RelFileLocator locator, uint32 relation,
+history_copy_page(RelFileLocator locator, uint32 relation, ForkNumber forknum,
 				  BlockNumber block, uint32 dest)
 {
 	Buffer		buffer;
 	HistoryPage *page = &history_pages[dest];
 
 	Assert(dest < history_capacity);
-	buffer = ReadBufferWithoutRelcache(locator, MAIN_FORKNUM, block,
+	buffer = ReadBufferWithoutRelcache(locator, forknum, block,
 									   RBM_NORMAL, NULL, true);
 	LockBuffer(buffer, BUFFER_LOCK_SHARE);
 	page->relation = relation;
+	page->forknum = forknum;
 	page->block = block;
 	memcpy(page->image.data, BufferGetPage(buffer), BLCKSZ);
 	UnlockReleaseBuffer(buffer);
@@ -439,9 +450,16 @@ history_retain(const Oid *oids, int nrelations)
 		for (int j = 0; j < i; j++)
 			if (RelFileLocatorEquals(rels[i]->rd_locator, rels[j]->rd_locator))
 				ereport(ERROR, (errmsg("duplicate relation in page history baseline")));
-		baseline.files[i].exists = true;
-		baseline.files[i].nblocks = RelationGetNumberOfBlocks(rels[i]);
-		nimages += baseline.files[i].nblocks;
+		for (int f = 0; f < lengthof(retained_forks); f++)
+		{
+			ForkNumber	forknum = retained_forks[f];
+			HistoryFile *file = &baseline.files[i][forknum];
+			SMgrRelation smgr = RelationGetSmgr(rels[i]);
+
+			file->exists = smgrexists(smgr, forknum);
+			file->nblocks = file->exists ? smgrnblocks(smgr, forknum) : 0;
+			nimages += file->nblocks;
+		}
 		if (nimages > history_capacity)
 			ereport(ERROR, (errmsg("page history capacity is smaller than the baseline")));
 	}
@@ -456,10 +474,15 @@ history_retain(const Oid *oids, int nrelations)
 	}
 	for (int i = 0; i < nrelations; i++)
 	{
-		for (BlockNumber block = 0; block < baseline.files[i].nblocks; block++)
+		for (int f = 0; f < lengthof(retained_forks); f++)
 		{
-			history_copy_page(rels[i]->rd_locator, i, block, baseline.nimages++);
-			CHECK_FOR_INTERRUPTS();
+			ForkNumber	forknum = retained_forks[f];
+
+			for (BlockNumber block = 0; block < baseline.files[i][forknum].nblocks; block++)
+			{
+				history_copy_page(rels[i]->rd_locator, i, forknum, block, baseline.nimages++);
+				CHECK_FOR_INTERRUPTS();
+			}
 		}
 	}
 
@@ -541,7 +564,7 @@ history_stop(const char *reason)
  * Return false for an unrecognized special record, to stop collecting.
  */
 static bool
-history_special(XLogReaderState *record, RelFileLocator locator,
+history_special(XLogReaderState *record, RelFileLocator locator, ForkNumber forknum,
 				HistoryFile *next, uint32 nimages, bool *refresh)
 {
 	uint8		info = XLogRecGetInfo(record) & ~XLR_INFO_MASK;
@@ -556,7 +579,7 @@ history_special(XLogReaderState *record, RelFileLocator locator,
 				xl_smgr_create *xlrec = (xl_smgr_create *) XLogRecGetData(record);
 
 				if (RelFileLocatorEquals(locator, xlrec->rlocator) &&
-					xlrec->forkNum == MAIN_FORKNUM)
+					xlrec->forkNum == forknum)
 				{
 					next->floor = nimages;
 					next->exists = true;
@@ -567,9 +590,21 @@ history_special(XLogReaderState *record, RelFileLocator locator,
 			{
 				xl_smgr_truncate *xlrec = (xl_smgr_truncate *) XLogRecGetData(record);
 
-				if (RelFileLocatorEquals(locator, xlrec->rlocator) &&
-					(xlrec->flags & SMGR_TRUNCATE_HEAP))
-					next->nblocks = xlrec->blkno;
+				if (RelFileLocatorEquals(locator, xlrec->rlocator))
+				{
+					if (forknum == MAIN_FORKNUM && (xlrec->flags & SMGR_TRUNCATE_HEAP))
+						next->nblocks = xlrec->blkno;
+					else if (forknum == VISIBILITYMAP_FORKNUM && (xlrec->flags & SMGR_TRUNCATE_VM))
+					{
+						/*
+						 * Truncation can clear tail bits without a block
+						 * reference, even when the VM file doesn't get
+						 * shorter.  Copy the remaining map, not just a new
+						 * size or referenced pages.
+						 */
+						*refresh = true;
+					}
+				}
 			}
 			else
 				return false;
@@ -639,17 +674,18 @@ history_special(XLogReaderState *record, RelFileLocator locator,
 
 /* Append one file's images, without publishing any part of the record. */
 static bool
-history_replay_file(XLogReaderState *record, uint32 relation, HistoryRecord *next)
+history_replay_file(XLogReaderState *record, uint32 relation,
+					ForkNumber forknum, HistoryRecord *next)
 {
 	RelFileLocator locator = history->locators[relation];
-	HistoryFile *file = &next->files[relation];
+	HistoryFile *file = &next->files[relation][forknum];
 	BlockNumber blocks[XLR_MAX_BLOCK_ID + 1];
 	BlockNumber copy_from;
 	int			nblocks = 0;
 	bool		refresh = false;
 
 	if ((XLogRecGetInfo(record) & XLR_SPECIAL_REL_UPDATE) &&
-		!history_special(record, locator, file, next->nimages, &refresh))
+		!history_special(record, locator, forknum, file, next->nimages, &refresh))
 	{
 		history_stop("unsupported special relation update");
 		return false;
@@ -657,13 +693,13 @@ history_replay_file(XLogReaderState *record, uint32 relation, HistoryRecord *nex
 	for (int i = 0; i <= XLogRecMaxBlockId(record); i++)
 	{
 		RelFileLocator rlocator;
-		ForkNumber	forknum;
+		ForkNumber	ref_fork;
 		BlockNumber block;
 
 		if (!XLogRecHasBlockRef(record, i))
 			continue;
-		XLogRecGetBlockTag(record, i, &rlocator, &forknum, &block);
-		if (forknum == MAIN_FORKNUM && RelFileLocatorEquals(locator, rlocator))
+		XLogRecGetBlockTag(record, i, &rlocator, &ref_fork, &block);
+		if (ref_fork == forknum && RelFileLocatorEquals(locator, rlocator))
 			blocks[nblocks++] = block;
 	}
 	copy_from = file->nblocks;
@@ -671,9 +707,16 @@ history_replay_file(XLogReaderState *record, uint32 relation, HistoryRecord *nex
 	{
 		SMgrRelation smgr = smgropen(locator, INVALID_PROC_NUMBER);
 
+		/* VM is created on demand, without a separate SMGR_CREATE record. */
+		if (!file->exists && nblocks > 0 && forknum == VISIBILITYMAP_FORKNUM &&
+			next->files[relation][MAIN_FORKNUM].exists)
+		{
+			file->floor = next->nimages;
+			refresh = true;
+		}
 		if (refresh)
 		{
-			file->exists = smgrexists(smgr, MAIN_FORKNUM);
+			file->exists = smgrexists(smgr, forknum);
 			copy_from = 0;
 		}
 		if (!file->exists && nblocks > 0)
@@ -681,10 +724,10 @@ history_replay_file(XLogReaderState *record, uint32 relation, HistoryRecord *nex
 			history_stop("block reference to an absent retained relation");
 			return false;
 		}
-		file->nblocks = file->exists ? smgrnblocks(smgr, MAIN_FORKNUM) : 0;
+		file->nblocks = file->exists ? smgrnblocks(smgr, forknum) : 0;
 		if (copy_from > file->nblocks)
 		{
-			history_stop("unexpected main-fork shrink");
+			history_stop("unexpected fork shrink");
 			return false;
 		}
 	}
@@ -699,7 +742,7 @@ history_replay_file(XLogReaderState *record, uint32 relation, HistoryRecord *nex
 		return false;
 	}
 	for (BlockNumber block = copy_from; block < file->nblocks; block++)
-		history_copy_page(locator, relation, block, next->nimages++);
+		history_copy_page(locator, relation, forknum, block, next->nimages++);
 	for (int i = 0; i < nblocks; i++)
 	{
 		if (blocks[i] >= file->nblocks)
@@ -708,7 +751,7 @@ history_replay_file(XLogReaderState *record, uint32 relation, HistoryRecord *nex
 			return false;
 		}
 		if (blocks[i] < copy_from)
-			history_copy_page(locator, relation, blocks[i], next->nimages++);
+			history_copy_page(locator, relation, forknum, blocks[i], next->nimages++);
 	}
 	return true;
 }
@@ -758,11 +801,16 @@ history_replay(XLogReaderState *record, TimeLineID tli)
 	next.lsn = record->EndRecPtr;
 	for (uint32 i = 0; i < history->nrelations; i++)
 	{
-		if (!history_replay_file(record, i, &next))
-			return;
-		if (history_records[nrecords - 1].files[i].exists &&
-			!next.files[i].exists)
-			INJECTION_POINT("test-page-store-after-history-drop", NULL);
+		for (int f = 0; f < lengthof(retained_forks); f++)
+		{
+			ForkNumber	forknum = retained_forks[f];
+
+			if (!history_replay_file(record, i, forknum, &next))
+				return;
+			if (history_records[nrecords - 1].files[i][forknum].exists &&
+				!next.files[i][forknum].exists)
+				INJECTION_POINT("test-page-store-after-history-drop", NULL);
+		}
 	}
 
 	if (history_durable)
@@ -831,7 +879,7 @@ test_page_store_history_fetch(RelFileLocator locator, ForkNumber forknum,
 		if (RelFileLocatorEquals(locator, history->locators[relation]))
 			break;
 	if (tli != history->tli || relation == history->nrelations ||
-		forknum != MAIN_FORKNUM)
+		(forknum != MAIN_FORKNUM && forknum != VISIBILITYMAP_FORKNUM))
 		ereport(ERROR, (errmsg("requested relation, fork, or timeline is not retained")));
 	high = history->nrecords;
 	while (low < high)
@@ -851,7 +899,7 @@ test_page_store_history_fetch(RelFileLocator locator, ForkNumber forknum,
 						   history->stopped ? " Collection stopped: " : "",
 						   history->reason)));
 	record = history_records[low];
-	file = &record.files[relation];
+	file = &record.files[relation][forknum];
 	*exists = file->exists;
 	*nblocks = file->nblocks;
 	if (count > 0 && (!file->exists || (uint64) block + count > file->nblocks))
@@ -862,6 +910,7 @@ test_page_store_history_fetch(RelFileLocator locator, ForkNumber forknum,
 
 		for (uint32 j = record.nimages; j > file->floor; j--)
 			if (history_pages[j - 1].relation == relation &&
+				history_pages[j - 1].forknum == forknum &&
 				history_pages[j - 1].block == block + i)
 			{
 				memcpy(VARDATA(pages) + i * BLCKSZ,
