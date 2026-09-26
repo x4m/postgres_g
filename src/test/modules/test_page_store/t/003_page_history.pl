@@ -75,10 +75,12 @@ my $cut = $storage->safe_psql('postgres', 'SELECT pg_last_wal_replay_lsn()');
 
 sub fetch_sql
 {
-	my ($lsn, $block, $count, $fork) = @_;
+	my ($lsn, $block, $count, $fork, $wait) = @_;
 	$fork //= 0;
-	return "test_page_store_fetch($spc, $db, $rel, $fork, $block, $count, "
-	  . "'$sysid', $tli, '$lsn')";
+	return
+		"test_page_store_fetch($spc, $db, $rel, $fork, $block, $count, "
+	  . "'$sysid', $tli, '$lsn'"
+	  . ($wait ? ', true' : '') . ')';
 }
 
 sub fetch_hash
@@ -198,7 +200,7 @@ isnt($changed_block, $original_block,
 	'fixture UPDATE really moves the tuple to another heap page');
 SKIP:
 {
-	skip 'Injection points are not available', 3 unless $injection_points;
+	skip 'Injection points are not available', 5 unless $injection_points;
 	$storage->poll_query_until(
 		'postgres', q{
 SELECT EXISTS (SELECT FROM pg_stat_activity
@@ -216,11 +218,25 @@ WHERE backend_type = 'startup' AND wait_event = 'test-page-store-after-history-p
 		'SELECT * FROM ' . fetch_sql($in_progress, 0, 1));
 	ok( $ret != 0 && $err =~ /record boundary is not retained/,
 		'the exact in-flight WAL record boundary is still unavailable');
+	my $waiter = $storage->background_psql('postgres');
+	my $wait_query =
+	  'SELECT md5(pages) FROM ' . fetch_sql($in_progress, 0, 1, 0, 1);
+	$waiter->query_until(qr/wait_started/,
+		"\\echo wait_started\n$wait_query;\n");
+	ok( $storage->poll_query_until(
+			'postgres', q{
+SELECT EXISTS (SELECT FROM pg_stat_activity WHERE wait_event = 'TestPageStoreHistory')
+}),
+		'optional wait blocks until the entire record is published');
 	$storage->safe_psql(
 		'postgres', q{
 SELECT injection_points_detach('test-page-store-after-history-page');
 SELECT injection_points_wakeup('test-page-store-after-history-page');
 });
+	is( $waiter->query_safe(''),
+		fetch_hash($in_progress, 0),
+		'waiting request returns exactly the newly published version');
+	$waiter->quit;
 }
 my $changed_cut = pause_after_catchup();
 isnt(fetch_hash($changed_cut, 0),

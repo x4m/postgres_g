@@ -28,6 +28,7 @@
 #include "funcapi.h"
 #include "miscadmin.h"
 #include "storage/bufmgr.h"
+#include "storage/condition_variable.h"
 #include "storage/lwlock.h"
 #include "storage/shmem.h"
 #include "storage/smgr.h"
@@ -36,6 +37,8 @@
 #include "utils/injection_point.h"
 #include "utils/pg_lsn.h"
 #include "utils/rel.h"
+#include "utils/timestamp.h"
+#include "utils/wait_event.h"
 
 #include "test_page_store.h"
 
@@ -62,6 +65,7 @@ typedef struct HistoryRecord
 typedef struct HistoryControl
 {
 	LWLock		lock;
+	ConditionVariable changed;
 	RelFileLocator locator;
 	TimeLineID	tli;
 	uint32		nrecords;		/* zero until the baseline is published */
@@ -120,6 +124,7 @@ history_initialize(void *arg)
 	memset(history, 0, sizeof(*history));
 	LWLockInitialize(&history->lock,
 					 LWLockNewTrancheId("test_page_store history"));
+	ConditionVariableInit(&history->changed);
 }
 
 bool
@@ -200,6 +205,7 @@ test_page_store_retain(PG_FUNCTION_ARGS)
 	history->nrecords = 1;
 	LWLockRelease(&history->lock);
 	relation_close(rel, AccessShareLock);
+	ConditionVariableBroadcast(&history->changed);
 	PG_RETURN_LSN(lsn);
 }
 
@@ -210,6 +216,7 @@ history_stop(const char *reason)
 	history->stopped = true;
 	strlcpy(history->reason, reason, sizeof(history->reason));
 	LWLockRelease(&history->lock);
+	ConditionVariableBroadcast(&history->changed);
 }
 
 /*
@@ -418,12 +425,43 @@ history_replay(XLogReaderState *record, TimeLineID tli)
 	history_records[nrecords] = next;
 	history->nrecords = nrecords + 1;
 	LWLockRelease(&history->lock);
+	ConditionVariableBroadcast(&history->changed);
+}
+
+/* A following compute may reach a record before this storage has applied it. */
+static void
+history_wait_for_replay(XLogRecPtr lsn)
+{
+	TimestampTz deadline = TimestampTzPlusMilliseconds(GetCurrentTimestamp(), 5000);
+	uint32		wait_event = WaitEventExtensionNew("TestPageStoreHistory");
+
+	ConditionVariablePrepareToSleep(&history->changed);
+	for (;;)
+	{
+		bool		ready;
+		long		remaining;
+
+		LWLockAcquire(&history->lock, LW_SHARED);
+		ready = history->nrecords == 0 || history->stopped ||
+			lsn <= history_records[history->nrecords - 1].lsn;
+		LWLockRelease(&history->lock);
+		if (ready)
+			break;
+		remaining = TimestampDifferenceMilliseconds(GetCurrentTimestamp(), deadline);
+		if (remaining <= 0)
+		{
+			ConditionVariableCancelSleep();
+			ereport(ERROR, (errmsg("timed out waiting for retained page history")));
+		}
+		ConditionVariableTimedSleep(&history->changed, remaining, wait_event);
+	}
+	ConditionVariableCancelSleep();
 }
 
 bytea *
 test_page_store_history_fetch(RelFileLocator locator, ForkNumber forknum,
 							  BlockNumber block, int count, TimeLineID tli,
-							  XLogRecPtr lsn, bool *exists, BlockNumber *nblocks)
+							  XLogRecPtr lsn, bool wait, bool *exists, BlockNumber *nblocks)
 {
 	HistoryRecord record;
 	bytea	   *pages = palloc(VARHDRSZ + count * BLCKSZ);
@@ -435,6 +473,8 @@ test_page_store_history_fetch(RelFileLocator locator, ForkNumber forknum,
 		ereport(ERROR, (errmsg("page service requires a standby")));
 	if (!history)
 		ereport(ERROR, (errmsg("page history is not available")));
+	if (wait)
+		history_wait_for_replay(lsn);
 	LWLockAcquire(&history->lock, LW_SHARED);
 	if (history->nrecords == 0)
 		ereport(ERROR, (errmsg("page history is not initialized")));

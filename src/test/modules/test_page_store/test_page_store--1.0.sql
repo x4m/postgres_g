@@ -23,14 +23,14 @@ CREATE FUNCTION test_page_store_fetch(
     tablespace oid, database oid, relfilenumber oid, fork_number integer,
     block_number bigint, block_count integer,
     expected_system_identifier text, expected_timeline bigint,
-    expected_replay_lsn pg_lsn,
+    expected_replay_lsn pg_lsn, wait_for_replay boolean DEFAULT false,
     OUT fork_exists boolean, OUT nblocks bigint, OUT pages bytea)
 RETURNS record
 AS 'MODULE_PATHNAME', 'test_page_store_fetch'
 LANGUAGE C STRICT VOLATILE PARALLEL UNSAFE;
 
 REVOKE ALL ON FUNCTION test_page_store_fetch(oid, oid, oid, integer, bigint,
-    integer, text, bigint, pg_lsn) FROM PUBLIC;
+    integer, text, bigint, pg_lsn, boolean) FROM PUBLIC;
 
 CREATE FUNCTION test_page_store_io_counts(OUT readv bigint, OUT startreadv bigint)
 RETURNS record

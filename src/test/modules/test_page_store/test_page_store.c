@@ -203,7 +203,8 @@ test_page_store_fetch(PG_FUNCTION_ARGS)
 	{
 		pages = test_page_store_history_fetch(locator, (ForkNumber) forknum,
 											  (BlockNumber) blkno, count,
-											  (TimeLineID) tli, lsn, &exists, &nblocks);
+											  (TimeLineID) tli, lsn, PG_GETARG_BOOL(9),
+											  &exists, &nblocks);
 		values[0] = BoolGetDatum(exists);
 		values[1] = Int64GetDatum(nblocks);
 		values[2] = PointerGetDatum(pages);
