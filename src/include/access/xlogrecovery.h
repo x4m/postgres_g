@@ -132,6 +132,15 @@ typedef struct XLogRecoveryCtlData
 extern PGDLLIMPORT XLogRecoveryCtlData *XLogRecoveryCtl;
 
 /*
+ * Called once in startup after initializing replay progress, before redo and
+ * before allowing hot-standby connections.  The position precedes the first
+ * record to replay; it is not necessarily a completed record's end pointer.
+ */
+typedef void (*wal_replay_start_hook_type) (XLogRecPtr startLSN,
+											TimeLineID replayTLI);
+extern PGDLLIMPORT wal_replay_start_hook_type wal_replay_start_hook;
+
+/*
  * Called in the startup process after redo and WAL consistency checking,
  * before publishing the record as replayed.  The callback must not modify
  * the decoded record.  This does not observe hint changes made by backends.

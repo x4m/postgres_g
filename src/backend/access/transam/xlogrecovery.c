@@ -142,6 +142,7 @@ static TimeLineID curFileTLI;
 bool		ArchiveRecoveryRequested = false;
 bool		InArchiveRecovery = false;
 
+wal_replay_start_hook_type wal_replay_start_hook = NULL;
 after_wal_replay_hook_type after_wal_replay_hook = NULL;
 
 /*
@@ -1655,6 +1656,13 @@ PerformWalRecovery(void)
 	XLogRecoveryCtl->currentChunkStartTime = 0;
 	XLogRecoveryCtl->recoveryPauseState = RECOVERY_NOT_PAUSED;
 	SpinLockRelease(&XLogRecoveryCtl->info_lck);
+
+	if (wal_replay_start_hook)
+	{
+		XLogRecPtr	startLSN = GetXLogReplayRecPtr(&replayTLI);
+
+		wal_replay_start_hook(startLSN, replayTLI);
+	}
 
 	/* Also ensure XLogReceiptTime has a sane value */
 	XLogReceiptTime = GetCurrentTimestamp();
