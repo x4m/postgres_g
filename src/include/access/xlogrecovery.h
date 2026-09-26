@@ -131,6 +131,15 @@ typedef struct XLogRecoveryCtlData
 
 extern PGDLLIMPORT XLogRecoveryCtlData *XLogRecoveryCtl;
 
+/*
+ * Called in the startup process after redo and WAL consistency checking,
+ * before publishing the record as replayed.  The callback must not modify
+ * the decoded record.  This does not observe hint changes made by backends.
+ */
+typedef void (*after_wal_replay_hook_type) (XLogReaderState *record,
+											TimeLineID replayTLI);
+extern PGDLLIMPORT after_wal_replay_hook_type after_wal_replay_hook;
+
 /* User-settable GUC parameters */
 extern PGDLLIMPORT bool recoveryTargetInclusive;
 extern PGDLLIMPORT int recoveryTargetAction;

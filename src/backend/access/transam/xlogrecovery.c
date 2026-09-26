@@ -142,6 +142,8 @@ static TimeLineID curFileTLI;
 bool		ArchiveRecoveryRequested = false;
 bool		InArchiveRecovery = false;
 
+after_wal_replay_hook_type after_wal_replay_hook = NULL;
+
 /*
  * When StandbyModeRequested is set, standby mode was requested, i.e.
  * standby.signal file was present.  When StandbyMode is set, we are currently
@@ -1986,6 +1988,9 @@ ApplyWalRecord(XLogReaderState *xlogreader, XLogRecord *record, TimeLineID *repl
 	 */
 	if ((record->xl_info & XLR_CHECK_CONSISTENCY) != 0)
 		verifyBackupPageConsistency(xlogreader);
+
+	if (after_wal_replay_hook)
+		after_wal_replay_hook(xlogreader, *replayTLI);
 
 	/* Pop the error context stack */
 	error_context_stack = errcallback.previous;
