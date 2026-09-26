@@ -33,6 +33,7 @@ tests += {
       't/003_page_history.pl',
       't/004_following_compute.pl',
       't/005_history_relations.pl',
+      't/006_following_relations.pl',
     ],
   },
 }
