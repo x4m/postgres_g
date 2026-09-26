@@ -100,6 +100,7 @@
 #include "access/heapam_xlog.h"
 #include "access/visibilitymap.h"
 #include "access/xloginsert.h"
+#include "access/xlogrecovery.h"
 #include "access/xlogutils.h"
 #include "miscadmin.h"
 #include "port/pg_bitutils.h"
@@ -526,6 +527,15 @@ visibilitymap_prepare_truncate(Relation rel, BlockNumber nheapblocks)
 		 * during recovery.
 		 */
 		MarkBufferDirty(mapBuffer);
+
+		/*
+		 * Preserve the redo boundary for storage managers that discard an
+		 * evicted page and later fetch its historical version.  Refetching a
+		 * pre-truncation VM page could resurrect the bits just cleared.  Do
+		 * not lower the LSN when redoing older WAL over a newer page.
+		 */
+		if (InRecovery)
+			PageSetLSN(page, Max(PageGetLSN(page), GetCurrentReplayRecPtr(NULL)));
 		if (!InRecovery && RelationNeedsWAL(rel) && XLogHintBitIsNeeded())
 			log_newpage_buffer(mapBuffer, false);
 

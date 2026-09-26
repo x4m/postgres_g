@@ -4,8 +4,8 @@
  *      Read-only SMgr consumers of the test page service.
  *
  * Frozen mode redirects selected physical relations on a paused standby.
- * Following mode redirects their main forks and replays heap and B-tree WAL
- * into cached pages.
+ * Following mode redirects their main and VM forks and replays heap and
+ * B-tree WAL into cached pages.
  * All other relations and forks still use md; neither mode is diskless compute.
  * SQL is a temporary transport to the independent test endpoint; the final
  * physical service must also work before database connections are possible.
@@ -84,7 +84,7 @@ typedef struct ComputeFile
 typedef struct ComputeControl
 {
 	pg_atomic_uint32 active;
-	ComputeFile files[COMPUTE_MAX_RELATIONS];
+	ComputeFile files[COMPUTE_MAX_RELATIONS][MAX_FORKNUM + 1];
 	pg_atomic_uint64 completed;
 	pg_atomic_uint64 skipped;
 	pg_atomic_uint64 cached;
@@ -110,11 +110,11 @@ static bool compute_active(void);
 static bool selected_locator(RelFileLocator locator);
 static int	selected_relation(RelFileLocator locator);
 static void parse_remote_locators(void);
-static ComputeFile *compute_file(RelFileLocator locator);
+static ComputeFile *compute_file(RelFileLocator locator, ForkNumber forknum);
 static void compute_check(void);
-static XLogRecPtr compute_read_lsn(RelFileLocator locator, BlockNumber block,
+static XLogRecPtr compute_read_lsn(RelFileLocator locator, ForkNumber forknum, BlockNumber block,
 								   BlockNumber count, TimestampTz deadline);
-static void compute_note_lsn(RelFileLocator locator, BlockNumber block, XLogRecPtr lsn);
+static void compute_note_lsn(RelFileLocator locator, ForkNumber forknum, BlockNumber block, XLogRecPtr lsn);
 static void remote_create(RelFileLocator old, SMgrRelation reln, ForkNumber forknum, bool isRedo, SmgrChainIndex next);
 static void remote_unlink(RelFileLocatorBackend locator, ForkNumber forknum, bool isRedo, SmgrChainIndex next);
 static void remote_extend(SMgrRelation reln, ForkNumber forknum, BlockNumber block,
@@ -214,9 +214,9 @@ _PG_init(void)
 							NULL, &request_timeout, 5000, 1, INT_MAX,
 							PGC_POSTMASTER, GUC_UNIT_MS, NULL, NULL, NULL);
 	test_page_store_history_init();
-	DefineCustomBoolVariable("test_page_store.follow", "Follow WAL for remote main forks.",
+	DefineCustomBoolVariable("test_page_store.follow", "Follow WAL for remote main and VM forks.",
 							 NULL, &follow_replay, false, PGC_POSTMASTER, 0, NULL, NULL, NULL);
-	DefineCustomIntVariable("test_page_store.follow_max_blocks", "Maximum tracked blocks per relation.",
+	DefineCustomIntVariable("test_page_store.follow_max_blocks", "Maximum tracked blocks per relation fork.",
 							NULL, &follow_max_blocks, 65536, 1, 1048576,
 							PGC_POSTMASTER, 0, NULL, NULL, NULL);
 	if (follow_replay && test_page_store_history_enabled())
@@ -332,12 +332,12 @@ parse_remote_locators(void)
 }
 
 static ComputeFile *
-compute_file(RelFileLocator locator)
+compute_file(RelFileLocator locator, ForkNumber forknum)
 {
 	int			relation = selected_relation(locator);
 
 	Assert(relation >= 0);
-	return &compute->files[relation];
+	return &compute->files[relation][forknum];
 }
 
 static bool
@@ -346,7 +346,7 @@ remote_relation(SMgrRelation reln, ForkNumber forknum)
 	if (SmgrIsTemp(reln) || !selected_locator(reln->smgr_rlocator.locator))
 		return false;
 	if (follow_replay)
-		return compute_active() && forknum == MAIN_FORKNUM;
+		return compute_active() && (forknum == MAIN_FORKNUM || forknum == VISIBILITYMAP_FORKNUM);
 	return !AmStartupProcess();
 }
 
@@ -368,7 +368,7 @@ compute_shmem_request(void *arg)
 	ShmemRequestStruct(.name = "test_page_store compute",
 					   .size = sizeof(ComputeControl), .ptr = (void **) &compute);
 	ShmemRequestStruct(.name = "test_page_store required LSN",
-					   .size = mul_size(mul_size(nselected, follow_max_blocks),
+					   .size = mul_size(mul_size(nselected * (MAX_FORKNUM + 1), follow_max_blocks),
 										sizeof(pg_atomic_uint64)),
 					   .ptr = (void **) &required_lsn);
 }
@@ -381,8 +381,11 @@ compute_shmem_init(void *arg)
 	pg_atomic_init_u32(&compute->active, 0);
 	for (int i = 0; i < nselected; i++)
 	{
-		pg_atomic_init_u32(&compute->files[i].nblocks, 0);
-		pg_atomic_init_u32(&compute->files[i].exists, 0);
+		for (ForkNumber forknum = MAIN_FORKNUM; forknum <= MAX_FORKNUM; forknum++)
+		{
+			pg_atomic_init_u32(&compute->files[i][forknum].nblocks, 0);
+			pg_atomic_init_u32(&compute->files[i][forknum].exists, 0);
+		}
 	}
 	pg_atomic_init_u64(&compute->completed, InvalidXLogRecPtr);
 	pg_atomic_init_u64(&compute->skipped, 0);
@@ -390,7 +393,7 @@ compute_shmem_init(void *arg)
 	pg_atomic_init_u64(&compute->fetches, 0);
 	pg_atomic_init_u64(&compute->startup_fetches, 0);
 	ConditionVariableInit(&compute->replayed);
-	for (int i = 0; i < nselected * follow_max_blocks; i++)
+	for (int i = 0; i < nselected * (MAX_FORKNUM + 1) * follow_max_blocks; i++)
 		pg_atomic_init_u64(&required_lsn[i], InvalidXLogRecPtr);
 }
 
@@ -410,12 +413,12 @@ compute_check(void)
 	if (tli != page_tli)
 		elog(ERROR, "following page compute cannot change timeline");
 	for (int i = 0; i < nselected; i++)
-		if (!pg_atomic_read_u32(&compute->files[i].exists))
+		if (!pg_atomic_read_u32(&compute->files[i][MAIN_FORKNUM].exists))
 			elog(ERROR, "a selected remote relation was dropped");
 }
 
 static void
-compute_note_lsn(RelFileLocator locator, BlockNumber block, XLogRecPtr lsn)
+compute_note_lsn(RelFileLocator locator, ForkNumber forknum, BlockNumber block, XLogRecPtr lsn)
 {
 	uint64		old;
 	int			relation = selected_relation(locator);
@@ -424,7 +427,7 @@ compute_note_lsn(RelFileLocator locator, BlockNumber block, XLogRecPtr lsn)
 	Assert(relation >= 0);
 	if (block >= follow_max_blocks)
 		elog(ERROR, "remote relation exceeds follow_max_blocks");
-	marker = &required_lsn[relation * follow_max_blocks + block];
+	marker = &required_lsn[(relation * (MAX_FORKNUM + 1) + forknum) * follow_max_blocks + block];
 	old = pg_atomic_read_u64(marker);
 	while (old < lsn && !pg_atomic_compare_exchange_u64(marker, &old, lsn))
 		;
@@ -453,15 +456,23 @@ compute_after_replay(XLogReaderState *record, TimeLineID tli)
 		for (int i = 0; i < nselected; i++)
 		{
 			SMgrRelation smgr = smgropen(selected_locators[i], INVALID_PROC_NUMBER);
-			BlockNumber size;
 
 			if (!smgrexists(smgr, MAIN_FORKNUM))
 				elog(ERROR, "selected relation is absent from the compute seed");
-			size = smgrnblocks(smgr, MAIN_FORKNUM);
-			if (size > follow_max_blocks)
-				elog(ERROR, "compute seed exceeds follow_max_blocks");
-			pg_atomic_write_u32(&compute->files[i].nblocks, size);
-			pg_atomic_write_u32(&compute->files[i].exists, 1);
+			for (ForkNumber forknum = MAIN_FORKNUM; forknum <= MAX_FORKNUM; forknum++)
+			{
+				bool		exists;
+				BlockNumber size;
+
+				if (forknum != MAIN_FORKNUM && forknum != VISIBILITYMAP_FORKNUM)
+					continue;
+				exists = smgrexists(smgr, forknum);
+				size = exists ? smgrnblocks(smgr, forknum) : 0;
+				if (size > follow_max_blocks)
+					elog(ERROR, "compute seed exceeds follow_max_blocks");
+				pg_atomic_write_u32(&compute->files[i][forknum].nblocks, size);
+				pg_atomic_write_u32(&compute->files[i][forknum].exists, exists);
+			}
 		}
 		pg_atomic_write_u64(&compute->completed, baseline);
 		pg_write_barrier();
@@ -491,14 +502,16 @@ compute_redo_filter(XLogReaderState *record, uint8 block_id, ReadBufferMode mode
 	static int	nchecked;
 
 	XLogRecGetBlockTag(record, block_id, &locator, &forknum, &block);
-	if (!compute_active() || forknum != MAIN_FORKNUM || !selected_locator(locator))
+	if (!compute_active() ||
+		(forknum != MAIN_FORKNUM && forknum != VISIBILITYMAP_FORKNUM) ||
+		!selected_locator(locator))
 		return previous_filter_hook ? previous_filter_hook(record, block_id, mode) : false;
 	if (XLogRecGetRmid(record) != RM_HEAP_ID && XLogRecGetRmid(record) != RM_HEAP2_ID &&
 		XLogRecGetRmid(record) != RM_BTREE_ID && XLogRecGetRmid(record) != RM_XLOG_ID)
-		elog(ERROR, "following compute supports heap and B-tree main-fork redo only");
+		elog(ERROR, "following compute supports heap and B-tree main/VM redo only");
 	if (block >= follow_max_blocks)
 		elog(ERROR, "remote relation exceeds follow_max_blocks");
-	file = compute_file(locator);
+	file = compute_file(locator, forknum);
 	InitBufferTag(&tag, &locator, forknum, block);
 	if (checked_record != record->ReadRecPtr)
 	{
@@ -507,8 +520,8 @@ compute_redo_filter(XLogReaderState *record, uint8 block_id, ReadBufferMode mode
 	}
 
 	/*
-	 * Audited heap and B-tree paths visit each main block once.  A second
-	 * visit could otherwise wait for a backend whose read awaits this
+	 * Audited heap and B-tree paths visit each main or VM block once.  A
+	 * second visit could otherwise wait for a backend whose read awaits this
 	 * record's completion.  Read-only B-tree descent and sibling walks drop
 	 * content locks before reading another page; split and unlink redo can
 	 * therefore retain their other page locks while a miss waits here.
@@ -519,11 +532,14 @@ compute_redo_filter(XLogReaderState *record, uint8 block_id, ReadBufferMode mode
 	Assert(nchecked < lengthof(checked_blocks));
 	checked_blocks[nchecked++] = tag;
 
+	/* A VM can first be created by a heap record, without SMGR_CREATE. */
+	if (forknum == VISIBILITYMAP_FORKNUM)
+		pg_atomic_write_u32(&file->exists, 1);
 	if (pg_atomic_read_u32(&file->nblocks) <= block)
 		pg_atomic_write_u32(&file->nblocks, block + 1);
 	smgr = smgropen(locator, INVALID_PROC_NUMBER);
-	if (smgr->smgr_cached_nblocks[MAIN_FORKNUM] != InvalidBlockNumber)
-		smgr->smgr_cached_nblocks[MAIN_FORKNUM] = pg_atomic_read_u32(&file->nblocks);
+	if (smgr->smgr_cached_nblocks[forknum] != InvalidBlockNumber)
+		smgr->smgr_cached_nblocks[forknum] = pg_atomic_read_u32(&file->nblocks);
 
 	/*
 	 * Init callers need a real buffer, and xlog_redo() requires BLK_RESTORED
@@ -544,13 +560,15 @@ compute_redo_filter(XLogReaderState *record, uint8 block_id, ReadBufferMode mode
 	 */
 	skip = BufTableLookup(&tag, hash) < 0;
 	if (skip)
-		compute_note_lsn(locator, block, record->EndRecPtr);
+		compute_note_lsn(locator, forknum, block, record->EndRecPtr);
 	LWLockRelease(lock);
 	if (skip)
 	{
 		pg_atomic_fetch_add_u64(&compute->skipped, 1);
+		if (forknum == VISIBILITYMAP_FORKNUM)
+			INJECTION_POINT("test-page-store-after-vm-skip", NULL);
 		/* Do not let an earlier pruning record satisfy the UPDATE schedule. */
-		if (XLogRecGetRmid(record) == RM_HEAP_ID &&
+		if (forknum == MAIN_FORKNUM && XLogRecGetRmid(record) == RM_HEAP_ID &&
 			(XLogRecGetInfo(record) & XLOG_HEAP_OPMASK) == XLOG_HEAP_UPDATE)
 			INJECTION_POINT("test-page-store-after-update-skip", NULL);
 		if (XLogRecGetRmid(record) == RM_BTREE_ID && block_id == 0 &&
@@ -565,7 +583,7 @@ compute_redo_filter(XLogReaderState *record, uint8 block_id, ReadBufferMode mode
 
 /* Page reads arrive after buffer admission; count == 0 asks only for metadata. */
 static XLogRecPtr
-compute_read_lsn(RelFileLocator locator, BlockNumber block,
+compute_read_lsn(RelFileLocator locator, ForkNumber forknum, BlockNumber block,
 				 BlockNumber count, TimestampTz deadline)
 {
 	XLogRecPtr	lsn = pg_atomic_read_u64(&compute->completed);
@@ -577,7 +595,7 @@ compute_read_lsn(RelFileLocator locator, BlockNumber block,
 	if ((uint64) block + count > follow_max_blocks)
 		elog(ERROR, "remote read exceeds follow_max_blocks");
 	for (BlockNumber i = 0; i < count; i++)
-		needed = Max(needed, pg_atomic_read_u64(&required_lsn[relation * follow_max_blocks + block + i]));
+		needed = Max(needed, pg_atomic_read_u64(&required_lsn[(relation * (MAX_FORKNUM + 1) + forknum) * follow_max_blocks + block + i]));
 	if (!AmStartupProcess() && needed > lsn)
 	{
 		uint32		wait_event = WaitEventExtensionNew("TestPageStoreReplay");
@@ -678,7 +696,7 @@ remote_fetch(SMgrRelation reln, ForkNumber forknum, BlockNumber blocknum,
 	Assert(count <= TEST_PAGE_STORE_MAX_BLOCKS);
 	if (follow_replay)
 	{
-		lsn = compute_read_lsn(reln->smgr_rlocator.locator, blocknum, count, deadline);
+		lsn = compute_read_lsn(reln->smgr_rlocator.locator, forknum, blocknum, count, deadline);
 		if (count > 0)
 		{
 			pg_atomic_fetch_add_u64(&compute->fetches, 1);
@@ -778,7 +796,7 @@ remote_exists(SMgrRelation reln, ForkNumber forknum, SmgrChainIndex next)
 	if (!remote_relation(reln, forknum))
 		return smgr_exists_next(reln, forknum, next + 1);
 	if (follow_replay && AmStartupProcess())
-		return pg_atomic_read_u32(&compute_file(reln->smgr_rlocator.locator)->exists) != 0;
+		return pg_atomic_read_u32(&compute_file(reln->smgr_rlocator.locator, forknum)->exists) != 0;
 	return remote_fetch(reln, forknum, 0, NULL, 0, &nblocks);
 }
 
@@ -800,7 +818,7 @@ remote_unlink(RelFileLocatorBackend locator, ForkNumber forknum,
 
 	if (follow_replay && remote_relation(smgr, forknum))
 	{
-		ComputeFile *file = compute_file(locator.locator);
+		ComputeFile *file = compute_file(locator.locator, forknum);
 
 		pg_atomic_write_u32(&file->exists, 0);
 		pg_atomic_write_u32(&file->nblocks, 0);
@@ -821,7 +839,7 @@ remote_zeroextend(SMgrRelation reln, ForkNumber forknum, BlockNumber block,
 
 		if (!follow_replay || !AmStartupProcess())
 			elog(ERROR, "only redo may extend the remote compute relation");
-		file = compute_file(reln->smgr_rlocator.locator);
+		file = compute_file(reln->smgr_rlocator.locator, forknum);
 		if ((uint64) block + count > follow_max_blocks)
 			elog(ERROR, "remote relation exceeds follow_max_blocks");
 		if (pg_atomic_read_u32(&file->nblocks) < block + count)
@@ -850,7 +868,7 @@ remote_truncate(SMgrRelation reln, ForkNumber forknum, BlockNumber old,
 	if (!remote_relation(reln, forknum))
 		smgr_truncate_next(reln, forknum, old, size, next + 1);
 	else if (follow_replay && AmStartupProcess())
-		pg_atomic_write_u32(&compute_file(reln->smgr_rlocator.locator)->nblocks, size);
+		pg_atomic_write_u32(&compute_file(reln->smgr_rlocator.locator, forknum)->nblocks, size);
 	else
 		elog(ERROR, "only redo may truncate the remote compute relation");
 }
@@ -886,7 +904,7 @@ remote_nblocks(SMgrRelation reln, ForkNumber forknum, SmgrChainIndex next)
 	if (!remote_relation(reln, forknum))
 		return smgr_nblocks_next(reln, forknum, next + 1);
 	if (follow_replay && AmStartupProcess())
-		return pg_atomic_read_u32(&compute_file(reln->smgr_rlocator.locator)->nblocks);
+		return pg_atomic_read_u32(&compute_file(reln->smgr_rlocator.locator, forknum)->nblocks);
 	if (!remote_fetch(reln, forknum, 0, NULL, 0, &nblocks))
 		elog(ERROR, "remote relation fork does not exist");
 	return nblocks;
@@ -997,7 +1015,7 @@ remote_writev(SMgrRelation reln, ForkNumber forknum, BlockNumber blocknum,
 		if (follow_replay)
 			for (BlockNumber i = 0; i < nblocks; i++)
 				if (!PageIsNew((Page) buffers[i]))
-					compute_note_lsn(reln->smgr_rlocator.locator, blocknum + i,
+					compute_note_lsn(reln->smgr_rlocator.locator, forknum, blocknum + i,
 									 PageGetLSN((Page) buffers[i]));
 	}
 }

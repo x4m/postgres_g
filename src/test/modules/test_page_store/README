@@ -66,8 +66,13 @@ The ninth test retains VM history through setting and clearing bits, implicit
 fork creation, truncation, reextension, DROP, and storage restart.  Truncation
 can clear the last VM page without changing the file size or registering a
 WAL block reference.  Disable hint FPIs in this test so they cannot hide a
-missing capture of that change.  This does not yet redirect a following
-compute's VM reads or redo to the service.
+missing capture of that change.
+
+The tenth test follows heap, B-tree, and VM together.  Real index-only scans
+run without their local files; results must match the writer's sequential
+scan.  It covers both VM admission orders, implicit creation, warm/cold
+clearing, truncation, reextension, and aborted insertion.  When all pages
+are visible, EXPLAIN ANALYZE must report no heap fetches.
 
 Run with an assertions/injection-points build:
 
@@ -190,7 +195,8 @@ with one list:
     test_page_store.locators = '1663/5/16384, 1663/5/16385'
 
 Up to 16 physical locators may be selected, with separate file-size state and
-LSN markers.  They must all exist at the retained baseline.  The list cannot
+LSN markers for each fork.  Main forks must exist at the retained baseline;
+VM forks can first appear later.  The list cannot
 be combined with the single-locator settings.  This remains temporary test
 configuration, not a proposed user-facing placement policy.  The sixth test
 shows this setup with two independent following computes.
@@ -209,12 +215,15 @@ second page while waiting for a skipped record can deadlock with redo of that
 second page.  The test reproduces this with a two-page UPDATE if the limit is
 removed.  General asynchronous multi-page admission/completion is future work.
 
-Only heap and B-tree main-fork paths have been audited.  Init-page redo and
-standalone full-page images always get a real buffer; this includes B-tree
+Only heap/B-tree main-fork and heap VM paths have been audited.  Init-page
+redo and standalone full-page images always get a real buffer; this includes B-tree
 metapages, new split/root pages, and half-dead/deleted page initialization.
 B-tree split/unlink redo still retains its required sibling locks.  Read-only
 descent and sibling walks release the previous content lock before reading
-the next page.  Other forks still receive ordinary local redo.  Snapshot
+the next page.  VM reads retain pins but not content locks across heap reads.
+Truncation's implicit VM update is not filtered and may fetch a cold page;
+it retains the replay record's LSN so eviction preserves the cleared tail.
+Other forks still receive ordinary local redo.  Snapshot
 conflicts, including B-tree page-reuse conflicts, run even when page work is
 skipped.  Prefetch is an advisory no-op, not a missing-file indication.
 WAL consistency checking skips
@@ -223,7 +232,7 @@ still performs and checks full redo.  test_page_store_compute_status() exposes
 the completed position and skip/cache/fetch counters for test orchestration.
 
 The per-page lower bounds are bounded dense arrays, with no eviction, sized by
-test_page_store.follow_max_blocks (default 65536) per selected relation.
+test_page_store.follow_max_blocks (default 65536) per selected relation fork.
 Unsupported rmgrs, a second
 visit to the same selected block within a record, or exceeding this bound cause
 an error.  Restart does not recover these markers; reuse requires a fresh seed
@@ -234,7 +243,9 @@ Important limitations:
 
 * This is not diskless compute.  Unselected relations, catalogs, SLRUs, and
   other state remain local.  Following mode redirects only selected heap and
-  B-tree main forks; frozen mode leaves startup redo unchanged.
+  B-tree main forks and VM; frozen mode leaves startup redo unchanged.
+* Size-reporting functions still stat local files, bypassing SMgr.  In this
+  experiment pg_relation_size() is not an oracle for a remote relation.
 * Both compute modes are read-only.  Executor guards reject queries outside
   the configured mode, including cache-only queries after promotion.  Do
   not resume a frozen compute, run mutating utility operations, or treat
