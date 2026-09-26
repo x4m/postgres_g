@@ -1,20 +1,23 @@
 /*-------------------------------------------------------------------------
  *
  * test_page_history.c
- *      Bounded, volatile page history collected from ordinary standby redo.
+ *      Bounded page history collected from ordinary standby redo.
  *
- * This is a correctness scaffold, not a durable storage engine.  Selected
+ * This is a correctness scaffold, not a complete storage engine.  Selected
  * main forks are retained from a paused, consistent baseline.  The startup
  * process then appends images after each complete WAL record.  Readers can
- * only use published record boundaries; unpublished images are invisible.  Neither
- * capacity exhaustion nor an unsupported record permits a latest-page
- * fallback.  Restart revokes all views instead of guessing their contents.
+ * only use published record boundaries; unpublished images are invisible.
+ * Neither capacity exhaustion nor an unsupported record permits a latest-page
+ * fallback.  History is volatile by default; an optional journal persists
+ * complete records before publication and reloads them after restart.
  *
  * Copyright (c) 2026, PostgreSQL Global Development Group
  *
  *-------------------------------------------------------------------------
  */
 #include "postgres.h"
+
+#include <sys/stat.h>
 
 #include "access/htup_details.h"
 #include "access/relation.h"
@@ -28,8 +31,10 @@
 #include "fmgr.h"
 #include "funcapi.h"
 #include "miscadmin.h"
+#include "port/pg_crc32c.h"
 #include "storage/bufmgr.h"
 #include "storage/condition_variable.h"
+#include "storage/fd.h"
 #include "storage/lwlock.h"
 #include "storage/shmem.h"
 #include "storage/smgr.h"
@@ -50,6 +55,10 @@ PG_FUNCTION_INFO_V1(test_page_store_history_status);
 
 #define HISTORY_MAX_RECORDS 65536
 #define HISTORY_MAX_RELATIONS 16
+#define HISTORY_JOURNAL "test_page_store.history"
+#define HISTORY_JOURNAL_TEMP HISTORY_JOURNAL ".tmp"
+#define HISTORY_JOURNAL_MAGIC 0x50475348
+#define HISTORY_JOURNAL_VERSION 1
 
 typedef struct HistoryPage
 {
@@ -72,6 +81,30 @@ typedef struct HistoryRecord
 	HistoryFile files[HISTORY_MAX_RELATIONS];
 } HistoryRecord;
 
+/* Local prototype format, not a portable storage or wire protocol. */
+typedef struct HistoryJournalHeader
+{
+	uint32		magic;
+	uint32		version;
+	uint32		pg_version;
+	uint32		block_size;
+	uint32		record_size;
+	uint32		image_size;
+	uint64		system_identifier;
+	uint32		nrelations;
+	TimeLineID	tli;
+	RelFileLocator locators[HISTORY_MAX_RELATIONS];
+	pg_crc32c	crc;
+} HistoryJournalHeader;
+
+typedef struct HistoryJournalFrame
+{
+	uint32		magic;
+	uint32		sequence;
+	uint32		images;
+	HistoryRecord record;
+} HistoryJournalFrame;
+
 typedef struct HistoryControl
 {
 	LWLock		lock;
@@ -80,11 +113,14 @@ typedef struct HistoryControl
 	uint32		nrelations;		/* immutable after baseline publication */
 	TimeLineID	tli;
 	uint32		nrecords;		/* zero until the baseline is published */
+	bool		journal_loaded;
+	pgoff_t		journal_end;
 	bool		stopped;
 	char		reason[128];
 } HistoryControl;
 
 static int	history_capacity;
+static bool history_durable;
 static HistoryControl *history;
 static HistoryPage *history_pages;
 static HistoryRecord *history_records;
@@ -93,6 +129,8 @@ static after_wal_replay_hook_type previous_replay_hook;
 static void history_request(void *arg);
 static void history_initialize(void *arg);
 static void history_replay(XLogReaderState *record, TimeLineID tli);
+static void history_journal_load(void);
+static void history_journal_save(const HistoryRecord *record, uint32 sequence);
 
 static const ShmemCallbacks history_callbacks = {
 	.request_fn = history_request,
@@ -106,6 +144,12 @@ test_page_store_history_init(void)
 							"Maximum retained main-fork page images.",
 							NULL, &history_capacity, 0, 0, 131072,
 							PGC_POSTMASTER, 0, NULL, NULL, NULL);
+	DefineCustomBoolVariable("test_page_store.history_durable",
+							 "Persist retained history before publishing a record.",
+							 NULL, &history_durable, false, PGC_POSTMASTER, 0,
+							 NULL, NULL, NULL);
+	if (history_durable && (history_capacity == 0 || !enableFsync))
+		elog(ERROR, "durable page history requires history_pages > 0 and fsync");
 	RegisterShmemCallbacks(&history_callbacks);
 	previous_replay_hook = after_wal_replay_hook;
 	after_wal_replay_hook = history_replay;
@@ -142,6 +186,206 @@ bool
 test_page_store_history_enabled(void)
 {
 	return history_capacity > 0;
+}
+
+/* Every call either transfers the whole item or aborts without publication. */
+static void
+history_journal_io(int fd, void *data, size_t size, pgoff_t *offset, bool writing)
+{
+	char	   *p = data;
+
+	while (size > 0)
+	{
+		size_t		chunk = Min(size, 1024 * 1024);
+		ssize_t		transferred;
+
+		errno = 0;
+		transferred = writing ? pg_pwrite(fd, p, chunk, *offset) :
+			pg_pread(fd, p, chunk, *offset);
+		if (transferred < 0 && errno == EINTR)
+			continue;
+		if (transferred == 0)
+			elog(ERROR, "incomplete %s of page history journal at offset " INT64_FORMAT,
+				 writing ? "write" : "read", (int64) *offset);
+		if (transferred < 0)
+			ereport(ERROR,
+					(errcode_for_file_access(),
+					 errmsg("could not %s page history journal at offset " INT64_FORMAT ": %m",
+							writing ? "write" : "read", (int64) *offset)));
+		*offset += transferred;
+		p += transferred;
+		size -= transferred;
+		CHECK_FOR_INTERRUPTS();
+	}
+}
+
+/* Caller holds the history lock; only startup loads after a restart. */
+static void
+history_journal_load(void)
+{
+	HistoryJournalHeader header;
+	struct stat st;
+	pg_crc32c	crc;
+	pgoff_t		offset = 0;
+	pgoff_t		complete;
+	uint32		nrecords = 0;
+	uint32		nimages = 0;
+	int			fd;
+
+	if (history->journal_loaded)
+		return;
+	fd = OpenTransientFile(HISTORY_JOURNAL, O_RDWR | PG_BINARY);
+	if (fd < 0)
+	{
+		if (errno != ENOENT)
+			ereport(ERROR, (errcode_for_file_access(),
+							errmsg("could not open page history journal: %m")));
+		history->journal_loaded = true;
+		return;
+	}
+	history_journal_io(fd, &header, sizeof(header), &offset, false);
+	INIT_CRC32C(crc);
+	COMP_CRC32C(crc, &header, offsetof(HistoryJournalHeader, crc));
+	FIN_CRC32C(crc);
+	if (!EQ_CRC32C(crc, header.crc) ||
+		header.magic != HISTORY_JOURNAL_MAGIC ||
+		header.version != HISTORY_JOURNAL_VERSION || header.pg_version != PG_VERSION_NUM ||
+		header.block_size != BLCKSZ || header.record_size != sizeof(HistoryRecord) ||
+		header.image_size != sizeof(HistoryPage) ||
+		header.nrelations == 0 || header.nrelations > HISTORY_MAX_RELATIONS)
+		elog(ERROR, "invalid page history journal header");
+	if (header.system_identifier != GetSystemIdentifier())
+		elog(ERROR, "page history journal belongs to another system");
+	if (fstat(fd, &st) != 0)
+		ereport(ERROR, (errcode_for_file_access(), errmsg("could not stat page history journal: %m")));
+	complete = offset;
+	while (offset < st.st_size)
+	{
+		HistoryJournalFrame frame;
+		pg_crc32c	stored_crc;
+		size_t		images_size;
+
+		if (st.st_size - offset < sizeof(frame))
+			break;
+		history_journal_io(fd, &frame, sizeof(frame), &offset, false);
+		if (frame.magic != HISTORY_JOURNAL_MAGIC || frame.sequence != nrecords ||
+			frame.images > history_capacity ||
+			(uint64) nimages + frame.images != frame.record.nimages ||
+			frame.record.nimages > history_capacity || nrecords == HISTORY_MAX_RECORDS ||
+			XLogRecPtrIsInvalid(frame.record.lsn) ||
+			(nrecords > 0 && frame.record.lsn <= history_records[nrecords - 1].lsn))
+			elog(ERROR, "invalid page history journal frame");
+		images_size = mul_size(frame.images, sizeof(HistoryPage));
+		if (st.st_size - offset < images_size + sizeof(stored_crc))
+			break;
+		history_journal_io(fd, &history_pages[nimages], images_size, &offset, false);
+		history_journal_io(fd, &stored_crc, sizeof(stored_crc), &offset, false);
+		INIT_CRC32C(crc);
+		COMP_CRC32C(crc, &frame, sizeof(frame));
+		COMP_CRC32C(crc, &history_pages[nimages], images_size);
+		FIN_CRC32C(crc);
+		if (!EQ_CRC32C(crc, stored_crc))
+			elog(ERROR, "page history journal checksum mismatch at record %u", nrecords);
+		for (uint32 i = nimages; i < frame.record.nimages; i++)
+			if (history_pages[i].relation >= header.nrelations ||
+				history_pages[i].block == InvalidBlockNumber)
+				elog(ERROR, "invalid page identity in history journal");
+		for (uint32 i = 0; i < header.nrelations; i++)
+			if (frame.record.files[i].floor > frame.record.nimages ||
+				(!frame.record.files[i].exists && frame.record.files[i].nblocks != 0))
+				elog(ERROR, "invalid file metadata in history journal");
+		history_records[nrecords++] = frame.record;
+		nimages = frame.record.nimages;
+		complete = offset;
+	}
+	if (nrecords == 0)
+		elog(ERROR, "page history journal has no complete baseline");
+	if (complete != st.st_size)
+	{
+		if (ftruncate(fd, complete) != 0)
+			ereport(ERROR, (errcode_for_file_access(),
+							errmsg("could not truncate incomplete page history tail: %m")));
+		elog(LOG, "removed incomplete page history journal tail");
+	}
+
+	/*
+	 * A complete but previously unpublished last frame may not have been
+	 * synced.
+	 */
+	if (pg_fsync(fd) != 0)
+		ereport(ERROR, (errcode_for_file_access(), errmsg("could not sync page history journal: %m")));
+	if (CloseTransientFile(fd) != 0)
+		ereport(ERROR, (errcode_for_file_access(), errmsg("could not close page history journal: %m")));
+	memcpy(history->locators, header.locators, sizeof(header.locators));
+	history->nrelations = header.nrelations;
+	history->tli = header.tli;
+	history->journal_end = complete;
+	history->nrecords = nrecords;
+	history->journal_loaded = true;
+}
+
+/* Sync a complete frame before its record boundary is visible to readers. */
+static void
+history_journal_save(const HistoryRecord *record, uint32 sequence)
+{
+	HistoryJournalFrame frame = {0};
+	uint32		first_image = sequence == 0 ? 0 : history_records[sequence - 1].nimages;
+	pgoff_t		offset = history->journal_end;
+	pg_crc32c	crc;
+	size_t		images_size;
+	int			fd;
+
+	/* fsync is reloadable, unlike history_durable. */
+	if (!enableFsync)
+		elog(ERROR, "durable page history requires fsync");
+	fd = OpenTransientFile(sequence == 0 ? HISTORY_JOURNAL_TEMP : HISTORY_JOURNAL,
+						   O_RDWR | PG_BINARY | (sequence == 0 ? O_CREAT | O_TRUNC : 0));
+	if (fd < 0)
+		ereport(ERROR, (errcode_for_file_access(), errmsg("could not open page history journal: %m")));
+	if (sequence == 0)
+	{
+		HistoryJournalHeader header = {0};
+
+		header.magic = HISTORY_JOURNAL_MAGIC;
+		header.version = HISTORY_JOURNAL_VERSION;
+		header.pg_version = PG_VERSION_NUM;
+		header.block_size = BLCKSZ;
+		header.record_size = sizeof(HistoryRecord);
+		header.image_size = sizeof(HistoryPage);
+		header.system_identifier = GetSystemIdentifier();
+		header.nrelations = history->nrelations;
+		header.tli = history->tli;
+		memcpy(header.locators, history->locators, sizeof(header.locators));
+		INIT_CRC32C(header.crc);
+		COMP_CRC32C(header.crc, &header, offsetof(HistoryJournalHeader, crc));
+		FIN_CRC32C(header.crc);
+		offset = 0;
+		history_journal_io(fd, &header, sizeof(header), &offset, true);
+	}
+	frame.magic = HISTORY_JOURNAL_MAGIC;
+	frame.sequence = sequence;
+	frame.images = record->nimages - first_image;
+	frame.record = *record;
+	images_size = mul_size(frame.images, sizeof(HistoryPage));
+	INIT_CRC32C(crc);
+	COMP_CRC32C(crc, &frame, sizeof(frame));
+	COMP_CRC32C(crc, &history_pages[first_image], images_size);
+	FIN_CRC32C(crc);
+	history_journal_io(fd, &frame, sizeof(frame), &offset, true);
+	history_journal_io(fd, &history_pages[first_image], images_size, &offset, true);
+	/* The missing checksum makes this an explicitly incomplete tail. */
+	if (AmStartupProcess() && frame.images > 0)
+		INJECTION_POINT("test-page-store-before-history-footer", NULL);
+	history_journal_io(fd, &crc, sizeof(crc), &offset, true);
+	if (pg_fsync(fd) != 0)
+		ereport(ERROR, (errcode_for_file_access(), errmsg("could not sync page history journal: %m")));
+	if (CloseTransientFile(fd) != 0)
+		ereport(ERROR, (errcode_for_file_access(), errmsg("could not close page history journal: %m")));
+	if (sequence == 0)
+		durable_rename(HISTORY_JOURNAL_TEMP, HISTORY_JOURNAL, ERROR);
+	else if (frame.images > 0)
+		INJECTION_POINT("test-page-store-after-history-sync", NULL);
+	history->journal_end = offset;
 }
 
 /* The destination must not be in any published record's image range. */
@@ -203,6 +447,8 @@ history_retain(const Oid *oids, int nrelations)
 	}
 
 	LWLockAcquire(&history->lock, LW_EXCLUSIVE);
+	if (history_durable)
+		history_journal_load();
 	if (history->nrecords != 0)
 	{
 		LWLockRelease(&history->lock);
@@ -230,6 +476,8 @@ history_retain(const Oid *oids, int nrelations)
 		history->locators[i] = rels[i]->rd_locator;
 	history->nrelations = nrelations;
 	history->tli = tli;
+	if (history_durable)
+		history_journal_save(&baseline, 0);
 	history_records[0] = baseline;
 	history->nrecords = 1;
 	LWLockRelease(&history->lock);
@@ -475,7 +723,9 @@ history_replay(XLogReaderState *record, TimeLineID tli)
 		previous_replay_hook(record, tli);
 	if (!history)
 		return;
-	LWLockAcquire(&history->lock, LW_SHARED);
+	LWLockAcquire(&history->lock, history_durable ? LW_EXCLUSIVE : LW_SHARED);
+	if (history_durable)
+		history_journal_load();
 	if (history->nrecords == 0 || history->stopped)
 	{
 		LWLockRelease(&history->lock);
@@ -484,6 +734,9 @@ history_replay(XLogReaderState *record, TimeLineID tli)
 	nrecords = history->nrecords;
 	next = history_records[nrecords - 1];
 	LWLockRelease(&history->lock);
+	/* Restart replays older WAL over md, not over immutable retained images. */
+	if (history_durable && record->EndRecPtr <= next.lsn)
+		return;
 	if (tli != history->tli)
 	{
 		history_stop("timeline changed");
@@ -492,6 +745,13 @@ history_replay(XLogReaderState *record, TimeLineID tli)
 	if (nrecords == HISTORY_MAX_RECORDS)
 	{
 		history_stop("record capacity exhausted");
+		return;
+	}
+	/* Never splice a journal onto a restart point that skipped a history gap. */
+	if (history_durable &&
+		(record->ReadRecPtr < next.lsn || XLogRecGetPrev(record) >= next.lsn))
+	{
+		history_stop("replay does not continue the retained journal");
 		return;
 	}
 	Assert(record->EndRecPtr > next.lsn);
@@ -505,6 +765,8 @@ history_replay(XLogReaderState *record, TimeLineID tli)
 			INJECTION_POINT("test-page-store-after-history-drop", NULL);
 	}
 
+	if (history_durable)
+		history_journal_save(&next, nrecords);
 	/* All files' images and lifecycle changes become visible together. */
 	LWLockAcquire(&history->lock, LW_EXCLUSIVE);
 	history_records[nrecords] = next;

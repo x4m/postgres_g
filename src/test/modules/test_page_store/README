@@ -48,6 +48,12 @@ lagging compute evicts its buffers and refetches older pages while the other
 already sees a later transaction.  Extension, truncation, and reextension must
 not mix up file sizes or pages belonging to different relations.
 
+The seventh test enables a persistent history journal.  An older compute
+continues fetching its pages after storage restarts, including a restartpoint
+after DROP.  Crashes before a journal frame's footer and after fsync but before
+publication preserve the previous cut.  A complete frame with a bad checksum
+is rejected, not mistaken for an incomplete append.
+
 Run with an assertions/injection-points build:
 
     make -C src/test/modules/test_page_store check
@@ -118,9 +124,33 @@ The journal is deliberately simple: a fixed set of physical main forks,
 append-only shared-memory images, at most 65536 record boundaries, and no
 garbage collection.  Reads search the image history linearly.  Do not use it
 for performance claims.  Only startup appends after baseline publication;
-unpublished slots are inaccessible to readers.  Restart clears the history,
+unpublished slots are inaccessible to readers.  By default, restart clears the history,
 and reinitialization cannot overwrite a live history.  This is fail-closed
 view loss, NOT durable historical recovery or a view-lease implementation.
+
+Optional persistent journal
+---------------------------
+
+Set test_page_store.history_durable = true and fsync = on on storage before
+starting it.  The same retain call then writes the baseline through a temporary
+file and durable rename.  Each complete WAL record appends a checksummed frame
+with its new images and all selected files' metadata to PGDATA/test_page_store.history.
+The frame is synced before its cut becomes visible to page requests.
+
+At restart, startup verifies and reloads the journal before collecting more
+history.  Replaying WAL already covered by the journal leaves its images
+unchanged.  A short final frame is removed; a checksum failure in a complete
+frame, wrong system identity, or incompatible local format is an error.  A
+restartpoint beyond a missing journal interval cannot silently continue the
+history.  This is tested with process crashes, not emulated power loss.
+
+This remains a bounded scaffold.  It reloads all retained images into shared
+memory, uses a native local format tied to this build, and syncs once per record.
+Keep history_pages large enough for the existing journal after restart.  There
+is no compaction, view GC, timeline transition, or backup protocol for the
+journal.  Its fsync cost and linear image searches are not representative of
+a mature provider.  Persistent storage history does not yet make the compute's
+per-page markers or its local catalogs recoverable after losing its disk.
 
 Following read-only compute experiment
 -------------------------------------
@@ -190,8 +220,8 @@ Important limitations:
   still wait synchronously in the calling backend with interrupts held.
   The deadline bounds socket waits, not external DNS resolution.  A worker
   transport with a safe cancellation lifetime remains to be implemented.
-* A binary physical service usable before database startup, durable page
-  history, general selective redo, remote WAL durability, and restart
+* A binary physical service usable before database startup, general selective
+  redo, remote WAL durability, and compute restart
   without local persistent state are not implemented.  No throughput claim
   is made.
 * The original single-locator GUCs and timeline GUC use signed-int range;
