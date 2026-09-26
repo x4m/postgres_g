@@ -37,6 +37,11 @@ INSERT, pruning, truncation, and reextension.  Ordered result digests include
 physical TIDs.  The test also exercises both orders of buffer admission versus
 redo, storage lag, and snapshot conflicts when the heap is entirely cold.
 
+The fifth test retains two heaps and a B-tree index together.  It checks page
+identity across relations, per-file truncation, and atomic publication of a
+commit that drops all three files.  Old views remain readable while collection
+is stopped between the first and second file's deletion metadata.
+
 Run with an assertions/injection-points build:
 
     make -C src/test/modules/test_page_store check
@@ -74,6 +79,16 @@ pg_wal_replay_pause().  While paused, call:
 
     SELECT test_page_store_retain('the_table');
 
+To retain several relations at the same baseline, use one call instead:
+
+    SELECT test_page_store_retain_relations(
+        ARRAY['the_table', 'another_table', 'the_table_pkey']::regclass[]);
+
+The immutable registry accepts at most 16 physical relations.  Images include
+the registry entry as well as the block number; sizes and existence are per
+file.  Each record publishes all files' metadata and images together.  This
+does not yet make the following compute's selection multi-relation.
+
 The returned LSN is the baseline view.  Resume storage replay normally; a
 compute frozen at that baseline can keep using it through the same physical
 fetch endpoint.  Recovery-target pause is unsuitable for the storage node:
@@ -94,7 +109,7 @@ an empty segment until checkpoint, and reextension must not expose an older
 image of the same block number.  Unknown special relation updates stop
 collection.  This prototype does not reproduce resource-manager redo.
 
-The journal is deliberately simple: one physical relation's main fork,
+The journal is deliberately simple: a fixed set of physical main forks,
 append-only shared-memory images, at most 65536 record boundaries, and no
 garbage collection.  Reads search the image history linearly.  Do not use it
 for performance claims.  Only startup appends after baseline publication;

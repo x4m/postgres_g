@@ -32,6 +32,7 @@ tests += {
       't/002_remote_smgr.pl',
       't/003_page_history.pl',
       't/004_following_compute.pl',
+      't/005_history_relations.pl',
     ],
   },
 }

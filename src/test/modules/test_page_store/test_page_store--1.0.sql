@@ -52,6 +52,14 @@ LANGUAGE C STRICT VOLATILE PARALLEL UNSAFE;
 
 REVOKE ALL ON FUNCTION test_page_store_retain(regclass) FROM PUBLIC;
 
+-- Arm several main forks atomically at the same baseline.
+CREATE FUNCTION test_page_store_retain_relations(regclass[])
+RETURNS pg_lsn
+AS 'MODULE_PATHNAME', 'test_page_store_retain_relations'
+LANGUAGE C STRICT VOLATILE PARALLEL UNSAFE;
+
+REVOKE ALL ON FUNCTION test_page_store_retain_relations(regclass[]) FROM PUBLIC;
+
 CREATE FUNCTION test_page_store_history_status(
     OUT first_lsn pg_lsn, OUT last_lsn pg_lsn, OUT timeline bigint,
     OUT pages integer, OUT records integer, OUT accepting boolean,
