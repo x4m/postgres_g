@@ -3,20 +3,25 @@
 MODULE_big = test_page_store
 OBJS = \
 	$(WIN32RES) \
-	test_page_store.o
+	test_page_store.o \
+	test_remote_smgr.o
+PG_CPPFLAGS = -I$(libpq_srcdir)
+SHLIB_LINK_INTERNAL = $(libpq)
 PGFILEDESC = "test_page_store - frozen-replay page service prototype"
 
 EXTENSION = test_page_store
 DATA = test_page_store--1.0.sql
 
 TAP_TESTS = 1
-EXTRA_INSTALL = contrib/pageinspect src/test/modules/injection_points
+EXTRA_INSTALL = contrib/pageinspect contrib/pg_buffercache \
+	src/test/modules/injection_points src/test/modules/test_aio
 
 ifdef USE_PGXS
 PG_CONFIG = pg_config
 PGXS := $(shell $(PG_CONFIG) --pgxs)
 include $(PGXS)
 else
+SHLIB_PREREQS = submake-libpq
 subdir = src/test/modules/test_page_store
 top_builddir = ../../../..
 include $(top_builddir)/src/Makefile.global

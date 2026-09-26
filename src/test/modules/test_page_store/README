@@ -5,7 +5,7 @@ This module is a design experiment for compute/storage separation, not a
 production page service.  It exposes a raw main-fork page from a standby
 paused at an explicitly identified system, timeline, and replay position.
 The position is checked again after the page copy.  No historical views
-are retained, and no compute I/O is redirected to this service.
+are retained.
 
 The TAP test illustrates why ordinary redo cannot always reconstruct a
 live writer's evicted pages: heap command IDs and sequence state can differ
@@ -14,8 +14,60 @@ a correctness bug in physical replication.  full_page_writes is disabled
 only to make the command-ID test exercise heap redo rather than an FPI.
 The sequence test assumes the current SEQ_LOG_VALS value.
 
-The test requires pageinspect.  With injection_points available it also
-checks a replay/view change during a page request.  These checks exercise
-the SQL test endpoint, not a remote SMgr, historical page reconstruction,
-selective redo, or remote durability.  This module is discussion scaffolding
-for those changes, not a proposed final public SQL interface.
+The second test connects an SMgr modifier to a physical batch endpoint via
+libpq.  It redirects one relation on a second paused standby, removes its
+local file from the expected path, and verifies real SQL, synchronous reads,
+and AIO buffer completion.  It also tests a stalled request with an acquired
+AIO handle, reconnect after error, and loss of the configured read view.
+pg_buffercache eviction and a complete ordered result digest prevent a warm
+cache or local-file fallback from satisfying the main test.
+
+Run with an assertions/injection-points build:
+
+    make -C src/test/modules/test_page_store check
+
+The tests require pageinspect, pg_buffercache, and test_aio.  Injection point
+schedules are skipped when injection_points is unavailable.  Autotools
+EXTRA_INSTALL supplies these dependencies; Meson test lists include them.
+
+For a manual disposable experiment, use two standbys recovered from the
+same backup to the same named restore point, with recovery_target_action
+set to pause.  On the storage node, create this extension on its upstream
+primary before taking the backup.  On the compute node, configure:
+
+    shared_preload_libraries = 'test_page_store'
+    smgr_chain = 'test_page_store, md'
+    test_page_store.conninfo = 'host=... port=... dbname=postgres user=...'
+    test_page_store.replay_lsn = '...'
+    test_page_store.replay_tli = 1
+    test_page_store.tablespace = 1663
+    test_page_store.database = ...
+    test_page_store.relfilenumber = ...
+
+Use the physical locator, not the table OID, and the storage's *replayed*
+LSN after reaching the target, not the restore-point function's return
+value.  The test script is the exact reproducible setup.  Do not remove
+files from a real cluster: moving the file is only a test oracle.
+
+Important limitations:
+
+* This is not diskless compute.  Startup still performs full local redo;
+  all unselected relations, catalogs, SLRUs, and other state remain local.
+* Only the frozen read-only case is supported.  Executor guards reject
+  queries outside the configured cut, including cache-only queries after
+  promotion.  Do not resume replay, run mutating utility operations, or
+  treat this guard as a replacement for a storage lease.
+* Hint writes for the selected relation are discarded.  Normal tuple or
+  index writes cannot be treated this way on a live writer.
+* Requests use a persistent, nonblocking libpq connection, binary SQL
+  results, at most 64 pages per request, and one in-flight request.  Reads
+  still wait synchronously in the calling backend with interrupts held.
+  The deadline bounds socket waits, not external DNS resolution.  A worker
+  transport with a safe cancellation lifetime remains to be implemented.
+* A binary physical service usable before database startup, retained page
+  history, selective redo, remote WAL durability, and restart without local
+  persistent state are not implemented.  No throughput claim is made.
+* The small test GUCs restrict the selected locator and timeline fields to
+  signed-int range.  They are not a proposed configuration or wire format.
+
+This module is discussion scaffolding, not a proposed public SQL API.

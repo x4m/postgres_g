@@ -18,3 +18,28 @@ LANGUAGE C STRICT VOLATILE PARALLEL UNSAFE;
 
 REVOKE ALL ON FUNCTION
 test_page_store_read(regclass, text, bigint, pg_lsn, bigint) FROM PUBLIC;
+
+CREATE FUNCTION test_page_store_fetch(
+    tablespace oid, database oid, relfilenumber oid, fork_number integer,
+    block_number bigint, block_count integer,
+    expected_system_identifier text, expected_timeline bigint,
+    expected_replay_lsn pg_lsn,
+    OUT fork_exists boolean, OUT nblocks bigint, OUT pages bytea)
+RETURNS record
+AS 'MODULE_PATHNAME', 'test_page_store_fetch'
+LANGUAGE C STRICT VOLATILE PARALLEL UNSAFE;
+
+REVOKE ALL ON FUNCTION test_page_store_fetch(oid, oid, oid, integer, bigint,
+    integer, text, bigint, pg_lsn) FROM PUBLIC;
+
+CREATE FUNCTION test_page_store_io_counts(OUT readv bigint, OUT startreadv bigint)
+RETURNS record
+AS 'MODULE_PATHNAME', 'test_page_store_io_counts'
+LANGUAGE C STRICT VOLATILE PARALLEL UNSAFE;
+
+CREATE FUNCTION test_page_store_read_smgr(regclass, integer)
+RETURNS bytea
+AS 'MODULE_PATHNAME', 'test_page_store_read_smgr'
+LANGUAGE C STRICT VOLATILE PARALLEL UNSAFE;
+
+REVOKE ALL ON FUNCTION test_page_store_read_smgr(regclass, integer) FROM PUBLIC;

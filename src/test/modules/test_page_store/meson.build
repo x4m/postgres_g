@@ -1,6 +1,6 @@
 # Copyright (c) 2026, PostgreSQL Global Development Group
 
-test_page_store_sources = files('test_page_store.c')
+test_page_store_sources = files('test_page_store.c', 'test_remote_smgr.c')
 
 if host_system == 'windows'
   test_page_store_sources += rc_lib_gen.process(win32ver_rc, extra_args: [
@@ -10,7 +10,9 @@ endif
 
 test_page_store = shared_module('test_page_store',
   test_page_store_sources,
-  kwargs: pg_test_mod_args,
+  kwargs: pg_test_mod_args + {
+    'dependencies': pg_test_mod_args['dependencies'] + [libpq],
+  },
 )
 test_install_libs += test_page_store
 
@@ -26,6 +28,7 @@ tests += {
   'tap': {
     'tests': [
       't/001_page_service.pl',
+      't/002_remote_smgr.pl',
     ],
   },
 }

@@ -25,18 +25,22 @@
 #include "funcapi.h"
 #include "miscadmin.h"
 #include "storage/bufmgr.h"
+#include "storage/smgr.h"
 #include "utils/builtins.h"
 #include "utils/injection_point.h"
 #include "utils/pg_lsn.h"
 #include "utils/rel.h"
 
+#include "test_page_store.h"
+
 PG_MODULE_MAGIC;
 
 PG_FUNCTION_INFO_V1(test_page_store_read);
+PG_FUNCTION_INFO_V1(test_page_store_fetch);
 
 /* No waiting here: a request has to identify the already frozen read view. */
-static void
-check_replay_cut(TimeLineID expected_tli, XLogRecPtr expected_lsn)
+void
+test_page_store_check_cut(TimeLineID expected_tli, XLogRecPtr expected_lsn)
 {
 	TimeLineID	tli;
 	XLogRecPtr	lsn;
@@ -101,7 +105,7 @@ test_page_store_read(PG_FUNCTION_ARGS)
 				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
 				 errmsg("storage system identifier does not match")));
 
-	check_replay_cut((TimeLineID) expected_tli, expected_lsn);
+	test_page_store_check_cut((TimeLineID) expected_tli, expected_lsn);
 
 	if (get_call_result_type(fcinfo, NULL, &tupdesc) != TYPEFUNC_COMPOSITE)
 		elog(ERROR, "return type must be a row type");
@@ -130,7 +134,7 @@ test_page_store_read(PG_FUNCTION_ARGS)
 	INJECTION_POINT("test-page-store-after-read", NULL);
 
 	/* A page's pd_lsn alone cannot establish this: unchanged pages are old. */
-	check_replay_cut((TimeLineID) expected_tli, expected_lsn);
+	test_page_store_check_cut((TimeLineID) expected_tli, expected_lsn);
 
 	values[0] = ObjectIdGetDatum(rel->rd_locator.spcOid);
 	values[1] = ObjectIdGetDatum(rel->rd_locator.dbOid);
@@ -141,4 +145,92 @@ test_page_store_read(PG_FUNCTION_ARGS)
 
 	relation_close(rel, AccessShareLock);
 	PG_RETURN_DATUM(HeapTupleGetDatum(tuple));
+}
+
+/*
+ * Physical, bounded reads for the SMgr experiment.  A zero block count asks
+ * only for fork existence and size, including the present-but-empty case.
+ * The old regclass reader remains an independent raw-page test oracle.
+ */
+Datum
+test_page_store_fetch(PG_FUNCTION_ARGS)
+{
+	RelFileLocator locator;
+	int32		forknum = PG_GETARG_INT32(3);
+	int64		blkno = PG_GETARG_INT64(4);
+	int32		count = PG_GETARG_INT32(5);
+	char	   *expected_sysid = text_to_cstring(PG_GETARG_TEXT_PP(6));
+	int64		tli = PG_GETARG_INT64(7);
+	XLogRecPtr	lsn = PG_GETARG_LSN(8);
+	char		sysid[32];
+	SMgrRelation smgr;
+	bool		exists;
+	BlockNumber nblocks;
+	bytea	   *pages;
+	TupleDesc	tupdesc;
+	Datum		values[3];
+	bool		nulls[3] = {false};
+
+	if (!superuser())
+		ereport(ERROR,
+				(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
+				 errmsg("must be superuser to use page service prototype")));
+
+	locator.spcOid = PG_GETARG_OID(0);
+	locator.dbOid = PG_GETARG_OID(1);
+	locator.relNumber = PG_GETARG_OID(2);
+	if (!OidIsValid(locator.spcOid) ||
+		!RelFileNumberIsValid(locator.relNumber) ||
+		forknum < MAIN_FORKNUM || forknum > MAX_FORKNUM ||
+		blkno < 0 || blkno > MaxBlockNumber ||
+		count < 0 || count > TEST_PAGE_STORE_MAX_BLOCKS ||
+		(uint64) blkno + count > InvalidBlockNumber)
+		ereport(ERROR,
+				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+				 errmsg("invalid physical page request")));
+	if (tli <= 0 || tli > PG_UINT32_MAX || XLogRecPtrIsInvalid(lsn))
+		ereport(ERROR,
+				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+				 errmsg("invalid replay cut")));
+
+	snprintf(sysid, sizeof(sysid), UINT64_FORMAT, GetSystemIdentifier());
+	if (strcmp(sysid, expected_sysid) != 0)
+		ereport(ERROR,
+				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+				 errmsg("storage system identifier does not match")));
+	test_page_store_check_cut((TimeLineID) tli, lsn);
+	if (get_call_result_type(fcinfo, NULL, &tupdesc) != TYPEFUNC_COMPOSITE)
+		elog(ERROR, "return type must be a row type");
+
+	smgr = smgropen(locator, INVALID_PROC_NUMBER);
+	exists = smgrexists(smgr, (ForkNumber) forknum);
+	nblocks = exists ? smgrnblocks(smgr, (ForkNumber) forknum) : 0;
+	if (count > 0 && (!exists || (uint64) blkno + count > nblocks))
+		ereport(ERROR,
+				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+				 errmsg("requested blocks are outside the relation")));
+
+	pages = (bytea *) palloc(VARHDRSZ + count * BLCKSZ);
+	SET_VARSIZE(pages, VARHDRSZ + count * BLCKSZ);
+	for (int i = 0; i < count; i++)
+	{
+		BlockNumber block = (BlockNumber) blkno + i;
+		Buffer		buf;
+		Page		copy = (Page) (VARDATA(pages) + i * BLCKSZ);
+
+		buf = ReadBufferWithoutRelcache(locator, (ForkNumber) forknum, block,
+										RBM_NORMAL, NULL, true);
+		LockBuffer(buf, BUFFER_LOCK_SHARE);
+		memcpy(copy, BufferGetPage(buf), BLCKSZ);
+		UnlockReleaseBuffer(buf);
+		/* A shared-buffer image does not necessarily have a valid checksum. */
+		PageSetChecksum(copy, block);
+	}
+
+	INJECTION_POINT("test-page-store-after-fetch", NULL);
+	test_page_store_check_cut((TimeLineID) tli, lsn);
+	values[0] = BoolGetDatum(exists);
+	values[1] = Int64GetDatum(nblocks);
+	values[2] = PointerGetDatum(pages);
+	PG_RETURN_DATUM(HeapTupleGetDatum(heap_form_tuple(tupdesc, values, nulls)));
 }
