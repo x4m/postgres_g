@@ -8,6 +8,18 @@ The position is checked again after the page copy.  An optional, bounded
 history mode retains main-fork and visibility-map versions while storage
 replay continues.
 
+For the complete five-node experiment (writer, two following readers,
+page/redo storage, and WAL inbox), run:
+
+    make -C src/test/modules/test_page_store check \
+      PROVE_TESTS='bench/pgbench.pl'
+
+See bench/README for parameters and the interactive mode.  This fixture uses
+new, disposable clusters and stops them after the workload.  The numbered
+tests below build up individual contracts; their earlier configurations
+are not instructions for the complete setup.  Recovery into a fresh writable
+epoch is covered by 023_writer_activation.pl, as described below.
+
 The TAP test illustrates why ordinary redo cannot always reconstruct a
 live writer's evicted pages: heap command IDs and sequence state can differ
 from the writer's runtime state.  This is expected recovery behavior, not
@@ -124,9 +136,8 @@ Run with an assertions/injection-points build:
     make -C src/test/modules/test_page_store check
 
 The tests require pageinspect, pg_buffercache, pg_visibility, pg_freespacemap,
-amcheck, and
-test_aio.  Injection
-point schedules are skipped when injection_points is unavailable.  Autotools
+amcheck, and test_aio.  Injection point schedules are skipped when
+injection_points is unavailable.  Autotools
 EXTRA_INSTALL supplies these dependencies; Meson test lists include them.
 
 For a manual disposable experiment, use two standbys recovered from the
@@ -441,8 +452,9 @@ reports occupied/capacity pages and image read/write counters.
 The file PGDATA/test_page_store.writer_epoch prevents restart, even after
 clean shutdown, because checkpoints have not made the overlay durable.
 Do not remove this guard or disable the extension to reuse the PGDATA.
-Recovering a new writable epoch from storage is a required subsequent step;
-the existing read-only replacement test does not establish that path.
+Recovering a new writable epoch requires a fresh seed and retained WAL;
+see "Activating a recovered remote writer" below.  The read-only replacement
+test alone does not establish that path.
 The optional WAL barrier below waits for a storage flush in addition to the
 local flush.  It does not recover the lost overlay or fence writers.  This
 experiment must not hold real data.
@@ -633,7 +645,8 @@ replacement read-only compute recovers from the metadata seed.  Values/TIDs,
 catalog changes, amcheck, absence of local files and actual remote reads are
 checked.  An independent byte comparison includes every exported byte and
 zero padding.  The test stops at a known restore point, not arbitrary WAL EOF.
-Activation of a new writable epoch remains a separate, unimplemented step.
+Activation of a new writable epoch is covered separately by
+023_writer_activation.pl below.
 
 021_wal_record_frontier.pl checks complete records, partial record and page
 headers, continuation fragments and segment switches.  Archive recovery from
