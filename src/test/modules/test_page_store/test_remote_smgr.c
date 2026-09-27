@@ -1426,6 +1426,13 @@ remote_read_complete(PgAioHandle *ioh, PgAioResult result, uint8 flags)
 	return result;
 }
 
+/* Startup FATAL exits do not run transaction resource-owner cleanup. */
+static void
+remote_read_abort(int code, Datum arg)
+{
+	pgaio_io_release((PgAioHandle *) DatumGetPointer(arg));
+}
+
 static void
 remote_startreadv(PgAioHandle *ioh, SMgrRelation reln, ForkNumber forknum,
 				  BlockNumber blocknum, void **buffers, BlockNumber nblocks,
@@ -1441,20 +1448,25 @@ remote_startreadv(PgAioHandle *ioh, SMgrRelation reln, ForkNumber forknum,
 		return;
 	}
 	startreadv_count++;
-	capacity = pgaio_io_get_iovec(ioh, &iov);
-	if (nblocks > capacity || nblocks > TEST_PAGE_STORE_MAX_BLOCKS ||
-		(follow_replay && nblocks != 1))
-		elog(ERROR, "remote read exceeds the batch limit");
-	for (BlockNumber i = 0; i < nblocks; i++)
+	PG_ENSURE_ERROR_CLEANUP(remote_read_abort, PointerGetDatum(ioh));
 	{
-		iov[i].iov_base = buffers[i];
-		iov[i].iov_len = BLCKSZ;
+		capacity = pgaio_io_get_iovec(ioh, &iov);
+		if (nblocks > capacity || nblocks > TEST_PAGE_STORE_MAX_BLOCKS ||
+			(follow_replay && nblocks != 1))
+			elog(ERROR, "remote read exceeds the batch limit");
+		for (BlockNumber i = 0; i < nblocks; i++)
+		{
+			iov[i].iov_base = buffers[i];
+			iov[i].iov_len = BLCKSZ;
+		}
+		if (forknum == VISIBILITYMAP_FORKNUM)
+			INJECTION_POINT("test-page-store-before-remote-vm-read", NULL);
+		remote_fetch(reln, forknum, blocknum, buffers, nblocks, &size);
+		pgaio_io_set_target_smgr(ioh, reln, forknum, blocknum, nblocks, false);
+		pgaio_io_register_callbacks(ioh, read_callback, 0);
 	}
-	if (forknum == VISIBILITYMAP_FORKNUM)
-		INJECTION_POINT("test-page-store-before-remote-vm-read", NULL);
-	remote_fetch(reln, forknum, blocknum, buffers, nblocks, &size);
-	pgaio_io_set_target_smgr(ioh, reln, forknum, blocknum, nblocks, false);
-	pgaio_io_register_callbacks(ioh, read_callback, 0);
+	PG_END_ENSURE_ERROR_CLEANUP(remote_read_abort, PointerGetDatum(ioh));
+	/* The completion routine consumes the handle, so remove cleanup first. */
 	pgaio_io_complete_readv(ioh, nblocks, nblocks * BLCKSZ);
 }
 

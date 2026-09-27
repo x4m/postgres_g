@@ -75,7 +75,6 @@ static PageTransportQueue *queue;
 static PageRequestSlot *slots;
 static int	owned_slot = -1;
 static uint64 owned_generation;
-static bool cleanup_registered;
 
 static void queue_request(void *arg);
 static void queue_initialize(void *arg);
@@ -142,6 +141,7 @@ queue_initialize(void *arg)
 static void
 queue_release(int code, Datum arg)
 {
+	ConditionVariableCancelSleep();
 	if (owned_slot < 0)
 		return;
 	LWLockAcquire(&queue->lock, LW_EXCLUSIVE);
@@ -171,12 +171,8 @@ test_page_store_worker_exchange(StringInfo request, StringInfo response,
 {
 	Assert(owned_slot == -1 && request->len <= TEST_PAGE_SERVICE_MAX_REQUEST);
 	Assert(!test_page_store_transport_worker);
-	if (!cleanup_registered)
-	{
-		before_shmem_exit(queue_release, 0);
-		cleanup_registered = true;
-	}
-	PG_TRY();
+	/* Nest with the caller's transient cleanup, including a first AIO read. */
+	PG_ENSURE_ERROR_CLEANUP(queue_release, (Datum) 0);
 	{
 		PageRequestSlot *slot;
 
@@ -240,13 +236,7 @@ test_page_store_worker_exchange(StringInfo request, StringInfo response,
 		appendBinaryStringInfo(response, slot->response, slot->response_len);
 		queue_release(0, (Datum) 0);
 	}
-	PG_CATCH();
-	{
-		ConditionVariableCancelSleep();
-		queue_release(0, (Datum) 0);
-		PG_RE_THROW();
-	}
-	PG_END_TRY();
+	PG_END_ENSURE_ERROR_CLEANUP(queue_release, (Datum) 0);
 }
 
 /* Do not leave callers waiting for an answer from an exited worker. */
