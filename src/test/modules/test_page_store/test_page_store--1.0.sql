@@ -93,3 +93,9 @@ CREATE FUNCTION test_page_store_transport_status(
 RETURNS record
 AS 'MODULE_PATHNAME', 'test_page_store_transport_status'
 LANGUAGE C STRICT VOLATILE PARALLEL UNSAFE;
+
+CREATE FUNCTION test_page_store_overlay_status(
+    OUT pages bigint, OUT capacity bigint, OUT reads bigint, OUT writes bigint)
+RETURNS record
+AS 'MODULE_PATHNAME', 'test_page_store_overlay_status'
+LANGUAGE C STRICT VOLATILE PARALLEL UNSAFE;

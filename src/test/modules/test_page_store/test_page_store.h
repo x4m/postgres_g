@@ -22,6 +22,17 @@
 #define TEST_PAGE_SERVICE_MAX_RESPONSE (TEST_PAGE_SERVICE_MAX_REQUEST + 9 + TEST_PAGE_STORE_MAX_BLOCKS * BLCKSZ)
 
 extern void test_page_store_protocol_init(void);
+extern void test_page_store_overlay_init(int nrelations, int max_blocks);
+extern bool test_page_store_overlay_enabled(void);
+extern bool test_page_store_overlay_read(int relation, ForkNumber forknum, BlockNumber block,
+										 void **buffers, BlockNumber count, BlockNumber *nblocks);
+extern void test_page_store_overlay_write(int relation, ForkNumber forknum, BlockNumber block,
+										  const void **buffers, BlockNumber count, bool extending);
+extern void test_page_store_overlay_create(int relation, ForkNumber forknum);
+extern void test_page_store_overlay_truncate(int relation, ForkNumber forknum, BlockNumber size,
+											 bool unlinking);
+extern bool test_page_store_baseline_fetch(int relation, ForkNumber forknum, BlockNumber block,
+										   void **buffers, BlockNumber count, BlockNumber *nblocks);
 extern void test_page_store_worker_init(bool physical_service);
 extern bool test_page_store_worker_enabled(void);
 extern bool test_page_store_transport_worker;

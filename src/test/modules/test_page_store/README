@@ -110,6 +110,15 @@ without a storage request.  Truncation, reextension, standalone FSM full-page
 images and compute restart must preserve exact SQL results and amcheck output
 without recreating those files.
 
+The sixteenth test makes the original primary a writable compute for the
+selected heap/B-tree and their VM/FSM forks.  After removing their local files,
+unchanged pages come from an immutable storage baseline and written pages go
+to a bounded shared-memory overlay.  Eviction must preserve live command IDs,
+combo IDs, an older cursor's snapshot, and subtransaction outcomes.  The same
+WAL also drives storage and a following read-only compute.  Exact values/TIDs,
+amcheck, extension, truncation, reextension, DROP and the writer restart guard
+are checked.  This is a single-epoch runtime experiment, not remote durability.
+
 Run with an assertions/injection-points build:
 
     make -C src/test/modules/test_page_store check
@@ -403,6 +412,41 @@ The first donor still uses an ordinary seed, and unselected relation files
 are included in all subsequent seeds.  This does not cover all metadata
 lifecycle paths or turn the existing writer into a remote-storage compute.
 
+Writable epoch experiment
+-------------------------
+
+Set test_page_store.writer_overlay_pages > 0 on a primary to enable the
+experimental exact-image overlay, instead of frozen/following mode.  Keep
+the page-service identity, locators and baseline configuration.  This must
+be a quiescent baseline: no selected-relation writes may occur between its
+capture and the clean stop used to configure the writer.  016_writer_overlay.pl
+demonstrates this disposable setup; it is not an online migration protocol.
+
+The baseline must remain available for the entire epoch.  Reads of untouched
+pages use storage; every write and extension retains an exact image, including
+non-WAL runtime state, until the file is truncated/dropped or the epoch ends.
+Commit and page LSN do not evict overlay images.  FSM starts with no free-space
+hints but thereafter retains its runtime images too.  The usual buffer I/O,
+relation extension, and truncation locking serialize operations on each page.
+No overlay lock is held across a network request.
+
+The image pool has a fixed capacity.  New images fail when it is exhausted;
+in a critical section this can stop the server.  This is fail-closed resource
+accounting, not a production backpressure policy.  An extra dense mapping
+uses four bytes per configured block per selected relation/fork, in addition
+to the image pool.  There is no eviction/GC or guarantee that the overlay
+stays small relative to the database.  test_page_store_overlay_status()
+reports occupied/capacity pages and image read/write counters.
+
+The file PGDATA/test_page_store.writer_epoch prevents restart, even after
+clean shutdown, because checkpoints have not made the overlay durable.
+Do not remove this guard or disable the extension to reuse the PGDATA.
+Recovering a new writable epoch from storage is a required subsequent step;
+the existing read-only replacement test does not establish that path.
+Local WAL still supplies the normal primary's flush acknowledgements.  No
+remote flush contract, writer fencing, or protection from losing both writer
+and unreceived WAL is claimed.  This experiment must not hold real data.
+
 Important limitations:
 
 * This is not diskless compute.  Unselected relations, catalogs, SLRUs, and
@@ -410,20 +454,22 @@ Important limitations:
   B-tree main forks and VM; frozen mode leaves startup redo unchanged.
 * Size-reporting functions still stat local files, bypassing SMgr.  In this
   experiment pg_relation_size() is not an oracle for a remote relation.
-* Both compute modes are read-only.  Executor guards reject queries outside
+* Frozen and following modes are read-only.  Executor guards reject queries outside
   the configured mode, including cache-only queries after promotion.  Do
   not resume a frozen compute, run mutating utility operations, or treat
   these guards as a replacement for a storage lease.
-* Hint writes for the selected relation are discarded.  Normal tuple or
-  index writes cannot be treated this way on a live writer.
+* Read-only compute discards hint writes for the selected relation.  Writable
+  mode must retain exact images instead; its runtime overlay is not durable.
 * Requests use a persistent, nonblocking libpq connection, either binary SQL
   results or the physical service, at most 64 pages per request, and one
   in-flight request.  Reads
   still wait synchronously in the calling backend with interrupts held.
-  The deadline bounds socket waits, not external DNS resolution.  A worker
-  transport with a safe cancellation lifetime remains to be implemented.
-* General selective redo, remote WAL durability, and a writable compute are
-  not implemented.
+  The deadline bounds socket waits, not external DNS resolution.  The shared
+  worker handles late replies safely, but asynchronous SMgr completion and
+  interruptible caller waits remain to be implemented.
+* General selective redo, remote WAL durability, and recoverable writable
+  compute are not implemented.  The writer overlay is only a single-epoch
+  experiment; sequence/build/extension-AM paths have not been tested with it.
   Replacement from a published seed works for the selected-relation experiment,
   but seed publication and retention remain operator-managed.  No throughput
   claim is made.

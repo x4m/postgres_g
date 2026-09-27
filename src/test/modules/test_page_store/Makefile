@@ -5,6 +5,7 @@ OBJS = \
 	$(WIN32RES) \
 	test_page_store.o \
 	test_page_history.o \
+	test_page_overlay.o \
 	test_page_protocol.o \
 	test_page_worker.o \
 	test_remote_smgr.o

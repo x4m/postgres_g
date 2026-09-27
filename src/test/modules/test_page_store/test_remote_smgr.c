@@ -1,12 +1,13 @@
 /*-------------------------------------------------------------------------
  *
  * test_remote_smgr.c
- *      Read-only SMgr consumers of the test page service.
+ *      SMgr consumers of the test page service.
  *
  * Frozen mode redirects selected physical relations on a paused standby.
  * Following mode redirects their main and VM forks and replays heap and
  * B-tree WAL into cached pages.
- * All other relations and forks still use md; neither mode is diskless compute.
+ * The optional single-epoch writer retains exact runtime images in an overlay.
+ * Unselected relations still use md; none of these modes is diskless compute.
  * SQL remains an independent test endpoint.  The optional physical transport
  * uses a database-independent replication connection and binary messages.
  *
@@ -237,6 +238,10 @@ _PG_init(void)
 	DefineCustomIntVariable("test_page_store.follow_max_blocks", "Maximum tracked blocks per relation fork.",
 							NULL, &follow_max_blocks, 65536, 1, 1048576,
 							PGC_POSTMASTER, 0, NULL, NULL, NULL);
+	test_page_store_overlay_init(nselected, follow_max_blocks);
+	if (test_page_store_overlay_enabled() &&
+		(follow_replay || test_page_store_history_enabled()))
+		elog(ERROR, "writer overlay cannot run on a following compute or page history node");
 	if (follow_replay && test_page_store_history_enabled())
 		elog(ERROR, "following compute and page history must run on different nodes");
 	if (follow_replay && nselected == 0)
@@ -365,6 +370,8 @@ remote_relation(SMgrRelation reln, ForkNumber forknum)
 {
 	if (SmgrIsTemp(reln) || !selected_locator(reln->smgr_rlocator.locator))
 		return false;
+	if (test_page_store_overlay_enabled())
+		return true;
 	if (follow_replay)
 		return compute_active() && (forknum == MAIN_FORKNUM ||
 									forknum == VISIBILITYMAP_FORKNUM || forknum == FSM_FORKNUM);
@@ -423,6 +430,12 @@ compute_check(void)
 {
 	TimeLineID	tli;
 
+	if (test_page_store_overlay_enabled())
+	{
+		if (RecoveryInProgress() || GetWALInsertionTimeLine() != page_tli)
+			elog(ERROR, "writer overlay requires its original primary timeline");
+		return;
+	}
 	if (!follow_replay)
 	{
 		test_page_store_check_cut(page_tli, pg_lsn_in_safe(page_lsn, NULL));
@@ -1029,6 +1042,12 @@ remote_fetch(SMgrRelation reln, ForkNumber forknum, BlockNumber blocknum,
 	bool		exists;
 
 	Assert(!INTERRUPTS_CAN_BE_PROCESSED());
+	if (test_page_store_overlay_enabled())
+	{
+		compute_check();
+		return test_page_store_overlay_read(selected_relation(reln->smgr_rlocator.locator),
+											forknum, blocknum, buffers, count, nblocks);
+	}
 	if (follow_replay)
 	{
 		/*
@@ -1066,6 +1085,18 @@ remote_fetch(SMgrRelation reln, ForkNumber forknum, BlockNumber blocknum,
 							 buffers, count, nblocks, lsn, deadline);
 	compute_check();
 	return exists;
+}
+
+/* Writer reads an immutable pre-epoch baseline only for never-written pages. */
+bool
+test_page_store_baseline_fetch(int relation, ForkNumber forknum, BlockNumber block,
+							   void **buffers, BlockNumber count, BlockNumber *nblocks)
+{
+	TimestampTz deadline = TimestampTzPlusMilliseconds(GetCurrentTimestamp(), request_timeout);
+
+	Assert(relation >= 0 && relation < nselected);
+	return remote_fetch_at(selected_locators[relation], forknum, block, buffers,
+						   count, nblocks, pg_lsn_in_safe(page_lsn, NULL), deadline);
 }
 
 /* The explicit cut also allows metadata lookup before compute activation. */
@@ -1155,6 +1186,8 @@ remote_create(RelFileLocator old, SMgrRelation reln, ForkNumber forknum,
 	else
 	{
 		compute_check();
+		if (test_page_store_overlay_enabled())
+			test_page_store_overlay_create(selected_relation(reln->smgr_rlocator.locator), forknum);
 		if (follow_replay && forknum == FSM_FORKNUM)
 			pg_atomic_write_u32(&compute_file(reln->smgr_rlocator.locator, forknum)->exists, 1);
 	}
@@ -1166,7 +1199,17 @@ remote_unlink(RelFileLocatorBackend locator, ForkNumber forknum,
 {
 	SMgrRelation smgr = smgropen(locator.locator, locator.backend);
 
-	if (follow_replay && remote_relation(smgr, forknum))
+	if (test_page_store_overlay_enabled() && remote_relation(smgr, forknum))
+	{
+		if (forknum == InvalidForkNumber)
+		{
+			for (ForkNumber f = MAIN_FORKNUM; f <= MAX_FORKNUM; f++)
+				test_page_store_overlay_truncate(selected_relation(locator.locator), f, 0, true);
+		}
+		else
+			test_page_store_overlay_truncate(selected_relation(locator.locator), forknum, 0, true);
+	}
+	else if (follow_replay && remote_relation(smgr, forknum))
 	{
 		ComputeFile *file = compute_file(locator.locator, forknum);
 
@@ -1183,6 +1226,9 @@ remote_zeroextend(SMgrRelation reln, ForkNumber forknum, BlockNumber block,
 {
 	if (!remote_relation(reln, forknum))
 		smgr_zeroextend_next(reln, forknum, block, count, skipFsync, next + 1);
+	else if (test_page_store_overlay_enabled())
+		test_page_store_overlay_write(selected_relation(reln->smgr_rlocator.locator),
+									  forknum, block, NULL, count, true);
 	else
 	{
 		ComputeFile *file;
@@ -1203,6 +1249,9 @@ remote_extend(SMgrRelation reln, ForkNumber forknum, BlockNumber block,
 {
 	if (!remote_relation(reln, forknum))
 		smgr_extend_next(reln, forknum, block, buffer, skipFsync, next + 1);
+	else if (test_page_store_overlay_enabled())
+		test_page_store_overlay_write(selected_relation(reln->smgr_rlocator.locator),
+									  forknum, block, &buffer, 1, true);
 	else
 	{
 		if (!PageIsNew((Page) buffer))
@@ -1217,6 +1266,9 @@ remote_truncate(SMgrRelation reln, ForkNumber forknum, BlockNumber old,
 {
 	if (!remote_relation(reln, forknum))
 		smgr_truncate_next(reln, forknum, old, size, next + 1);
+	else if (test_page_store_overlay_enabled())
+		test_page_store_overlay_truncate(selected_relation(reln->smgr_rlocator.locator),
+										 forknum, size, false);
 	else if (follow_replay && AmStartupProcess())
 		pg_atomic_write_u32(&compute_file(reln->smgr_rlocator.locator, forknum)->nblocks, size);
 	else
@@ -1352,13 +1404,16 @@ remote_startreadv(PgAioHandle *ioh, SMgrRelation reln, ForkNumber forknum,
 	pgaio_io_complete_readv(ioh, nblocks, nblocks * BLCKSZ);
 }
 
-/* Discard writes, but never let eviction lose a replayed page's lower bound. */
+/* Keep exact writer images, or a replayed read-only page's lower bound. */
 static void
 remote_writev(SMgrRelation reln, ForkNumber forknum, BlockNumber blocknum,
 			  const void **buffers, BlockNumber nblocks, bool skipFsync, SmgrChainIndex next)
 {
 	if (!remote_relation(reln, forknum))
 		smgr_writev_next(reln, forknum, blocknum, buffers, nblocks, skipFsync, next + 1);
+	else if (test_page_store_overlay_enabled())
+		test_page_store_overlay_write(selected_relation(reln->smgr_rlocator.locator),
+									  forknum, blocknum, buffers, nblocks, false);
 	else
 	{
 		compute_check();
@@ -1422,8 +1477,8 @@ test_page_store_read_smgr(PG_FUNCTION_ARGS)
 
 	if (!superuser())
 		elog(ERROR, "must be superuser to use page service prototype");
-	if (follow_replay)
-		elog(ERROR, "direct reads bypass following compute's buffer admission protocol");
+	if (follow_replay || test_page_store_overlay_enabled())
+		elog(ERROR, "direct reads bypass compute's buffer admission protocol");
 	if (block < 0)
 		elog(ERROR, "invalid block number");
 	rel = relation_open(PG_GETARG_OID(0), AccessShareLock);
