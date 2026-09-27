@@ -99,3 +99,21 @@ CREATE FUNCTION test_page_store_overlay_status(
 RETURNS record
 AS 'MODULE_PATHNAME', 'test_page_store_overlay_status'
 LANGUAGE C STRICT VOLATILE PARALLEL UNSAFE;
+
+CREATE FUNCTION test_page_store_wal_status(
+    OUT flushed pg_lsn, OUT requested pg_lsn, OUT calls bigint, OUT waiters integer)
+RETURNS record
+AS 'MODULE_PATHNAME', 'test_page_store_wal_status'
+LANGUAGE C STRICT VOLATILE PARALLEL UNSAFE;
+
+CREATE FUNCTION test_page_store_flush_wal(pg_lsn, boolean DEFAULT false)
+RETURNS void
+AS 'MODULE_PATHNAME', 'test_page_store_flush_wal'
+LANGUAGE C STRICT VOLATILE PARALLEL UNSAFE;
+
+REVOKE ALL ON FUNCTION test_page_store_flush_wal(pg_lsn, boolean) FROM PUBLIC;
+
+CREATE FUNCTION test_page_store_wal_needs_flush(pg_lsn)
+RETURNS boolean
+AS 'MODULE_PATHNAME', 'test_page_store_wal_needs_flush'
+LANGUAGE C STRICT VOLATILE PARALLEL UNSAFE;

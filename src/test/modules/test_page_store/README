@@ -443,9 +443,51 @@ clean shutdown, because checkpoints have not made the overlay durable.
 Do not remove this guard or disable the extension to reuse the PGDATA.
 Recovering a new writable epoch from storage is a required subsequent step;
 the existing read-only replacement test does not establish that path.
-Local WAL still supplies the normal primary's flush acknowledgements.  No
-remote flush contract, writer fencing, or protection from losing both writer
-and unreceived WAL is claimed.  This experiment must not hold real data.
+The optional WAL barrier below waits for a storage flush in addition to the
+local flush.  It does not recover the lost overlay or fence writers.  This
+experiment must not hold real data.
+
+Additional WAL durability experiment
+-----------------------------------
+
+On the writer, set test_page_store.wal_durability_slot to the physical slot
+used exclusively by the trusted storage receiver.  The receiver must have
+fsync enabled; this is an operator precondition, not a negotiated capability.
+test_page_store.replay_tli is also the expected streaming timeline.  Both
+settings are fixed for the postmaster's lifetime.  The barrier is independent
+of synchronous_standby_names and synchronous_commit; it applies whenever a
+caller needs a WAL flush, including buffer/SLRU writes and checkpoints.
+Async commits do not themselves require an immediate durable flush.
+
+XLogFlush first flushes local WAL, then waits for the selected receiver's
+flush feedback.  XLogNeedsFlush uses the same additional frontier.  Receiver
+write/replay positions and other slots cannot satisfy it.  GetFlushRecPtr and
+the WAL writer retain their local semantics so the physical walsender can
+ship bytes while the caller waits.  The callback uses only shared atomics
+and a condition variable, not a new connection or worker per flush.  Its wait
+event is Extension, and test_page_store_wal_status() exposes the frontier,
+requested position, call count and waiter count.
+
+The callback can run inside a critical section or with buffer/SLRU locks.
+Cancellation outside a critical section raises ERROR, not a successful flush;
+inside a critical section interrupts remain held.  wal_flush_timeout bounds
+the wait and raises ERROR, hence PANIC when the caller is in a critical
+section.  A missing receiver never silently downgrades the guarantee.  Keep
+storage running until writer shutdown and its final checkpoint complete.
+
+017_wal_durability.pl stops the receiver before fsync, separately tests the
+local-already-flushed path, a commit, cancellation and a checkpoint, then
+shows that paused storage replay does not prevent a durable commit.  The
+writer-overlay scenario in 016 also enables this barrier with fsync on.
+
+This is one trusted storage instance, not quorum durability or writer fencing.
+It assumes storage retains both the acknowledged WAL and a usable seed/history.
+A clean primary start is supported by the fixture; writer crash recovery,
+promotion and timeline changes are NOT implemented by this barrier.  In
+particular, end-of-recovery flushing needs a transport that can make progress
+before ordinary writer connections are accepted.  That is a required next
+step, not a reason to skip the barrier during recovery.  The exact-image
+writer's restart guard remains in force.
 
 Important limitations:
 
@@ -467,8 +509,9 @@ Important limitations:
   The deadline bounds socket waits, not external DNS resolution.  The shared
   worker handles late replies safely, but asynchronous SMgr completion and
   interruptible caller waits remain to be implemented.
-* General selective redo, remote WAL durability, and recoverable writable
-  compute are not implemented.  The writer overlay is only a single-epoch
+* General selective redo and recoverable writable compute are not implemented.
+  Remote WAL durability is the single-receiver experiment above, not a
+  replacement/recovery or fencing protocol.  The overlay is a single-epoch
   experiment; sequence/build/extension-AM paths have not been tested with it.
   Replacement from a published seed works for the selected-relation experiment,
   but seed publication and retention remain operator-managed.  No throughput

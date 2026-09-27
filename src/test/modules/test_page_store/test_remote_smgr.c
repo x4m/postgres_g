@@ -239,6 +239,7 @@ _PG_init(void)
 							NULL, &follow_max_blocks, 65536, 1, 1048576,
 							PGC_POSTMASTER, 0, NULL, NULL, NULL);
 	test_page_store_overlay_init(nselected, follow_max_blocks);
+	test_page_store_durability_init(page_tli);
 	if (test_page_store_overlay_enabled() &&
 		(follow_replay || test_page_store_history_enabled()))
 		elog(ERROR, "writer overlay cannot run on a following compute or page history node");

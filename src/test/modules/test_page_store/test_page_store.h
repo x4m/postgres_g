@@ -22,6 +22,7 @@
 #define TEST_PAGE_SERVICE_MAX_RESPONSE (TEST_PAGE_SERVICE_MAX_REQUEST + 9 + TEST_PAGE_STORE_MAX_BLOCKS * BLCKSZ)
 
 extern void test_page_store_protocol_init(void);
+extern void test_page_store_durability_init(TimeLineID tli);
 extern void test_page_store_overlay_init(int nrelations, int max_blocks);
 extern bool test_page_store_overlay_enabled(void);
 extern bool test_page_store_overlay_read(int relation, ForkNumber forknum, BlockNumber block,

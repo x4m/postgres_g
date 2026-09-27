@@ -2,8 +2,9 @@
 #
 # Runtime images, unlike crash redo, must preserve a live backend's command
 # IDs.  Keep exact images in an epoch-local overlay while the ordinary WAL
-# stream still drives storage and a read-only compute.  This does not test
-# remote WAL durability or restarting the writer after loss of that overlay.
+# stream still drives storage and a read-only compute.  WAL flushes must also
+# reach storage; restarting the writer after loss of its overlay is not yet
+# supported.
 use strict;
 use warnings FATAL => 'all';
 
@@ -16,6 +17,7 @@ $writer->init(allows_streaming => 1, extra => ['--no-data-checksums']);
 $writer->append_conf(
 	'postgresql.conf', q{
 autovacuum = off
+fsync = on
 checkpoint_timeout = '1h'
 full_page_writes = off
 wal_log_hints = off
@@ -106,6 +108,7 @@ $writer->stop;
 $writer->append_conf(
 	'postgresql.conf', $common_config . q{
 test_page_store.writer_overlay_pages = 2048
+test_page_store.wal_durability_slot = 'overlay_storage'
 });
 my @local_files;
 for my $node ($writer, $reader)
@@ -260,8 +263,8 @@ is( $writer->safe_psql(
 		'postgres', 'SELECT pages FROM test_page_store_overlay_status()'),
 	'0',
 	'DROP releases selected main, VM and FSM images without reading storage');
-$storage->stop;
 $writer->stop;
+$storage->stop;
 ok( -f $writer->data_dir . '/test_page_store.writer_epoch',
 	'epoch guard survives even a clean shutdown');
 command_fails_like(

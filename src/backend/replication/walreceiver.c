@@ -77,6 +77,7 @@
 #include "utils/acl.h"
 #include "utils/builtins.h"
 #include "utils/guc.h"
+#include "utils/injection_point.h"
 #include "utils/pg_lsn.h"
 #include "utils/ps_status.h"
 #include "utils/timestamp.h"
@@ -1098,6 +1099,7 @@ XLogWalRcvFlush(bool dying, TimeLineID tli)
 	{
 		WalRcvData *walrcv = WalRcv;
 
+		INJECTION_POINT("walreceiver-before-wal-flush", NULL);
 		issue_xlog_fsync(recvFile, recvSegNo, tli);
 
 		LogstreamResult.Flush = LogstreamResult.Write;

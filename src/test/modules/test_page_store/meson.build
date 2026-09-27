@@ -2,7 +2,8 @@
 
 test_page_store_sources = files(
   'test_page_store.c', 'test_page_history.c', 'test_page_protocol.c',
-  'test_page_worker.c', 'test_page_overlay.c', 'test_remote_smgr.c')
+  'test_page_worker.c', 'test_page_overlay.c', 'test_wal_durability.c',
+  'test_remote_smgr.c')
 
 if host_system == 'windows'
   test_page_store_sources += rc_lib_gen.process(win32ver_rc, extra_args: [
@@ -28,6 +29,9 @@ tests += {
   'sd': meson.current_source_dir(),
   'bd': meson.current_build_dir(),
   'tap': {
+    'env': {
+      'enable_injection_points': get_option('injection_points') ? 'yes' : 'no',
+    },
     'tests': [
       't/001_page_service.pl',
       't/002_remote_smgr.pl',
@@ -45,6 +49,7 @@ tests += {
       't/014_transport_worker.pl',
       't/015_disposable_fsm.pl',
       't/016_writer_overlay.pl',
+      't/017_wal_durability.pl',
     ],
   },
 }
