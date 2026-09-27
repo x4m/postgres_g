@@ -116,8 +116,11 @@ AND relfilenode = $locators{$name} AND relforknumber = 0
 sub evict
 {
 	my ($name) = @_;
-	$compute->safe_psql('postgres',
-		"SELECT * FROM pg_buffercache_evict_relation('$name')");
+	# Eviction can skip a buffer briefly pinned by a background writer.
+	# Wait for the operation to succeed before requiring a wholly cold scan.
+	$compute->poll_query_until('postgres',
+		"SELECT buffers_skipped = 0 FROM pg_buffercache_evict_relation('$name')"
+	) or die "could not evict $name";
 	is(cached_pages($name), '0', "no cached $name main pages remain");
 }
 
@@ -130,8 +133,16 @@ sub status
 
 sub catchup
 {
-	$primary->wait_for_catchup($storage);
-	$primary->wait_for_catchup($compute);
+	# VACUUM need not flush its last WAL record.  Waiting for the current
+	# write position can leave metapage initialization racing later eviction.
+	# Use an exact record end, including when the insertion position happens
+	# to have advanced over a page header.
+	my $target = $primary->safe_psql('postgres',
+		"SELECT pg_create_restore_point('btree-catchup')");
+	$primary->safe_psql('postgres',
+		"SELECT test_page_store_flush_wal('$target', false)");
+	$primary->wait_for_catchup($storage, 'replay', $target);
+	$primary->wait_for_catchup($compute, 'replay', $target);
 }
 
 # Preserve output order as well as every value and physical TID.  The
