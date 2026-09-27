@@ -22,8 +22,9 @@ test_page_store = shared_module('test_page_store',
 test_install_libs += test_page_store
 
 test_wal_fetch = executable('test_wal_fetch',
-  files('test_wal_fetch.c'),
-  dependencies: [frontend_code, libpq],
+  files('test_wal_fetch.c') + xlogreader_sources,
+  dependencies: [frontend_code, libpq, lz4, zstd],
+  c_args: ['-DFRONTEND'],
   kwargs: default_bin_args + {'install': false},
 )
 testprep_targets += test_wal_fetch
@@ -63,6 +64,7 @@ tests += {
       't/018_wal_store.pl',
       't/019_early_wal_sender.pl',
       't/020_inbox_recovery.pl',
+      't/021_wal_record_frontier.pl',
     ],
   },
 }

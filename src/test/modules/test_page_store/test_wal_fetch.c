@@ -20,6 +20,7 @@
 #include <unistd.h>
 
 #include "access/xlog_internal.h"
+#include "access/xlogreader.h"
 #include "common/file_utils.h"
 #include "common/logging.h"
 #include "libpq-fe.h"
@@ -36,6 +37,7 @@ static uint64 start_lsn;
 static uint64 end_lsn;
 static uint32 segment_size;
 static instr_time request_start;
+static bool reached_end;
 
 static uint64
 parse_number(const char *value)
@@ -239,6 +241,109 @@ write_all(int fd, const char *data, size_t size)
 	}
 }
 
+static void
+open_segment(XLogReaderState *reader, XLogSegNo segno, TimeLineID *tli)
+{
+	char		filename[MAXFNAMELEN];
+	char		path[MAXPGPATH];
+
+	XLogFileName(filename, *tli, segno, reader->segcxt.ws_segsize);
+	snprintf(path, sizeof(path), "%s/%s", reader->segcxt.ws_dir, filename);
+	reader->seg.ws_file = open(path, O_RDONLY | PG_BINARY, 0);
+	if (reader->seg.ws_file < 0)
+		pg_fatal("could not open WAL segment \"%s\": %m", path);
+}
+
+static void
+close_segment(XLogReaderState *reader)
+{
+	if (close(reader->seg.ws_file) != 0)
+		pg_fatal("could not close WAL segment: %m");
+	reader->seg.ws_file = -1;
+}
+
+/* Never let zero padding masquerade as acknowledged WAL. */
+static int
+read_page(XLogReaderState *reader, XLogRecPtr page, int required,
+		  XLogRecPtr record, char *buffer)
+{
+	WALReadError error;
+	int			count;
+
+	if (page < start_lsn)
+		pg_fatal("WAL reader requested bytes before the retained prefix");
+	/* ReadPageInternal requires more than just the short page header. */
+	required = Max(required, SizeOfXLogShortPHD + 1);
+	if (page >= end_lsn || end_lsn - page < required)
+	{
+		reached_end = true;
+		return -1;
+	}
+	count = Min(end_lsn - page, XLOG_BLCKSZ);
+	if (!WALRead(reader, buffer, page, count, timeline, &error))
+	{
+		if (error.wre_errno)
+		{
+			errno = error.wre_errno;
+			pg_fatal("could not read exported WAL at %X/%X: %m", LSN_FORMAT_ARGS(page));
+		}
+		pg_fatal("short read of exported WAL at %X/%X", LSN_FORMAT_ARGS(page));
+	}
+
+	/*
+	 * At a page boundary the decoder's initial request does not yet include
+	 * the page header.  Unlike a full-page reader, we must not let it inspect
+	 * an incomplete first record header beyond the returned bytes.
+	 */
+	if (record == page &&
+		count < XLogPageHeaderSize((XLogPageHeader) buffer) + SizeOfXLogRecord)
+	{
+		reached_end = true;
+		return -1;
+	}
+	return count;
+}
+
+/*
+ * A byte-durable frontier need not be a record boundary.  Use the same reader
+ * as recovery, including CRC and prev-link checks, to find the last complete
+ * record.  Only running out of acknowledged bytes is an acceptable stop;
+ * corruption inside that prefix must not silently shorten the bundle.
+ *
+ * The anchor may start with continuation data belonging to the bootstrap
+ * seed.  Report the first record checked, too: this is not proof that an
+ * arbitrary seed can be recovered from the exported range.
+ */
+static XLogRecPtr
+check_records(const char *directory, XLogRecPtr *first, XLogRecPtr *last)
+{
+	XLogReaderState *reader;
+	XLogRecPtr	end = InvalidXLogRecPtr;
+	char	   *error = NULL;
+
+	reader = XLogReaderAllocate(segment_size, directory,
+								XL_ROUTINE(.page_read = read_page,
+										   .segment_open = open_segment,
+										   .segment_close = close_segment), NULL);
+	if (!reader)
+		pg_fatal("out of memory allocating WAL reader");
+	reader->system_identifier = system_identifier;
+	*first = XLogFindNextRecord(reader, start_lsn, &error);
+	if (XLogRecPtrIsInvalid(*first))
+		pg_fatal("no complete WAL record in exported prefix: %s",
+				 error ? error : "end of acknowledged WAL");
+	while (XLogReadRecord(reader, &error) != NULL)
+	{
+		*last = reader->ReadRecPtr;
+		end = reader->EndRecPtr;
+	}
+	if (error || !reached_end)
+		pg_fatal("invalid exported WAL after %X/%X: %s", LSN_FORMAT_ARGS(end),
+				 error ? error : "WAL reader stopped before the durable frontier");
+	XLogReaderFree(reader);
+	return end;
+}
+
 int
 main(int argc, char **argv)
 {
@@ -250,6 +355,9 @@ main(int argc, char **argv)
 	char		temporary[MAXPGPATH];
 	char		manifest[512];
 	uint64		parsed_tli;
+	XLogRecPtr	first_record;
+	XLogRecPtr	last_record = InvalidXLogRecPtr;
+	XLogRecPtr	record_end;
 	int			fd;
 	int			length;
 
@@ -314,6 +422,7 @@ main(int argc, char **argv)
 			pg_fatal("could not finish WAL segment: %m");
 	}
 	PQfinish(conn);
+	record_end = check_records(directory, &first_record, &last_record);
 
 	/* Publish only after every segment and its directory entry are durable. */
 	if (fsync_fname(directory, true) != 0 || fsync_parent_path(directory) != 0)
@@ -321,10 +430,13 @@ main(int argc, char **argv)
 	snprintf(path, sizeof(path), "%s/wal-inbox-manifest", directory);
 	snprintf(temporary, sizeof(temporary), "%s/wal-inbox-manifest.tmp", directory);
 	length = snprintf(manifest, sizeof(manifest),
-					  "version=1\nsystem_identifier=" UINT64_FORMAT "\ntimeline=%u\nepoch=" UINT64_FORMAT
-					  "\nstart=%X/%X\nend=%X/%X\nsegment_size=%u\n",
+					  "version=2\nsystem_identifier=" UINT64_FORMAT "\ntimeline=%u\nepoch=" UINT64_FORMAT
+					  "\nstart=%X/%X\nend=%X/%X\nsegment_size=%u\n"
+					  "first_record=%X/%X\nlast_record=%X/%X\nrecord_end=%X/%X\n",
 					  system_identifier, timeline, epoch, LSN_FORMAT_ARGS(start_lsn),
-					  LSN_FORMAT_ARGS(end_lsn), segment_size);
+					  LSN_FORMAT_ARGS(end_lsn), segment_size,
+					  LSN_FORMAT_ARGS(first_record), LSN_FORMAT_ARGS(last_record),
+					  LSN_FORMAT_ARGS(record_end));
 	fd = open(temporary, O_CREAT | O_EXCL | O_WRONLY | PG_BINARY, 0600);
 	if (fd < 0)
 		pg_fatal("could not create WAL bundle manifest: %m");

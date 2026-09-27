@@ -18,7 +18,7 @@ PGFILEDESC = "test_page_store - replay page service prototype"
 
 EXTENSION = test_page_store
 DATA = test_page_store--1.0.sql
-EXTRA_CLEAN = test_wal_fetch$(X) test_wal_fetch.o
+EXTRA_CLEAN = test_wal_fetch$(X) test_wal_fetch.o xlogreader_fe.o
 
 TAP_TESTS = 1
 export enable_injection_points
@@ -42,8 +42,11 @@ all: test_wal_fetch$(X)
 
 test_wal_fetch.o: test_page_wire.h
 
-test_wal_fetch$(X): test_wal_fetch.o
-	$(CC) $(CFLAGS) $< $(libpq_pgport) $(filter-out -lpq,$(LDFLAGS)) $(LDFLAGS_EX) $(LIBS) -o $@
+xlogreader_fe.o: $(top_srcdir)/src/backend/access/transam/xlogreader.c
+	$(CC) $(CFLAGS) $(CPPFLAGS) -DFRONTEND -c $< -o $@
+
+test_wal_fetch$(X): test_wal_fetch.o xlogreader_fe.o
+	$(CC) $(CFLAGS) $^ $(libpq_pgport) $(filter-out -lpq,$(LDFLAGS)) $(LDFLAGS_EX) $(LIBS) -o $@
 
 ifndef USE_PGXS
 test_wal_fetch$(X): | submake-libpq
