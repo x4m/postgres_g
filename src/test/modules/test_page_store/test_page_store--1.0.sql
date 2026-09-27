@@ -101,10 +101,19 @@ AS 'MODULE_PATHNAME', 'test_page_store_overlay_status'
 LANGUAGE C STRICT VOLATILE PARALLEL UNSAFE;
 
 CREATE FUNCTION test_page_store_wal_status(
-    OUT flushed pg_lsn, OUT requested pg_lsn, OUT calls bigint, OUT waiters integer)
+    OUT flushed pg_lsn, OUT requested pg_lsn, OUT calls bigint, OUT waiters integer,
+    OUT recovery_calls bigint, OUT sender_pid integer, OUT sender_wait_event text)
 RETURNS record
 AS 'MODULE_PATHNAME', 'test_page_store_wal_status'
 LANGUAGE C STRICT VOLATILE PARALLEL UNSAFE;
+
+CREATE FUNCTION test_page_store_wal_store_status(
+    OUT flushed pg_lsn, OUT epoch bigint)
+RETURNS record
+AS 'MODULE_PATHNAME', 'test_page_store_wal_store_status'
+LANGUAGE C STRICT VOLATILE PARALLEL UNSAFE;
+
+REVOKE ALL ON FUNCTION test_page_store_wal_store_status() FROM PUBLIC;
 
 CREATE FUNCTION test_page_store_flush_wal(pg_lsn, boolean DEFAULT false)
 RETURNS void

@@ -20,9 +20,12 @@
 
 #include <sys/stat.h>
 
+#include "access/htup_details.h"
 #include "access/xlog.h"
 #include "access/xlog_internal.h"
 #include "common/file_perm.h"
+#include "fmgr.h"
+#include "funcapi.h"
 #include "libpq/pqformat.h"
 #include "libpq/protocol.h"
 #include "miscadmin.h"
@@ -32,6 +35,7 @@
 #include "storage/shmem.h"
 #include "utils/guc.h"
 #include "utils/injection_point.h"
+#include "utils/pg_lsn.h"
 
 #include "test_page_store.h"
 
@@ -41,6 +45,8 @@
 #define WAL_STORE_TEMP WAL_STORE_DIR "/control.tmp"
 #define WAL_STORE_MAGIC 0x54505753
 #define WAL_STORE_VERSION 1
+
+PG_FUNCTION_INFO_V1(test_page_store_wal_store_status);
 
 typedef struct WalStoreControl
 {
@@ -358,4 +364,26 @@ test_page_store_wal_store_request(StringInfo request, StringInfo response)
 	if (kind == 'r')
 		pq_sendbytes(response, bytes, size);
 	pq_endmessage(response);
+}
+
+/* Administrative observation only; the physical data path needs no SQL. */
+Datum
+test_page_store_wal_store_status(PG_FUNCTION_ARGS)
+{
+	WalStoreControl control;
+	TupleDesc	tupdesc;
+	Datum		values[2];
+	bool		nulls[2] = {false};
+
+	if (!superuser() || !wal_store_enabled)
+		elog(ERROR, "WAL inbox status requires a superuser on WAL storage");
+	if (get_call_result_type(fcinfo, NULL, &tupdesc) != TYPEFUNC_COMPOSITE)
+		elog(ERROR, "return type must be a row type");
+	LWLockAcquire(wal_store_lock, LW_SHARED);
+	if (!wal_store_load(&control))
+		elog(ERROR, "test WAL store is not initialized");
+	LWLockRelease(wal_store_lock);
+	values[0] = LSNGetDatum(control.flushed);
+	values[1] = Int64GetDatum(control.epoch);
+	PG_RETURN_DATUM(HeapTupleGetDatum(heap_form_tuple(tupdesc, values, nulls)));
 }

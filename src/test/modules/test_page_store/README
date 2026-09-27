@@ -482,12 +482,11 @@ writer-overlay scenario in 016 also enables this barrier with fsync on.
 
 This is one trusted storage instance, not quorum durability or writer fencing.
 It assumes storage retains both the acknowledged WAL and a usable seed/history.
-A clean primary start is supported by the fixture; writer crash recovery,
-promotion and timeline changes are NOT implemented by this barrier.  In
-particular, end-of-recovery flushing needs a transport that can make progress
-before ordinary writer connections are accepted.  That is a required next
-step, not a reason to skip the barrier during recovery.  The exact-image
-writer's restart guard remains in force.
+A clean primary start is supported by the slot-feedback fixture; recovery
+needs a transport that can progress before ordinary writer connections are
+accepted.  The outbound WAL inbox sender below supplies that transport.
+Neither mode implements overlay-writer recovery or timeline changes.  The
+exact-image writer's restart guard remains in force.
 
 Independent WAL inbox
 ---------------------
@@ -537,11 +536,55 @@ A repeated fence with an old expected epoch fails rather than fencing twice.
 This is a single-timeline, single-store scaffold with a native private control
 format, serial filesystem operations and no retention/GC.  Capacity is bounded
 by test_page_store.wal_store_max_mb (default 1024); exceeding it raises ERROR.
-There is not yet an early outbound compute transport, a connection to the WAL
-barrier, or a redo consumer for the inbox.  It does not enable writer restart.
+There is not yet a redo consumer for the inbox.  It does not enable overlay
+writer restart or recovery after losing local WAL.
 018_wal_store.pl tests source WAL bytes, conflicting retries, old connections,
 and process crashes before/after data fsync and control publication, including
 a fence whose reply is lost.  It does not simulate power failure.
+
+Early outbound WAL sender
+-------------------------
+
+Instead of wal_durability_slot, a compute can use the independent inbox:
+
+    test_page_store.wal_store_conninfo = 'host=... port=... user=...'
+    test_page_store.wal_store_slot = 'inbox_source'
+    test_page_store.wal_store_start_lsn = '...'
+    test_page_store.wal_store_epoch = 1
+
+Create a persistent physical slot with immediately reserved WAL before enabling
+this mode.  The start LSN must be the beginning of its retained segment, no
+later than the compute's redo point.  Earlier WAL and pages must belong to an
+independently retained bootstrap baseline.  A trusted controller supplies the
+epoch.  The SQL extensions are only needed for test diagnostics, not transport.
+
+The sender is an unconnected shared-memory background worker started at
+postmaster startup.  Flush callers publish the locally durable position and
+wait on shared state; only the worker owns libpq and reads local WAL.  Before
+recovery finishes it sends through explicitly requested positions, without
+calling GetFlushRecPtr(), which is not yet available.  After recovery it also
+sends asynchronously flushed WAL.  wal_store_timeout bounds each exchange;
+wal_flush_timeout still bounds callers waiting for durable acknowledgement.
+
+The worker uses BGWORKER_SHUTDOWN_AFTER_CHECKPOINT to survive normal backend
+shutdown until the final checkpoint completes.  It cannot connect to a database
+or generate new WAL.  Crash and immediate shutdown still terminate it, and it
+is not restarted during shutdown.  Its failure cannot turn an unmet barrier
+into success; a critical-section caller will eventually PANIC on timeout.
+
+Only bytes actually sent or compared can advance the shared frontier.  A
+larger inbox frontier alone is not proof that local WAL matches.  Worker restart
+retries from the shared confirmed position; postmaster restart compares again
+from the configured start.  The slot is deliberately not advanced: this bounded
+experiment retains the complete epoch locally as well as on storage.  It is
+not a scalable retention policy or recovery from an independently restored seed.
+
+019_early_wal_sender.pl checks commit/fsync ordering, loss of the worker after
+storage publication but before shared acknowledgement, segment boundaries,
+end-of-recovery checkpoint before connection readiness, and orderly shutdown.
+It compares every stored byte with the corresponding local WAL, including the
+shutdown checkpoint.  These are ordinary local crash-recovery tests; the
+overlay writer guard and single-timeline restriction remain unchanged.
 
 Important limitations:
 
@@ -564,7 +607,7 @@ Important limitations:
   worker handles late replies safely, but asynchronous SMgr completion and
   interruptible caller waits remain to be implemented.
 * General selective redo and recoverable writable compute are not implemented.
-  Remote WAL durability is the single-receiver experiment above, not a
+  Remote WAL durability uses one receiver or inbox, not a
   replacement/recovery or fencing protocol.  The overlay is a single-epoch
   experiment; sequence/build/extension-AM paths have not been tested with it.
   Replacement from a published seed works for the selected-relation experiment,

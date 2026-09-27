@@ -8,6 +8,7 @@ OBJS = \
 	test_page_overlay.o \
 	test_wal_durability.o \
 	test_wal_store.o \
+	test_wal_sender.o \
 	test_page_protocol.o \
 	test_page_worker.o \
 	test_remote_smgr.o
