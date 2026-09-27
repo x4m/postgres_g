@@ -15,14 +15,7 @@
 #include "storage/relfilelocator.h"
 #include "utils/timestamp.h"
 
-#define TEST_PAGE_STORE_MAX_BLOCKS 64
-#define TEST_PAGE_SERVICE_COMMAND "TEST_PAGE_SERVICE"
-#define TEST_PAGE_SERVICE_VERSION 1
-#define TEST_PAGE_SERVICE_MAX_REQUEST 64
-#define TEST_PAGE_SERVICE_MAX_RESPONSE (TEST_PAGE_SERVICE_MAX_REQUEST + 9 + TEST_PAGE_STORE_MAX_BLOCKS * BLCKSZ)
-#define TEST_WAL_SERVICE_COMMAND "TEST_WAL_SERVICE"
-#define TEST_WAL_STORE_MAX_BYTES (64 * 1024)
-#define TEST_WAL_SERVICE_MAX_REQUEST (29 + TEST_WAL_STORE_MAX_BYTES)
+#include "test_page_wire.h"
 
 extern void test_page_store_protocol_init(void);
 extern void test_page_store_wal_store_init(void);

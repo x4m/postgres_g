@@ -18,6 +18,7 @@ PGFILEDESC = "test_page_store - replay page service prototype"
 
 EXTENSION = test_page_store
 DATA = test_page_store--1.0.sql
+EXTRA_CLEAN = test_wal_fetch$(X) test_wal_fetch.o
 
 TAP_TESTS = 1
 export enable_injection_points
@@ -36,3 +37,27 @@ top_builddir = ../../../..
 include $(top_builddir)/src/Makefile.global
 include $(top_srcdir)/contrib/contrib-global.mk
 endif
+
+all: test_wal_fetch$(X)
+
+test_wal_fetch.o: test_page_wire.h
+
+test_wal_fetch$(X): test_wal_fetch.o
+	$(CC) $(CFLAGS) $< $(libpq_pgport) $(filter-out -lpq,$(LDFLAGS)) $(LDFLAGS_EX) $(LIBS) -o $@
+
+ifndef USE_PGXS
+test_wal_fetch$(X): | submake-libpq
+endif
+
+.PHONY: install-wal-fetch uninstall-wal-fetch
+
+install: install-wal-fetch
+
+install-wal-fetch: test_wal_fetch$(X)
+	$(MKDIR_P) '$(DESTDIR)$(bindir)'
+	$(INSTALL_PROGRAM) $< '$(DESTDIR)$(bindir)'
+
+uninstall: uninstall-wal-fetch
+
+uninstall-wal-fetch:
+	rm -f '$(DESTDIR)$(bindir)/test_wal_fetch$(X)'

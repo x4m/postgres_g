@@ -21,6 +21,13 @@ test_page_store = shared_module('test_page_store',
 )
 test_install_libs += test_page_store
 
+test_wal_fetch = executable('test_wal_fetch',
+  files('test_wal_fetch.c'),
+  dependencies: [frontend_code, libpq],
+  kwargs: default_bin_args + {'install': false},
+)
+testprep_targets += test_wal_fetch
+
 test_install_data += files(
   'test_page_store.control',
   'test_page_store--1.0.sql',
@@ -31,6 +38,7 @@ tests += {
   'sd': meson.current_source_dir(),
   'bd': meson.current_build_dir(),
   'tap': {
+    'deps': [test_wal_fetch],
     'env': {
       'enable_injection_points': get_option('injection_points') ? 'yes' : 'no',
     },
@@ -54,6 +62,7 @@ tests += {
       't/017_wal_durability.pl',
       't/018_wal_store.pl',
       't/019_early_wal_sender.pl',
+      't/020_inbox_recovery.pl',
     ],
   },
 }

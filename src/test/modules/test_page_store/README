@@ -536,8 +536,8 @@ A repeated fence with an old expected epoch fails rather than fencing twice.
 This is a single-timeline, single-store scaffold with a native private control
 format, serial filesystem operations and no retention/GC.  Capacity is bounded
 by test_page_store.wal_store_max_mb (default 1024); exceeding it raises ERROR.
-There is not yet a redo consumer for the inbox.  It does not enable overlay
-writer restart or recovery after losing local WAL.
+There is not yet a live redo consumer for the inbox.  The offline export below
+feeds ordinary recovery, but does not enable overlay writer restart.
 018_wal_store.pl tests source WAL bytes, conflicting retries, old connections,
 and process crashes before/after data fsync and control publication, including
 a fence whose reply is lost.  It does not simulate power failure.
@@ -585,6 +585,45 @@ end-of-recovery checkpoint before connection readiness, and orderly shutdown.
 It compares every stored byte with the corresponding local WAL, including the
 shutdown checkpoint.  These are ordinary local crash-recovery tests; the
 overlay writer guard and single-timeline restriction remain unchanged.
+
+Recovering an inbox prefix
+-------------------------
+
+The test_wal_fetch frontend exports the inbox through a fixed durable frontier
+to a new directory of ordinary WAL segment files:
+
+    test_wal_fetch CONNINFO SYSTEM_ID TIMELINE EPOCH NEW_DIRECTORY
+
+An optional --fence first compares and increments the expected writer epoch.
+It is a controller operation: it does not elect a writer, revoke SQL reads,
+or supply a complete activation protocol.  Do not retry fencing blindly after
+an unknown result.  Resolve the persisted epoch before another attempt.
+
+The client verifies stream identity, epoch and range on every response.  It
+never overwrites an existing destination, and bounds socket exchanges to 30
+seconds (not external DNS lookup).  Segment files and directory entries are
+synced before publishing wal-inbox-manifest by durable rename.  A failed run
+can leave partial files; only a successful export is suitable for recovery.
+The manifest records the exact byte frontier.  The last segment's zero padding
+is not acknowledged WAL and must not be treated as an additional valid range.
+The export is not a backup, does not export timeline history, and neither
+identifies the last complete record nor repairs an incomplete record tail.
+
+Use the completed bundle with an ordinary restore_command and an independently
+retained metadata seed/page history.  The exporter is not itself a live
+restore_command: network failure must not be confused with end of available
+WAL.  Publication and retention of those dependencies remain controller work.
+
+020_inbox_recovery.pl stops page/redo storage while a writer with no selected
+relation files commits to the independent inbox.  Its small working set is
+warm; arbitrary cold reads still require page storage.  After losing the
+writer's PGDATA, export fences its epoch and materializes WAL.  With both the
+old writer and inbox stopped, redo storage catches up from the bundle, and a
+replacement read-only compute recovers from the metadata seed.  Values/TIDs,
+catalog changes, amcheck, absence of local files and actual remote reads are
+checked.  An independent byte comparison includes every exported byte and
+zero padding.  The test stops at a known restore point, not arbitrary WAL EOF.
+Activation of a new writable epoch remains a separate, unimplemented step.
 
 Important limitations:
 
