@@ -6,6 +6,7 @@ OBJS = \
 	test_page_store.o \
 	test_page_history.o \
 	test_page_protocol.o \
+	test_page_worker.o \
 	test_remote_smgr.o
 PG_CPPFLAGS = -I$(libpq_srcdir)
 SHLIB_LINK_INTERNAL = $(libpq)

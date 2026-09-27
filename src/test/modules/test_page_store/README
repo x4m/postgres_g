@@ -97,6 +97,13 @@ the SQL extension and denies database connections through pg_hba.conf while
 continuing to fetch retained pages.  This raw fixture uses private Unix sockets;
 the libpq consumer is exercised by 011 and 012 on all platforms.
 
+The fourteenth test uses one shared transport slot and two backends.  It
+checks backpressure, one physical connection for both callers, timeout with
+an acquired AIO handle, reuse of the timed-out slot before the reply arrives,
+and worker restart with a request outstanding.  The selected local file is
+absent.  Distinct page images catch misrouted replies, and a full value/TID
+digest checks that the backend remains usable after failed I/O.
+
 Run with an assertions/injection-points build:
 
     make -C src/test/modules/test_page_store check
@@ -223,10 +230,12 @@ Requests are bounded at 64 bytes and batches at 64 pages.  A count of zero
 returns fork existence and size; a separate predecessor request finds the
 retained state before a recovery start.  CopyDone finishes the service command
 and permits ordinary replication commands on the same connection.  A canceled
-request produces an error; the consumer discards that connection.  There is
-one request in flight per persistent backend connection, which consumes a
-max_wal_senders slot on storage.  These sessions neither stream nor acknowledge
-WAL and do not count as synchronous replication acknowledgements.
+request produces an error; the transport discards that connection.  By default
+there is one persistent connection per backend, with one request in flight.
+Each connection consumes a max_wal_senders slot on storage.  The optional
+shared transport below bounds that process fanout.  These sessions neither
+stream nor acknowledge WAL and do not count as synchronous replication
+acknowledgements.
 
 The endpoint remains superuser-only.  Normal physical replication HBA rules
 apply, and SSL can be handled by the existing connection layer; TLS is not
@@ -234,9 +243,41 @@ covered by this test.  Storage must reach ordinary hot standby readiness:
 hot_standby=off also prevents incoming replication connections.  The service
 does not bypass that startup safeguard.  It can, however, serve a compute
 that has not yet opened SQL connections of its own.  There are no service
-heartbeats or server-side idle deadlines yet; compute requests retain their
-existing client deadline.  A worker-based, cancellable transport is still
-required before treating this as a general-purpose storage provider.
+heartbeats or server-side idle deadlines yet.  test_page_store.request_timeout
+sets the client deadline and can be changed by a superuser per session.
+
+Shared transport worker
+-----------------------
+
+With physical_service enabled, set test_page_store.transport_slots to a value
+from 1 to 64 on compute (default 0 disables the worker).  One early background
+worker owns the libpq connection and serves a bounded FIFO queue.  It starts
+before recovery consistency, without connecting to a database, so startup can
+use it to bootstrap remote metadata.  Tests 011 and 012 use this path.
+
+Each slot has an owner, generation, absolute deadline and fixed-size request
+and response areas.  A caller waits for capacity, submits its request, then
+copies a completed response into private memory before releasing the slot.
+The worker never receives pointers into caller memory or shared buffers and
+never owns the caller's AIO handle.  ERROR and process-exit cleanup release
+the slot.  Timeout permits immediate reuse, but a worker may publish only
+while the slot still names its running generation.  Late replies are discarded.
+Worker exit marks outstanding requests failed; restart opens a new connection
+on demand.  It does not silently retry failed requests.
+
+test_page_store_transport_status() exposes queue occupancy and counters, the
+worker PID and its wait event.  The worker has no database session and is not
+in pg_stat_activity.  Its wait event permits deterministic test orchestration
+without assuming a sleep duration or backend startup order.
+
+This first worker is serial: it decouples connection ownership, not network
+parallelism.  Callers still wait synchronously, preserving SMgr interrupt
+holdoffs.  Query cancel therefore need not end a read before its transport
+deadline, and startreadv is not yet truly asynchronous.  DNS can block the
+worker outside its socket deadline, although callers can release their slots
+on timeout.  Multiple in-flight requests, asynchronous completion and bounded
+resolver/shutdown behavior remain separate work.  The extra response copies
+and fixed slot sizes are also prototype tradeoffs, not performance claims.
 
 Following read-only compute experiment
 -------------------------------------

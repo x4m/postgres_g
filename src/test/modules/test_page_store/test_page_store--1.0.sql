@@ -85,3 +85,11 @@ LANGUAGE C STRICT VOLATILE PARALLEL UNSAFE;
 
 REVOKE ALL ON FUNCTION test_page_store_history_before(text, bigint, pg_lsn)
 FROM PUBLIC;
+
+CREATE FUNCTION test_page_store_transport_status(
+    OUT worker_pid integer, OUT slots integer, OUT ready integer,
+    OUT running integer, OUT done integer, OUT submitted bigint,
+    OUT completed bigint, OUT discarded bigint, OUT worker_wait_event text)
+RETURNS record
+AS 'MODULE_PATHNAME', 'test_page_store_transport_status'
+LANGUAGE C STRICT VOLATILE PARALLEL UNSAFE;

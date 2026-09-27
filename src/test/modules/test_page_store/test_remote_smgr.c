@@ -224,13 +224,14 @@ _PG_init(void)
 	parse_remote_locators();
 	DefineCustomIntVariable("test_page_store.request_timeout", "Page request timeout.",
 							NULL, &request_timeout, 5000, 1, INT_MAX,
-							PGC_POSTMASTER, GUC_UNIT_MS, NULL, NULL, NULL);
+							PGC_SUSET, GUC_UNIT_MS, NULL, NULL, NULL);
 	DefineCustomBoolVariable("test_page_store.physical_service",
 							 "Use a physical page-service session instead of SQL.",
 							 NULL, &physical_service, false, PGC_POSTMASTER, 0,
 							 NULL, NULL, NULL);
 	test_page_store_history_init();
 	test_page_store_protocol_init();
+	test_page_store_worker_init(physical_service);
 	DefineCustomBoolVariable("test_page_store.follow", "Follow WAL for remote main and VM forks.",
 							 NULL, &follow_replay, false, PGC_POSTMASTER, 0, NULL, NULL, NULL);
 	DefineCustomIntVariable("test_page_store.follow_max_blocks", "Maximum tracked blocks per relation fork.",
@@ -703,20 +704,23 @@ remote_disconnect(int code, Datum arg)
 /*
  * SMgr callers hold interrupts, and may already hold locks.  In particular,
  * processing a SMgr release barrier here would reenter the SMgr callbacks.
- * Use nonblocking libpq and a deadline, but do not process interrupts here.
- * A transport worker and a cancellable request lifetime are still needed
- * before this can be used as a general-purpose remote storage manager.
+ * The direct client therefore cannot process interrupts here.  The optional
+ * transport worker owns only private response memory and can process them.
+ * Neither path makes the calling SMgr operation asynchronous or interruptible.
  */
 static void
 remote_wait(int event, TimestampTz deadline)
 {
 	long		remaining = TimestampDifferenceMilliseconds(GetCurrentTimestamp(), deadline);
 
+	ResetLatch(MyLatch);
+	/* A dedicated transport process owns no caller buffer pins or locks. */
+	if (test_page_store_transport_worker)
+		CHECK_FOR_INTERRUPTS();
 	if (remaining <= 0)
 		ereport(ERROR,
 				(errcode(ERRCODE_CONNECTION_FAILURE),
 				 errmsg("page service request timed out")));
-	ResetLatch(MyLatch);
 	(void) WaitLatchOrSocket(MyLatch,
 							 WL_LATCH_SET | WL_EXIT_ON_PM_DEATH | WL_TIMEOUT | event,
 							 PQsocket(page_conn), remaining, PG_WAIT_EXTENSION);
@@ -810,12 +814,12 @@ remote_copy_response(StringInfo response, TimestampTz deadline)
 		}
 		remote_wait(WL_SOCKET_READABLE, deadline);
 	}
-	if (len > TEST_PAGE_SERVICE_MAX_REQUEST + 9 + TEST_PAGE_STORE_MAX_BLOCKS * BLCKSZ)
+	if (len > TEST_PAGE_SERVICE_MAX_RESPONSE)
 		elog(ERROR, "oversized page service response");
-	response->data = page_copy_data;
-	response->len = len;
-	response->maxlen = len;
-	response->cursor = 0;
+	initStringInfo(response);
+	appendBinaryStringInfo(response, page_copy_data, len);
+	PQfreemem(page_copy_data);
+	page_copy_data = NULL;
 }
 
 static void
@@ -840,8 +844,7 @@ remote_physical_start(TimestampTz deadline)
 		(uint64) pq_getmsgint64(&greeting) != GetSystemIdentifier())
 		elog(ERROR, "incompatible page service identity or physical format");
 	pq_getmsgend(&greeting);
-	PQfreemem(page_copy_data);
-	page_copy_data = NULL;
+	pfree(greeting.data);
 }
 
 static void
@@ -856,20 +859,40 @@ remote_request_header(StringInfo request, char kind, XLogRecPtr lsn)
 	pq_sendint64(request, lsn);
 }
 
-/* One request in flight.  The echo binds every result to its full read key. */
+/* One direct exchange; the worker catches errors without a SQL transaction. */
+void
+test_page_store_client_exchange(StringInfo request, StringInfo response,
+								TimestampTz deadline)
+{
+	Assert(request->len <= TEST_PAGE_SERVICE_MAX_REQUEST);
+	PG_TRY();
+	{
+		int			sent;
+
+		remote_connect(deadline);
+		while ((sent = PQputCopyData(page_conn, request->data, request->len)) == 0)
+			remote_flush(deadline);
+		if (sent < 0)
+			elog(ERROR, "could not send page service request: %s", PQerrorMessage(page_conn));
+		remote_flush(deadline);
+		remote_copy_response(response, deadline);
+	}
+	PG_CATCH();
+	{
+		remote_disconnect(0, (Datum) 0);
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+}
+
+/* The echo binds every result to its full read key on either transport path. */
 static void
 remote_exchange(StringInfo request, StringInfo response, TimestampTz deadline)
 {
-	int			sent;
-
-	Assert(request->len <= TEST_PAGE_SERVICE_MAX_REQUEST);
-	remote_connect(deadline);
-	while ((sent = PQputCopyData(page_conn, request->data, request->len)) == 0)
-		remote_flush(deadline);
-	if (sent < 0)
-		elog(ERROR, "could not send page service request: %s", PQerrorMessage(page_conn));
-	remote_flush(deadline);
-	remote_copy_response(response, deadline);
+	if (test_page_store_worker_enabled())
+		test_page_store_worker_exchange(request, response, deadline);
+	else
+		test_page_store_client_exchange(request, response, deadline);
 	if (response->len < request->len ||
 		memcmp(response->data, request->data, request->len) != 0)
 		elog(ERROR, "page service response does not match its request");
@@ -888,8 +911,7 @@ remote_physical_before(XLogRecPtr start, TimestampTz deadline)
 	result = pq_getmsgint64(&response);
 	pq_getmsgend(&response);
 	pfree(request.data);
-	PQfreemem(page_copy_data);
-	page_copy_data = NULL;
+	pfree(response.data);
 	return result;
 }
 
@@ -922,8 +944,7 @@ remote_physical_fetch(RelFileLocator locator, ForkNumber forknum,
 		memcpy(buffers[i], pq_getmsgbytes(&response, BLCKSZ), BLCKSZ);
 	pq_getmsgend(&response);
 	pfree(request.data);
-	PQfreemem(page_copy_data);
-	page_copy_data = NULL;
+	pfree(response.data);
 	return exists != 0;
 }
 

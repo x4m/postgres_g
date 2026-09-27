@@ -132,6 +132,7 @@ shared_preload_libraries = 'test_page_store'
 smgr_chain = 'test_page_store, md'
 test_page_store.conninfo = '$conninfo'
 test_page_store.physical_service = true
+test_page_store.transport_slots = 4
 test_page_store.follow = true
 test_page_store.replay_lsn = '$cut'
 test_page_store.replay_tli = $tli
@@ -255,9 +256,12 @@ is( $compute->safe_psql(
 $primary->safe_psql('postgres', 'VACUUM (FREEZE, ANALYZE) restart_heap');
 catchup();
 $compute->stop('fast');
+# Retain coverage of the direct physical consumer as well as the worker.
+$compute->append_conf('postgresql.conf',
+	'test_page_store.transport_slots = 0');
 $compute->start;
 catchup();
-same_rows('clean restart');
+same_rows('clean restart with direct transport');
 my $plan = decode_json(
 	$compute->safe_psql(
 		'postgres', $index_settings . q{
