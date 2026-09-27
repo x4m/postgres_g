@@ -4,6 +4,7 @@
 use strict;
 use warnings FATAL => 'all';
 
+use Errno qw(ECONNRESET);
 use IO::Select;
 use IO::Socket::UNIX;
 use PostgreSQL::Test::Cluster;
@@ -218,7 +219,10 @@ send_bytes($socket, 'd' . pack('N', 69));
 die 'oversized frame did not close the connection'
   unless IO::Select->new($socket)->can_read(30);
 my $eof = sysread($socket, my $unused, 1);
-is($eof, 0, 'oversized frame closes the connection before reading its body');
+# Windows can report a connection reset rather than an orderly EOF.
+ok(defined($eof) ? $eof == 0 : $! == ECONNRESET,
+	'oversized frame closes the connection before reading its body')
+  or diag("read after oversized frame: $!");
 like(
 	slurp_file($storage->logfile),
 	qr/invalid message length/,
