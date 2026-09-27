@@ -31,10 +31,15 @@ for my $case (
 	[join(', ', ('fsync_checker') x 15, 'md'), qr/between 1 and 15 entries/])
 {
 	my ($chain, $pattern) = @$case;
-	$node->command_fails_like(
-		['postgres', '-D', $node->data_dir, '-C', 'shared_memory_size',
-		 '-c', "smgr_chain=$chain"],
-		$pattern, "invalid chain is rejected: $chain");
+	my $offset = -s $node->logfile;
+
+	# pg_ctl also supplies the restricted process token needed on Windows.
+	$node->append_conf('postgresql.conf', "smgr_chain = '$chain'\n");
+	my $started = $node->start(fail_ok => 1);
+	ok(!$started, "invalid chain prevents startup: $chain");
+	ok($node->log_contains($pattern, $offset),
+		"invalid chain has the expected diagnostic: $chain");
+	$node->stop if $started;
 }
 
 done_testing();
