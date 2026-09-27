@@ -67,6 +67,7 @@ tests += {
       't/021_wal_record_frontier.pl',
       't/022_child_wal_epoch.pl',
       't/023_writer_activation.pl',
+      't/024_startup_read_failure.pl',
     ],
   },
 }

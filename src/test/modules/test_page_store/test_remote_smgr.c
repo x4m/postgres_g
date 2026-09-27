@@ -1450,6 +1450,8 @@ remote_startreadv(PgAioHandle *ioh, SMgrRelation reln, ForkNumber forknum,
 		iov[i].iov_base = buffers[i];
 		iov[i].iov_len = BLCKSZ;
 	}
+	if (forknum == VISIBILITYMAP_FORKNUM)
+		INJECTION_POINT("test-page-store-before-remote-vm-read", NULL);
 	remote_fetch(reln, forknum, blocknum, buffers, nblocks, &size);
 	pgaio_io_set_target_smgr(ioh, reln, forknum, blocknum, nblocks, false);
 	pgaio_io_register_callbacks(ioh, read_callback, 0);
