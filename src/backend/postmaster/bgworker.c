@@ -688,6 +688,17 @@ SanityCheckBackgroundWorker(BackgroundWorker *worker, int elevel)
 		/* XXX other checks? */
 	}
 
+	/* Late workers provide storage services, not new transactional work. */
+	if ((worker->bgw_flags & BGWORKER_SHUTDOWN_AFTER_CHECKPOINT) &&
+		(worker->bgw_flags & (BGWORKER_BACKEND_DATABASE_CONNECTION | BGWORKER_CLASS_PARALLEL)))
+	{
+		ereport(elevel,
+				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+				 errmsg("background worker \"%s\": cannot combine late shutdown with database access or parallel worker status",
+						worker->bgw_name)));
+		return false;
+	}
+
 	/* Interruptible workers require a database connection */
 	if ((worker->bgw_flags & BGWORKER_INTERRUPTIBLE) &&
 		!(worker->bgw_flags & BGWORKER_BACKEND_DATABASE_CONNECTION))

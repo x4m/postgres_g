@@ -67,6 +67,12 @@
 #define BGWORKER_INTERRUPTIBLE			0x0004
 
 /*
+ * Keep a storage-service worker alive until the shutdown checkpoint completes.
+ * Such a worker must not connect to a database or insert WAL.
+ */
+#define BGWORKER_SHUTDOWN_AFTER_CHECKPOINT	0x0008
+
+/*
  * This class is used internally for parallel queries, to keep track of the
  * number of active parallel workers and make sure we never launch more than
  * max_parallel_workers parallel workers at the same time.  Third party

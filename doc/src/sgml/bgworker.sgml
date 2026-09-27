@@ -131,6 +131,22 @@ typedef struct BackgroundWorker
      </listitem>
     </varlistentry>
 
+    <varlistentry>
+     <term><literal>BGWORKER_SHUTDOWN_AFTER_CHECKPOINT</literal></term>
+     <listitem>
+      <para>
+       Requests that a worker providing storage services remain running until
+       the shutdown checkpoint has completed.  Such a worker must not connect
+       to a database, insert WAL, or be a parallel worker.  It receives
+       <literal>SIGTERM</literal> after the checkpoint instead of before it.
+       Immediate shutdown and crash handling are unchanged.  As with other
+       background workers, it will not be restarted once shutdown has begun;
+       users of its services must handle its failure without reporting a
+       successful operation.
+      </para>
+     </listitem>
+    </varlistentry>
+
    </variablelist>
 
   </para>

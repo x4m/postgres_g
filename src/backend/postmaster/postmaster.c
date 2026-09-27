@@ -443,8 +443,11 @@ static void report_fork_failure_to_client(ClientSocket *client_sock, int errnum)
 static CAC_state canAcceptConnections(BackendType backend_type);
 static void signal_child(PMChild *pmchild, int signal);
 static bool SignalChildren(int signal, BackendTypeMask targetMask);
+static bool SignalChildrenFiltered(int signal, BackendTypeMask targetMask,
+								   bool skip_late_workers);
 static void TerminateChildren(int signal);
 static int	CountChildren(BackendTypeMask targetMask);
+static int	CountChildrenFiltered(BackendTypeMask targetMask, bool skip_late_workers);
 static void LaunchMissingBackgroundProcesses(void);
 static void maybe_start_bgworkers(void);
 static bool maybe_reap_io_worker(int pid);
@@ -2957,11 +2960,14 @@ PostmasterStateMachine(void)
 	if (pmState == PM_STOP_BACKENDS || pmState == PM_WAIT_BACKENDS)
 	{
 		BackendTypeMask targetMask = BTYPE_MASK_NONE;
+		bool		skip_late_workers = !FatalError && Shutdown < ImmediateShutdown;
 
 		/*
 		 * PM_WAIT_BACKENDS state ends when we have no regular backends, no
 		 * autovac launcher or workers, and no bgworkers (including
-		 * unconnected ones).
+		 * unconnected ones), except workers needed by the shutdown
+		 * checkpoint. Crash handling and immediate shutdown do not make this
+		 * exception.
 		 */
 		targetMask = btmask_add(targetMask,
 								B_BACKEND,
@@ -3048,13 +3054,13 @@ PostmasterStateMachine(void)
 			 */
 			ForgetUnstartedBackgroundWorkers();
 
-			SignalChildren(SIGTERM, targetMask);
+			SignalChildrenFiltered(SIGTERM, targetMask, skip_late_workers);
 
 			UpdatePMState(PM_WAIT_BACKENDS);
 		}
 
 		/* Are any of the target processes still running? */
-		if (CountChildren(targetMask) == 0)
+		if (CountChildrenFiltered(targetMask, skip_late_workers) == 0)
 		{
 			if (Shutdown >= ImmediateShutdown || FatalError)
 			{
@@ -3541,6 +3547,14 @@ signal_child(PMChild *pmchild, int signal)
 static bool
 SignalChildren(int signal, BackendTypeMask targetMask)
 {
+	return SignalChildrenFiltered(signal, targetMask, false);
+}
+
+/* Storage-service workers can still be needed by the shutdown checkpoint. */
+static bool
+SignalChildrenFiltered(int signal, BackendTypeMask targetMask,
+					   bool skip_late_workers)
+{
 	dlist_iter	iter;
 	bool		signaled = false;
 
@@ -3561,6 +3575,9 @@ SignalChildren(int signal, BackendTypeMask targetMask)
 		}
 
 		if (!btmask_contains(targetMask, bp->bkend_type))
+			continue;
+		if (skip_late_workers && bp->bkend_type == B_BG_WORKER &&
+			(bp->rw->rw_worker.bgw_flags & BGWORKER_SHUTDOWN_AFTER_CHECKPOINT))
 			continue;
 
 		signal_child(bp, signal);
@@ -3899,6 +3916,9 @@ process_pm_pmsignal(void)
 			 */
 			SignalChildren(SIGUSR2, btmask(B_WAL_SENDER));
 
+			/* Only workers needed by the checkpoint can still be running. */
+			SignalChildren(SIGTERM, btmask(B_BG_WORKER));
+
 			UpdatePMState(PM_WAIT_XLOG_ARCHIVAL);
 		}
 		else if (!FatalError && Shutdown != ImmediateShutdown)
@@ -3985,6 +4005,12 @@ dummy_handler(SIGNAL_ARGS)
 static int
 CountChildren(BackendTypeMask targetMask)
 {
+	return CountChildrenFiltered(targetMask, false);
+}
+
+static int
+CountChildrenFiltered(BackendTypeMask targetMask, bool skip_late_workers)
+{
 	dlist_iter	iter;
 	int			cnt = 0;
 
@@ -4005,6 +4031,9 @@ CountChildren(BackendTypeMask targetMask)
 		}
 
 		if (!btmask_contains(targetMask, bp->bkend_type))
+			continue;
+		if (skip_late_workers && bp->bkend_type == B_BG_WORKER &&
+			(bp->rw->rw_worker.bgw_flags & BGWORKER_SHUTDOWN_AFTER_CHECKPOINT))
 			continue;
 
 		ereport(DEBUG4,
