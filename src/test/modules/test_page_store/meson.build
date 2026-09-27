@@ -39,6 +39,7 @@ tests += {
       't/009_history_forks.pl',
       't/010_following_vm.pl',
       't/011_compute_restart.pl',
+      't/012_compute_seed.pl',
     ],
   },
 }

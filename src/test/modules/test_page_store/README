@@ -82,6 +82,14 @@ TIDs, a transaction spanning the restartpoint, amcheck, and a real index-only
 scan check that neither local files nor the provider's latest state substitute
 for the required historical view.
 
+The twelfth test saves a new seed from an already following compute using
+ordinary pg_basebackup.  Its selected main and VM files are absent, including
+any renamed copies inside PGDATA.  After losing that compute's entire PGDATA,
+a replacement materializes the seed and fetches both WAL and pages from
+storage.  It checks transaction and commit-timestamp status, multixact members,
+prepared outcomes, catalog mappings, and replication origin progress.  A
+dedicated storage slot protects the seed's WAL while restartpoints advance.
+
 Run with an assertions/injection-points build:
 
     make -C src/test/modules/test_page_store check
@@ -181,8 +189,8 @@ Format version 2 adds fork identity and metadata; version 1 is not accepted.
 Keep history_pages large enough for the existing journal after restart.  There
 is no compaction, view GC, timeline transition, or backup protocol for the
 journal.  Its fsync cost and linear image searches are not representative of
-a mature provider.  Persistent storage history does not make the compute's
-local catalogs or other nonselected state recoverable after losing its disk.
+a mature provider.  Storage page history alone cannot recover local catalogs
+or other nonselected state; replacement also needs a metadata seed.
 
 Following read-only compute experiment
 -------------------------------------
@@ -261,6 +269,33 @@ an error.  Restart reconstructs the markers from WAL only when retained history
 covers the recovery start as described above.  Promotion and replacement of
 the selected relation are not supported.
 
+Replacing a compute
+-------------------
+
+An existing following compute can supply a new metadata seed through
+pg_basebackup.  The source must have full_page_writes enabled on its primary
+and a replayed checkpoint with that setting.  The ordinary backup protocol
+copies local catalogs, SLRUs, relmaps, two-phase state, control data, and the
+required WAL; selected main/VM files that are absent are not copied.
+
+Retain that seed outside the donor compute, alongside access to the matching
+page history and WAL.  Before publishing it, check that storage retains WAL
+from at least the backup manifest's Start-LSN.  A separate physical slot on
+storage can enforce this in the prototype.  Creating a slot immediately
+before backup is not sufficient if the donor is behind storage's restartpoint;
+verify the boundary.  A live compute's advancing slot is not a seed lease.
+For a replacement, materialize the saved metadata into a new PGDATA, configure
+its own WAL receiver slot, and keep the page-service identity and history
+settings.  See 012_compute_seed.pl for the complete disposable procedure.
+
+This is NOT a self-contained backup of the database.  pg_verifybackup checks
+the files and WAL in the seed, not its external page-history dependency.
+Passing that check does not make it safe to discard storage.  A complete
+provider/backup integration must represent these dependencies explicitly.
+The first donor still uses an ordinary seed, and unselected relation files
+are included in all subsequent seeds.  This does not cover all metadata
+lifecycle paths or turn the existing writer into a remote-storage compute.
+
 Important limitations:
 
 * This is not diskless compute.  Unselected relations, catalogs, SLRUs, and
@@ -280,9 +315,10 @@ Important limitations:
   The deadline bounds socket waits, not external DNS resolution.  A worker
   transport with a safe cancellation lifetime remains to be implemented.
 * A binary physical service usable before database startup, general selective
-  redo, remote WAL durability, and compute restart
-  without local persistent state are not implemented.  No throughput claim
-  is made.
+  redo, remote WAL durability, and a writable compute are not implemented.
+  Replacement from a published seed works for the selected-relation experiment,
+  but seed publication and retention remain operator-managed.  No throughput
+  claim is made.
 * The original single-locator GUCs and timeline GUC use signed-int range;
   the locator list accepts unsigned OIDs.  Neither is a proposed wire format.
 
