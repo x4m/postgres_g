@@ -234,6 +234,21 @@ extern XLogRecPtr XLogInsertRecord(struct XLogRecData *rdata,
 								   uint64 fpi_bytes,
 								   bool topxid_included);
 extern void XLogFlush(XLogRecPtr record);
+extern void XLogFlushLocal(XLogRecPtr record);
+
+/*
+ * Optional additional durability barrier, after local WAL flush.  Callers may
+ * hold buffer/SLRU locks and be in a critical section.  The wait hook must not
+ * return success before its durability obligation is satisfied; the probe
+ * must not block.  Neither hook is called for minRecoveryPoint updates.
+ * A provider must install both hooks and use the same durability frontier.
+ * GetFlushRecPtr() and background WAL flushing still describe local WAL,
+ * allowing a transport to make progress while callers wait at the barrier.
+ */
+typedef void (*wal_flush_hook_type) (XLogRecPtr record, TimeLineID tli);
+typedef bool (*wal_needs_flush_hook_type) (XLogRecPtr record);
+extern PGDLLIMPORT wal_flush_hook_type wal_flush_hook;
+extern PGDLLIMPORT wal_needs_flush_hook_type wal_needs_flush_hook;
 extern bool XLogBackgroundFlush(void);
 extern bool XLogNeedsFlush(XLogRecPtr record);
 extern int	XLogFileInit(XLogSegNo logsegno, TimeLineID logtli);

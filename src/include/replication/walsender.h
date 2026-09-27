@@ -47,6 +47,11 @@ extern PGDLLIMPORT bool log_replication_commands;
 typedef bool (*physical_replication_command_hook_type) (const char *cmd_string);
 extern PGDLLIMPORT physical_replication_command_hook_type physical_replication_command_hook;
 
+/* A physical slot's receiver has reported a flushed WAL position. */
+typedef void (*physical_replication_flush_hook_type) (const char *slot_name,
+													  TimeLineID tli, XLogRecPtr flush);
+extern PGDLLIMPORT physical_replication_flush_hook_type physical_replication_flush_hook;
+
 extern void InitWalSender(void);
 extern bool exec_replication_command(const char *cmd_string);
 extern void WalSndErrorCleanup(void);

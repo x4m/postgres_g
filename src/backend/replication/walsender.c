@@ -150,6 +150,7 @@ int			wal_sender_shutdown_timeout = -1;	/* maximum time to wait during
 bool		log_replication_commands = false;
 
 physical_replication_command_hook_type physical_replication_command_hook = NULL;
+physical_replication_flush_hook_type physical_replication_flush_hook = NULL;
 
 /*
  * State for WalSndWakeupRequest
@@ -2524,6 +2525,8 @@ PhysicalConfirmReceivedLocation(XLogRecPtr lsn)
 	ReplicationSlot *slot = MyReplicationSlot;
 
 	Assert(XLogRecPtrIsValid(lsn));
+	if (physical_replication_flush_hook)
+		physical_replication_flush_hook(NameStr(slot->data.name), sendTimeLine, lsn);
 	SpinLockAcquire(&slot->mutex);
 	if (slot->data.restart_lsn != lsn)
 	{

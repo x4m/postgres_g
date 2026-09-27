@@ -216,6 +216,8 @@ const struct config_enum_entry archive_mode_options[] = {
 CheckpointStatsData CheckpointStats;
 
 checkpoint_create_hook_type checkpoint_create_hook = NULL;
+wal_flush_hook_type wal_flush_hook = NULL;
+wal_needs_flush_hook_type wal_needs_flush_hook = NULL;
 
 /*
  * During recovery, lastFullPageWrites keeps track of full_page_writes that
@@ -775,6 +777,7 @@ static void UpdateLastRemovedPtr(char *filename);
 static void ValidateXLOGDirectoryStructure(void);
 static void CleanupBackupHistory(void);
 static void UpdateMinRecoveryPoint(XLogRecPtr lsn, bool force);
+static bool XLogNeedsFlushLocal(XLogRecPtr record);
 static bool PerformRecoveryXLogAction(void);
 static void CheckReplayedDataChecksumState(uint32 replayed_state);
 static void AdoptReplayedDataChecksumState(uint32 new_version, XLogRecPtr lsn);
@@ -2862,6 +2865,18 @@ UpdateMinRecoveryPoint(XLogRecPtr lsn, bool force)
 void
 XLogFlush(XLogRecPtr record)
 {
+	XLogFlushLocal(record);
+	if (wal_flush_hook && XLogInsertAllowed())
+		wal_flush_hook(record, XLogCtl->InsertTimeLineID);
+}
+
+/*
+ * Flush the local staging WAL without an additional durability barrier.
+ * A transport shipping that WAL must not wait for its own acknowledgement.
+ */
+void
+XLogFlushLocal(XLogRecPtr record)
+{
 	XLogRecPtr	WriteRqstPtr;
 	XLogwrtRqst WriteRqst;
 	TimeLineID	insertTLI = XLogCtl->InsertTimeLineID;
@@ -3032,11 +3047,10 @@ XLogFlush(XLogRecPtr record)
 			 LSN_FORMAT_ARGS(LogwrtResult.Flush));
 
 	/*
-	 * Cross-check XLogNeedsFlush().  Some of the checks of XLogFlush() and
-	 * XLogNeedsFlush() are duplicated, and this assertion ensures that these
-	 * remain consistent.
+	 * Cross-check the local part of XLogNeedsFlush().  Some of its checks
+	 * duplicate ours, and this assertion ensures that they remain consistent.
 	 */
-	Assert(!XLogNeedsFlush(record));
+	Assert(!XLogNeedsFlushLocal(record));
 }
 
 /*
@@ -3221,6 +3235,15 @@ XLogBackgroundFlush(void)
  */
 bool
 XLogNeedsFlush(XLogRecPtr record)
+{
+	if (XLogNeedsFlushLocal(record))
+		return true;
+	return wal_needs_flush_hook && XLogInsertAllowed() &&
+		wal_needs_flush_hook(record);
+}
+
+static bool
+XLogNeedsFlushLocal(XLogRecPtr record)
 {
 	/*
 	 * During recovery, we don't flush WAL but update minRecoveryPoint
