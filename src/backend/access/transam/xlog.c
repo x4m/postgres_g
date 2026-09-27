@@ -6829,6 +6829,9 @@ StartupXLOG(void)
 	/* Shut down xlogreader */
 	ShutdownWalRecovery();
 
+	if (performedWalRecovery && wal_replay_end_hook)
+		wal_replay_end_hook(EndOfLog, EndOfLogTLI, newTLI);
+
 	/* Enable WAL writes for this backend only. */
 	LocalSetXLogInsertAllowed();
 

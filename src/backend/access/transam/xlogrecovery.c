@@ -143,6 +143,7 @@ bool		ArchiveRecoveryRequested = false;
 bool		InArchiveRecovery = false;
 
 wal_replay_start_hook_type wal_replay_start_hook = NULL;
+wal_replay_end_hook_type wal_replay_end_hook = NULL;
 after_wal_replay_hook_type after_wal_replay_hook = NULL;
 
 /*

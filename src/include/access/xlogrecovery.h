@@ -141,6 +141,17 @@ typedef void (*wal_replay_start_hook_type) (XLogRecPtr startLSN,
 extern PGDLLIMPORT wal_replay_start_hook_type wal_replay_start_hook;
 
 /*
+ * Called in startup after WAL recovery and selection of the new timeline,
+ * before enabling WAL insertion or emitting end-of-recovery WAL.
+ * This does not run when no WAL recovery was needed.  Hot-standby sessions
+ * may still exist; the hook is not a general quiescence or fencing barrier.
+ */
+typedef void (*wal_replay_end_hook_type) (XLogRecPtr endLSN,
+										  TimeLineID replayTLI,
+										  TimeLineID insertTLI);
+extern PGDLLIMPORT wal_replay_end_hook_type wal_replay_end_hook;
+
+/*
  * Called in the startup process after redo and WAL consistency checking,
  * before publishing the record as replayed.  The callback must not modify
  * the decoded record.  This does not observe hint changes made by backends.
