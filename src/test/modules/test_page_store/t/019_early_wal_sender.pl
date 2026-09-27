@@ -168,7 +168,9 @@ my $old_pid = $writer->safe_psql('postgres',
 	'SELECT sender_pid FROM test_page_store_wal_status()');
 $writer->safe_psql('postgres',
 	"SELECT injection_points_detach('$confirm_point')");
-kill('TERM', $old_pid) == 1 or die "could not stop WAL sender $old_pid: $!";
+# Use PostgreSQL's signal emulation on Windows, not a console signal.
+is(PostgreSQL::Test::Utils::system_log('pg_ctl', 'kill', 'TERM', $old_pid),
+	0, 'terminate the WAL sender before publishing its acknowledgement');
 $writer->poll_query_until('postgres',
 	"SELECT sender_pid > 0 AND sender_pid <> $old_pid FROM test_page_store_wal_status()"
 ) or die 'WAL sender was not restarted';

@@ -200,7 +200,11 @@ is( $child->safe_psql(
 	'child includes the parent commit made after the seed');
 my $sender_pid = $child->safe_psql('postgres',
 	'SELECT sender_pid FROM test_page_store_wal_status()');
-kill 'TERM', $sender_pid or die "terminate child sender: $!";
+# Use PostgreSQL's signal emulation on Windows, not a console signal.
+is( PostgreSQL::Test::Utils::system_log(
+		'pg_ctl', 'kill', 'TERM', $sender_pid),
+	0,
+	'terminate the child WAL sender');
 $child->poll_query_until('postgres',
 	"SELECT sender_pid > 0 AND sender_pid <> $sender_pid FROM test_page_store_wal_status()"
 ) or die 'child sender did not restart';
