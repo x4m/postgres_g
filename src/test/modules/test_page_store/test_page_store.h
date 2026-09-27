@@ -12,6 +12,7 @@
 
 #include "access/xlogdefs.h"
 #include "lib/stringinfo.h"
+#include "storage/block.h"
 #include "storage/relfilelocator.h"
 #include "utils/timestamp.h"
 
