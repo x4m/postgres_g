@@ -1,12 +1,12 @@
 /*-------------------------------------------------------------------------
  *
  * test_page_protocol.c
- *      A test-only physical session for retained page reads.
+ *      Test-only physical sessions for retained pages and a WAL inbox.
  *
  * The ordinary postmaster supplies authentication and connection handling.
- * This command needs neither a database connection nor SQL objects.  It does
- * not send WAL or participate in synchronous replication.  The wire format
- * is private to this prototype, not a proposed stable replication protocol.
+ * Neither command needs a database connection or SQL objects, and neither
+ * participates in ordinary synchronous replication.  The wire formats are
+ * private to this prototype, not proposed stable replication protocols.
  *
  * Copyright (c) 2026, PostgreSQL Global Development Group
  *
@@ -102,8 +102,11 @@ page_service_command(const char *command)
 	StringInfoData message;
 	MemoryContext request_context;
 	MemoryContext command_context = CurrentMemoryContext;
+	bool		wal_service = strcmp(command, TEST_WAL_SERVICE_COMMAND) == 0;
+	int			max_request = wal_service ? TEST_WAL_SERVICE_MAX_REQUEST :
+		TEST_PAGE_SERVICE_MAX_REQUEST;
 
-	if (strcmp(command, TEST_PAGE_SERVICE_COMMAND) != 0)
+	if (!wal_service && strcmp(command, TEST_PAGE_SERVICE_COMMAND) != 0)
 		return previous_command_hook ? previous_command_hook(command) : false;
 	Assert(am_walsender && !am_db_walsender && !OidIsValid(MyDatabaseId));
 
@@ -111,13 +114,15 @@ page_service_command(const char *command)
 	StartTransactionCommand();
 	if (!superuser())
 		ereport(ERROR, (errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
-						errmsg("must be superuser to use page service prototype")));
+						errmsg("must be superuser to use physical storage prototype")));
 	CommitTransactionCommand();
-	if (!test_page_store_history_enabled())
+	if (wal_service && !test_page_store_wal_store_enabled())
+		elog(ERROR, "physical WAL service requires wal_store");
+	if (!wal_service && !test_page_store_history_enabled())
 		elog(ERROR, "physical page service requires retained history");
 	debug_query_string = command;
 	pgstat_report_activity(STATE_RUNNING, command);
-	set_ps_display(TEST_PAGE_SERVICE_COMMAND);
+	set_ps_display(command);
 	ereport(log_replication_commands ? LOG : DEBUG1,
 			(errmsg("received replication command: %s", command)));
 
@@ -155,7 +160,7 @@ page_service_command(const char *command)
 			kind != PqMsg_Terminate)
 			ereport(FATAL, (errcode(ERRCODE_PROTOCOL_VIOLATION),
 							errmsg("unexpected message type in page service")));
-		if (pq_getmessage(&request, TEST_PAGE_SERVICE_MAX_REQUEST + 4))
+		if (pq_getmessage(&request, max_request + 4))
 			proc_exit(0);
 		if (kind != PqMsg_CopyData)
 		{
@@ -164,13 +169,16 @@ page_service_command(const char *command)
 				proc_exit(0);
 			break;
 		}
-		page_service_request(&request, &message);
+		if (wal_service)
+			test_page_store_wal_store_request(&request, &message);
+		else
+			page_service_request(&request, &message);
 		if (pq_flush() != 0)
 			proc_exit(0);
 	}
 	MemoryContextSwitchTo(command_context);
 	MemoryContextDelete(request_context);
 	pq_putmessage(PqMsg_CopyDone, NULL, 0);
-	EndReplicationCommand(TEST_PAGE_SERVICE_COMMAND);
+	EndReplicationCommand(command);
 	return true;
 }

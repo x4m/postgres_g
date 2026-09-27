@@ -231,6 +231,7 @@ _PG_init(void)
 							 NULL, &physical_service, false, PGC_POSTMASTER, 0,
 							 NULL, NULL, NULL);
 	test_page_store_history_init();
+	test_page_store_wal_store_init();
 	test_page_store_protocol_init();
 	test_page_store_worker_init(physical_service);
 	DefineCustomBoolVariable("test_page_store.follow", "Follow WAL for remote main and VM forks.",

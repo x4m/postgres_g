@@ -489,6 +489,60 @@ before ordinary writer connections are accepted.  That is a required next
 step, not a reason to skip the barrier during recovery.  The exact-image
 writer's restart guard remains in force.
 
+Independent WAL inbox
+---------------------
+
+On a separate, independently initialized postmaster, set:
+
+    shared_preload_libraries = 'test_page_store'
+    test_page_store.wal_store = true
+    fsync = on
+
+The private physical command TEST_WAL_SERVICE uses the same CopyBoth framing
+as the page service.  It needs no SQL extension objects or database connection.
+The greeting identifies the service postmaster; each request separately names
+the compute's system identifier and timeline.  This inbox stores opaque WAL
+bytes under PGDATA/test_page_store.wal, never in its own pg_wal, and does not
+run redo for them.  Page/redo storage is still a different node.
+
+Every request starts with kind:u8, system_identifier:u64, timeline:u32,
+epoch:u64 and lsn:u64, in network byte order.  The operations are:
+
+* 'i': initialize the stream at a segment-aligned lsn; a trailing u32 supplies
+  the segment size.  Repeating the same initialization is harmless.
+* 's': return status; epoch is ignored and lsn must be zero.
+* 'f': compare epoch with the current one and durably increment it by one;
+  lsn must be zero.  This does not discard any retained bytes.
+* 'a': append 1..65536 trailing WAL bytes at lsn.  No holes are allowed;
+  overlap with the durable prefix must match byte for byte.
+* 'r': read bytes starting at lsn; a trailing u32 specifies 1..65536 bytes.
+  The entire range must already be durable, and epoch must still match.
+
+Responses repeat kind, system identifier, timeline and request lsn, with the
+current epoch in the corresponding header field, followed by start:u64,
+flushed:u64 and segment_size:u32.  Read responses then include the bytes.
+The stream's initial epoch is supplied by a trusted controller.  A stale
+epoch fails even on an old connection or a fully redundant append retry.
+An earlier response can still arrive after a fence: this is a store append
+fence, not a SQL lease, election or complete writer activation protocol.
+
+Append fsyncs the data before publishing a checksummed control file through
+durable rename.  Responses never precede that publication.  Startup checks
+the control and data length, discards an unpublished suffix and preserves the
+epoch.  A missing or damaged control beside existing bytes fails closed;
+even interrupted initial creation cannot silently reset writer authority.
+Lost replies are resolved by querying status and retrying identical bytes.
+A repeated fence with an old expected epoch fails rather than fencing twice.
+
+This is a single-timeline, single-store scaffold with a native private control
+format, serial filesystem operations and no retention/GC.  Capacity is bounded
+by test_page_store.wal_store_max_mb (default 1024); exceeding it raises ERROR.
+There is not yet an early outbound compute transport, a connection to the WAL
+barrier, or a redo consumer for the inbox.  It does not enable writer restart.
+018_wal_store.pl tests source WAL bytes, conflicting retries, old connections,
+and process crashes before/after data fsync and control publication, including
+a fence whose reply is lost.  It does not simulate power failure.
+
 Important limitations:
 
 * This is not diskless compute.  Unselected relations, catalogs, SLRUs, and

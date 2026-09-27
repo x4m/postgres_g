@@ -20,8 +20,14 @@
 #define TEST_PAGE_SERVICE_VERSION 1
 #define TEST_PAGE_SERVICE_MAX_REQUEST 64
 #define TEST_PAGE_SERVICE_MAX_RESPONSE (TEST_PAGE_SERVICE_MAX_REQUEST + 9 + TEST_PAGE_STORE_MAX_BLOCKS * BLCKSZ)
+#define TEST_WAL_SERVICE_COMMAND "TEST_WAL_SERVICE"
+#define TEST_WAL_STORE_MAX_BYTES (64 * 1024)
+#define TEST_WAL_SERVICE_MAX_REQUEST (29 + TEST_WAL_STORE_MAX_BYTES)
 
 extern void test_page_store_protocol_init(void);
+extern void test_page_store_wal_store_init(void);
+extern bool test_page_store_wal_store_enabled(void);
+extern void test_page_store_wal_store_request(StringInfo request, StringInfo response);
 extern void test_page_store_durability_init(TimeLineID tli);
 extern void test_page_store_overlay_init(int nrelations, int max_blocks);
 extern bool test_page_store_overlay_enabled(void);

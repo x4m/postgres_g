@@ -3,6 +3,7 @@
 test_page_store_sources = files(
   'test_page_store.c', 'test_page_history.c', 'test_page_protocol.c',
   'test_page_worker.c', 'test_page_overlay.c', 'test_wal_durability.c',
+  'test_wal_store.c',
   'test_remote_smgr.c')
 
 if host_system == 'windows'
@@ -50,6 +51,7 @@ tests += {
       't/015_disposable_fsm.pl',
       't/016_writer_overlay.pl',
       't/017_wal_durability.pl',
+      't/018_wal_store.pl',
     ],
   },
 }
