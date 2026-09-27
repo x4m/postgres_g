@@ -223,6 +223,14 @@ FROM pg_replication_slots WHERE slot_name = 'retained_seed'
 	't',
 	'storage retains WAL from at least the seed recovery start');
 
+# The seed contains the MultiXact, whose members remain after commit.
+# Reap the background clients before copying and starting the replacement:
+# lingering IPC::Run sessions can prevent backup_label renames on Windows.
+$locker1->query_safe('COMMIT');
+$locker2->query_safe('COMMIT');
+$locker1->quit;
+$locker2->quit;
+
 # Preserve the old directory for diagnosis, but make the replacement incapable
 # of using it.  Its only inputs are the published seed and the storage node.
 $compute->stop('immediate');
@@ -331,10 +339,6 @@ is(scalar(grep { -e $replacement->data_dir . "/$_" } @remote_paths),
 
 $primary->safe_psql('postgres',
 	"COMMIT PREPARED 'seed_commit'; ROLLBACK PREPARED 'seed_abort'");
-$locker1->query_safe('COMMIT');
-$locker2->query_safe('COMMIT');
-$locker1->quit;
-$locker2->quit;
 catchup($replacement);
 same_rows('prepared outcomes replayed after replacement');
 @restored_twophase = glob($replacement->data_dir . '/pg_twophase/*');
