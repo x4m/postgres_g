@@ -21,15 +21,17 @@ extern void test_page_store_protocol_init(void);
 extern void test_page_store_wal_store_init(void);
 extern bool test_page_store_wal_store_enabled(void);
 extern void test_page_store_wal_store_request(StringInfo request, StringInfo response);
-extern void test_page_store_durability_init(TimeLineID tli);
+extern void test_page_store_durability_init(TimeLineID tli, bool require_inbox);
 extern bool test_page_store_wal_sender_init(TimeLineID tli);
 extern XLogRecPtr test_page_store_wal_requested(void);
 extern XLogRecPtr test_page_store_wal_confirmed(void);
 extern void test_page_store_wal_confirm(TimeLineID tli, XLogRecPtr lsn);
 extern void test_page_store_wal_wait_for_work(void);
 extern void test_page_store_wal_sender_pid(int pid);
-extern void test_page_store_overlay_init(int nrelations, int max_blocks);
+extern void test_page_store_overlay_init(int nrelations, int max_blocks, bool after_recovery);
 extern bool test_page_store_overlay_enabled(void);
+extern bool test_page_store_overlay_active(void);
+extern void test_page_store_overlay_activate(void);
 extern bool test_page_store_overlay_read(int relation, ForkNumber forknum, BlockNumber block,
 										 void **buffers, BlockNumber count, BlockNumber *nblocks);
 extern void test_page_store_overlay_write(int relation, ForkNumber forknum, BlockNumber block,

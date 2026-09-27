@@ -485,7 +485,7 @@ It assumes storage retains both the acknowledged WAL and a usable seed/history.
 A clean primary start is supported by the slot-feedback fixture; recovery
 needs a transport that can progress before ordinary writer connections are
 accepted.  The outbound WAL inbox sender below supplies that transport.
-Neither mode implements overlay-writer recovery or timeline changes.  The
+Those fixtures do not implement overlay-writer recovery or timeline changes.  The
 exact-image writer's restart guard remains in force.
 
 Independent WAL inbox
@@ -671,6 +671,39 @@ the child writer, restarts and exports its inbox, and restores again without
 either writer's PGDATA.  Parent bytes remain unchanged; history corruption is
 rejected.  Remote overlay activation is not part of this test.
 
+Activating a recovered remote writer
+------------------------------------
+
+Set test_page_store.writer_after_recovery_tli to the assigned child timeline,
+along with follow = true, writer_overlay_pages, and a separate WAL inbox.
+replay_tli still names the parent page history.  Use a fresh metadata seed,
+hot_standby = off and archive recovery to the fenced parent prefix; remove an
+inherited standby.signal from this new seed.  Do not remove an old writer's
+epoch guard or reuse its PGDATA.
+
+Before startup inserts post-recovery WAL, the consumer verifies the recovered
+cut and both timelines.  It initializes the overlay's file metadata at exactly
+that parent cut, then publishes the transition from redo-time discards to
+retaining runtime images.  Unwritten pages continue to use the parent baseline;
+new WAL goes to the child inbox.  FSM misses can forget heuristic contents.
+The general core hook does not itself quiesce hot-standby sessions or fence a
+writer; this experiment refuses hot_standby and requires an independent inbox.
+
+023_writer_activation.pl lets page storage replay an unacknowledged commit,
+then loses the writer and the inbox's unpublished suffix.  A replacement uses
+the independently retained metadata seed and fenced WAL bundle.  It must not
+read storage's too-new page versions, either immediately after recovery or
+after allocating new transaction IDs.  The test also checks command IDs and
+cursor visibility through writes, checkpoint and eviction, amcheck, physical
+requests, and the absence of selected relation files.
+
+The provider is still single-timeline: this step retains parent page history
+as a baseline, not a live child page/redo service.  Starting child read replicas
+requires arranging a child redo/history node from a suitable seed and WAL; a
+parent standby ahead of the fork cannot simply follow the new writer.  The
+new writer still has a bounded whole-epoch overlay and cannot reuse its own
+PGDATA on restart.
+
 Important limitations:
 
 * This is not diskless compute.  Unselected relations, catalogs, SLRUs, and
@@ -691,10 +724,10 @@ Important limitations:
   The deadline bounds socket waits, not external DNS resolution.  The shared
   worker handles late replies safely, but asynchronous SMgr completion and
   interruptible caller waits remain to be implemented.
-* General selective redo and recoverable writable compute are not implemented.
-  Remote WAL durability uses one receiver or inbox, not a
-  replacement/recovery or fencing protocol.  The overlay is a single-epoch
-  experiment; sequence/build/extension-AM paths have not been tested with it.
+* General selective redo and cluster-wide recoverable compute are not implemented.
+  Remote WAL durability uses one receiver or inbox, not a quorum or complete
+  lease protocol.  Fresh writer recovery is tested for selected relations;
+  sequence/build/extension-AM paths have not been tested with the overlay.
   Replacement from a published seed works for the selected-relation experiment,
   but seed publication and retention remain operator-managed.  No throughput
   claim is made.

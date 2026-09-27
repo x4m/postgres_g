@@ -42,6 +42,7 @@ typedef struct OverlayFile
 typedef struct OverlayControl
 {
 	LWLock		lock;
+	pg_atomic_uint32 active;
 	uint32		free_head;
 	uint32		used;
 	uint64		reads;
@@ -49,6 +50,7 @@ typedef struct OverlayControl
 } OverlayControl;
 
 static int	overlay_capacity;
+static bool overlay_after_recovery;
 static int	overlay_files;
 static int	overlay_max_blocks;
 static OverlayControl *overlay;
@@ -66,7 +68,7 @@ static const ShmemCallbacks overlay_callbacks = {
 };
 
 void
-test_page_store_overlay_init(int nrelations, int max_blocks)
+test_page_store_overlay_init(int nrelations, int max_blocks, bool after_recovery)
 {
 	DefineCustomIntVariable("test_page_store.writer_overlay_pages",
 							"Maximum epoch-local exact images for the test writer.",
@@ -75,6 +77,7 @@ test_page_store_overlay_init(int nrelations, int max_blocks)
 							NULL, NULL, NULL);
 	overlay_files = nrelations * (MAX_FORKNUM + 1);
 	overlay_max_blocks = max_blocks;
+	overlay_after_recovery = after_recovery;
 	if (overlay_capacity && !nrelations)
 		elog(ERROR, "writer overlay needs selected relations");
 	RegisterShmemCallbacks(&overlay_callbacks);
@@ -84,6 +87,42 @@ bool
 test_page_store_overlay_enabled(void)
 {
 	return overlay_capacity > 0;
+}
+
+bool
+test_page_store_overlay_active(void)
+{
+	if (!overlay || pg_atomic_read_u32(&overlay->active) == 0)
+		return false;
+	pg_read_barrier();
+	return true;
+}
+
+/* No SQL sessions exist in the opt-in recovery-to-writer experiment. */
+void
+test_page_store_overlay_activate(void)
+{
+	Assert(overlay_after_recovery && overlay && !test_page_store_overlay_active());
+	for (int file = 0; file < overlay_files; file++)
+	{
+		ForkNumber	forknum = file % (MAX_FORKNUM + 1);
+		BlockNumber size;
+		bool		exists;
+
+		if (forknum != MAIN_FORKNUM && forknum != VISIBILITYMAP_FORKNUM && forknum != FSM_FORKNUM)
+			continue;
+		exists = test_page_store_baseline_fetch(file / (MAX_FORKNUM + 1), forknum,
+												0, NULL, 0, &size);
+		if ((forknum == MAIN_FORKNUM && !exists) || size > overlay_max_blocks)
+			elog(ERROR, "invalid recovered writer baseline");
+		files[file].exists = exists;
+		files[file].nblocks = size;
+		files[file].baseline_blocks = forknum == FSM_FORKNUM ? 0 : size;
+		files[file].initialized = true;
+	}
+	/* Subsequent writes must retain images; redo-time discards are over. */
+	pg_write_barrier();
+	pg_atomic_write_u32(&overlay->active, 1);
 }
 
 static void
@@ -122,8 +161,8 @@ overlay_initialize(void *arg)
 	/*
 	 * Even a clean checkpoint cannot replace lost runtime images with the
 	 * original baseline.  Refuse a second epoch, including postmaster's crash
-	 * restart, until recovery from storage is implemented.  Do not remove
-	 * this guard on shutdown: the local relation files are no longer
+	 * restart.  Recovery into a new writer uses a fresh seed instead.  Do not
+	 * remove this guard on shutdown: the local relation files are no longer
 	 * authoritative.
 	 */
 	fd = OpenTransientFile(OVERLAY_GUARD, O_WRONLY | O_CREAT | O_EXCL | PG_BINARY);
@@ -138,6 +177,7 @@ overlay_initialize(void *arg)
 		ereport(FATAL, (errcode_for_file_access(), errmsg("could not close writer epoch guard: %m")));
 	fsync_fname(".", true);
 	memset(overlay, 0, sizeof(*overlay));
+	pg_atomic_init_u32(&overlay->active, !overlay_after_recovery);
 	memset(files, 0, overlay_files * sizeof(OverlayFile));
 	memset(mapping, 0, (size_t) overlay_files * overlay_max_blocks * sizeof(uint32));
 	LWLockInitialize(&overlay->lock, LWLockNewTrancheId("test_page_store overlay"));
@@ -154,7 +194,8 @@ overlay_file(int relation, ForkNumber forknum)
 	Assert(overlay && relation >= 0 && file < overlay_files);
 	if (forknum != MAIN_FORKNUM && forknum != VISIBILITYMAP_FORKNUM && forknum != FSM_FORKNUM)
 		elog(ERROR, "writer overlay supports main, VM and FSM forks only");
-	if (RecoveryInProgress())
+	if (RecoveryInProgress() &&
+		(!overlay_after_recovery || !test_page_store_overlay_active()))
 		elog(ERROR, "writer overlay cannot be used in recovery");
 	return file;
 }
@@ -220,6 +261,11 @@ test_page_store_overlay_read(int relation, ForkNumber forknum, BlockNumber block
 		LWLockRelease(&overlay->lock);
 		if (!slot)
 		{
+			if (forknum == FSM_FORKNUM)
+			{
+				memset(buffers[i], 0, BLCKSZ);
+				continue;
+			}
 			if (block + i >= baseline_blocks)
 				elog(ERROR, "writer overlay lost an extended page");
 			(void) test_page_store_baseline_fetch(relation, forknum, block + i,

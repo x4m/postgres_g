@@ -73,7 +73,7 @@ static const ShmemCallbacks durability_callbacks = {
 };
 
 void
-test_page_store_durability_init(TimeLineID tli)
+test_page_store_durability_init(TimeLineID tli, bool require_inbox)
 {
 	DefineCustomStringVariable("test_page_store.wal_durability_slot",
 							   "Physical storage slot that must acknowledge WAL flushes.",
@@ -83,6 +83,8 @@ test_page_store_durability_init(TimeLineID tli)
 							NULL, &durability_timeout, 60000, 1, INT_MAX,
 							PGC_POSTMASTER, GUC_UNIT_MS, NULL, NULL, NULL);
 	use_sender = test_page_store_wal_sender_init(tli);
+	if (require_inbox && !use_sender)
+		elog(ERROR, "recovered writer requires an independent WAL inbox");
 	if (use_sender && durability_slot[0] != '\0')
 		elog(ERROR, "test WAL durability needs either a slot or an inbox, not both");
 	if (!use_sender && durability_slot[0] == '\0')

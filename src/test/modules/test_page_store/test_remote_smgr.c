@@ -60,6 +60,7 @@ PG_FUNCTION_INFO_V1(test_page_store_compute_status);
 static char *page_conninfo;
 static char *page_lsn;
 static int	page_tli;
+static int	writer_after_recovery_tli;
 static int	page_spc;
 static int	page_db;
 static int	page_rel;
@@ -105,12 +106,14 @@ static pg_atomic_uint64 *required_lsn;
 static RelFileLocator selected_locators[COMPUTE_MAX_RELATIONS];
 static int	nselected;
 static wal_replay_start_hook_type previous_replay_start_hook;
+static wal_replay_end_hook_type previous_replay_end_hook;
 static after_wal_replay_hook_type previous_replay_hook;
 static redo_buffer_filter_hook_type previous_filter_hook;
 
 static void compute_shmem_request(void *arg);
 static void compute_shmem_init(void *arg);
 static void compute_replay_start(XLogRecPtr start, TimeLineID tli);
+static void compute_replay_end(XLogRecPtr end, TimeLineID replay_tli, TimeLineID insert_tli);
 static void compute_after_replay(XLogReaderState *record, TimeLineID tli);
 static bool compute_redo_filter(XLogReaderState *record, uint8 block_id, ReadBufferMode mode);
 static bool compute_active(void);
@@ -239,11 +242,19 @@ _PG_init(void)
 	DefineCustomIntVariable("test_page_store.follow_max_blocks", "Maximum tracked blocks per relation fork.",
 							NULL, &follow_max_blocks, 65536, 1, 1048576,
 							PGC_POSTMASTER, 0, NULL, NULL, NULL);
-	test_page_store_overlay_init(nselected, follow_max_blocks);
-	test_page_store_durability_init(page_tli);
+	DefineCustomIntVariable("test_page_store.writer_after_recovery_tli",
+							"Activate a fresh writer overlay on this timeline after recovery.",
+							NULL, &writer_after_recovery_tli, 0, 0, INT_MAX,
+							PGC_POSTMASTER, 0, NULL, NULL, NULL);
+	test_page_store_overlay_init(nselected, follow_max_blocks, writer_after_recovery_tli != 0);
+	test_page_store_durability_init(writer_after_recovery_tli ? writer_after_recovery_tli : page_tli,
+									writer_after_recovery_tli != 0);
 	if (test_page_store_overlay_enabled() &&
-		(follow_replay || test_page_store_history_enabled()))
+		((follow_replay && !writer_after_recovery_tli) || test_page_store_history_enabled()))
 		elog(ERROR, "writer overlay cannot run on a following compute or page history node");
+	if (writer_after_recovery_tli &&
+		(!follow_replay || !test_page_store_overlay_enabled() || writer_after_recovery_tli <= page_tli))
+		elog(ERROR, "writer activation requires following recovery, an overlay and a child timeline");
 	if (follow_replay && test_page_store_history_enabled())
 		elog(ERROR, "following compute and page history must run on different nodes");
 	if (follow_replay && nselected == 0)
@@ -251,6 +262,8 @@ _PG_init(void)
 	RegisterShmemCallbacks(&compute_callbacks);
 	previous_replay_start_hook = wal_replay_start_hook;
 	wal_replay_start_hook = compute_replay_start;
+	previous_replay_end_hook = wal_replay_end_hook;
+	wal_replay_end_hook = compute_replay_end;
 	previous_replay_hook = after_wal_replay_hook;
 	after_wal_replay_hook = compute_after_replay;
 	previous_filter_hook = redo_buffer_filter_hook;
@@ -372,7 +385,7 @@ remote_relation(SMgrRelation reln, ForkNumber forknum)
 {
 	if (SmgrIsTemp(reln) || !selected_locator(reln->smgr_rlocator.locator))
 		return false;
-	if (test_page_store_overlay_enabled())
+	if (test_page_store_overlay_active())
 		return true;
 	if (follow_replay)
 		return compute_active() && (forknum == MAIN_FORKNUM ||
@@ -432,9 +445,15 @@ compute_check(void)
 {
 	TimeLineID	tli;
 
-	if (test_page_store_overlay_enabled())
+	if (test_page_store_overlay_active())
 	{
-		if (RecoveryInProgress() || GetWALInsertionTimeLine() != page_tli)
+		if (writer_after_recovery_tli)
+		{
+			/* The end hook validates the child before end-of-recovery writes. */
+			if (!RecoveryInProgress() && GetWALInsertionTimeLine() != writer_after_recovery_tli)
+				elog(ERROR, "recovered writer changed its timeline");
+		}
+		else if (RecoveryInProgress() || GetWALInsertionTimeLine() != page_tli)
 			elog(ERROR, "writer overlay requires its original primary timeline");
 		return;
 	}
@@ -485,6 +504,8 @@ compute_replay_start(XLogRecPtr start, TimeLineID tli)
 		previous_replay_start_hook(start, tli);
 	if (!compute)
 		return;
+	if (writer_after_recovery_tli && EnableHotStandby)
+		elog(ERROR, "writer activation requires hot_standby off");
 	baseline = pg_lsn_in_safe(page_lsn, NULL);
 	/* Older fixtures replay their local seed up to an exact baseline. */
 	if (start < baseline)
@@ -521,6 +542,24 @@ compute_replay_start(XLogRecPtr start, TimeLineID tli)
 	pg_atomic_write_u64(&compute->completed, cut);
 	pg_write_barrier();
 	pg_atomic_write_u32(&compute->active, 1);
+}
+
+/*
+ * All old sessions were lost, so ordinary redo images are a valid new baseline.
+ * Keep the parent's exact cut: storage may already have replayed later WAL.
+ * The controller has fenced the parent and assigned a separate child inbox.
+ */
+static void
+compute_replay_end(XLogRecPtr end, TimeLineID replay_tli, TimeLineID insert_tli)
+{
+	if (previous_replay_end_hook)
+		previous_replay_end_hook(end, replay_tli, insert_tli);
+	if (!writer_after_recovery_tli)
+		return;
+	if (EnableHotStandby || !compute_active() || replay_tli != page_tli ||
+		insert_tli != writer_after_recovery_tli || pg_atomic_read_u64(&compute->completed) != end)
+		elog(ERROR, "recovered writer does not match its assigned timeline and baseline");
+	test_page_store_overlay_activate();
 }
 
 /* Publish a completed record, or activate at a legacy local-seed baseline. */
@@ -1044,7 +1083,7 @@ remote_fetch(SMgrRelation reln, ForkNumber forknum, BlockNumber blocknum,
 	bool		exists;
 
 	Assert(!INTERRUPTS_CAN_BE_PROCESSED());
-	if (test_page_store_overlay_enabled())
+	if (test_page_store_overlay_active())
 	{
 		compute_check();
 		return test_page_store_overlay_read(selected_relation(reln->smgr_rlocator.locator),
@@ -1095,10 +1134,21 @@ test_page_store_baseline_fetch(int relation, ForkNumber forknum, BlockNumber blo
 							   void **buffers, BlockNumber count, BlockNumber *nblocks)
 {
 	TimestampTz deadline = TimestampTzPlusMilliseconds(GetCurrentTimestamp(), request_timeout);
+	XLogRecPtr	lsn = pg_lsn_in_safe(page_lsn, NULL);
 
 	Assert(relation >= 0 && relation < nselected);
+	if (writer_after_recovery_tli)
+	{
+		lsn = pg_atomic_read_u64(&compute->completed);
+		if (forknum == FSM_FORKNUM)
+		{
+			Assert(count == 0);
+			*nblocks = pg_atomic_read_u32(&compute->files[relation][forknum].nblocks);
+			return pg_atomic_read_u32(&compute->files[relation][forknum].exists) != 0;
+		}
+	}
 	return remote_fetch_at(selected_locators[relation], forknum, block, buffers,
-						   count, nblocks, pg_lsn_in_safe(page_lsn, NULL), deadline);
+						   count, nblocks, lsn, deadline);
 }
 
 /* The explicit cut also allows metadata lookup before compute activation. */
@@ -1174,7 +1224,7 @@ remote_exists(SMgrRelation reln, ForkNumber forknum, SmgrChainIndex next)
 
 	if (!remote_relation(reln, forknum))
 		return smgr_exists_next(reln, forknum, next + 1);
-	if (follow_replay && AmStartupProcess())
+	if (follow_replay && !test_page_store_overlay_active() && AmStartupProcess())
 		return pg_atomic_read_u32(&compute_file(reln->smgr_rlocator.locator, forknum)->exists) != 0;
 	return remote_fetch(reln, forknum, 0, NULL, 0, &nblocks);
 }
@@ -1188,7 +1238,7 @@ remote_create(RelFileLocator old, SMgrRelation reln, ForkNumber forknum,
 	else
 	{
 		compute_check();
-		if (test_page_store_overlay_enabled())
+		if (test_page_store_overlay_active())
 			test_page_store_overlay_create(selected_relation(reln->smgr_rlocator.locator), forknum);
 		if (follow_replay && forknum == FSM_FORKNUM)
 			pg_atomic_write_u32(&compute_file(reln->smgr_rlocator.locator, forknum)->exists, 1);
@@ -1201,7 +1251,7 @@ remote_unlink(RelFileLocatorBackend locator, ForkNumber forknum,
 {
 	SMgrRelation smgr = smgropen(locator.locator, locator.backend);
 
-	if (test_page_store_overlay_enabled() && remote_relation(smgr, forknum))
+	if (test_page_store_overlay_active() && remote_relation(smgr, forknum))
 	{
 		if (forknum == InvalidForkNumber)
 		{
@@ -1228,7 +1278,7 @@ remote_zeroextend(SMgrRelation reln, ForkNumber forknum, BlockNumber block,
 {
 	if (!remote_relation(reln, forknum))
 		smgr_zeroextend_next(reln, forknum, block, count, skipFsync, next + 1);
-	else if (test_page_store_overlay_enabled())
+	else if (test_page_store_overlay_active())
 		test_page_store_overlay_write(selected_relation(reln->smgr_rlocator.locator),
 									  forknum, block, NULL, count, true);
 	else
@@ -1251,7 +1301,7 @@ remote_extend(SMgrRelation reln, ForkNumber forknum, BlockNumber block,
 {
 	if (!remote_relation(reln, forknum))
 		smgr_extend_next(reln, forknum, block, buffer, skipFsync, next + 1);
-	else if (test_page_store_overlay_enabled())
+	else if (test_page_store_overlay_active())
 		test_page_store_overlay_write(selected_relation(reln->smgr_rlocator.locator),
 									  forknum, block, &buffer, 1, true);
 	else
@@ -1268,7 +1318,7 @@ remote_truncate(SMgrRelation reln, ForkNumber forknum, BlockNumber old,
 {
 	if (!remote_relation(reln, forknum))
 		smgr_truncate_next(reln, forknum, old, size, next + 1);
-	else if (test_page_store_overlay_enabled())
+	else if (test_page_store_overlay_active())
 		test_page_store_overlay_truncate(selected_relation(reln->smgr_rlocator.locator),
 										 forknum, size, false);
 	else if (follow_replay && AmStartupProcess())
@@ -1307,7 +1357,7 @@ remote_nblocks(SMgrRelation reln, ForkNumber forknum, SmgrChainIndex next)
 
 	if (!remote_relation(reln, forknum))
 		return smgr_nblocks_next(reln, forknum, next + 1);
-	if (follow_replay && AmStartupProcess())
+	if (follow_replay && !test_page_store_overlay_active() && AmStartupProcess())
 		return pg_atomic_read_u32(&compute_file(reln->smgr_rlocator.locator, forknum)->nblocks);
 	if (!remote_fetch(reln, forknum, 0, NULL, 0, &nblocks))
 		elog(ERROR, "remote relation fork does not exist");
@@ -1413,7 +1463,7 @@ remote_writev(SMgrRelation reln, ForkNumber forknum, BlockNumber blocknum,
 {
 	if (!remote_relation(reln, forknum))
 		smgr_writev_next(reln, forknum, blocknum, buffers, nblocks, skipFsync, next + 1);
-	else if (test_page_store_overlay_enabled())
+	else if (test_page_store_overlay_active())
 		test_page_store_overlay_write(selected_relation(reln->smgr_rlocator.locator),
 									  forknum, blocknum, buffers, nblocks, false);
 	else
