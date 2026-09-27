@@ -226,15 +226,17 @@ test_page_store_fetch(PG_FUNCTION_ARGS)
 	{
 		BlockNumber block = (BlockNumber) blkno + i;
 		Buffer		buf;
-		Page		copy = (Page) (VARDATA(pages) + i * BLCKSZ);
+		PGAlignedBlock copy;
 
 		buf = ReadBufferWithoutRelcache(locator, (ForkNumber) forknum, block,
 										RBM_NORMAL, NULL, true);
 		LockBuffer(buf, BUFFER_LOCK_SHARE);
-		memcpy(copy, BufferGetPage(buf), BLCKSZ);
+		memcpy(copy.data, BufferGetPage(buf), BLCKSZ);
 		UnlockReleaseBuffer(buf);
 		/* A shared-buffer image does not necessarily have a valid checksum. */
-		PageSetChecksum(copy, block);
+		PageSetChecksum(copy.data, block);
+		/* bytea's payload is not aligned for PageHeader access. */
+		memcpy(VARDATA(pages) + i * BLCKSZ, copy.data, BLCKSZ);
 	}
 
 	INJECTION_POINT("test-page-store-after-fetch", NULL);
