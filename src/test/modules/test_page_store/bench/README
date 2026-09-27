@@ -7,8 +7,9 @@ Opt-in pgbench workload
 This starts a writer, two following readers, page/redo storage, and an
 independent WAL inbox.  All pgbench heaps and B-tree indexes have no local
 main/VM/FSM files on the three computes.  Other relations, catalogs, SLRUs,
-and WAL staging remain local.  Nodes are stopped after the run; never point
-this fixture at existing data.
+and WAL staging remain local.  By default, nodes are stopped after the run;
+the interactive mode below delays that cleanup.  Never point this fixture
+at existing data.
 
 The writer runs rate-limited simple-update with two clients, while each
 reader runs select-only with two clients.  The defaults are scale 1,
@@ -19,6 +20,7 @@ reader runs select-only with two clients.  The defaults are scale 1,
     PAGE_STORE_BENCH_SCALE=1           # 1..4
     PAGE_STORE_BENCH_MODE=remote       # remote or local
     PAGE_STORE_BENCH_REVISION=...      # include the tested source revision
+    PAGE_STORE_BENCH_HOLD_SECONDS=0    # 0..3600, manual inspection after checks
 
 Use -O2 without assertions for measurements.  Assertions/debug builds are
 useful only for workload correctness.  Each run gets a fresh cluster; save
@@ -42,3 +44,39 @@ durability path running, but uses ordinary md files on writer and readers.
 This is a controlled reference for remote access overhead, not a benchmark
 of a conventional three-node PostgreSQL cluster.  No crash/failover is
 injected during measurement; separate TAP tests cover those transitions.
+
+Interactive demo
+----------------
+
+To inspect the same five-node setup after the workload and its checks:
+
+    PAGE_STORE_BENCH_HOLD_SECONDS=1800 \
+      make -C src/test/modules/test_page_store check \
+      PROVE_TESTS='bench/pgbench.pl' PROVE_FLAGS='-v'
+
+Wait for tmp_check/log/pgbench-demo.json in this module.  It is published
+only after the correctness checks pass, and lists the connstr, pgdata and
+logfile for each node.  In another terminal, from the checkout root:
+
+    demo=src/test/modules/test_page_store/tmp_check/log/pgbench-demo.json
+    src/bin/psql/psql \
+      "$(jq -r '.nodes.bench_r1.connstr' "$demo")"
+
+Alternatively, use psql from your build's install prefix.  bench_writer
+accepts writes; bench_r1 and bench_r2 are following readers.  The other
+two nodes are storage services, not additional computes.  Keep changes
+small: history and overlay are bounded, and only the existing seven
+pgbench relations are selected for remote I/O.
+
+To stop early, run:
+
+    touch "$(jq -r '.resume_file' "$demo")"
+
+Otherwise, wait for the requested hold interval.  The normal harness
+cleanup stops all five nodes.  Ctrl-C also triggers cleanup but reports
+an interrupted test, not a successful one.  The JSON file can remain
+after shutdown; its presence alone does not prove the nodes are still
+running.  Do not try to restart the old
+writer PGDATA after this session: its exact-image overlay is volatile.
+Start a new demo instead.  This phase is not part of the measured workload;
+manual changes made here are not included in the preceding test assertions.

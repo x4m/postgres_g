@@ -18,7 +18,12 @@ die 'mode must be remote or local' unless $mode =~ /\A(remote|local)\z/;
 my $seconds = $ENV{PAGE_STORE_BENCH_SECONDS} // 5;
 my $rate = $ENV{PAGE_STORE_BENCH_RATE} // 100;
 my $scale = $ENV{PAGE_STORE_BENCH_SCALE} // 1;
-for my $setting ([ $seconds, 3, 60 ], [ $rate, 1, 200 ], [ $scale, 1, 4 ])
+my $hold = $ENV{PAGE_STORE_BENCH_HOLD_SECONDS} // 0;
+for my $setting (
+	[ $seconds, 3, 60 ],
+	[ $rate, 1, 200 ],
+	[ $scale, 1, 4 ],
+	[ $hold, 0, 3600 ])
 {
 	die 'benchmark setting is outside its bounded range'
 	  unless $setting->[0] =~ /\A[0-9]+\z/
@@ -346,6 +351,33 @@ open my $out, '>', "$PostgreSQL::Test::Utils::log_path/pgbench-$mode.json"
   or die "open benchmark report: $!";
 print $out JSON::PP->new->pretty->canonical->encode(\%report);
 close $out or die "close benchmark report: $!";
+
+# Optional interactive phase, outside the measured workload and its checks.
+# Keep the harness alive so that its normal exit cleanup still owns the nodes.
+if ($hold > 0 && PostgreSQL::Test::Utils::all_tests_passing())
+{
+	my $ready = "$PostgreSQL::Test::Utils::log_path/pgbench-demo.json";
+	my $resume = "$PostgreSQL::Test::Utils::log_path/pgbench-demo.resume";
+	die "resume file already exists: $resume" if -e $resume;
+	my %demo = (resume_file => $resume, expires_at => time + $hold);
+	for my $node ($writer, @readers, $storage, $inbox)
+	{
+		$demo{nodes}{ $node->name } = {
+			connstr => $node->connstr('postgres'),
+			pgdata => $node->data_dir,
+			logfile => $node->logfile
+		};
+	}
+	open my $manifest, '>', "$ready.tmp" or die "open demo manifest: $!";
+	print $manifest JSON::PP->new->pretty->canonical->encode(\%demo);
+	close $manifest or die "close demo manifest: $!";
+	rename("$ready.tmp", $ready) or die "publish demo manifest: $!";
+	note "Live demo: $ready; create $resume to stop early";
+	while (time < $demo{expires_at} && !-e $resume)
+	{
+		sleep 1;
+	}
+}
 $writer->stop;
 $_->stop for @readers;
 $storage->stop;
