@@ -1,0 +1,44 @@
+Opt-in pgbench workload
+======================
+
+    make -C src/test/modules/test_page_store check \
+      PROVE_TESTS='bench/pgbench.pl'
+
+This starts a writer, two following readers, page/redo storage, and an
+independent WAL inbox.  All pgbench heaps and B-tree indexes have no local
+main/VM/FSM files on the three computes.  Other relations, catalogs, SLRUs,
+and WAL staging remain local.  Nodes are stopped after the run; never point
+this fixture at existing data.
+
+The writer runs rate-limited simple-update with two clients, while each
+reader runs select-only with two clients.  The defaults are scale 1,
+5 seconds and 100 writer transactions/second.  Optional environment:
+
+    PAGE_STORE_BENCH_SECONDS=30        # 3..60
+    PAGE_STORE_BENCH_RATE=200          # 1..200, aggregate writer rate
+    PAGE_STORE_BENCH_SCALE=1           # 1..4
+    PAGE_STORE_BENCH_MODE=remote       # remote or local
+    PAGE_STORE_BENCH_REVISION=...      # include the tested source revision
+
+Use -O2 without assertions for measurements.  Assertions/debug builds are
+useful only for workload correctness.  Each run gets a fresh cluster; save
+tmp_check/log/pgbench-*.json and server logs before the next make check.
+JSON includes the exact configure flags, commands, raw pgbench output,
+history capacity and replay/overlay counters.  Do not infer concurrency
+from throughput alone: the final data/TID comparisons and counters check
+that writes happened and both following readers used remote storage.
+Each client must report positive transaction counts and zero failures,
+even if pgbench exits with status zero.  The writer's processed count must
+equal the number of committed pgbench_history rows.
+
+fsync is on, and writer flushes wait for the independent inbox.  The page
+history is volatile, append-only, bounded, and linearly searched; it is not
+a performance-oriented provider.  Report measurements as prototype costs,
+not as the expected performance of compute/storage separation.  History
+headroom is checked; no capacity failure may be counted as a valid sample.
+
+Local-files mode leaves the same five nodes, history collection and WAL
+durability path running, but uses ordinary md files on writer and readers.
+This is a controlled reference for remote access overhead, not a benchmark
+of a conventional three-node PostgreSQL cluster.  No crash/failover is
+injected during measurement; separate TAP tests cover those transitions.
