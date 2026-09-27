@@ -29,7 +29,7 @@ CREATE EXTENSION pg_buffercache;
 CREATE TABLE follow_heap (id int, payload text);
 ALTER TABLE follow_heap ALTER COLUMN payload SET STORAGE PLAIN;
 INSERT INTO follow_heap
-  SELECT i, repeat(md5(i::text), 3) FROM generate_series(1, 1000) i;
+  SELECT i, repeat(md5(i::text), 3) FROM generate_series(1, 500) i;
 VACUUM (FREEZE, ANALYZE) follow_heap;
 SELECT pg_create_physical_replication_slot('follow_storage', true);
 SELECT pg_create_physical_replication_slot('follow_compute', true);
@@ -76,6 +76,11 @@ $storage->safe_psql('postgres', 'SELECT pg_wal_replay_resume()');
 
 my $compute = PostgreSQL::Test::Cluster->new('follow_compute');
 $compute->init_from_backup($primary, 'follow_seed', has_streaming => 1);
+# Windows permits fewer blocks in one I/O.  Keep the fixture small enough
+# that both blocks of the later UPDATE fit in one legal combined read.
+my $combine_limit = $primary->safe_psql('postgres',
+	"SELECT least(64, max_val::int) FROM pg_settings WHERE name = 'io_max_combine_limit'"
+);
 my $conninfo =
   $storage->connstr('postgres') . ' application_name=follow_page_test';
 $conninfo =~ s/'/''/g;
@@ -94,7 +99,7 @@ test_page_store.relfilenumber = $rel
 test_page_store.request_timeout = '30s'
 max_parallel_workers_per_gather = 0
 shared_buffers = '16MB'
-io_max_combine_limit = 64
+io_max_combine_limit = $combine_limit
 });
 $compute->start;
 $primary->wait_for_catchup($compute);
@@ -187,7 +192,7 @@ same_rows('eviction preserves the lower bound of replayed pages');
 
 SKIP:
 {
-	skip 'Injection points are not available', 13 unless $injection_points;
+	skip 'Injection points are not available', 14 unless $injection_points;
 
 	# A buffer mapping with input I/O in progress is not an absent page.
 	evict_heap();
@@ -229,10 +234,13 @@ UPDATE follow_heap SET payload = repeat('x', current_setting('block_size')::int 
 WHERE id = 4 RETURNING ctid
 }) =~ /^\((\d+),/;
 	isnt($new_block, $old_block, 'fixture update changes two heap blocks');
+	cmp_ok($new_block - $old_block + 1,
+		'<=', $combine_limit,
+		'both updated blocks fit in one legal combined read');
 	$primary->wait_for_catchup($storage);
 	wait_event($compute, 'test-page-store-after-update-skip');
 	$reader = $compute->background_psql('postgres');
-	$reader->query_safe('SET io_combine_limit = 64');
+	$reader->query_safe("SET io_combine_limit = $combine_limit");
 	$reader->query_until(
 		qr/read_started/, qq{
 \\echo read_started

@@ -12,6 +12,7 @@ use IO::Socket::UNIX;
 use PostgreSQL::Test::Cluster;
 use PostgreSQL::Test::Utils;
 use Test::More;
+use TestPageStore;
 
 plan skip_all => 'raw protocol fixture needs Unix sockets'
   if $PostgreSQL::Test::Utils::windows_os
@@ -33,8 +34,8 @@ my $start = hex(substr($walfile, 8, 8)) * 4294967296 +
 $source->safe_psql('postgres',
 	'CREATE TABLE inbox_rows AS SELECT i, md5(i::text) FROM generate_series(1, 5000) i; CHECKPOINT'
 );
-my $wal = substr(slurp_file($source->data_dir . '/pg_wal/' . $walfile), 0,
-	512 * 1024);
+my $wal = substr(read_binary_file($source->data_dir . '/pg_wal/' . $walfile),
+	0, 512 * 1024);
 $source->stop;
 
 my $store = PostgreSQL::Test::Cluster->new('wal_inbox');
@@ -356,7 +357,7 @@ SKIP:
 # A durable control file without all of its bytes is corruption, not an empty
 # or partially initialized store that a new writer can silently replace.
 $store->stop;
-my $saved = slurp_file($bytes_path);
+my $saved = read_binary_file($bytes_path);
 truncate($bytes_path, length($saved) - 1) or die "truncate WAL: $!";
 my $log_start = -s $store->logfile;
 ok(!$store->start(fail_ok => 1),
@@ -368,7 +369,7 @@ binmode $file;
 print $file $saved;
 close $file;
 
-my $control = slurp_file($control_path);
+my $control = read_binary_file($control_path);
 rename($control_path, "$control_path.saved") or die "hide control: $!";
 $log_start = -s $store->logfile;
 ok(!$store->start(fail_ok => 1),

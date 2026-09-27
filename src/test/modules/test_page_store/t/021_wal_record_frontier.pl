@@ -12,6 +12,7 @@ use IO::Socket::UNIX;
 use PostgreSQL::Test::Cluster;
 use PostgreSQL::Test::Utils;
 use Test::More;
+use TestPageStore;
 
 plan skip_all => 'raw protocol fixture needs Unix sockets'
   if $PostgreSQL::Test::Utils::windows_os
@@ -85,7 +86,7 @@ for (my $pos = $start; $pos < $post_switch; $pos += $segsize)
 		$tli,
 		int($pos / 4294967296),
 		int(($pos % 4294967296) / $segsize));
-	$wal .= slurp_file($source->data_dir . "/pg_wal/$name");
+	$wal .= read_binary_file($source->data_dir . "/pg_wal/$name");
 }
 rename($source->data_dir, $source->data_dir . '.lost')
   or die "isolate original source: $!";

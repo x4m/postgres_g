@@ -10,6 +10,7 @@ use IPC::Run;
 use PostgreSQL::Test::Cluster;
 use PostgreSQL::Test::Utils;
 use Test::More;
+use TestPageStore;
 
 plan skip_all => 'injection points are not supported'
   unless $ENV{enable_injection_points} eq 'yes';
@@ -113,9 +114,9 @@ rename($source->data_dir, $source->data_dir . '.lost')
   or die "isolate old compute: $!";
 my $parent = export_inbox($parent_inbox, $sysid, 1, 1);
 my $parent_bytes =
-  slurp_file($parent_inbox->data_dir . '/test_page_store.wal/bytes');
+  read_binary_file($parent_inbox->data_dir . '/test_page_store.wal/bytes');
 my $parent_control =
-  slurp_file($parent_inbox->data_dir . '/test_page_store.wal/control');
+  read_binary_file($parent_inbox->data_dir . '/test_page_store.wal/control');
 $parent_inbox->stop;
 
 # Use a separate empty namespace, not a reset of the old authority metadata.
@@ -143,14 +144,14 @@ test_page_store.wal_store_epoch = 3
 });
 ok( !-d $child->data_dir . '/pg_replslot/child_sender',
 	'fresh seed does not contain a sender slot');
-my ($out, $err) = ('', '');
+# Use files, not capture pipes that a long-lived Windows child can inherit.
 my $starting = IPC::Run::start(
 	[
 		'pg_ctl', '-D', $child->data_dir, '-l', $child->logfile, '-w',
 		'start'
 	],
-	'>' => \$out,
-	'2>' => \$err);
+	'>' => $child->logfile . '.pg_ctl_start',
+	'2>&1');
 $inbox->poll_query_until('postgres',
 	"SELECT count(*) = 1 FROM pg_stat_activity WHERE wait_event = '$point'")
   or die 'child did not reach inbox initialization';
@@ -245,10 +246,13 @@ is( $restored->safe_psql(
 is(slurp_file($restored->data_dir . '/pg_wal/00000002.history'),
 	$history, 'recovery restored the child history from the exported bundle');
 $restored->stop;
-is(slurp_file($parent_inbox->data_dir . '/test_page_store.wal/bytes'),
-	$parent_bytes, 'child activation never replaces the parent WAL prefix');
-is(slurp_file($parent_inbox->data_dir . '/test_page_store.wal/control'),
-	$parent_control, 'old inbox remains at its fenced epoch');
+is( read_binary_file($parent_inbox->data_dir . '/test_page_store.wal/bytes'),
+	$parent_bytes,
+	'child activation never replaces the parent WAL prefix');
+is( read_binary_file(
+		$parent_inbox->data_dir . '/test_page_store.wal/control'),
+	$parent_control,
+	'old inbox remains at its fenced epoch');
 
 # Control still has a valid CRC, so lost or changed history must be checked too.
 my $stored_history = $inbox->data_dir . '/test_page_store.wal/history';

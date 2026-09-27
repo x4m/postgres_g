@@ -9,6 +9,7 @@ use IPC::Run;
 use PostgreSQL::Test::Cluster;
 use PostgreSQL::Test::Utils;
 use Test::More;
+use TestPageStore;
 
 plan skip_all => 'injection points are not supported'
   unless $ENV{enable_injection_points} eq 'yes';
@@ -195,14 +196,14 @@ is( $store->safe_psql(
 # connections are still refused.  Hold its storage flush until observing that.
 $writer->stop('immediate');
 pause_storage();
-my ($start_out, $start_err) = ('', '');
+# Use files, not capture pipes that a long-lived Windows child can inherit.
 my $starting = IPC::Run::start(
 	[
 		'pg_ctl', '-D', $writer->data_dir, '-l',
 		$writer->logfile, '-w', 'start'
 	],
-	'>' => \$start_out,
-	'2>' => \$start_err);
+	'>' => $writer->logfile . '.pg_ctl_start',
+	'2>&1');
 wait_storage();
 $writer->_update_pid(1);
 my ($ret, $out, $err) = $writer->psql('postgres', 'SELECT 1');
@@ -259,13 +260,13 @@ for (my $lsn = $start; $lsn < lsn_number($frontier); $lsn += $segsize)
 		int($lsn / 4294967296),
 		int(($lsn % 4294967296) / $segsize));
 	$expected .= substr(
-		slurp_file($writer->data_dir . '/pg_wal/' . $file),
+		read_binary_file($writer->data_dir . '/pg_wal/' . $file),
 		0,
 		($lsn + $segsize > lsn_number($frontier))
 		? lsn_number($frontier) - $lsn
 		: $segsize);
 }
-is(slurp_file($store->data_dir . '/test_page_store.wal/bytes'),
+is(read_binary_file($store->data_dir . '/test_page_store.wal/bytes'),
 	$expected,
 	'complete stored WAL matches local WAL through final checkpoint');
 $store->stop;

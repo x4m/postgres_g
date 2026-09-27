@@ -9,6 +9,7 @@ use warnings FATAL => 'all';
 use PostgreSQL::Test::Cluster;
 use PostgreSQL::Test::Utils;
 use Test::More;
+use TestPageStore;
 
 my $writer = PostgreSQL::Test::Cluster->new('inbox_recovery_writer');
 $writer->init(
@@ -253,8 +254,8 @@ for my $segment (sort @segments)
 {
 	my ($name) = $segment =~ m{/([^/]+)$};
 	my $count = $remaining > $segsize ? $segsize : $remaining;
-	my $bytes = slurp_file($segment);
-	my $source = slurp_file($writer->data_dir . ".lost/pg_wal/$name");
+	my $bytes = read_binary_file($segment);
+	my $source = read_binary_file($writer->data_dir . ".lost/pg_wal/$name");
 	$matches      &&= substr($bytes, 0, $count) eq substr($source, 0, $count);
 	$padding_zero &&= substr($bytes, $count) eq "\0" x ($segsize - $count);
 	$remaining -= $count;
