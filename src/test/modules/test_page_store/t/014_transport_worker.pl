@@ -112,8 +112,9 @@ $compute->poll_query_until('postgres',
 
 sub evict
 {
-	$compute->safe_psql('postgres',
-		"SELECT * FROM pg_buffercache_evict_relation('queue_heap')");
+	$compute->poll_query_until('postgres',
+		"SELECT buffers_skipped = 0 FROM pg_buffercache_evict_relation('queue_heap')"
+	) or die 'could not evict queue_heap';
 	is( $compute->safe_psql(
 			'postgres', qq{
 SELECT count(*) FROM pg_buffercache WHERE reldatabase = $db

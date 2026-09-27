@@ -312,8 +312,9 @@ my $nodes = join ', ', @nodes;
 my $buffers =
   "FROM pg_buffercache WHERE reldatabase = $db AND reltablespace = $spc AND relfilenode IN ($nodes)";
 $child->safe_psql('postgres', 'CHECKPOINT');
-$child->safe_psql('postgres',
-	"SELECT (pg_buffercache_evict(bufferid)).buffer_evicted $buffers");
+$child->poll_query_until('postgres',
+	"SELECT coalesce(bool_and((pg_buffercache_evict(bufferid)).buffer_evicted), true) $buffers"
+) or die 'could not evict the selected child buffers';
 is($child->safe_psql('postgres', "SELECT count(*) $buffers"),
 	'0', 'all selected buffers really evicted');
 is($session->query_safe($runtime_sql),

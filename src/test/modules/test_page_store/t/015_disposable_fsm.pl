@@ -142,9 +142,9 @@ AND relfilenode = $locators{fsm_heap} AND relforknumber = 1
 
 sub evict_fsm
 {
-	$compute->safe_psql('postgres',
-		"SELECT (pg_buffercache_evict(bufferid)).buffer_evicted $fsm_buffers"
-	);
+	$compute->poll_query_until('postgres',
+		"SELECT coalesce(bool_and((pg_buffercache_evict(bufferid)).buffer_evicted), true) $fsm_buffers"
+	) or die 'could not evict the FSM';
 	is($compute->safe_psql('postgres', "SELECT count(*) $fsm_buffers"),
 		'0', 'all heap FSM buffers really evicted');
 }

@@ -115,8 +115,9 @@ max_parallel_workers_per_gather = 0
 sub evict
 {
 	my ($node, $name) = @_;
-	$node->safe_psql('postgres',
-		"SELECT * FROM pg_buffercache_evict_relation('$name')");
+	$node->poll_query_until('postgres',
+		"SELECT buffers_skipped = 0 FROM pg_buffercache_evict_relation('$name')"
+	) or die "could not evict $name";
 	is( $node->safe_psql(
 			'postgres', qq{
 SELECT count(*) FROM pg_buffercache

@@ -139,13 +139,13 @@ EXPLAIN (ANALYZE, FORMAT JSON) SELECT id, payload FROM vm_heap ORDER BY id
 
 sub evict_vm
 {
-	$compute->safe_psql(
+	$compute->poll_query_until(
 		'postgres', qq{
-SELECT (pg_buffercache_evict(bufferid)).buffer_evicted
+SELECT coalesce(bool_and((pg_buffercache_evict(bufferid)).buffer_evicted), true)
 FROM pg_buffercache
 WHERE reldatabase = $db AND reltablespace = $spc
 AND relfilenode = $locators{vm_heap} AND relforknumber = 2
-});
+}) or die 'could not evict the VM';
 	is( $compute->safe_psql(
 			'postgres', qq{
 SELECT count(*) FROM pg_buffercache
@@ -185,8 +185,9 @@ SELECT injection_points_wakeup('$point');
 my @local_files;
 for my $name (@names)
 {
-	$compute->safe_psql('postgres',
-		"SELECT * FROM pg_buffercache_evict_relation('$name')");
+	$compute->poll_query_until('postgres',
+		"SELECT buffers_skipped = 0 FROM pg_buffercache_evict_relation('$name')"
+	) or die "could not evict $name";
 	my $local = $compute->data_dir . '/' . $paths{$name};
 	for my $suffix ('', '_vm')
 	{

@@ -121,8 +121,9 @@ is($compute->safe_psql('postgres', 'SELECT pg_last_wal_replay_lsn()'),
 
 sub evict_heap
 {
-	$compute->safe_psql('postgres',
-		"SELECT * FROM pg_buffercache_evict_relation('remote_heap')");
+	$compute->poll_query_until('postgres',
+		"SELECT buffers_skipped = 0 FROM pg_buffercache_evict_relation('remote_heap')"
+	) or die 'could not evict remote_heap';
 	is($compute->safe_psql('postgres', qq{
 SELECT count(*) FROM pg_buffercache
 WHERE reldatabase = $db AND reltablespace = $spc AND relfilenode = $rel

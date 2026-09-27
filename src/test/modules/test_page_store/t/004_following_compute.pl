@@ -110,8 +110,14 @@ is( $compute->safe_psql(
 
 sub evict_heap
 {
-	$compute->safe_psql('postgres',
-		"SELECT * FROM pg_buffercache_evict_relation('follow_heap')");
+	# Finish preceding WAL before eviction, including hint records from reads.
+	catchup();
+
+	# A background writer can briefly pin a dirty buffer.  Eviction reports
+	# that as a skipped buffer, not an error or a promise that it is now cold.
+	$compute->poll_query_until('postgres',
+		"SELECT buffers_skipped = 0 FROM pg_buffercache_evict_relation('follow_heap')"
+	) or die 'could not evict follow_heap';
 	is( $compute->safe_psql(
 			'postgres', qq{
 SELECT count(*) FROM pg_buffercache WHERE reldatabase = $db
@@ -130,8 +136,14 @@ sub status
 
 sub catchup
 {
-	$primary->wait_for_catchup($storage);
-	$primary->wait_for_catchup($compute);
+	# VACUUM and hint records need not have reached the current write position.
+	# Wait for an explicit, flushed record end on both replay nodes.
+	my $target = $primary->safe_psql('postgres',
+		"SELECT pg_create_restore_point('heap-catchup')");
+	$primary->safe_psql('postgres',
+		"SELECT test_page_store_flush_wal('$target', false)");
+	$primary->wait_for_catchup($storage, 'replay', $target);
+	$primary->wait_for_catchup($compute, 'replay', $target);
 }
 
 sub same_rows

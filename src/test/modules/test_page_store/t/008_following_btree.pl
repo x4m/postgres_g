@@ -315,14 +315,14 @@ SELECT btpo_next FROM generate_series(1,
   LATERAL bt_page_stats('tree_idx', b) s
 WHERE type = 'l' AND btpo_prev = 0
 });
-	is( $compute->safe_psql(
+	ok( $compute->poll_query_until(
 			'postgres', qq{
-SELECT (pg_buffercache_evict(bufferid)).buffer_evicted FROM pg_buffercache
+SELECT coalesce(bool_and((pg_buffercache_evict(bufferid)).buffer_evicted), true)
+FROM pg_buffercache
 WHERE reldatabase = $db AND reltablespace = $spc
 AND relfilenode = $locators{tree_idx} AND relforknumber = 0
 AND relblocknumber = $second
 }),
-		't',
 		'evicted the next forward leaf, leaving the preceding leaf warm');
 	$expected = $primary->safe_psql('postgres', digest_sql('ASC', 0));
 	$reader = $compute->background_psql('postgres');

@@ -164,8 +164,9 @@ AND relfilenode IN ($locators{overlay_heap}, $locators{overlay_idx})
 sub evict_writer
 {
 	$writer->safe_psql('postgres', 'CHECKPOINT');
-	$writer->safe_psql('postgres',
-		"SELECT (pg_buffercache_evict(bufferid)).buffer_evicted $buffers");
+	$writer->poll_query_until('postgres',
+		"SELECT coalesce(bool_and((pg_buffercache_evict(bufferid)).buffer_evicted), true) $buffers"
+	) or die 'could not evict the selected writer buffers';
 	is($writer->safe_psql('postgres', "SELECT count(*) $buffers"),
 		'0', 'all selected writer buffers really evicted');
 }
