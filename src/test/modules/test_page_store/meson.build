@@ -65,6 +65,7 @@ tests += {
       't/019_early_wal_sender.pl',
       't/020_inbox_recovery.pl',
       't/021_wal_record_frontier.pl',
+      't/022_child_wal_epoch.pl',
     ],
   },
 }

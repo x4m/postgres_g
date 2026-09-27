@@ -41,10 +41,11 @@
 
 #define WAL_STORE_DIR "test_page_store.wal"
 #define WAL_STORE_DATA WAL_STORE_DIR "/bytes"
+#define WAL_STORE_HISTORY WAL_STORE_DIR "/history"
 #define WAL_STORE_CONTROL WAL_STORE_DIR "/control"
 #define WAL_STORE_TEMP WAL_STORE_DIR "/control.tmp"
 #define WAL_STORE_MAGIC 0x54505753
-#define WAL_STORE_VERSION 1
+#define WAL_STORE_VERSION 2
 
 PG_FUNCTION_INFO_V1(test_page_store_wal_store_status);
 
@@ -58,6 +59,8 @@ typedef struct WalStoreControl
 	uint64		epoch;
 	XLogRecPtr	start;
 	XLogRecPtr	flushed;
+	uint32		history_size;
+	pg_crc32c	history_crc;
 	pg_crc32c	crc;
 } WalStoreControl;
 
@@ -67,7 +70,7 @@ static LWLock *wal_store_lock;
 
 static void wal_store_request_shmem(void *arg);
 static void wal_store_initialize(void *arg);
-static bool wal_store_load(WalStoreControl *control);
+static bool wal_store_load(WalStoreControl *control, StringInfo history);
 
 static const ShmemCallbacks wal_store_callbacks = {
 	.request_fn = wal_store_request_shmem,
@@ -148,7 +151,7 @@ wal_store_close(int fd)
 
 /* No shared copy can get ahead of the atomically replaced control file. */
 static bool
-wal_store_load(WalStoreControl *control)
+wal_store_load(WalStoreControl *control, StringInfo history)
 {
 	int			fd;
 	struct stat st;
@@ -163,7 +166,12 @@ wal_store_load(WalStoreControl *control)
 			if (stat(WAL_STORE_DATA, &st) == 0)
 				elog(ERROR, "test WAL store control is missing for existing bytes");
 			if (errno == ENOENT)
-				return false;
+			{
+				if (stat(WAL_STORE_HISTORY, &st) == 0)
+					elog(ERROR, "test WAL store control is missing for existing history");
+				if (errno == ENOENT)
+					return false;
+			}
 		}
 		ereport(ERROR, (errcode_for_file_access(),
 						errmsg("could not open test WAL store control: %m")));
@@ -180,6 +188,8 @@ wal_store_load(WalStoreControl *control)
 	if (control->magic != WAL_STORE_MAGIC || control->version != WAL_STORE_VERSION ||
 		!EQ_CRC32C(crc, control->crc) || control->system_identifier == 0 ||
 		control->tli == 0 || control->epoch == 0 ||
+		control->history_size > TEST_WAL_STORE_MAX_HISTORY ||
+		(control->tli == 1) != (control->history_size == 0) ||
 		!IsValidWalSegSize(control->segment_size) ||
 		XLogRecPtrIsInvalid(control->start) ||
 		control->start % control->segment_size != 0 ||
@@ -190,6 +200,26 @@ wal_store_load(WalStoreControl *control)
 		ereport(ERROR, (errcode_for_file_access(), errmsg("could not stat test WAL store bytes: %m")));
 	if (st.st_size < control->flushed - control->start)
 		elog(ERROR, "test WAL store is shorter than its durable frontier");
+	if (control->history_size)
+	{
+		char	   *data = palloc(control->history_size);
+
+		fd = wal_store_open(WAL_STORE_HISTORY, O_RDONLY);
+		if (fstat(fd, &st) != 0)
+			ereport(ERROR, (errcode_for_file_access(), errmsg("could not stat test WAL history: %m")));
+		if (st.st_size != control->history_size)
+			elog(ERROR, "invalid test WAL history size");
+		wal_store_io(fd, data, control->history_size, 0, false);
+		wal_store_close(fd);
+		INIT_CRC32C(crc);
+		COMP_CRC32C(crc, data, control->history_size);
+		FIN_CRC32C(crc);
+		if (!EQ_CRC32C(crc, control->history_crc))
+			elog(ERROR, "invalid test WAL history checksum");
+		if (history)
+			appendBinaryStringInfo(history, data, control->history_size);
+		pfree(data);
+	}
 	return true;
 }
 
@@ -204,7 +234,7 @@ wal_store_initialize(void *arg)
 	if (mkdir(WAL_STORE_DIR, pg_dir_create_mode) != 0 && errno != EEXIST)
 		ereport(FATAL, (errcode_for_file_access(), errmsg("could not create test WAL store directory: %m")));
 	fsync_fname_ext(".", true, false, PANIC);
-	if (!wal_store_load(&control))
+	if (!wal_store_load(&control, NULL))
 		return;
 
 	/* Only the published prefix survives; an incomplete append has no force. */
@@ -212,6 +242,8 @@ wal_store_initialize(void *arg)
 		ereport(FATAL, (errcode_for_file_access(), errmsg("could not truncate test WAL store bytes: %m")));
 	fsync_fname_ext(WAL_STORE_DATA, false, false, PANIC);
 	fsync_fname_ext(WAL_STORE_CONTROL, false, false, PANIC);
+	if (control.history_size)
+		fsync_fname_ext(WAL_STORE_HISTORY, false, false, PANIC);
 	fsync_fname_ext(WAL_STORE_DIR, true, false, PANIC);
 }
 
@@ -248,8 +280,11 @@ test_page_store_wal_store_request(StringInfo request, StringInfo response)
 	uint64		epoch = pq_getmsgint64(request);
 	XLogRecPtr	lsn = pq_getmsgint64(request);
 	uint32		size = 0;
+	uint32		history_size = 0;
 	const char *data = NULL;
+	const char *history_data = NULL;
 	char	   *bytes = NULL;
+	StringInfoData history;
 	WalStoreControl control;
 	bool		found;
 
@@ -258,26 +293,38 @@ test_page_store_wal_store_request(StringInfo request, StringInfo response)
 	if (sysid == 0 || tli == 0)
 		elog(ERROR, "invalid test WAL stream identity");
 	if (kind == 'i' || kind == 'r')
+	{
 		size = pq_getmsgint(request, 4);
+		if (kind == 'i')
+		{
+			history_size = request->len - request->cursor;
+			history_data = pq_getmsgbytes(request, history_size);
+		}
+	}
 	else if (kind == 'a')
 	{
 		size = request->len - request->cursor;
 		data = pq_getmsgbytes(request, size);
 	}
-	else if (kind != 's' && kind != 'f')
+	else if (kind != 's' && kind != 'f' && kind != 'h')
 		elog(ERROR, "unknown test WAL request type: %d", kind);
 	pq_getmsgend(request);
 	if (kind == 'i' && (!IsValidWalSegSize(size) || epoch == 0 ||
 						XLogRecPtrIsInvalid(lsn) || lsn % size != 0))
 		elog(ERROR, "invalid test WAL store initialization");
+	if (kind == 'i' && (history_size > TEST_WAL_STORE_MAX_HISTORY ||
+						(tli == 1) != (history_size == 0) ||
+						memchr(history_data, '\0', history_size) != NULL))
+		elog(ERROR, "test WAL timeline requires its complete history");
 	if ((kind == 'a' || kind == 'r') &&
 		(size == 0 || size > TEST_WAL_STORE_MAX_BYTES || lsn > PG_UINT64_MAX - size))
 		elog(ERROR, "invalid test WAL byte range");
-	if ((kind == 's' || kind == 'f') && !XLogRecPtrIsInvalid(lsn))
+	if ((kind == 's' || kind == 'f' || kind == 'h') && !XLogRecPtrIsInvalid(lsn))
 		elog(ERROR, "unexpected LSN in test WAL control request");
 
+	initStringInfo(&history);
 	LWLockAcquire(wal_store_lock, LW_EXCLUSIVE);
-	found = wal_store_load(&control);
+	found = wal_store_load(&control, &history);
 	if (!found)
 	{
 		int			fd;
@@ -292,17 +339,32 @@ test_page_store_wal_store_request(StringInfo request, StringInfo response)
 		control.epoch = epoch;
 		control.segment_size = size;
 		control.start = control.flushed = lsn;
-		fd = wal_store_open(WAL_STORE_DATA, O_WRONLY | O_CREAT | O_TRUNC);
+		control.history_size = history_size;
+		fd = wal_store_open(WAL_STORE_DATA, O_WRONLY | O_CREAT | O_EXCL);
 		wal_store_close(fd);
 		fsync_fname_ext(WAL_STORE_DATA, false, false, PANIC);
+		if (history_size)
+		{
+			INIT_CRC32C(control.history_crc);
+			COMP_CRC32C(control.history_crc, history_data, history_size);
+			FIN_CRC32C(control.history_crc);
+			fd = wal_store_open(WAL_STORE_HISTORY, O_WRONLY | O_CREAT | O_EXCL);
+			wal_store_io(fd, unconstify(char *, history_data), history_size, 0, true);
+			wal_store_close(fd);
+			fsync_fname_ext(WAL_STORE_HISTORY, false, false, PANIC);
+			appendBinaryStringInfo(&history, history_data, history_size);
+		}
 		fsync_fname_ext(WAL_STORE_DIR, true, false, PANIC);
+		INJECTION_POINT("test-wal-store-before-initialize-publish", NULL);
 		wal_store_save(&control);
 	}
 	if (sysid != control.system_identifier || tli != control.tli)
 		elog(ERROR, "test WAL stream identity does not match");
 	if (kind != 's' && epoch != control.epoch)
 		elog(ERROR, "test WAL writer epoch does not match");
-	if (kind == 'i' && (lsn != control.start || size != control.segment_size))
+	if (kind == 'i' && (lsn != control.start || size != control.segment_size ||
+						history_size != history.len ||
+						memcmp(history_data, history.data, history_size) != 0))
 		elog(ERROR, "test WAL store initialization does not match");
 	if (kind == 'f')
 	{
@@ -363,7 +425,13 @@ test_page_store_wal_store_request(StringInfo request, StringInfo response)
 	pq_sendint32(response, control.segment_size);
 	if (kind == 'r')
 		pq_sendbytes(response, bytes, size);
+	else if (kind == 'h')
+	{
+		pq_sendint32(response, history.len);
+		pq_sendbytes(response, history.data, history.len);
+	}
 	pq_endmessage(response);
+	pfree(history.data);
 }
 
 /* Administrative observation only; the physical data path needs no SQL. */
@@ -380,7 +448,7 @@ test_page_store_wal_store_status(PG_FUNCTION_ARGS)
 	if (get_call_result_type(fcinfo, NULL, &tupdesc) != TYPEFUNC_COMPOSITE)
 		elog(ERROR, "return type must be a row type");
 	LWLockAcquire(wal_store_lock, LW_SHARED);
-	if (!wal_store_load(&control))
+	if (!wal_store_load(&control, NULL))
 		elog(ERROR, "test WAL store is not initialized");
 	LWLockRelease(wal_store_lock);
 	values[0] = LSNGetDatum(control.flushed);

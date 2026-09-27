@@ -616,7 +616,7 @@ complete record fails export; it is not a reason to silently select an earlier
 record.  Empty prefixes are rejected.  first_record and last_record identify
 the checked chain: a segment-aligned anchor can skip initial continuation data
 whose start belongs to the seed.  The export is not a backup, does not export
-timeline history, and does not prove that an arbitrary seed is recoverable.
+all ancestor WAL, and does not prove that an arbitrary seed is recoverable.
 It preserves the bytes of an incomplete tail rather than editing parent WAL.
 
 Use the completed bundle with an ordinary restore_command and an independently
@@ -641,6 +641,35 @@ a seed predating the final commit runs to incomplete EOF, without a named
 target, and independently chooses the manifest's record_end as the child
 timeline's branch point.  A complete record with a bad CRC prevents manifest
 publication.  This is an ordinary recovery node, not overlay-writer activation.
+
+Child timeline WAL epochs
+-------------------------
+
+A child timeline uses a separate, initially empty inbox.  The controller
+first fences and exports its parent, retains the parent's WAL and page history,
+and supplies the child's timeline, first segment and epoch.  This is not an
+atomic cross-inbox handoff or a production process-per-timeline design.
+
+The sender reads the history file created by core before end-of-recovery WAL
+is flushed.  Initialization stores those exact bytes durably before publishing
+the new inbox control file.  The private control format is now version 2 and
+binds history size and checksum; retries must have identical history.  The
+inbox treats history as opaque data, not as authorization to fork a parent.
+test_wal_fetch exports that history alongside the child's WAL.  The controller
+must still supply earlier ancestor WAL required by a particular seed.
+
+With test_page_store.wal_store_create_slot enabled, the early sender can create
+its physical slot when an independently retained seed lacks it.  It uses the
+normal slot reservation and persistence APIs, and rejects a retained position
+that no longer covers the configured first segment.  It never replaces a
+surviving slot or silently skips missing WAL.
+
+022_child_wal_epoch.pl restores an ordinary local writer into a new timeline,
+blocks inbox initialization before publication, and verifies that SQL cannot
+open until end-of-recovery WAL is durable.  It then restarts the sender, loses
+the child writer, restarts and exports its inbox, and restores again without
+either writer's PGDATA.  Parent bytes remain unchanged; history corruption is
+rejected.  Remote overlay activation is not part of this test.
 
 Important limitations:
 

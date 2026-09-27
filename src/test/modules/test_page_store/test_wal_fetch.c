@@ -141,7 +141,7 @@ get_result(void)
 }
 
 static char *
-get_response(int expected_size)
+get_response(int expected_size, int *actual_size)
 {
 	char	   *data = NULL;
 	int			size;
@@ -155,8 +155,11 @@ get_response(int expected_size)
 		pg_fatal("WAL inbox session ended: %s",
 				 result ? PQresultErrorMessage(result) : PQerrorMessage(conn));
 	}
-	if (size != expected_size)
+	if ((expected_size >= 0 && size != expected_size) ||
+		(expected_size < 0 && (size < 53 || size > 53 + TEST_WAL_STORE_MAX_HISTORY)))
 		pg_fatal("unexpected WAL inbox response length: %d", size);
+	if (actual_size)
+		*actual_size = size;
 	return data;
 }
 
@@ -190,7 +193,7 @@ connect_inbox(const char *conninfo)
 		pg_fatal("could not start WAL inbox service: %s",
 				 result ? PQresultErrorMessage(result) : PQerrorMessage(conn));
 	PQclear(result);
-	greeting = get_response(21);
+	greeting = get_response(21, NULL);
 	if (greeting[0] != 'h' || read32(greeting + 1) != TEST_PAGE_SERVICE_VERSION ||
 		read32(greeting + 5) != PG_VERSION_NUM || read32(greeting + 9) != BLCKSZ ||
 		read64(greeting + 13) == 0)
@@ -204,6 +207,7 @@ exchange(char kind, uint64 lsn, uint32 count)
 	char		request[33];
 	char	   *response;
 	int			sent;
+	int			response_size;
 
 	INSTR_TIME_SET_CURRENT(request_start);
 	request[0] = kind;
@@ -217,11 +221,13 @@ exchange(char kind, uint64 lsn, uint32 count)
 	if (sent < 0)
 		pg_fatal("could not send WAL inbox request: %s", PQerrorMessage(conn));
 	flush_request();
-	response = get_response(49 + count);
+	response = get_response(kind == 'h' ? -1 : 49 + count, &response_size);
 	if (response[0] != kind || read64(response + 1) != system_identifier ||
 		read32(response + 9) != timeline || read64(response + 21) != lsn ||
 		read64(response + 13) != epoch + (kind == 'f' ? 1 : 0))
 		pg_fatal("WAL inbox response identity or epoch does not match");
+	if (kind == 'h' && read32(response + 49) != response_size - 53)
+		pg_fatal("invalid WAL inbox history response length");
 	return response;
 }
 
@@ -358,6 +364,7 @@ main(int argc, char **argv)
 	XLogRecPtr	first_record;
 	XLogRecPtr	last_record = InvalidXLogRecPtr;
 	XLogRecPtr	record_end;
+	uint32		history_size;
 	int			fd;
 	int			length;
 
@@ -421,6 +428,26 @@ main(int argc, char **argv)
 		if (ftruncate(fd, segment_size) != 0 || close(fd) != 0 || fsync_fname(path, false) != 0)
 			pg_fatal("could not finish WAL segment: %m");
 	}
+	response = exchange('h', 0, 0);
+	history_size = read32(response + 49);
+	if ((timeline == 1) != (history_size == 0) ||
+		read64(response + 29) != start_lsn || read64(response + 37) < end_lsn ||
+		read32(response + 45) != segment_size)
+		pg_fatal("invalid WAL inbox timeline history");
+	if (history_size)
+	{
+		char		filename[MAXFNAMELEN];
+
+		TLHistoryFileName(filename, timeline);
+		snprintf(path, sizeof(path), "%s/%s", directory, filename);
+		fd = open(path, O_CREAT | O_EXCL | O_WRONLY | PG_BINARY, 0600);
+		if (fd < 0)
+			pg_fatal("could not create timeline history file: %m");
+		write_all(fd, response + 53, history_size);
+		if (close(fd) != 0 || fsync_fname(path, false) != 0)
+			pg_fatal("could not finish timeline history file: %m");
+	}
+	PQfreemem(response);
 	PQfinish(conn);
 	record_end = check_records(directory, &first_record, &last_record);
 
@@ -432,11 +459,12 @@ main(int argc, char **argv)
 	length = snprintf(manifest, sizeof(manifest),
 					  "version=2\nsystem_identifier=" UINT64_FORMAT "\ntimeline=%u\nepoch=" UINT64_FORMAT
 					  "\nstart=%X/%X\nend=%X/%X\nsegment_size=%u\n"
-					  "first_record=%X/%X\nlast_record=%X/%X\nrecord_end=%X/%X\n",
+					  "first_record=%X/%X\nlast_record=%X/%X\nrecord_end=%X/%X\n"
+					  "history_size=%u\n",
 					  system_identifier, timeline, epoch, LSN_FORMAT_ARGS(start_lsn),
 					  LSN_FORMAT_ARGS(end_lsn), segment_size,
 					  LSN_FORMAT_ARGS(first_record), LSN_FORMAT_ARGS(last_record),
-					  LSN_FORMAT_ARGS(record_end));
+					  LSN_FORMAT_ARGS(record_end), history_size);
 	fd = open(temporary, O_CREAT | O_EXCL | O_WRONLY | PG_BINARY, 0600);
 	if (fd < 0)
 		pg_fatal("could not create WAL bundle manifest: %m");

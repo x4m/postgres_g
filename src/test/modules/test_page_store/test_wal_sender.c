@@ -17,6 +17,9 @@
  */
 #include "postgres.h"
 
+#include <sys/stat.h>
+
+#include "access/timeline.h"
 #include "access/xlog.h"
 #include "access/xlog_internal.h"
 #include "libpq-fe.h"
@@ -40,6 +43,7 @@ PGDLLEXPORT void test_page_store_wal_sender_main(Datum arg);
 static char *sender_conninfo;
 static char *sender_start_lsn;
 static char *sender_slot;
+static bool sender_create_slot;
 static int	sender_epoch;
 static int	sender_timeout;
 static TimeLineID sender_tli;
@@ -62,9 +66,13 @@ test_page_store_wal_sender_init(TimeLineID tli)
 							   NULL, &sender_start_lsn, "0/0", PGC_POSTMASTER, 0,
 							   NULL, NULL, NULL);
 	DefineCustomStringVariable("test_page_store.wal_store_slot",
-							   "Pre-existing physical slot retaining the test WAL epoch.",
+							   "Physical slot retaining the test WAL epoch.",
 							   NULL, &sender_slot, "", PGC_POSTMASTER, 0,
 							   NULL, NULL, NULL);
+	DefineCustomBoolVariable("test_page_store.wal_store_create_slot",
+							 "Create the sender's physical slot if the seed lacks it.",
+							 NULL, &sender_create_slot, false, PGC_POSTMASTER, 0,
+							 NULL, NULL, NULL);
 	DefineCustomIntVariable("test_page_store.wal_store_epoch",
 							"Writer epoch issued by the test controller.",
 							NULL, &sender_epoch, 1, 1, INT_MAX, PGC_POSTMASTER, 0,
@@ -232,8 +240,7 @@ sender_exchange(char kind, XLogRecPtr lsn, const char *bytes, int size)
 	pq_sendint64(&request, lsn);
 	if (kind == 'i')
 		pq_sendint32(&request, wal_segment_size);
-	else
-		pq_sendbytes(&request, bytes, size);
+	pq_sendbytes(&request, bytes, size);
 	while ((sent = PQputCopyData(sender_conn, request.data, request.len)) == 0)
 		sender_flush(deadline);
 	if (sent < 0)
@@ -249,12 +256,58 @@ sender_exchange(char kind, XLogRecPtr lsn, const char *bytes, int size)
 		elog(ERROR, "WAL inbox response identity does not match");
 	flushed = pq_getmsgint64(&response);
 	if (pq_getmsgint(&response, 4) != wal_segment_size ||
-		flushed < lsn + size)
+		flushed < lsn + (kind == 'a' ? size : 0))
 		elog(ERROR, "invalid WAL inbox durable frontier");
 	pq_getmsgend(&response);
 	pfree(response.data);
 	pfree(request.data);
 	return flushed;
+}
+
+/* Core creates this immutable file before the first end-of-recovery flush. */
+static void
+sender_history(StringInfo history)
+{
+	List	   *entries;
+	TimeLineHistoryEntry *entry;
+	char		path[MAXPGPATH];
+	struct stat st;
+	int			fd;
+
+	if (sender_tli == 1)
+	{
+		if (sender_start > GetRedoRecPtr())
+			elog(ERROR, "WAL inbox start must precede the redo point");
+		return;
+	}
+	entries = readTimeLineHistory(sender_tli);
+	entry = linitial(entries);
+	if (list_length(entries) < 2 || XLogRecPtrIsInvalid(entry->begin) ||
+		sender_start != entry->begin - XLogSegmentOffset(entry->begin, wal_segment_size))
+		elog(ERROR, "child WAL inbox must start with the timeline's first segment");
+	list_free_deep(entries);
+	TLHistoryFilePath(path, sender_tli);
+	fd = OpenTransientFile(path, O_RDONLY | PG_BINARY);
+	if (fd < 0)
+		ereport(ERROR, (errcode_for_file_access(), errmsg("could not open sender timeline history: %m")));
+	if (fstat(fd, &st) != 0)
+		ereport(ERROR, (errcode_for_file_access(), errmsg("could not stat sender timeline history: %m")));
+	if (st.st_size <= 0 || st.st_size > TEST_WAL_STORE_MAX_HISTORY)
+		elog(ERROR, "invalid sender timeline history size");
+	enlargeStringInfo(history, st.st_size);
+	while (history->len < st.st_size)
+	{
+		ssize_t		n = read(fd, history->data + history->len, st.st_size - history->len);
+
+		if (n < 0 && errno == EINTR)
+			continue;
+		if (n <= 0)
+			elog(ERROR, "could not read complete sender timeline history");
+		history->len += n;
+	}
+	history->data[history->len] = '\0';
+	if (CloseTransientFile(fd) != 0)
+		ereport(ERROR, (errcode_for_file_access(), errmsg("could not close sender timeline history: %m")));
 }
 
 static void
@@ -297,6 +350,8 @@ test_page_store_wal_sender_main(Datum arg)
 	XLogRecPtr	retained;
 	XLogRecPtr	remote;
 	char	   *bytes;
+	StringInfoData history;
+	bool		created = false;
 
 	before_shmem_exit(sender_exit, 0);
 	BackgroundWorkerUnblockSignals();
@@ -306,18 +361,34 @@ test_page_store_wal_sender_main(Datum arg)
 	/* A startup flush implies ControlFile and replication slots are ready. */
 	while (XLogRecPtrIsInvalid(test_page_store_wal_requested()) && RecoveryInProgress())
 		test_page_store_wal_wait_for_work();
-	if (sender_start % wal_segment_size != 0 || sender_start > GetRedoRecPtr())
-		elog(ERROR, "WAL inbox start must be segment-aligned and precede the redo point");
+	if (sender_start % wal_segment_size != 0)
+		elog(ERROR, "WAL inbox start must be segment-aligned");
+	initStringInfo(&history);
+	sender_history(&history);
 	ReplicationSlotInitialize();
-	ReplicationSlotAcquire(sender_slot, true, false);
+	if (sender_create_slot && SearchNamedReplicationSlot(sender_slot, true) == NULL)
+	{
+		ReplicationSlotCreate(sender_slot, false, RS_EPHEMERAL,
+							  false, false, false, false);
+		ReplicationSlotReserveWal();
+		created = true;
+	}
+	else
+		ReplicationSlotAcquire(sender_slot, true, true);
 	SpinLockAcquire(&MyReplicationSlot->mutex);
 	retained = MyReplicationSlot->data.restart_lsn;
 	SpinLockRelease(&MyReplicationSlot->mutex);
 	if (SlotIsLogical(MyReplicationSlot) || XLogRecPtrIsInvalid(retained) ||
 		retained - XLogSegmentOffset(retained, wal_segment_size) > sender_start)
 		elog(ERROR, "physical slot does not retain the start of the test WAL epoch");
+	if (created)
+	{
+		ReplicationSlotMarkDirty();
+		ReplicationSlotPersist();
+	}
 	sender_connect();
-	remote = sender_exchange('i', sender_start, NULL, 0);
+	remote = sender_exchange('i', sender_start, history.data, history.len);
+	pfree(history.data);
 	position = Max(sender_start, test_page_store_wal_confirmed());
 	if (remote < position)
 		elog(ERROR, "WAL inbox lost an acknowledged prefix");
