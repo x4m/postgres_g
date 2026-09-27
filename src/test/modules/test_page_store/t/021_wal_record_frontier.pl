@@ -266,8 +266,9 @@ $restored->enable_restoring($store, 0);
 $restored->append_conf('postgresql.conf',
 	"recovery_target_timeline = '$tli'\n");
 $restored->start;
-is($restored->safe_psql('postgres', 'SELECT pg_is_in_recovery()'),
-	'f', 'ordinary recovery completes at incomplete WAL EOF');
+# pg_ctl can return as soon as hot standby accepts read-only connections.
+ok( $restored->poll_query_until('postgres', 'SELECT NOT pg_is_in_recovery()'),
+	'ordinary recovery completes at incomplete WAL EOF');
 is( $restored->safe_psql(
 		'postgres', 'SELECT id, payload FROM prefix_rows ORDER BY id'),
 	"1|seed\n2|committed after seed",
