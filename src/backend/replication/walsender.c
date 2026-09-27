@@ -149,6 +149,8 @@ int			wal_sender_shutdown_timeout = -1;	/* maximum time to wait during
 
 bool		log_replication_commands = false;
 
+physical_replication_command_hook_type physical_replication_command_hook = NULL;
+
 /*
  * State for WalSndWakeupRequest
  */
@@ -2175,6 +2177,11 @@ exec_replication_command(const char *cmd_string)
 		/* Nope; clean up and get out. */
 		replication_scanner_finish(scanner);
 
+		/* Extensions cannot override built-in commands or database SQL. */
+		if (MyDatabaseId == InvalidOid && physical_replication_command_hook &&
+			physical_replication_command_hook(cmd_string))
+			goto command_done;
+
 		MemoryContextSwitchTo(old_context);
 		MemoryContextReset(cmd_context);
 
@@ -2335,6 +2342,8 @@ exec_replication_command(const char *cmd_string)
 			elog(ERROR, "unrecognized replication command node tag: %u",
 				 cmd_node->type);
 	}
+
+command_done:
 
 	/*
 	 * Done.  Revert to caller's memory context, and clean out the cmd_context

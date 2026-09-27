@@ -36,6 +36,17 @@ extern PGDLLIMPORT int wal_sender_timeout;
 extern PGDLLIMPORT int wal_sender_shutdown_timeout;
 extern PGDLLIMPORT bool log_replication_commands;
 
+/*
+ * Optional handler for otherwise unrecognized physical replication commands.
+ * Runs in the replication command memory context, without a database or an
+ * open transaction.  Return false without side effects for an unknown command;
+ * otherwise execute it and send its command completion before returning true.
+ * The handler owns argument checks, additional privileges and activity reports.
+ * It must remain interruptible and must not claim to stream or acknowledge WAL.
+ */
+typedef bool (*physical_replication_command_hook_type) (const char *cmd_string);
+extern PGDLLIMPORT physical_replication_command_hook_type physical_replication_command_hook;
+
 extern void InitWalSender(void);
 extern bool exec_replication_command(const char *cmd_string);
 extern void WalSndErrorCleanup(void);
