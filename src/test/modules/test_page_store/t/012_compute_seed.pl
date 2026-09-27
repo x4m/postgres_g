@@ -103,7 +103,7 @@ max_parallel_workers_per_gather = 0
 my @remote_paths;
 for my $name (@names)
 {
-	for my $suffix ('', '_vm')
+	for my $suffix ('', '_vm', '_fsm')
 	{
 		my $relative = $paths{$name} . $suffix;
 		my $path = $compute->data_dir . '/' . $relative;
@@ -114,7 +114,10 @@ for my $name (@names)
 		push @remote_paths, $relative;
 	}
 }
-is(scalar @remote_paths, 3, 'selected heap, index and VM are remote-only');
+is(scalar(grep { !/_fsm$/ } @remote_paths),
+	3, 'selected heap, index and VM are remote-only');
+ok( scalar(grep { $_ eq "$paths{seed_heap}_fsm" } @remote_paths),
+	'disposable heap FSM is also removed from the seed');
 $compute->start;
 
 sub catchup
@@ -209,7 +212,7 @@ $storage->command_ok(
 	[ 'pg_verifybackup', $seed_path ],
 	'metadata seed files and required WAL pass ordinary backup verification');
 is(scalar(grep { -e "$seed_path/$_" } @remote_paths),
-	0, 'seed has no selected main or VM files');
+	0, 'seed has no selected main, VM or FSM files');
 my $manifest = decode_json(slurp_file("$seed_path/backup_manifest"));
 my $seed_start = $manifest->{'WAL-Ranges'}[0]->{'Start-LSN'};
 is( $storage->safe_psql(

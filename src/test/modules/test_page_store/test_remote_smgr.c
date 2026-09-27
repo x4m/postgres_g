@@ -366,7 +366,8 @@ remote_relation(SMgrRelation reln, ForkNumber forknum)
 	if (SmgrIsTemp(reln) || !selected_locator(reln->smgr_rlocator.locator))
 		return false;
 	if (follow_replay)
-		return compute_active() && (forknum == MAIN_FORKNUM || forknum == VISIBILITYMAP_FORKNUM);
+		return compute_active() && (forknum == MAIN_FORKNUM ||
+									forknum == VISIBILITYMAP_FORKNUM || forknum == FSM_FORKNUM);
 	return !AmStartupProcess();
 }
 
@@ -529,12 +530,14 @@ compute_after_replay(XLogReaderState *record, TimeLineID tli)
 
 			if (!smgrexists(smgr, MAIN_FORKNUM))
 				elog(ERROR, "selected relation is absent from the compute seed");
+			/* FSM buffers may already be resident at this legacy activation. */
 			for (ForkNumber forknum = MAIN_FORKNUM; forknum <= MAX_FORKNUM; forknum++)
 			{
 				bool		exists;
 				BlockNumber size;
 
-				if (forknum != MAIN_FORKNUM && forknum != VISIBILITYMAP_FORKNUM)
+				if (forknum != MAIN_FORKNUM && forknum != VISIBILITYMAP_FORKNUM &&
+					forknum != FSM_FORKNUM)
 					continue;
 				exists = smgrexists(smgr, forknum);
 				size = exists ? smgrnblocks(smgr, forknum) : 0;
@@ -1028,6 +1031,25 @@ remote_fetch(SMgrRelation reln, ForkNumber forknum, BlockNumber blocknum,
 	Assert(!INTERRUPTS_CAN_BE_PROCESSED());
 	if (follow_replay)
 	{
+		/*
+		 * FSM has no exact page-at-LSN contract.  Keep heuristic redo in
+		 * shared buffers, but let a miss forget the hints without consulting
+		 * storage or waiting for record completion.  Ordinary FSM readers
+		 * already handle zero pages as unknown free space.
+		 */
+		if (forknum == FSM_FORKNUM)
+		{
+			ComputeFile *file = compute_file(reln->smgr_rlocator.locator, forknum);
+
+			compute_check();
+			*nblocks = pg_atomic_read_u32(&file->nblocks);
+			exists = pg_atomic_read_u32(&file->exists) != 0;
+			if (count > 0 && (!exists || (uint64) blocknum + count > *nblocks))
+				elog(ERROR, "disposable FSM read exceeds its size");
+			for (BlockNumber i = 0; i < count; i++)
+				memset(buffers[i], 0, BLCKSZ);
+			return exists;
+		}
 		lsn = compute_read_lsn(reln->smgr_rlocator.locator, forknum, blocknum, count, deadline);
 		if (count > 0)
 		{
@@ -1131,7 +1153,11 @@ remote_create(RelFileLocator old, SMgrRelation reln, ForkNumber forknum,
 	if (!remote_relation(reln, forknum))
 		smgr_create_next(old, reln, forknum, isRedo, next + 1);
 	else
+	{
 		compute_check();
+		if (follow_replay && forknum == FSM_FORKNUM)
+			pg_atomic_write_u32(&compute_file(reln->smgr_rlocator.locator, forknum)->exists, 1);
+	}
 }
 
 static void
@@ -1336,7 +1362,8 @@ remote_writev(SMgrRelation reln, ForkNumber forknum, BlockNumber blocknum,
 	else
 	{
 		compute_check();
-		if (follow_replay)
+		/* Disposable FSM contents need no historical lower bound. */
+		if (follow_replay && forknum != FSM_FORKNUM)
 			for (BlockNumber i = 0; i < nblocks; i++)
 				if (!PageIsNew((Page) buffers[i]))
 					compute_note_lsn(reln->smgr_rlocator.locator, forknum, blocknum + i,

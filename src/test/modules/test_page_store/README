@@ -83,7 +83,7 @@ scan check that neither local files nor the provider's latest state substitute
 for the required historical view.
 
 The twelfth test saves a new seed from an already following compute using
-ordinary pg_basebackup.  Its selected main and VM files are absent, including
+ordinary pg_basebackup.  Its selected main, VM and FSM files are absent, including
 any renamed copies inside PGDATA.  After losing that compute's entire PGDATA,
 a replacement materializes the seed and fetches both WAL and pages from
 storage.  It checks transaction and commit-timestamp status, multixact members,
@@ -104,11 +104,18 @@ and worker restart with a request outstanding.  The selected local file is
 absent.  Distinct page images catch misrouted replies, and a full value/TID
 digest checks that the backend remains usable after failed I/O.
 
+The fifteenth test removes main, VM and FSM files before compute startup.
+Warm heap prune redo rebuilds free-space hints, which can be lost on eviction
+without a storage request.  Truncation, reextension, standalone FSM full-page
+images and compute restart must preserve exact SQL results and amcheck output
+without recreating those files.
+
 Run with an assertions/injection-points build:
 
     make -C src/test/modules/test_page_store check
 
-The tests require pageinspect, pg_buffercache, pg_visibility, amcheck, and
+The tests require pageinspect, pg_buffercache, pg_visibility, pg_freespacemap,
+amcheck, and
 test_aio.  Injection
 point schedules are skipped when injection_points is unavailable.  Autotools
 EXTRA_INSTALL supplies these dependencies; Meson test lists include them.
@@ -340,6 +347,17 @@ descent and sibling walks release the previous content lock before reading
 the next page.  VM reads retain pins but not content locks across heap reads.
 Truncation's implicit VM update is not filtered and may fetch a cold page;
 it retains the replay record's LSN so eviction preserves the cleared tail.
+FSM is different: its contents are hints, not historical versions.  On a
+following compute it exists only in shared buffers, with a volatile size.
+Ordinary heuristic redo and full-page image replay still obtain real FSM
+buffers.  Writes are discarded, and a later miss supplies zero pages locally,
+which mean unknown free space.  It does not fetch FSM pages from storage or
+wait for a replay cut.  Fresh compute startup starts with an empty FSM;
+legacy local-seed activation retains the old size and any resident hints.
+The storage node still has its ordinary, local FSM.  This is a read-only
+compute policy, not permission to forget free-space state on a live writer
+without considering its allocation behavior.
+
 Other forks still receive ordinary local redo.  Snapshot
 conflicts, including B-tree page-reuse conflicts, run even when page work is
 skipped.  Prefetch is an advisory no-op, not a missing-file indication.
@@ -363,7 +381,9 @@ An existing following compute can supply a new metadata seed through
 pg_basebackup.  The source must have full_page_writes enabled on its primary
 and a replayed checkpoint with that setting.  The ordinary backup protocol
 copies local catalogs, SLRUs, relmaps, two-phase state, control data, and the
-required WAL; selected main/VM files that are absent are not copied.
+required WAL; selected main/VM files that are absent are not copied.  Remove
+obsolete selected FSM files as well: their disposable contents are not part
+of the compute's recovery baseline.
 
 Retain that seed outside the donor compute, alongside access to the matching
 page history and WAL.  Before publishing it, check that storage retains WAL

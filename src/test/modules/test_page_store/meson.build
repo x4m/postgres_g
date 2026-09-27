@@ -43,6 +43,7 @@ tests += {
       't/012_compute_seed.pl',
       't/013_physical_service.pl',
       't/014_transport_worker.pl',
+      't/015_disposable_fsm.pl',
     ],
   },
 }
