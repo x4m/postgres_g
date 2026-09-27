@@ -87,6 +87,7 @@ primary_slot_name = 'seed_compute'
 shared_preload_libraries = 'test_page_store'
 smgr_chain = 'test_page_store, md'
 test_page_store.conninfo = '$conninfo'
+test_page_store.physical_service = true
 test_page_store.follow = true
 test_page_store.replay_lsn = '$cut'
 test_page_store.replay_tli = $tli

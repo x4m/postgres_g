@@ -1,7 +1,8 @@
 # Copyright (c) 2026, PostgreSQL Global Development Group
 
 test_page_store_sources = files(
-  'test_page_store.c', 'test_page_history.c', 'test_remote_smgr.c')
+  'test_page_store.c', 'test_page_history.c', 'test_page_protocol.c',
+  'test_remote_smgr.c')
 
 if host_system == 'windows'
   test_page_store_sources += rc_lib_gen.process(win32ver_rc, extra_args: [
@@ -40,6 +41,7 @@ tests += {
       't/010_following_vm.pl',
       't/011_compute_restart.pl',
       't/012_compute_seed.pl',
+      't/013_physical_service.pl',
     ],
   },
 }

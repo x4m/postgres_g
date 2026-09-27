@@ -862,9 +862,6 @@ test_page_store_history_before(PG_FUNCTION_ARGS)
 	int64		tli = PG_GETARG_INT64(1);
 	XLogRecPtr	start = PG_GETARG_LSN(2);
 	char		sysid[32];
-	uint32		low = 0;
-	uint32		high;
-	XLogRecPtr	result;
 
 	if (!superuser())
 		ereport(ERROR, (errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
@@ -877,6 +874,18 @@ test_page_store_history_before(PG_FUNCTION_ARGS)
 	if (tli <= 0 || tli > PG_UINT32_MAX || XLogRecPtrIsInvalid(start))
 		elog(ERROR, "invalid recovery start position");
 
+	PG_RETURN_LSN(test_page_store_history_predecessor((TimeLineID) tli, start));
+}
+
+XLogRecPtr
+test_page_store_history_predecessor(TimeLineID tli, XLogRecPtr start)
+{
+	uint32		low = 0;
+	uint32		high;
+	XLogRecPtr	result;
+
+	if (!RecoveryInProgress() || !history)
+		elog(ERROR, "page history requires a configured standby");
 	/* Do not return an older cut merely because storage has not caught up. */
 	history_wait_for_replay(start);
 	LWLockAcquire(&history->lock, LW_SHARED);
@@ -897,7 +906,7 @@ test_page_store_history_before(PG_FUNCTION_ARGS)
 	Assert(low > 0);
 	result = history_records[low - 1].lsn;
 	LWLockRelease(&history->lock);
-	PG_RETURN_LSN(result);
+	return result;
 }
 
 bytea *

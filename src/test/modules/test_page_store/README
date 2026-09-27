@@ -90,6 +90,13 @@ storage.  It checks transaction and commit-timestamp status, multixact members,
 prepared outcomes, catalog mappings, and replication origin progress.  A
 dedicated storage slot protects the seed's WAL while restartpoints advance.
 
+The thirteenth test exercises the physical wire protocol independently of the
+libpq consumer: binary batches and metadata, request identity, malformed input,
+query cancellation, CopyDone, and shutdown with an idle connection.  It drops
+the SQL extension and denies database connections through pg_hba.conf while
+continuing to fetch retained pages.  This raw fixture uses private Unix sockets;
+the libpq consumer is exercised by 011 and 012 on all platforms.
+
 Run with an assertions/injection-points build:
 
     make -C src/test/modules/test_page_store check
@@ -191,6 +198,45 @@ is no compaction, view GC, timeline transition, or backup protocol for the
 journal.  Its fsync cost and linear image searches are not representative of
 a mature provider.  Storage page history alone cannot recover local catalogs
 or other nonselected state; replacement also needs a metadata seed.
+
+Physical page-service session
+-----------------------------
+
+Set test_page_store.physical_service = true on compute to use a physical
+replication connection instead of SQL.  libpq handles the normal PostgreSQL
+connection, authentication and socket protocol.  The conninfo's replication
+setting is overridden with replication=true; no database is opened.  Storage
+must preload test_page_store and retain history as described above.  SQL
+objects are only needed for the current administrative retention setup, not
+for serving already retained pages.
+
+The private TEST_PAGE_SERVICE command enters CopyBoth.  A greeting identifies
+the prototype protocol version, PG_VERSION_NUM, BLCKSZ and system identifier.
+Each binary request names its request ID, timeline and replay cut, plus the
+physical locator, fork and block range for a page read.  The response echoes
+that entire identity before returning metadata and bytes.  Integers use network
+byte order; the raw pages still require physically compatible PostgreSQL builds.
+Missing history and malformed responses cannot fall back to SQL or latest pages.
+This is a draft test protocol, not a new public replication contract.
+
+Requests are bounded at 64 bytes and batches at 64 pages.  A count of zero
+returns fork existence and size; a separate predecessor request finds the
+retained state before a recovery start.  CopyDone finishes the service command
+and permits ordinary replication commands on the same connection.  A canceled
+request produces an error; the consumer discards that connection.  There is
+one request in flight per persistent backend connection, which consumes a
+max_wal_senders slot on storage.  These sessions neither stream nor acknowledge
+WAL and do not count as synchronous replication acknowledgements.
+
+The endpoint remains superuser-only.  Normal physical replication HBA rules
+apply, and SSL can be handled by the existing connection layer; TLS is not
+covered by this test.  Storage must reach ordinary hot standby readiness:
+hot_standby=off also prevents incoming replication connections.  The service
+does not bypass that startup safeguard.  It can, however, serve a compute
+that has not yet opened SQL connections of its own.  There are no service
+heartbeats or server-side idle deadlines yet; compute requests retain their
+existing client deadline.  A worker-based, cancellable transport is still
+required before treating this as a general-purpose storage provider.
 
 Following read-only compute experiment
 -------------------------------------
@@ -309,13 +355,14 @@ Important limitations:
   these guards as a replacement for a storage lease.
 * Hint writes for the selected relation are discarded.  Normal tuple or
   index writes cannot be treated this way on a live writer.
-* Requests use a persistent, nonblocking libpq connection, binary SQL
-  results, at most 64 pages per request, and one in-flight request.  Reads
+* Requests use a persistent, nonblocking libpq connection, either binary SQL
+  results or the physical service, at most 64 pages per request, and one
+  in-flight request.  Reads
   still wait synchronously in the calling backend with interrupts held.
   The deadline bounds socket waits, not external DNS resolution.  A worker
   transport with a safe cancellation lifetime remains to be implemented.
-* A binary physical service usable before database startup, general selective
-  redo, remote WAL durability, and a writable compute are not implemented.
+* General selective redo, remote WAL durability, and a writable compute are
+  not implemented.
   Replacement from a published seed works for the selected-relation experiment,
   but seed publication and retention remain operator-managed.  No throughput
   claim is made.

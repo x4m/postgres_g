@@ -7,8 +7,8 @@
  * Following mode redirects their main and VM forks and replays heap and
  * B-tree WAL into cached pages.
  * All other relations and forks still use md; neither mode is diskless compute.
- * SQL is a temporary transport to the independent test endpoint; the final
- * physical service must also work before database connections are possible.
+ * SQL remains an independent test endpoint.  The optional physical transport
+ * uses a database-independent replication connection and binary messages.
  *
  * Copyright (c) 2026, PostgreSQL Global Development Group
  *
@@ -27,6 +27,7 @@
 #include "fmgr.h"
 #include "funcapi.h"
 #include "libpq-fe.h"
+#include "libpq/pqformat.h"
 #include "miscadmin.h"
 #include "port/pg_bswap.h"
 #include "storage/aio.h"
@@ -65,6 +66,9 @@ static char *page_locators;
 static int	request_timeout;
 static PGconn *page_conn;
 static PGresult *page_result;
+static char *page_copy_data;
+static bool physical_service;
+static uint64 request_serial;
 static bool cleanup_registered;
 static uint64 readv_count;
 static uint64 startreadv_count;
@@ -144,6 +148,7 @@ static bool remote_fetch_at(RelFileLocator locator, ForkNumber forknum,
 							BlockNumber count, BlockNumber *nblocks,
 							XLogRecPtr lsn, TimestampTz deadline);
 static XLogRecPtr remote_history_before(XLogRecPtr start);
+static void remote_physical_start(TimestampTz deadline);
 static bool remote_exists(SMgrRelation reln, ForkNumber forknum, SmgrChainIndex next);
 static BlockNumber remote_nblocks(SMgrRelation reln, ForkNumber forknum, SmgrChainIndex next);
 static bool remote_prefetch(SMgrRelation reln, ForkNumber forknum, BlockNumber blocknum,
@@ -220,7 +225,12 @@ _PG_init(void)
 	DefineCustomIntVariable("test_page_store.request_timeout", "Page request timeout.",
 							NULL, &request_timeout, 5000, 1, INT_MAX,
 							PGC_POSTMASTER, GUC_UNIT_MS, NULL, NULL, NULL);
+	DefineCustomBoolVariable("test_page_store.physical_service",
+							 "Use a physical page-service session instead of SQL.",
+							 NULL, &physical_service, false, PGC_POSTMASTER, 0,
+							 NULL, NULL, NULL);
 	test_page_store_history_init();
+	test_page_store_protocol_init();
 	DefineCustomBoolVariable("test_page_store.follow", "Follow WAL for remote main and VM forks.",
 							 NULL, &follow_replay, false, PGC_POSTMASTER, 0, NULL, NULL, NULL);
 	DefineCustomIntVariable("test_page_store.follow_max_blocks", "Maximum tracked blocks per relation fork.",
@@ -679,6 +689,9 @@ compute_read_lsn(RelFileLocator locator, ForkNumber forknum, BlockNumber block,
 static void
 remote_disconnect(int code, Datum arg)
 {
+	if (page_copy_data)
+		PQfreemem(page_copy_data);
+	page_copy_data = NULL;
 	if (page_result)
 		PQclear(page_result);
 	page_result = NULL;
@@ -723,7 +736,16 @@ remote_connect(TimestampTz deadline)
 		on_proc_exit(remote_disconnect, 0);
 		cleanup_registered = true;
 	}
-	page_conn = PQconnectStart(page_conninfo);
+	if (physical_service)
+	{
+		const char *keywords[] = {"dbname", "replication", NULL};
+		const char *values[] = {page_conninfo, "true", NULL};
+
+		/* Override any database/replication setting from the conninfo. */
+		page_conn = PQconnectStartParams(keywords, values, 1);
+	}
+	else
+		page_conn = PQconnectStart(page_conninfo);
 	if (page_conn == NULL)
 		elog(ERROR, "could not allocate page service connection");
 	for (;;)
@@ -738,6 +760,171 @@ remote_connect(TimestampTz deadline)
 	}
 	if (PQsetnonblocking(page_conn, 1) != 0)
 		elog(ERROR, "could not set page service connection to nonblocking mode");
+	if (physical_service)
+		remote_physical_start(deadline);
+}
+
+static void
+remote_flush(TimestampTz deadline)
+{
+	int			flushed;
+
+	while ((flushed = PQflush(page_conn)) > 0)
+		remote_wait(WL_SOCKET_WRITEABLE, deadline);
+	if (flushed < 0)
+		elog(ERROR, "could not flush page service request: %s", PQerrorMessage(page_conn));
+}
+
+/* Receive one command result without letting PQgetResult perform socket I/O. */
+static PGresult *
+remote_result(TimestampTz deadline)
+{
+	for (;;)
+	{
+		if (!PQconsumeInput(page_conn))
+			elog(ERROR, "could not receive page service response: %s", PQerrorMessage(page_conn));
+		if (!PQisBusy(page_conn))
+			return PQgetResult(page_conn);
+		remote_wait(WL_SOCKET_READABLE, deadline);
+	}
+}
+
+static void
+remote_copy_response(StringInfo response, TimestampTz deadline)
+{
+	int			len;
+
+	Assert(page_copy_data == NULL);
+	for (;;)
+	{
+		if (!PQconsumeInput(page_conn))
+			elog(ERROR, "could not receive page service response: %s", PQerrorMessage(page_conn));
+		len = PQgetCopyData(page_conn, &page_copy_data, 1);
+		if (len > 0)
+			break;
+		if (len < 0)
+		{
+			page_result = remote_result(deadline);
+			elog(ERROR, "physical page service ended: %s",
+				 page_result ? PQresultErrorMessage(page_result) : PQerrorMessage(page_conn));
+		}
+		remote_wait(WL_SOCKET_READABLE, deadline);
+	}
+	if (len > TEST_PAGE_SERVICE_MAX_REQUEST + 9 + TEST_PAGE_STORE_MAX_BLOCKS * BLCKSZ)
+		elog(ERROR, "oversized page service response");
+	response->data = page_copy_data;
+	response->len = len;
+	response->maxlen = len;
+	response->cursor = 0;
+}
+
+static void
+remote_physical_start(TimestampTz deadline)
+{
+	StringInfoData greeting;
+
+	if (!PQsendQuery(page_conn, TEST_PAGE_SERVICE_COMMAND))
+		elog(ERROR, "could not start physical page service: %s", PQerrorMessage(page_conn));
+	remote_flush(deadline);
+	page_result = remote_result(deadline);
+	if (!page_result || PQresultStatus(page_result) != PGRES_COPY_BOTH)
+		elog(ERROR, "could not start physical page service: %s",
+			 page_result ? PQresultErrorMessage(page_result) : PQerrorMessage(page_conn));
+	PQclear(page_result);
+	page_result = NULL;
+	remote_copy_response(&greeting, deadline);
+	if (pq_getmsgbyte(&greeting) != 'h' ||
+		pq_getmsgint(&greeting, 4) != TEST_PAGE_SERVICE_VERSION ||
+		pq_getmsgint(&greeting, 4) != PG_VERSION_NUM ||
+		pq_getmsgint(&greeting, 4) != BLCKSZ ||
+		(uint64) pq_getmsgint64(&greeting) != GetSystemIdentifier())
+		elog(ERROR, "incompatible page service identity or physical format");
+	pq_getmsgend(&greeting);
+	PQfreemem(page_copy_data);
+	page_copy_data = NULL;
+}
+
+static void
+remote_request_header(StringInfo request, char kind, XLogRecPtr lsn)
+{
+	initStringInfo(request);
+	if (++request_serial == 0)
+		elog(ERROR, "page service request identifier exhausted");
+	pq_sendbyte(request, kind);
+	pq_sendint64(request, request_serial);
+	pq_sendint32(request, page_tli);
+	pq_sendint64(request, lsn);
+}
+
+/* One request in flight.  The echo binds every result to its full read key. */
+static void
+remote_exchange(StringInfo request, StringInfo response, TimestampTz deadline)
+{
+	int			sent;
+
+	Assert(request->len <= TEST_PAGE_SERVICE_MAX_REQUEST);
+	remote_connect(deadline);
+	while ((sent = PQputCopyData(page_conn, request->data, request->len)) == 0)
+		remote_flush(deadline);
+	if (sent < 0)
+		elog(ERROR, "could not send page service request: %s", PQerrorMessage(page_conn));
+	remote_flush(deadline);
+	remote_copy_response(response, deadline);
+	if (response->len < request->len ||
+		memcmp(response->data, request->data, request->len) != 0)
+		elog(ERROR, "page service response does not match its request");
+	response->cursor = request->len;
+}
+
+static XLogRecPtr
+remote_physical_before(XLogRecPtr start, TimestampTz deadline)
+{
+	StringInfoData request;
+	StringInfoData response;
+	XLogRecPtr	result;
+
+	remote_request_header(&request, 'b', start);
+	remote_exchange(&request, &response, deadline);
+	result = pq_getmsgint64(&response);
+	pq_getmsgend(&response);
+	pfree(request.data);
+	PQfreemem(page_copy_data);
+	page_copy_data = NULL;
+	return result;
+}
+
+static bool
+remote_physical_fetch(RelFileLocator locator, ForkNumber forknum,
+					  BlockNumber block, void **buffers, BlockNumber count,
+					  BlockNumber *nblocks, XLogRecPtr lsn, TimestampTz deadline)
+{
+	StringInfoData request;
+	StringInfoData response;
+	int			exists;
+
+	remote_request_header(&request, 'p', lsn);
+	pq_sendint32(&request, locator.spcOid);
+	pq_sendint32(&request, locator.dbOid);
+	pq_sendint32(&request, locator.relNumber);
+	pq_sendbyte(&request, forknum);
+	pq_sendint32(&request, block);
+	pq_sendint32(&request, count);
+	pq_sendbyte(&request, follow_replay);
+	remote_exchange(&request, &response, deadline);
+	exists = pq_getmsgbyte(&response);
+	*nblocks = pq_getmsgint(&response, 4);
+	if (exists > 1 || (!exists && *nblocks != 0) ||
+		(count > 0 && (!exists || (uint64) block + count > *nblocks)))
+		elog(ERROR, "invalid page service relation size");
+	if (response.len - response.cursor != count * BLCKSZ)
+		elog(ERROR, "invalid page service payload length");
+	for (BlockNumber i = 0; i < count; i++)
+		memcpy(buffers[i], pq_getmsgbytes(&response, BLCKSZ), BLCKSZ);
+	pq_getmsgend(&response);
+	pfree(request.data);
+	PQfreemem(page_copy_data);
+	page_copy_data = NULL;
+	return exists != 0;
 }
 
 /* Caller owns the result and must disconnect if validation raises an error. */
@@ -745,27 +932,15 @@ static void
 remote_query(const char *query, int nparams, const char *const *values,
 			 TimestampTz deadline)
 {
-	int			flushed;
-
 	Assert(page_result == NULL);
 	remote_connect(deadline);
 	if (!PQsendQueryParams(page_conn, query, nparams, NULL, values, NULL, NULL, 1))
 		elog(ERROR, "could not send page service request: %s", PQerrorMessage(page_conn));
-	while ((flushed = PQflush(page_conn)) > 0)
-		remote_wait(WL_SOCKET_WRITEABLE, deadline);
-	if (flushed < 0)
-		elog(ERROR, "could not flush page service request: %s", PQerrorMessage(page_conn));
+	remote_flush(deadline);
 	for (;;)
 	{
-		PGresult   *result;
+		PGresult   *result = remote_result(deadline);
 
-		while (PQisBusy(page_conn))
-		{
-			remote_wait(WL_SOCKET_READABLE, deadline);
-			if (!PQconsumeInput(page_conn))
-				elog(ERROR, "could not receive page service response: %s", PQerrorMessage(page_conn));
-		}
-		result = PQgetResult(page_conn);
 		if (result == NULL)
 			break;
 		if (page_result)
@@ -783,28 +958,34 @@ remote_query(const char *query, int nparams, const char *const *values,
 static XLogRecPtr
 remote_history_before(XLogRecPtr start)
 {
-	char		params[3][32];
-	const char *values[3];
 	TimestampTz deadline = TimestampTzPlusMilliseconds(GetCurrentTimestamp(), request_timeout);
 	uint64		result = InvalidXLogRecPtr;
 
-	snprintf(params[0], 32, UINT64_FORMAT, GetSystemIdentifier());
-	snprintf(params[1], 32, "%d", page_tli);
-	snprintf(params[2], 32, "%X/%X", LSN_FORMAT_ARGS(start));
-	for (int i = 0; i < 3; i++)
-		values[i] = params[i];
 	PG_TRY();
 	{
-		remote_query("SELECT public.test_page_store_history_before("
-					 "$1::text, $2::bigint, $3::pg_lsn)", 3, values, deadline);
-		if (PQntuples(page_result) != 1 || PQnfields(page_result) != 1 ||
-			PQgetisnull(page_result, 0, 0) ||
-			PQgetlength(page_result, 0, 0) != sizeof(result))
-			elog(ERROR, "invalid page history recovery boundary response");
-		memcpy(&result, PQgetvalue(page_result, 0, 0), sizeof(result));
-		result = pg_ntoh64(result);
-		PQclear(page_result);
-		page_result = NULL;
+		if (physical_service)
+			result = remote_physical_before(start, deadline);
+		else
+		{
+			char		params[3][32];
+			const char *values[3];
+
+			snprintf(params[0], 32, UINT64_FORMAT, GetSystemIdentifier());
+			snprintf(params[1], 32, "%d", page_tli);
+			snprintf(params[2], 32, "%X/%X", LSN_FORMAT_ARGS(start));
+			for (int i = 0; i < 3; i++)
+				values[i] = params[i];
+			remote_query("SELECT public.test_page_store_history_before("
+						 "$1::text, $2::bigint, $3::pg_lsn)", 3, values, deadline);
+			if (PQntuples(page_result) != 1 || PQnfields(page_result) != 1 ||
+				PQgetisnull(page_result, 0, 0) ||
+				PQgetlength(page_result, 0, 0) != sizeof(result))
+				elog(ERROR, "invalid page history recovery boundary response");
+			memcpy(&result, PQgetvalue(page_result, 0, 0), sizeof(result));
+			result = pg_ntoh64(result);
+			PQclear(page_result);
+			page_result = NULL;
+		}
 	}
 	PG_CATCH();
 	{
@@ -850,49 +1031,56 @@ remote_fetch_at(RelFileLocator locator, ForkNumber forknum, BlockNumber blocknum
 				void **buffers, BlockNumber count, BlockNumber *nblocks,
 				XLogRecPtr lsn, TimestampTz deadline)
 {
-	char		params[10][32];
-	const char *values[10];
 	bool		exists = false;
-	uint64		size;
 
 	Assert(count <= TEST_PAGE_STORE_MAX_BLOCKS);
-	snprintf(params[0], 32, "%u", locator.spcOid);
-	snprintf(params[1], 32, "%u", locator.dbOid);
-	snprintf(params[2], 32, "%u", locator.relNumber);
-	snprintf(params[3], 32, "%d", forknum);
-	snprintf(params[4], 32, "%u", blocknum);
-	snprintf(params[5], 32, "%u", count);
-	snprintf(params[6], 32, UINT64_FORMAT, GetSystemIdentifier());
-	snprintf(params[7], 32, "%d", page_tli);
-	snprintf(params[8], 32, "%X/%X", LSN_FORMAT_ARGS(lsn));
-	strlcpy(params[9], follow_replay ? "true" : "false", 32);
-	for (int i = 0; i < 10; i++)
-		values[i] = params[i];
 
 	PG_TRY();
 	{
-		remote_query("SELECT fork_exists, nblocks, pages FROM public.test_page_store_fetch("
-					 "$1::oid, $2::oid, $3::oid, $4::int, $5::bigint, $6::int, "
-					 "$7::text, $8::bigint, $9::pg_lsn, $10::boolean)",
-					 10, values, deadline);
-		if (PQntuples(page_result) != 1 || PQnfields(page_result) != 3 ||
-			PQgetisnull(page_result, 0, 0) || PQgetisnull(page_result, 0, 1) ||
-			PQgetisnull(page_result, 0, 2) ||
-			PQgetlength(page_result, 0, 0) != 1 ||
-			PQgetlength(page_result, 0, 1) != sizeof(uint64) ||
-			PQgetlength(page_result, 0, 2) != count * BLCKSZ)
-			elog(ERROR, "invalid page service response");
-		exists = PQgetvalue(page_result, 0, 0)[0] != 0;
-		memcpy(&size, PQgetvalue(page_result, 0, 1), sizeof(size));
-		size = pg_ntoh64(size);
-		if (size > InvalidBlockNumber || (!exists && size != 0) ||
-			(count > 0 && (!exists || (uint64) blocknum + count > size)))
-			elog(ERROR, "invalid page service relation size");
-		*nblocks = (BlockNumber) size;
-		for (BlockNumber i = 0; i < count; i++)
-			memcpy(buffers[i], PQgetvalue(page_result, 0, 2) + i * BLCKSZ, BLCKSZ);
-		PQclear(page_result);
-		page_result = NULL;
+		if (physical_service)
+			exists = remote_physical_fetch(locator, forknum, blocknum, buffers,
+										   count, nblocks, lsn, deadline);
+		else
+		{
+			char		params[10][32];
+			const char *values[10];
+			uint64		size;
+
+			snprintf(params[0], 32, "%u", locator.spcOid);
+			snprintf(params[1], 32, "%u", locator.dbOid);
+			snprintf(params[2], 32, "%u", locator.relNumber);
+			snprintf(params[3], 32, "%d", forknum);
+			snprintf(params[4], 32, "%u", blocknum);
+			snprintf(params[5], 32, "%u", count);
+			snprintf(params[6], 32, UINT64_FORMAT, GetSystemIdentifier());
+			snprintf(params[7], 32, "%d", page_tli);
+			snprintf(params[8], 32, "%X/%X", LSN_FORMAT_ARGS(lsn));
+			strlcpy(params[9], follow_replay ? "true" : "false", 32);
+			for (int i = 0; i < 10; i++)
+				values[i] = params[i];
+			remote_query("SELECT fork_exists, nblocks, pages FROM public.test_page_store_fetch("
+						 "$1::oid, $2::oid, $3::oid, $4::int, $5::bigint, $6::int, "
+						 "$7::text, $8::bigint, $9::pg_lsn, $10::boolean)",
+						 10, values, deadline);
+			if (PQntuples(page_result) != 1 || PQnfields(page_result) != 3 ||
+				PQgetisnull(page_result, 0, 0) || PQgetisnull(page_result, 0, 1) ||
+				PQgetisnull(page_result, 0, 2) ||
+				PQgetlength(page_result, 0, 0) != 1 ||
+				PQgetlength(page_result, 0, 1) != sizeof(uint64) ||
+				PQgetlength(page_result, 0, 2) != count * BLCKSZ)
+				elog(ERROR, "invalid page service response");
+			exists = PQgetvalue(page_result, 0, 0)[0] != 0;
+			memcpy(&size, PQgetvalue(page_result, 0, 1), sizeof(size));
+			size = pg_ntoh64(size);
+			if (size > InvalidBlockNumber || (!exists && size != 0) ||
+				(count > 0 && (!exists || (uint64) blocknum + count > size)))
+				elog(ERROR, "invalid page service relation size");
+			*nblocks = (BlockNumber) size;
+			for (BlockNumber i = 0; i < count; i++)
+				memcpy(buffers[i], PQgetvalue(page_result, 0, 2) + i * BLCKSZ, BLCKSZ);
+			PQclear(page_result);
+			page_result = NULL;
+		}
 	}
 	PG_CATCH();
 	{
