@@ -1199,9 +1199,12 @@ check_tuple_visibility(HeapCheckContext *ctx, bool *xmin_commit_status_ok,
 				bool		status_known;
 
 				/*
-				 * get_xid_status() assumes committed if clog has been
-				 * truncated.  Only report a contradiction if the status was
-				 * actually available.  The horizon cannot move backwards.
+				 * Hint bits can outlive the clog entries they describe, so an
+				 * assumed commit status after truncation cannot prove a hint
+				 * bit wrong.  If clog still covers xmin, the status was also
+				 * available at the earlier lookup, since the truncation
+				 * horizon only advances.  See get_xid_status() for the lookup
+				 * and its truncation fallback.
 				 */
 				LWLockAcquire(XactTruncationLock, LW_SHARED);
 				clog_horizon =
