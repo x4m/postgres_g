@@ -224,7 +224,7 @@ my $relpath = "$pgdata/$rel";
 # $ROWCOUNT is the total number of rows that we expect to insert into the page.
 # $ROWCOUNT_BASIC is the number of those rows that are related to basic
 # tuple validation, rather than update chain validation.
-my $ROWCOUNT = 44;
+my $ROWCOUNT = 49;
 my $ROWCOUNT_BASIC = 16;
 
 # First insert data needed for tests unrelated to update chain validation.
@@ -316,6 +316,15 @@ my $in_progress_xid = $node->safe_psql(
 		SELECT transaction FROM pg_prepared_xacts;
 	));
 
+# Tuples for checking xmin hint bits, at offset numbers 45 through 49.
+$node->safe_psql(
+	'postgres', qq(
+		INSERT INTO public.test (a, b, c)
+			SELECT x'DEADF9F9DEADF9F9'::bigint, 'abcdefg',
+				repeat('w', 10000)
+			FROM generate_series(1, 5);
+	));
+
 my $relfrozenxid = $node->safe_psql('postgres',
 	q(select relfrozenxid from pg_class where relname = 'test'));
 my $datfrozenxid = $node->safe_psql('postgres',
@@ -405,6 +414,8 @@ use constant HEAP_XMAX_COMMITTED => 0x0400;
 use constant HEAP_XMAX_INVALID => 0x0800;
 use constant HEAP_NATTS_MASK => 0x07FF;
 use constant HEAP_XMAX_IS_MULTI => 0x1000;
+use constant HEAP_MOVED_OFF => 0x4000;
+use constant HEAP_MOVED_IN => 0x8000;
 use constant HEAP_KEYS_UPDATED => 0x2000;
 use constant HEAP_HOT_UPDATED => 0x4000;
 use constant HEAP_ONLY_TUPLE => 0x8000;
@@ -735,6 +746,41 @@ for (my $tupidx = 0; $tupidx < $ROWCOUNT; $tupidx++)
 		$tup->{t_xmin} = $in_progress_xid;
 		$tup->{t_infomask} &= ~HEAP_XMIN_COMMITTED;
 	}
+	elsif ($offnum >= 45 && $offnum <= 49)
+	{
+		$tup->{t_infomask} &= ~HEAP_XMIN_COMMITTED;
+		$tup->{t_infomask} |= HEAP_XMIN_INVALID;
+
+		if ($offnum == 45)
+		{
+			# A committed inserter must not be hinted aborted.
+			my $xmin = $tup->{t_xmin};
+			push @expected,
+			  qr/${header}xmin $xmin is committed, but HEAP_XMIN_INVALID is set/;
+		}
+		elsif ($offnum == 46)
+		{
+			# Old-style VACUUM FULL moved this tuple off and committed.
+			$tup->{t_infomask} |= HEAP_MOVED_OFF;
+			$tup->{t_field3} = $tup->{t_xmin};
+		}
+		elsif ($offnum == 47)
+		{
+			# Old-style VACUUM FULL moved this tuple in, then aborted.
+			$tup->{t_infomask} |= HEAP_MOVED_IN;
+			$tup->{t_field3} = $aborted_xid;
+		}
+		elsif ($offnum == 48)
+		{
+			# The hint is valid when the inserting transaction aborted.
+			$tup->{t_xmin} = $aborted_xid;
+		}
+		else
+		{
+			# Aborting a speculative insertion invalidates xmin itself.
+			$tup->{t_xmin} = 0;
+		}
+	}
 	else
 	{
 		# The tests for update chain validation end up creating a bunch of
@@ -757,6 +803,15 @@ $node->start;
 $node->command_checks_all(
 	[ 'pg_amcheck', '--no-dependent-indexes', '--port' => $port, 'postgres' ],
 	2, [@expected], [], 'Expected corruption message output');
+
+# The other uses of HEAP_XMIN_INVALID above must not be reported as corrupt.
+is( $node->safe_psql(
+		'postgres',
+		q(SELECT offnum FROM verify_heapam('test', check_toast => false)
+		  WHERE offnum >= 45 ORDER BY offnum)),
+	'45',
+	'only the incorrect xmin hint bit is reported');
+
 $node->safe_psql(
 	'postgres', qq(
                         COMMIT PREPARED 'in_progress_tx';
