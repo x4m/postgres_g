@@ -1185,7 +1185,38 @@ check_tuple_visibility(HeapCheckContext *ctx, bool *xmin_commit_status_ok,
 	if (!HeapTupleHeaderXminCommitted(tuphdr))
 	{
 		if (HeapTupleHeaderXminInvalid(tuphdr))
-			return false;		/* inserter aborted, don't check */
+		{
+			/*
+			 * A committed inserter must not be hinted aborted.  The hint can
+			 * legitimately be set by old-style VACUUM FULL, however, based on
+			 * the status of xvac rather than xmin.
+			 */
+			if (xmin_status == XID_COMMITTED &&
+				!(tuphdr->t_infomask & HEAP_MOVED))
+			{
+				FullTransactionId fxid = FullTransactionIdFromXidAndCtx(xmin, ctx);
+				FullTransactionId clog_horizon;
+				bool		status_known;
+
+				/*
+				 * get_xid_status() assumes committed if clog has been
+				 * truncated.  Only report a contradiction if the status was
+				 * actually available.  The horizon cannot move backwards.
+				 */
+				LWLockAcquire(XactTruncationLock, LW_SHARED);
+				clog_horizon =
+					FullTransactionIdFromXidAndCtx(TransamVariables->oldestClogXid,
+												   ctx);
+				status_known = FullTransactionIdPrecedesOrEquals(clog_horizon, fxid);
+				LWLockRelease(XactTruncationLock);
+
+				if (status_known)
+					report_corruption(ctx,
+									  psprintf("xmin %u is committed, but HEAP_XMIN_INVALID is set",
+											   xmin));
+			}
+			return false;		/* don't check the tuple's contents */
+		}
 		/* Used by pre-9.0 binary upgrades */
 		else if (tuphdr->t_infomask & HEAP_MOVED_OFF)
 		{
