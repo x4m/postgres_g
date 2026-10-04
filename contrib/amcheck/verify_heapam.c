@@ -1143,6 +1143,7 @@ check_tuple_visibility(HeapCheckContext *ctx, bool *xmin_commit_status_ok,
 	XidCommitStatus xvac_status;
 	XidCommitStatus xmax_status;
 	bool		xmin_status_known;
+	bool		xmax_status_known;
 	HeapTupleHeader tuphdr = ctx->tuphdr;
 
 	ctx->tuple_could_be_pruned = true;	/* have not yet proven otherwise */
@@ -1356,6 +1357,17 @@ check_tuple_visibility(HeapCheckContext *ctx, bool *xmin_commit_status_ok,
 			return false;
 		}
 	}
+	else if (xmin_status == XID_ABORTED)
+	{
+		/*
+		 * Only a final aborted status contradicts a committed hint.  An
+		 * in-progress status can be stale by the time we read the hint.
+		 */
+		report_corruption(ctx,
+						  psprintf("xmin %u is aborted, but HEAP_XMIN_COMMITTED is set",
+								   xmin));
+		return false;			/* don't check the tuple's contents */
+	}
 
 	/*
 	 * Okay, the inserter committed, so it was good at some point.  Now what
@@ -1408,8 +1420,46 @@ check_tuple_visibility(HeapCheckContext *ctx, bool *xmin_commit_status_ok,
 		}
 	}
 
+	/*
+	 * A committed hint must agree with the transaction's outcome, even if
+	 * xmax only locked the tuple.  A multixact cannot have a committed hint;
+	 * check_tuple_header() already reports that case.
+	 */
+	if ((tuphdr->t_infomask & (HEAP_XMAX_COMMITTED | HEAP_XMAX_IS_MULTI)) ==
+		HEAP_XMAX_COMMITTED)
+	{
+		xmax = HeapTupleHeaderGetRawXmax(tuphdr);
+		if (get_xid_status(xmax, ctx, &xmax_status, NULL) == XID_BOUNDS_OK &&
+			xmax_status == XID_ABORTED)
+			report_corruption(ctx,
+							  psprintf("xmax %u is aborted, but HEAP_XMAX_COMMITTED is set",
+									   xmax));
+	}
+
 	if (tuphdr->t_infomask & HEAP_XMAX_INVALID)
 	{
+		/*
+		 * A finished locker can legitimately be hinted invalid even if it
+		 * committed, but a committed updater cannot.  For a multixact, check
+		 * its updater, not the multixact ID or its lockers.
+		 */
+		if (!HEAP_XMAX_IS_LOCKED_ONLY(tuphdr->t_infomask))
+		{
+			xmax = (tuphdr->t_infomask & HEAP_XMAX_IS_MULTI) ?
+				HeapTupleGetUpdateXid(tuphdr) : HeapTupleHeaderGetRawXmax(tuphdr);
+			if (TransactionIdIsNormal(xmax) &&
+				get_xid_status(xmax, ctx, &xmax_status, &xmax_status_known) == XID_BOUNDS_OK &&
+				xmax_status == XID_COMMITTED && xmax_status_known)
+			{
+				report_corruption(ctx,
+								  psprintf((tuphdr->t_infomask & HEAP_XMAX_IS_MULTI) ?
+										   "update xid %u is committed, but HEAP_XMAX_INVALID is set" :
+										   "xmax %u is committed, but HEAP_XMAX_INVALID is set",
+										   xmax));
+				return true;	/* tuple may be dead; don't check its TOAST */
+			}
+		}
+
 		/*
 		 * This tuple is live.  A concurrently running transaction could
 		 * delete it before we get around to checking the toast, but any such

@@ -224,7 +224,7 @@ my $relpath = "$pgdata/$rel";
 # $ROWCOUNT is the total number of rows that we expect to insert into the page.
 # $ROWCOUNT_BASIC is the number of those rows that are related to basic
 # tuple validation, rather than update chain validation.
-my $ROWCOUNT = 49;
+my $ROWCOUNT = 60;
 my $ROWCOUNT_BASIC = 16;
 
 # First insert data needed for tests unrelated to update chain validation.
@@ -316,14 +316,48 @@ my $in_progress_xid = $node->safe_psql(
 		SELECT transaction FROM pg_prepared_xacts;
 	));
 
-# Tuples for checking xmin hint bits, at offset numbers 45 through 49.
+# Tuples for checking hint bits, at offset numbers 45 through 60.
 $node->safe_psql(
 	'postgres', qq(
 		INSERT INTO public.test (a, b, c)
 			SELECT x'DEADF9F9DEADF9F9'::bigint, 'abcdefg',
 				repeat('w', 10000)
-			FROM generate_series(1, 5);
+			FROM generate_series(1, 16);
 	));
+
+# Make real multixacts with a committed updater, an aborted updater, and
+# lockers only. Keep the first locker open until all three have been made.
+$node->safe_psql(
+	'postgres', q(
+		CREATE TABLE multixact_test (id int PRIMARY KEY, val int);
+		INSERT INTO multixact_test VALUES (1, 0), (2, 0), (3, 0);
+	));
+my $locker = $node->background_psql('postgres');
+$locker->query_safe(
+	q(BEGIN; SELECT * FROM multixact_test FOR KEY SHARE;));
+$node->safe_psql(
+	'postgres', q(
+		UPDATE multixact_test SET val = 1 WHERE id = 1;
+	));
+$node->safe_psql(
+	'postgres', q(
+		BEGIN;
+		UPDATE multixact_test SET val = 1 WHERE id = 2;
+		ROLLBACK;
+	));
+$node->safe_psql(
+	'postgres', q(
+		SELECT * FROM multixact_test WHERE id = 3 FOR KEY SHARE;
+	));
+my @multixacts = split '\n', $node->safe_psql(
+	'postgres', q(
+		SELECT t_xmax FROM heap_page_items(get_raw_page('multixact_test', 0))
+		WHERE lp BETWEEN 1 AND 3 AND t_infomask & 4096 <> 0
+		ORDER BY lp;
+	));
+scalar @multixacts == 3 or BAIL_OUT('expected three multixacts');
+$locker->query_safe('COMMIT;');
+$locker->quit;
 
 my $relfrozenxid = $node->safe_psql('postgres',
 	q(select relfrozenxid from pg_class where relname = 'test'));
@@ -407,6 +441,7 @@ $node->stop;
 
 # Some #define constants from access/htup_details.h for use while corrupting.
 use constant HEAP_HASNULL => 0x0001;
+use constant HEAP_XMAX_KEYSHR_LOCK => 0x0010;
 use constant HEAP_XMAX_LOCK_ONLY => 0x0080;
 use constant HEAP_XMIN_COMMITTED => 0x0100;
 use constant HEAP_XMIN_INVALID => 0x0200;
@@ -602,10 +637,11 @@ for (my $tupidx = 0; $tupidx < $ROWCOUNT; $tupidx++)
 		# Set both HEAP_XMAX_COMMITTED and HEAP_XMAX_IS_MULTI
 		$tup->{t_infomask} |= HEAP_XMAX_COMMITTED;
 		$tup->{t_infomask} |= HEAP_XMAX_IS_MULTI;
-		$tup->{t_xmax} = 4;
+		my $future_mxid = $multixacts[-1] + 1;
+		$tup->{t_xmax} = $future_mxid;
 
 		push @expected,
-		  qr/${header}multitransaction ID 4 equals or exceeds next valid multitransaction ID 1/;
+		  qr/${header}multitransaction ID $future_mxid equals or exceeds next valid multitransaction ID \d+/;
 	}
 	elsif ($offnum == 15)
 	{
@@ -781,6 +817,72 @@ for (my $tupidx = 0; $tupidx < $ROWCOUNT; $tupidx++)
 			$tup->{t_xmin} = 0;
 		}
 	}
+	elsif ($offnum == 50)
+	{
+		# An aborted inserter must not be hinted committed.
+		$tup->{t_xmin} = $aborted_xid;
+		$tup->{t_infomask} &= ~HEAP_XMIN_INVALID;
+		$tup->{t_infomask} |= HEAP_XMIN_COMMITTED;
+		push @expected,
+		  qr/${header}xmin $aborted_xid is aborted, but HEAP_XMIN_COMMITTED is set/;
+	}
+	elsif ($offnum >= 51 && $offnum <= 60)
+	{
+		# Offset 59 keeps this committed updater without any xmax hints.
+		$tup->{t_xmax} = $tup->{t_xmin};
+		$tup->{t_infomask} &= ~(HEAP_XMAX_INVALID | HEAP_XMAX_COMMITTED);
+
+		if ($offnum == 51 || $offnum == 60)
+		{
+			# An aborted xmax cannot be hinted committed, even for a locker.
+			$tup->{t_xmax} = $aborted_xid;
+			$tup->{t_infomask} |= HEAP_XMAX_COMMITTED;
+			$tup->{t_infomask} |= HEAP_XMAX_LOCK_ONLY | HEAP_XMAX_KEYSHR_LOCK
+			  if $offnum == 60;
+			push @expected,
+			  qr/${header}xmax $aborted_xid is aborted, but HEAP_XMAX_COMMITTED is set/;
+		}
+		elsif ($offnum == 52)
+		{
+			# A committed updater must not be hidden by an invalid-xmax hint.
+			$tup->{t_infomask} |= HEAP_XMAX_INVALID;
+			my $xmax = $tup->{t_xmax};
+			push @expected,
+			  qr/${header}xmax $xmax is committed, but HEAP_XMAX_INVALID is set/;
+		}
+		elsif ($offnum == 53 || $offnum == 54)
+		{
+			# A committed locker can have either xmax hint. HEAP_UPDATED
+			# describes how this version was created, not what xmax did.
+			$tup->{t_infomask} |=
+			  HEAP_XMAX_LOCK_ONLY | HEAP_XMAX_KEYSHR_LOCK | HEAP_UPDATED;
+			$tup->{t_infomask} |=
+			  $offnum == 53 ? HEAP_XMAX_INVALID : HEAP_XMAX_COMMITTED;
+		}
+		elsif ($offnum == 55)
+		{
+			# An aborted updater can legitimately be hinted invalid.
+			$tup->{t_xmax} = $aborted_xid;
+			$tup->{t_infomask} |= HEAP_XMAX_INVALID;
+		}
+		elsif ($offnum >= 56 && $offnum <= 58)
+		{
+			$tup->{t_xmax} = $multixacts[$offnum - 56];
+			$tup->{t_infomask} |= HEAP_XMAX_IS_MULTI | HEAP_XMAX_INVALID;
+			if ($offnum == 56)
+			{
+				# Only the multixact with a committed updater contradicts
+				# HEAP_XMAX_INVALID. Its lockers' status is irrelevant.
+				push @expected,
+				  qr/${header}update xid \d+ is committed, but HEAP_XMAX_INVALID is set/;
+			}
+			elsif ($offnum == 58)
+			{
+				$tup->{t_infomask} |=
+				  HEAP_XMAX_LOCK_ONLY | HEAP_XMAX_KEYSHR_LOCK;
+			}
+		}
+	}
 	else
 	{
 		# The tests for update chain validation end up creating a bunch of
@@ -808,9 +910,16 @@ $node->command_checks_all(
 is( $node->safe_psql(
 		'postgres',
 		q(SELECT offnum FROM verify_heapam('test', check_toast => false)
-		  WHERE offnum >= 45 ORDER BY offnum)),
+		  WHERE offnum BETWEEN 45 AND 49 ORDER BY offnum)),
 	'45',
 	'only the incorrect xmin hint bit is reported');
+
+is( $node->safe_psql(
+		'postgres',
+		q(SELECT offnum FROM verify_heapam('test', check_toast => false)
+		  WHERE offnum >= 50 ORDER BY offnum)),
+	"50\n51\n52\n56\n60",
+	'only contradictory commit-status hints are reported');
 
 $node->safe_psql(
 	'postgres', qq(
