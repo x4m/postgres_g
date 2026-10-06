@@ -61,8 +61,9 @@
 
 /* These are the codes sent by both the frontend and backend. */
 
-#define PqMsg_CopyDone				'c'
-#define PqMsg_CopyData				'd'
+#define PqMsg_CopyDone						'c'
+#define PqMsg_CopyData						'd'
+#define PqMsg_CompressedData	'z'
 
 
 /* Additional codes sent by parallel workers to leader processes. */
@@ -110,5 +111,10 @@
 #define AUTH_REQ_SASL_CONT 11	/* Continue SASL authentication */
 #define AUTH_REQ_SASL_FIN  12	/* Final SASL message */
 #define AUTH_REQ_MAX	   AUTH_REQ_SASL_FIN	/* maximum AUTH_REQ_* value */
+
+/* Maximum compressed payload and decompressed bytes in one wrapper. */
+#define PQ_COMPRESSION_MAX_SEGMENT_SIZE (16 * 1024 * 1024)
+#define PQ_COMPRESSION_MAX_WRAPPER_SIZE (17 * 1024 * 1024)
+#define PQ_COMPRESSION_WINDOW_LOG 16
 
 #endif							/* PROTOCOL_H */
