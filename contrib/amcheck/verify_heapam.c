@@ -1357,6 +1357,17 @@ check_tuple_visibility(HeapCheckContext *ctx, bool *xmin_commit_status_ok,
 			return false;
 		}
 	}
+	else if (xmin_status == XID_ABORTED)
+	{
+		/*
+		 * Only a final aborted status contradicts a committed hint.  An
+		 * in-progress status can be stale by the time we read the hint.
+		 */
+		report_corruption(ctx,
+						  psprintf("xmin %u is aborted, but marked committed",
+								   xmin));
+		return false;			/* don't check the tuple's contents */
+	}
 
 	/*
 	 * Okay, the inserter committed, so it was good at some point.  Now what
@@ -1407,6 +1418,22 @@ check_tuple_visibility(HeapCheckContext *ctx, bool *xmin_commit_status_ok,
 			case XID_BOUNDS_OK:
 				break;
 		}
+	}
+
+	/*
+	 * A committed hint must agree with the transaction's outcome, even if
+	 * xmax only locked the tuple.  A multixact cannot have a committed hint;
+	 * check_tuple_header() already reports that case.
+	 */
+	if ((tuphdr->t_infomask & (HEAP_XMAX_COMMITTED | HEAP_XMAX_IS_MULTI)) ==
+		HEAP_XMAX_COMMITTED)
+	{
+		xmax = HeapTupleHeaderGetRawXmax(tuphdr);
+		if (get_xid_status(xmax, ctx, &xmax_status, NULL) == XID_BOUNDS_OK &&
+			xmax_status == XID_ABORTED)
+			report_corruption(ctx,
+							  psprintf("xmax %u is aborted, but marked committed",
+									   xmax));
 	}
 
 	if (tuphdr->t_infomask & HEAP_XMAX_INVALID)

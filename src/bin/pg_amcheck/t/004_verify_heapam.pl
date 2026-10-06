@@ -224,7 +224,7 @@ my $relpath = "$pgdata/$rel";
 # $ROWCOUNT is the total number of rows that we expect to insert into the page.
 # $ROWCOUNT_BASIC is the number of those rows that are related to basic
 # tuple validation, rather than update chain validation.
-my $ROWCOUNT = 57;
+my $ROWCOUNT = 60;
 my $ROWCOUNT_BASIC = 16;
 
 # First insert data needed for tests unrelated to update chain validation.
@@ -316,13 +316,13 @@ my $in_progress_xid = $node->safe_psql(
 		SELECT transaction FROM pg_prepared_xacts;
 	));
 
-# Tuples for checking hint bits, at offset numbers 45 through 57.
+# Tuples for checking hint bits, at offset numbers 45 through 60.
 $node->safe_psql(
 	'postgres', qq(
 		INSERT INTO public.test (a, b, c)
 			SELECT x'DEADF9F9DEADF9F9'::bigint, 'abcdefg',
 				repeat('w', 10000)
-			FROM generate_series(1, 13);
+			FROM generate_series(1, 16);
 	));
 
 # Make real multixacts with a committed updater, an aborted updater, and
@@ -864,6 +864,26 @@ for (my $tupidx = 0; $tupidx < $ROWCOUNT; $tupidx++)
 			}
 		}
 	}
+	elsif ($offnum == 58)
+	{
+		# An aborted inserter must not be hinted committed.
+		$tup->{t_xmin} = $aborted_xid;
+		$tup->{t_infomask} &= ~HEAP_XMIN_INVALID;
+		$tup->{t_infomask} |= HEAP_XMIN_COMMITTED;
+		push @expected,
+		  qr/${header}xmin $aborted_xid is aborted, but marked committed/;
+	}
+	elsif ($offnum == 59 || $offnum == 60)
+	{
+		# An aborted xmax cannot be hinted committed, even for a locker.
+		$tup->{t_xmax} = $aborted_xid;
+		$tup->{t_infomask} &= ~HEAP_XMAX_INVALID;
+		$tup->{t_infomask} |= HEAP_XMAX_COMMITTED;
+		$tup->{t_infomask} |= HEAP_XMAX_LOCK_ONLY | HEAP_XMAX_KEYSHR_LOCK
+		  if $offnum == 60;
+		push @expected,
+		  qr/${header}xmax $aborted_xid is aborted, but marked committed/;
+	}
 	else
 	{
 		# The tests for update chain validation end up creating a bunch of
@@ -901,6 +921,13 @@ is( $node->safe_psql(
 		  WHERE offnum BETWEEN 50 AND 57 ORDER BY offnum)),
 	"50\n54",
 	'only the incorrect xmax hint bits are reported');
+
+is( $node->safe_psql(
+		'postgres',
+		q(SELECT offnum FROM verify_heapam('test', check_toast => false)
+		  WHERE offnum >= 58 ORDER BY offnum)),
+	"58\n59\n60",
+	'only contradictory committed hints are reported');
 
 $node->safe_psql(
 	'postgres', qq(
