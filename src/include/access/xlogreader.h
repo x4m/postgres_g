@@ -34,8 +34,13 @@
 #ifndef XLOGREADER_H
 #define XLOGREADER_H
 
+#ifdef USE_ZSTD
+#include <zstd.h>
+#endif
+
 #ifndef FRONTEND
 #include "access/transam.h"
+#include "utils/palloc.h"
 #endif
 
 #include "access/xlogrecord.h"
@@ -238,6 +243,14 @@ struct XLogReaderState
 	 * private/internal state
 	 * ----------------------------------------
 	 */
+
+#ifdef USE_ZSTD
+	/* Reused to decompress zstd-compressed full-page images. */
+	ZSTD_DCtx  *zstd_dctx;
+#ifndef FRONTEND
+	MemoryContextCallback zstd_dctx_cb;
+#endif
+#endif
 
 	/*
 	 * Buffer for decoded records.  This is a circular buffer, though
