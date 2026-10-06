@@ -112,6 +112,7 @@ typedef struct HeapCheckContext
 	 */
 	TransactionId cached_xid;
 	XidCommitStatus cached_status;
+	bool		cached_status_known;
 
 	/* Values concerning the heap relation being checked */
 	Relation	rel;
@@ -216,7 +217,8 @@ static XidBoundsViolation check_mxid_valid_in_rel(MultiXactId mxid,
 												  HeapCheckContext *ctx);
 static XidBoundsViolation get_xid_status(TransactionId xid,
 										 HeapCheckContext *ctx,
-										 XidCommitStatus *status);
+										 XidCommitStatus *status,
+										 bool *status_known);
 
 /*
  * Scan and report corruption in heap pages, optionally reconciling toasted
@@ -1140,6 +1142,8 @@ check_tuple_visibility(HeapCheckContext *ctx, bool *xmin_commit_status_ok,
 	XidCommitStatus xmin_status;
 	XidCommitStatus xvac_status;
 	XidCommitStatus xmax_status;
+	bool		xmin_status_known;
+	bool		xmax_status_known;
 	HeapTupleHeader tuphdr = ctx->tuphdr;
 
 	ctx->tuple_could_be_pruned = true;	/* have not yet proven otherwise */
@@ -1147,7 +1151,7 @@ check_tuple_visibility(HeapCheckContext *ctx, bool *xmin_commit_status_ok,
 
 	/* If xmin is normal, it should be within valid range */
 	xmin = HeapTupleHeaderGetXmin(tuphdr);
-	switch (get_xid_status(xmin, ctx, &xmin_status))
+	switch (get_xid_status(xmin, ctx, &xmin_status, &xmin_status_known))
 	{
 		case XID_INVALID:
 			/* Could be the result of a speculative insertion that aborted. */
@@ -1185,13 +1189,28 @@ check_tuple_visibility(HeapCheckContext *ctx, bool *xmin_commit_status_ok,
 	if (!HeapTupleHeaderXminCommitted(tuphdr))
 	{
 		if (HeapTupleHeaderXminInvalid(tuphdr))
-			return false;		/* inserter aborted, don't check */
+		{
+			/*
+			 * A committed inserter must not be hinted aborted.  The hint can
+			 * legitimately be set by old-style VACUUM FULL, however, based on
+			 * the status of xvac rather than xmin.
+			 *
+			 * After clog truncation, an assumed commit status is not evidence
+			 * of a bad hint bit; see get_xid_status().
+			 */
+			if (xmin_status == XID_COMMITTED && xmin_status_known &&
+				!(tuphdr->t_infomask & HEAP_MOVED))
+				report_corruption(ctx,
+								  psprintf("xmin %u is committed, but marked invalid",
+										   xmin));
+			return false;		/* don't check the tuple's contents */
+		}
 		/* Used by pre-9.0 binary upgrades */
 		else if (tuphdr->t_infomask & HEAP_MOVED_OFF)
 		{
 			xvac = HeapTupleHeaderGetXvac(tuphdr);
 
-			switch (get_xid_status(xvac, ctx, &xvac_status))
+			switch (get_xid_status(xvac, ctx, &xvac_status, NULL))
 			{
 				case XID_INVALID:
 					report_corruption(ctx,
@@ -1260,7 +1279,7 @@ check_tuple_visibility(HeapCheckContext *ctx, bool *xmin_commit_status_ok,
 		{
 			xvac = HeapTupleHeaderGetXvac(tuphdr);
 
-			switch (get_xid_status(xvac, ctx, &xvac_status))
+			switch (get_xid_status(xvac, ctx, &xvac_status, NULL))
 			{
 				case XID_INVALID:
 					report_corruption(ctx,
@@ -1393,6 +1412,28 @@ check_tuple_visibility(HeapCheckContext *ctx, bool *xmin_commit_status_ok,
 	if (tuphdr->t_infomask & HEAP_XMAX_INVALID)
 	{
 		/*
+		 * A finished locker can legitimately be hinted invalid even if it
+		 * committed, but a committed updater cannot.  For a multixact, check
+		 * its updater, not the multixact ID or its lockers.
+		 */
+		if (!HEAP_XMAX_IS_LOCKED_ONLY(tuphdr->t_infomask))
+		{
+			xmax = (tuphdr->t_infomask & HEAP_XMAX_IS_MULTI) ?
+				HeapTupleGetUpdateXid(tuphdr) : HeapTupleHeaderGetRawXmax(tuphdr);
+			if (TransactionIdIsNormal(xmax) &&
+				get_xid_status(xmax, ctx, &xmax_status, &xmax_status_known) == XID_BOUNDS_OK &&
+				xmax_status == XID_COMMITTED && xmax_status_known)
+			{
+				report_corruption(ctx,
+								  psprintf((tuphdr->t_infomask & HEAP_XMAX_IS_MULTI) ?
+										   "update xid %u is committed, but marked invalid" :
+										   "xmax %u is committed, but marked invalid",
+										   xmax));
+				return true;	/* tuple may be dead; don't check its TOAST */
+			}
+		}
+
+		/*
 		 * This tuple is live.  A concurrently running transaction could
 		 * delete it before we get around to checking the toast, but any such
 		 * running transaction is surely not less than our safe_xmin, so the
@@ -1420,7 +1461,7 @@ check_tuple_visibility(HeapCheckContext *ctx, bool *xmin_commit_status_ok,
 		 * this table.  Now check the update xid from this multixact.
 		 */
 		xmax = HeapTupleGetUpdateXid(tuphdr);
-		switch (get_xid_status(xmax, ctx, &xmax_status))
+		switch (get_xid_status(xmax, ctx, &xmax_status, NULL))
 		{
 			case XID_INVALID:
 				/* not LOCKED_ONLY, so it has to have an xmax */
@@ -1487,7 +1528,7 @@ check_tuple_visibility(HeapCheckContext *ctx, bool *xmin_commit_status_ok,
 
 	/* xmax is an XID, not a MXID. Sanity check it. */
 	xmax = HeapTupleHeaderGetRawXmax(tuphdr);
-	switch (get_xid_status(xmax, ctx, &xmax_status))
+	switch (get_xid_status(xmax, ctx, &xmax_status, NULL))
 	{
 		case XID_INVALID:
 			ctx->tuple_could_be_pruned = false;
@@ -2172,13 +2213,21 @@ check_mxid_valid_in_rel(MultiXactId mxid, HeapCheckContext *ctx)
  * If the status argument is not NULL, and if and only if the transaction ID
  * appears to be valid in this relation, the status argument will be set with
  * the commit status of the transaction ID.
+ *
+ * When requesting a status, callers can also pass status_known to distinguish
+ * a determined status from a commit assumed after clog truncation.  It is set
+ * to false for an assumed status or a bounds violation, and true otherwise.
  */
 static XidBoundsViolation
 get_xid_status(TransactionId xid, HeapCheckContext *ctx,
-			   XidCommitStatus *status)
+			   XidCommitStatus *status, bool *status_known)
 {
 	FullTransactionId fxid;
 	FullTransactionId clog_horizon;
+	bool		known = false;
+
+	if (status_known != NULL)
+		*status_known = false;
 
 	/* Quick check for special xids */
 	if (!TransactionIdIsValid(xid))
@@ -2187,6 +2236,8 @@ get_xid_status(TransactionId xid, HeapCheckContext *ctx,
 	{
 		if (status != NULL)
 			*status = XID_COMMITTED;
+		if (status_known != NULL)
+			*status_known = true;
 		return XID_BOUNDS_OK;
 	}
 
@@ -2218,9 +2269,16 @@ get_xid_status(TransactionId xid, HeapCheckContext *ctx,
 	if (xid == ctx->cached_xid)
 	{
 		*status = ctx->cached_status;
+		if (status_known != NULL)
+			*status_known = ctx->cached_status_known;
 		return XID_BOUNDS_OK;
 	}
 
+	/*
+	 * Hint bits can outlive their clog entries.  An assumed commit status
+	 * after truncation is sufficient for our visibility checks, but cannot
+	 * prove a hint bit wrong.  Keep that distinction with the cached status.
+	 */
 	*status = XID_COMMITTED;
 	LWLockAcquire(XactTruncationLock, LW_SHARED);
 	clog_horizon =
@@ -2228,6 +2286,7 @@ get_xid_status(TransactionId xid, HeapCheckContext *ctx,
 									   ctx);
 	if (FullTransactionIdPrecedesOrEquals(clog_horizon, fxid))
 	{
+		known = true;
 		if (TransactionIdIsCurrentTransactionId(xid))
 			*status = XID_IS_CURRENT_XID;
 		else if (TransactionIdIsInProgress(xid))
@@ -2240,5 +2299,8 @@ get_xid_status(TransactionId xid, HeapCheckContext *ctx,
 	LWLockRelease(XactTruncationLock);
 	ctx->cached_xid = xid;
 	ctx->cached_status = *status;
+	ctx->cached_status_known = known;
+	if (status_known != NULL)
+		*status_known = known;
 	return XID_BOUNDS_OK;
 }
