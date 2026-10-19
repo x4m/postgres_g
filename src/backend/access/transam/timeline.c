@@ -44,25 +44,35 @@
 #include "utils/wait_event.h"
 
 /*
- * Copies all timeline history files with id's between 'begin' and 'end'
- * from archive to pg_wal.
+ * Copy ancestor history files of 'end' with IDs >= 'begin' from the archive
+ * to pg_wal.  The history for 'end' itself has already been obtained.
  */
 void
 restoreTimeLineHistoryFiles(TimeLineID begin, TimeLineID end)
 {
 	char		path[MAXPGPATH];
 	char		histfname[MAXFNAMELEN];
-	TimeLineID	tli;
+	List	   *history;
+	ListCell   *lc;
 
-	for (tli = begin; tli < end; tli++)
+	if (begin >= end)
+		return;
+
+	/* IDs allocated externally need not be consecutive. */
+	history = readTimeLineHistory(end);
+	foreach(lc, history)
 	{
-		if (tli == 1)
+		TimeLineHistoryEntry *entry = lfirst(lc);
+		TimeLineID	tli = entry->tli;
+
+		if (tli == 1 || tli < begin || tli >= end)
 			continue;
 
 		TLHistoryFileName(histfname, tli);
 		if (RestoreArchivedFile(path, histfname, "RECOVERYHISTORY", 0, false))
 			KeepFileRestoredFromArchive(path, histfname);
 	}
+	list_free_deep(history);
 }
 
 /*
@@ -257,24 +267,41 @@ existsTimeLineHistory(TimeLineID probeTLI)
 /*
  * Find the newest existing timeline, assuming that startTLI exists.
  *
- * Note: while this is somewhat heuristic, it does positively guarantee
- * that (result + 1) is not a known timeline, and therefore it should
- * be safe to assign that ID to a new timeline.
+ * This is only a heuristic: a failed archive fetch cannot distinguish a
+ * missing history from an unavailable archive, and concurrent promotions
+ * can choose the same ID.  Also, PG_UINT32_MAX has no successor.
  */
 TimeLineID
 findNewestTimeLine(TimeLineID startTLI)
 {
 	TimeLineID	newestTLI;
 	TimeLineID	probeTLI;
+	DIR		   *dir;
+	struct dirent *de;
 
 	/*
-	 * The algorithm is just to probe for the existence of timeline history
-	 * files.  XXX is it useful to allow gaps in the sequence?
+	 * A streaming upstream can supply a history file beyond a gap in the
+	 * sequence.  Find the newest local history first, then probe the archive.
+	 * The archive interface cannot list files, so gaps there still require an
+	 * explicit recovery_target_timeline or a streaming connection.
 	 */
 	newestTLI = startTLI;
-
-	for (probeTLI = startTLI + 1;; probeTLI++)
+	dir = AllocateDir(XLOGDIR);
+	while ((de = ReadDir(dir, XLOGDIR)) != NULL)
 	{
+		if (IsTLHistoryFileName(de->d_name))
+		{
+			TimeLineID	tli;
+
+			sscanf(de->d_name, "%08X", &tli);
+			newestTLI = Max(newestTLI, tli);
+		}
+	}
+	FreeDir(dir);
+
+	while (newestTLI < PG_UINT32_MAX)
+	{
+		probeTLI = newestTLI + 1;
 		if (existsTimeLineHistory(probeTLI))
 		{
 			newestTLI = probeTLI;	/* probeTLI exists */
@@ -287,6 +314,48 @@ findNewestTimeLine(TimeLineID startTLI)
 	}
 
 	return newestTLI;
+}
+
+/*
+ * Validate an externally allocated timeline against local state only.  The
+ * allocator, not restore_command, is responsible for cluster-wide uniqueness.
+ * Check WAL as well as history: an interrupted promotion can leave either.
+ * Startup repeats this check after recovery, before creating any new files.
+ */
+void
+checkTimeLineID(TimeLineID newTLI, TimeLineID minTLI, int elevel)
+{
+	DIR		   *dir;
+	struct dirent *de;
+	bool		conflict = false;
+
+	if (newTLI <= minTLI)
+		ereport(elevel,
+				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+				 errmsg("new timeline ID %u must be greater than timeline ID %u",
+						newTLI, minTLI)));
+
+	dir = AllocateDir(XLOGDIR);
+	while ((de = ReadDir(dir, XLOGDIR)) != NULL)
+	{
+		if (IsTLHistoryFileName(de->d_name) ||
+			IsXLogFileName(de->d_name) || IsPartialXLogFileName(de->d_name))
+		{
+			TimeLineID	tli;
+
+			sscanf(de->d_name, "%08X", &tli);
+			if (tli == newTLI)
+			{
+				conflict = true;
+				break;
+			}
+		}
+	}
+	FreeDir(dir);
+	if (conflict)
+		ereport(elevel,
+				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+				 errmsg("timeline ID %u is already present in pg_wal", newTLI)));
 }
 
 /*
@@ -303,7 +372,8 @@ findNewestTimeLine(TimeLineID startTLI)
  */
 void
 writeTimeLineHistory(TimeLineID newTLI, TimeLineID parentTLI,
-					 XLogRecPtr switchpoint, const char *reason)
+					 XLogRecPtr switchpoint, const char *reason,
+					 bool restoreHistory)
 {
 	char		path[MAXPGPATH];
 	char		tmppath[MAXPGPATH];
@@ -332,7 +402,7 @@ writeTimeLineHistory(TimeLineID newTLI, TimeLineID parentTLI,
 	/*
 	 * If a history file exists for the parent, copy it verbatim
 	 */
-	if (ArchiveRecoveryRequested)
+	if (restoreHistory && ArchiveRecoveryRequested)
 	{
 		TLHistoryFileName(histfname, parentTLI);
 		RestoreArchivedFile(path, histfname, "RECOVERYHISTORY", 0, false);
@@ -343,7 +413,7 @@ writeTimeLineHistory(TimeLineID newTLI, TimeLineID parentTLI,
 	srcfd = OpenTransientFile(path, O_RDONLY);
 	if (srcfd < 0)
 	{
-		if (errno != ENOENT)
+		if (errno != ENOENT || (!restoreHistory && parentTLI != 1))
 			ereport(ERROR,
 					(errcode_for_file_access(),
 					 errmsg("could not open file \"%s\": %m", path)));

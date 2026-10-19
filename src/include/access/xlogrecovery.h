@@ -78,6 +78,14 @@ typedef struct XLogRecoveryCtlData
 	bool		SharedPromoteIsTriggered;
 
 	/*
+	 * SQL promotion request and frozen timeline choice, protected by
+	 * info_lck.
+	 */
+	bool		promotionRequested;
+	bool		promotionTimelineSelected;
+	TimeLineID	promotionTimeline;
+
+	/*
 	 * SharedRecoverySubtransInitialized indicates whether hot standby
 	 * initialization has started pg_subtrans. Protected by info_lck.
 	 */
@@ -225,6 +233,8 @@ extern TimestampTz GetCurrentChunkReplayStartTime(void);
 extern XLogRecPtr GetCurrentReplayRecPtr(TimeLineID *replayEndTLI);
 
 extern bool PromoteIsTriggered(void);
+extern void RequestPromotion(TimeLineID newTLI);
+extern TimeLineID GetPromotionTimeLine(void);
 extern bool CheckPromoteSignal(void);
 extern bool RecoverySubtransInitialized(void);
 extern void SetRecoverySubtransInitialized(void);
