@@ -56,6 +56,7 @@
 #include "access/twophase.h"
 #include "access/xact.h"
 #include "access/xlog_internal.h"
+#include "access/xlogarchive.h"
 #include "access/xlogreader.h"
 #include "access/xlogrecovery.h"
 #include "access/xlogutils.h"
@@ -94,6 +95,7 @@
 #include "utils/acl.h"
 #include "utils/builtins.h"
 #include "utils/guc.h"
+#include "utils/injection_point.h"
 #include "utils/lsyscache.h"
 #include "utils/memutils.h"
 #include "utils/pg_lsn.h"
@@ -148,6 +150,7 @@ int			wal_sender_shutdown_timeout = -1;	/* maximum time to wait during
 												 * replication */
 
 bool		log_replication_commands = false;
+bool		wal_sender_restore = false;
 
 /*
  * State for WalSndWakeupRequest
@@ -160,6 +163,10 @@ bool		wake_wal_senders = false;
  * keep a state of its work.
  */
 static XLogReaderState *xlogreader = NULL;
+
+/* Private archive copy for physical streaming, never installed as local WAL. */
+static char restoreDir[MAXPGPATH];
+static int	restoredFile = -1;
 
 /*
  * If the UPLOAD_MANIFEST command is used to provide a backup manifest in
@@ -323,6 +330,9 @@ static bool TransactionIdInRecentPast(TransactionId xid, uint32 epoch);
 
 static void WalSndSegmentOpen(XLogReaderState *state, XLogSegNo nextSegNo,
 							  TimeLineID *tli_p);
+static void WalSndSegmentClose(XLogReaderState *state);
+static bool WalSndRestoreSegment(XLogReaderState *state, const char *xlogfname);
+static void WalSndRestoreCleanup(int code, Datum arg);
 
 
 /* Initialize walsender process before entering the main command loop */
@@ -333,6 +343,7 @@ InitWalSender(void)
 
 	/* Create a per-walsender data structure in shared memory */
 	InitWalSenderSlot();
+	on_shmem_exit(WalSndRestoreCleanup, 0);
 
 	/* need resource owner for e.g. basebackups */
 	CreateAuxProcessResourceOwner();
@@ -382,7 +393,7 @@ WalSndErrorCleanup(void)
 	pgaio_error_cleanup();
 
 	if (xlogreader != NULL && xlogreader->seg.ws_file >= 0)
-		wal_segment_close(xlogreader);
+		WalSndSegmentClose(xlogreader);
 
 	xlogreader = NULL;
 	logical_decoding_ctx = NULL;
@@ -870,7 +881,7 @@ StartReplication(StartReplicationCmd *cmd)
 	xlogreader =
 		XLogReaderAllocate(wal_segment_size, NULL,
 						   XL_ROUTINE(.segment_open = WalSndSegmentOpen,
-									  .segment_close = wal_segment_close),
+									  .segment_close = WalSndSegmentClose),
 						   NULL);
 
 	if (!xlogreader)
@@ -3371,6 +3382,13 @@ WalSndSegmentOpen(XLogReaderState *state, XLogSegNo nextSegNo,
 		int			save_errno = errno;
 
 		XLogFileName(xlogfname, *tli_p, nextSegNo, wal_segment_size);
+
+		/* Only physical streaming may fall back to the archive. */
+		if (wal_sender_restore &&
+			state->routine.segment_close == WalSndSegmentClose &&
+			WalSndRestoreSegment(state, xlogfname))
+			return;
+
 		errno = save_errno;
 		ereport(ERROR,
 				(errcode_for_file_access(),
@@ -3382,6 +3400,96 @@ WalSndSegmentOpen(XLogReaderState *state, XLogSegNo nextSegNo,
 				(errcode_for_file_access(),
 				 errmsg("could not open file \"%s\": %m",
 						path)));
+}
+
+/* Remove a private archive copy on normal close, ERROR, or process exit. */
+static void
+WalSndRestoreCleanup(int code, Datum arg)
+{
+	if (restoredFile >= 0)
+	{
+		close(restoredFile);
+		restoredFile = -1;
+	}
+	if (restoreDir[0] != '\0')
+	{
+		rmtree(restoreDir, true);
+		restoreDir[0] = '\0';
+	}
+}
+
+/* XLogReaderRoutine->segment_close callback for physical streaming. */
+static void
+WalSndSegmentClose(XLogReaderState *state)
+{
+	if (restoredFile >= 0)
+	{
+		Assert(state->seg.ws_file == restoredFile);
+		state->seg.ws_file = -1;
+		WalSndRestoreCleanup(0, 0);
+	}
+	else
+		wal_segment_close(state);
+}
+
+/*
+ * Restore one segment without exposing it to checkpoint recycling, archiving,
+ * recovery, or other walsenders.  RemoveTempXlogFiles removes the directory
+ * after a crash.  Using a private directory also prevents a surviving restore
+ * command from recreating its destination after crash cleanup, provided the
+ * command does not itself create the destination directory.
+ */
+static bool
+WalSndRestoreSegment(XLogReaderState *state, const char *xlogfname)
+{
+	char		dir[MAXPGPATH];
+	char		recovername[MAXPGPATH];
+	bool		restored = false;
+
+	if (recoveryRestoreCommand == NULL || recoveryRestoreCommand[0] == '\0')
+		return false;
+
+	Assert(restoredFile < 0 && restoreDir[0] == '\0');
+	snprintf(recovername, sizeof(recovername),
+			 "xlogtemp.%d." INT64_FORMAT ".walsender", MyProcPid,
+			 MyStartTimestamp);
+	snprintf(dir, sizeof(dir), XLOGDIR "/%s", recovername);
+	if (MakePGDirectory(dir) < 0)
+		ereport(ERROR,
+				(errcode_for_file_access(),
+				 errmsg("could not create directory \"%s\": %m", dir)));
+	strlcpy(restoreDir, dir, sizeof(restoreDir));
+	strlcat(recovername, "/RECOVERYXLOG", sizeof(recovername));
+
+	PG_TRY();
+	{
+		char		path[MAXPGPATH];
+
+		if (RestoreArchivedFile(path, xlogfname, recovername,
+								wal_segment_size, false))
+		{
+			restoredFile = BasicOpenFile(path, O_RDONLY | PG_BINARY);
+			if (restoredFile < 0)
+				ereport(ERROR,
+						(errcode_for_file_access(),
+						 errmsg("could not open file \"%s\": %m", path)));
+			state->seg.ws_file = restoredFile;
+			XLogReaderRegisterResetCallback(state);
+			INJECTION_POINT("walsender-after-archive-restore", NULL);
+			restored = true;
+		}
+	}
+	PG_CATCH();
+	{
+		WalSndRestoreCleanup(0, 0);
+		state->seg.ws_file = -1;
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+
+	if (!restored)
+		WalSndRestoreCleanup(0, 0);
+	return restored;
 }
 
 /*
@@ -3546,7 +3654,7 @@ XLogSendPhysical(void)
 	{
 		/* close the current file. */
 		if (xlogreader->seg.ws_file >= 0)
-			wal_segment_close(xlogreader);
+			WalSndSegmentClose(xlogreader);
 
 		/* Send CopyDone */
 		pq_putmessage_noblock(PqMsg_CopyDone, NULL, 0);
@@ -3582,6 +3690,13 @@ XLogSendPhysical(void)
 	startptr = sentPtr;
 	endptr = startptr;
 	endptr += MAX_SEND_SIZE;
+
+	/*
+	 * Keep each read in one segment so its local/archive origin is
+	 * unambiguous.
+	 */
+	endptr = Min(endptr, startptr + wal_segment_size -
+				 XLogSegmentOffset(startptr, wal_segment_size));
 
 	/* if we went beyond SendRqstPtr, back off */
 	if (SendRqstPtr <= endptr)
@@ -3640,7 +3755,8 @@ retry:
 
 	/* See logical_read_xlog_page(). */
 	XLByteToSeg(startptr, segno, xlogreader->segcxt.ws_segsize);
-	CheckXLogRemoved(segno, xlogreader->seg.ws_tli);
+	if (nbytes == 0 || restoredFile < 0)
+		CheckXLogRemoved(segno, xlogreader->seg.ws_tli);
 
 	/*
 	 * During recovery, the currently-open WAL file might be replaced with the
@@ -3658,9 +3774,9 @@ retry:
 		walsnd->needreload = false;
 		SpinLockRelease(&walsnd->mutex);
 
-		if (reload && xlogreader->seg.ws_file >= 0)
+		if (reload && xlogreader->seg.ws_file >= 0 && restoredFile < 0)
 		{
-			wal_segment_close(xlogreader);
+			WalSndSegmentClose(xlogreader);
 
 			goto retry;
 		}
@@ -3668,6 +3784,10 @@ retry:
 
 	output_message.len += nbytes;
 	output_message.data[output_message.len] = '\0';
+
+	/* Do not retain a complete archive segment while waiting for more WAL. */
+	if (restoredFile >= 0 && XLogSegmentOffset(endptr, wal_segment_size) == 0)
+		WalSndSegmentClose(xlogreader);
 
 	/*
 	 * Fill the send timestamp last, so that it is taken as late as possible.
