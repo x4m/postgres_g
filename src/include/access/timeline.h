@@ -32,8 +32,10 @@ typedef struct
 extern List *readTimeLineHistory(TimeLineID targetTLI);
 extern bool existsTimeLineHistory(TimeLineID probeTLI);
 extern TimeLineID findNewestTimeLine(TimeLineID startTLI);
+extern void checkTimeLineID(TimeLineID newTLI, TimeLineID minTLI, int elevel);
 extern void writeTimeLineHistory(TimeLineID newTLI, TimeLineID parentTLI,
-								 XLogRecPtr switchpoint, const char *reason);
+								 XLogRecPtr switchpoint, const char *reason,
+								 bool restoreHistory);
 extern void writeTimeLineHistoryFile(TimeLineID tli, const char *content, size_t size);
 extern void restoreTimeLineHistoryFiles(TimeLineID begin, TimeLineID end);
 extern bool tliInHistory(TimeLineID tli, List *expectedTLEs);

@@ -47,6 +47,8 @@ static StringInfo tablespace_map = NULL;
 /* Session-level context for the SQL-callable backup functions */
 static MemoryContext backupcontext = NULL;
 
+static bool pg_promote_internal(bool wait, int wait_seconds, TimeLineID newTLI);
+
 
 /*
  * Return a string constant representing the recovery pause state. This is
@@ -690,7 +692,29 @@ pg_promote(PG_FUNCTION_ARGS)
 {
 	bool		wait = PG_GETARG_BOOL(0);
 	int			wait_seconds = PG_GETARG_INT32(1);
-	FILE	   *promote_file;
+
+	PG_RETURN_BOOL(pg_promote_internal(wait, wait_seconds, 0));
+}
+
+/* Promote using a timeline allocated by an external coordinator. */
+Datum
+pg_promote_timeline(PG_FUNCTION_ARGS)
+{
+	bool		wait = PG_GETARG_BOOL(0);
+	int			wait_seconds = PG_GETARG_INT32(1);
+	int64		newTLI = PG_GETARG_INT64(2);
+
+	if (newTLI <= 1 || newTLI > PG_UINT32_MAX)
+		ereport(ERROR,
+				(errcode(ERRCODE_NUMERIC_VALUE_OUT_OF_RANGE),
+				 errmsg("\"new_timeline\" must be between 2 and 4294967295")));
+
+	PG_RETURN_BOOL(pg_promote_internal(wait, wait_seconds, (TimeLineID) newTLI));
+}
+
+static bool
+pg_promote_internal(bool wait, int wait_seconds, TimeLineID newTLI)
+{
 	TimestampTz end_time;
 
 	if (!RecoveryInProgress())
@@ -704,32 +728,11 @@ pg_promote(PG_FUNCTION_ARGS)
 				(errcode(ERRCODE_NUMERIC_VALUE_OUT_OF_RANGE),
 				 errmsg("\"wait_seconds\" must not be negative or zero")));
 
-	/* create the promote signal file */
-	promote_file = AllocateFile(PROMOTE_SIGNAL_FILE, "w");
-	if (!promote_file)
-		ereport(ERROR,
-				(errcode_for_file_access(),
-				 errmsg("could not create file \"%s\": %m",
-						PROMOTE_SIGNAL_FILE)));
-
-	if (FreeFile(promote_file))
-		ereport(ERROR,
-				(errcode_for_file_access(),
-				 errmsg("could not write file \"%s\": %m",
-						PROMOTE_SIGNAL_FILE)));
-
-	/* signal the postmaster */
-	if (kill(PostmasterPid, SIGUSR1) != 0)
-	{
-		(void) unlink(PROMOTE_SIGNAL_FILE);
-		ereport(ERROR,
-				(errcode(ERRCODE_SYSTEM_ERROR),
-				 errmsg("failed to send signal to postmaster: %m")));
-	}
+	RequestPromotion(newTLI);
 
 	/* return immediately if waiting was not requested */
 	if (!wait)
-		PG_RETURN_BOOL(true);
+		return true;
 
 	/* wait for the amount of time wanted until promotion */
 	end_time = TimestampTzPlusSeconds(GetCurrentTimestamp(), wait_seconds);
@@ -740,7 +743,7 @@ pg_promote(PG_FUNCTION_ARGS)
 		ResetLatch(MyLatch);
 
 		if (!RecoveryInProgress())
-			PG_RETURN_BOOL(true);
+			return true;
 
 		CHECK_FOR_INTERRUPTS();
 
@@ -765,7 +768,7 @@ pg_promote(PG_FUNCTION_ARGS)
 						   "server did not promote within %d seconds",
 						   wait_seconds,
 						   wait_seconds)));
-	PG_RETURN_BOOL(false);
+	return false;
 }
 
 /*
