@@ -136,6 +136,7 @@ static StringInfoData reply_message;
 
 /* Prototypes for private functions */
 static void WalRcvFetchTimeLineHistoryFiles(TimeLineID first, TimeLineID last);
+static void WalRcvFetchTimeLineHistoryFile(TimeLineID tli);
 static void WalRcvWaitForStartPosition(XLogRecPtr *startpoint, TimeLineID *startpointTLI);
 static void WalRcvDie(int code, Datum arg);
 static void XLogWalRcvProcessMsg(unsigned char type, char *buf, Size len,
@@ -819,59 +820,75 @@ WalRcvWaitForStartPosition(XLogRecPtr *startpoint, TimeLineID *startpointTLI)
 }
 
 /*
- * Fetch any missing timeline history files between 'first' and 'last'
- * (inclusive) from the server.
+ * Fetch missing history files on the ancestry of 'last', back to 'first'.
+ * Do not request every intervening ID: externally allocated IDs can have gaps.
  */
 static void
 WalRcvFetchTimeLineHistoryFiles(TimeLineID first, TimeLineID last)
 {
-	TimeLineID	tli;
+	List	   *history;
+	ListCell   *lc;
 
-	for (tli = first; tli <= last; tli++)
+	/* endstreaming can return zero when no timeline switch occurred. */
+	if (last < first)
+		return;
+
+	WalRcvFetchTimeLineHistoryFile(last);
+	history = readTimeLineHistory(last);
+	foreach(lc, history)
 	{
-		/* there's no history file for timeline 1 */
-		if (tli != 1 && !existsTimeLineHistory(tli))
-		{
-			char	   *fname;
-			char	   *content;
-			size_t		len;
-			char		expectedfname[MAXFNAMELEN];
+		TimeLineHistoryEntry *entry = lfirst(lc);
 
-			ereport(LOG,
-					(errmsg("fetching timeline history file for timeline %u from primary server",
-							tli)));
+		if (entry->tli >= first && entry->tli != last)
+			WalRcvFetchTimeLineHistoryFile(entry->tli);
+	}
+	list_free_deep(history);
+}
 
-			walrcv_readtimelinehistoryfile(wrconn, tli, &fname, &content, &len);
+static void
+WalRcvFetchTimeLineHistoryFile(TimeLineID tli)
+{
+	/* there's no history file for timeline 1 */
+	if (tli != 1 && !existsTimeLineHistory(tli))
+	{
+		char	   *fname;
+		char	   *content;
+		size_t		len;
+		char		expectedfname[MAXFNAMELEN];
 
-			/*
-			 * Check that the filename on the primary matches what we
-			 * calculated ourselves. This is just a sanity check, it should
-			 * always match.
-			 */
-			TLHistoryFileName(expectedfname, tli);
-			if (strcmp(fname, expectedfname) != 0)
-				ereport(ERROR,
-						(errcode(ERRCODE_PROTOCOL_VIOLATION),
-						 errmsg_internal("primary reported unexpected file name for timeline history file of timeline %u",
-										 tli)));
+		ereport(LOG,
+				(errmsg("fetching timeline history file for timeline %u from primary server",
+						tli)));
 
-			/*
-			 * Write the file to pg_wal.
-			 */
-			writeTimeLineHistoryFile(tli, content, len);
+		walrcv_readtimelinehistoryfile(wrconn, tli, &fname, &content, &len);
 
-			/*
-			 * Mark the streamed history file as ready for archiving if
-			 * archive_mode is always.
-			 */
-			if (XLogArchiveMode != ARCHIVE_MODE_ALWAYS)
-				XLogArchiveForceDone(fname);
-			else
-				XLogArchiveNotify(fname);
+		/*
+		 * Check that the filename on the primary matches what we calculated
+		 * ourselves. This is just a sanity check, it should always match.
+		 */
+		TLHistoryFileName(expectedfname, tli);
+		if (strcmp(fname, expectedfname) != 0)
+			ereport(ERROR,
+					(errcode(ERRCODE_PROTOCOL_VIOLATION),
+					 errmsg_internal("primary reported unexpected file name for timeline history file of timeline %u",
+									 tli)));
 
-			pfree(fname);
-			pfree(content);
-		}
+		/*
+		 * Write the file to pg_wal.
+		 */
+		writeTimeLineHistoryFile(tli, content, len);
+
+		/*
+		 * Mark the streamed history file as ready for archiving if
+		 * archive_mode is always.
+		 */
+		if (XLogArchiveMode != ARCHIVE_MODE_ALWAYS)
+			XLogArchiveForceDone(fname);
+		else
+			XLogArchiveNotify(fname);
+
+		pfree(fname);
+		pfree(content);
 	}
 }
 

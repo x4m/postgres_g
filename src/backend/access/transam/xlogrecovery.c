@@ -4453,15 +4453,88 @@ SetPromoteIsTriggered(void)
 }
 
 /*
+ * Request promotion through shared memory.  Zero asks startup to allocate the
+ * timeline as usual.  Once a request has been accepted, callers may wait for
+ * it, but may not change its timeline.  A pg_ctl request freezes the choice
+ * when startup observes it; an SQL request freezes it here.
+ *
+ * The request survives transaction abort and client disconnect, but not a
+ * server restart.  Neither cancellation nor a wait timeout cancels promotion.
+ */
+void
+RequestPromotion(TimeLineID newTLI)
+{
+	bool		conflict = false;
+	bool		validated = false;
+
+	for (;;)
+	{
+		SpinLockAcquire(&XLogRecoveryCtl->info_lck);
+		if (XLogRecoveryCtl->promotionRequested ||
+			XLogRecoveryCtl->SharedPromoteIsTriggered ||
+			XLogRecoveryCtl->promotionTimelineSelected)
+		{
+			if (newTLI != 0 && newTLI != XLogRecoveryCtl->promotionTimeline)
+				conflict = true;
+		}
+		else if (newTLI != 0 && !validated)
+		{
+			TimeLineID	replayTLI;
+
+			/* Do I/O without the spinlock, then recheck for other requests. */
+			SpinLockRelease(&XLogRecoveryCtl->info_lck);
+			(void) GetXLogReplayRecPtr(&replayTLI);
+			checkTimeLineID(newTLI, replayTLI, ERROR);
+			validated = true;
+			continue;
+		}
+		else
+		{
+			XLogRecoveryCtl->promotionTimeline = newTLI;
+			XLogRecoveryCtl->promotionRequested = true;
+		}
+		SpinLockRelease(&XLogRecoveryCtl->info_lck);
+		break;
+	}
+
+	if (conflict)
+		ereport(ERROR,
+				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
+				 errmsg("cannot change timeline of a promotion in progress")));
+
+	WakeupRecovery();
+}
+
+/* Freeze the choice before end-of-recovery processing creates any files. */
+TimeLineID
+GetPromotionTimeLine(void)
+{
+	TimeLineID	result;
+
+	SpinLockAcquire(&XLogRecoveryCtl->info_lck);
+	XLogRecoveryCtl->promotionTimelineSelected = true;
+	result = XLogRecoveryCtl->promotionTimeline;
+	SpinLockRelease(&XLogRecoveryCtl->info_lck);
+
+	return result;
+}
+
+/*
  * Check whether a promote request has arrived.
  */
 static bool
 CheckForStandbyTrigger(void)
 {
+	bool		requested;
+
 	if (LocalPromoteIsTriggered)
 		return true;
 
-	if (IsPromoteSignaled() && CheckPromoteSignal())
+	SpinLockAcquire(&XLogRecoveryCtl->info_lck);
+	requested = XLogRecoveryCtl->promotionRequested;
+	SpinLockRelease(&XLogRecoveryCtl->info_lck);
+
+	if (requested || (IsPromoteSignaled() && CheckPromoteSignal()))
 	{
 		ereport(LOG, (errmsg("received promote request")));
 		RemovePromoteSignalFiles();

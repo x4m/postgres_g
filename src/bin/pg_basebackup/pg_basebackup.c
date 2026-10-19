@@ -2014,7 +2014,7 @@ BaseBackup(char *compression_algorithm, char *compression_detail,
 	 * IDENTIFY_SYSTEM.
 	 */
 	if (PQnfields(res) >= 2)
-		starttli = atoi(PQgetvalue(res, 0, 1));
+		starttli = strtoul(PQgetvalue(res, 0, 1), NULL, 10);
 	else
 		starttli = latesttli;
 	PQclear(res);

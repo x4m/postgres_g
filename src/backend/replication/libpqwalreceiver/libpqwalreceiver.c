@@ -453,7 +453,8 @@ libpqrcv_identify_system(WalReceiverConn *conn, TimeLineID *primary_tli,
 				 errdetail("Could not identify system: got %d rows and %d fields, expected %d rows and %d or more fields.",
 						   PQntuples(res), PQnfields(res), 1, 3)));
 	primary_sysid = pstrdup(PQgetvalue(res, 0, 0));
-	*primary_tli = pg_strtoint32(PQgetvalue(res, 0, 1));
+	*primary_tli = uint32in_subr(PQgetvalue(res, 0, 1), NULL,
+								 "timeline ID", NULL);
 
 	/* Column 2 is the server's current WAL flush position */
 	if (server_lsn)
@@ -709,7 +710,8 @@ libpqrcv_endstreaming(WalReceiverConn *conn, TimeLineID *next_tli)
 			ereport(ERROR,
 					(errcode(ERRCODE_PROTOCOL_VIOLATION),
 					 errmsg("unexpected result set after end-of-streaming")));
-		*next_tli = pg_strtoint32(PQgetvalue(res, 0, 0));
+		*next_tli = uint32in_subr(PQgetvalue(res, 0, 0), NULL,
+								  "timeline ID", NULL);
 		PQclear(res);
 
 		/* the result set should be followed by CommandComplete */

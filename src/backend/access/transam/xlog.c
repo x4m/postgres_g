@@ -6658,7 +6658,45 @@ StartupXLOG(void)
 	newTLI = endOfRecoveryInfo->lastRecTLI;
 	if (ArchiveRecoveryRequested)
 	{
-		newTLI = findNewestTimeLine(recoveryTargetTLI) + 1;
+		TimeLineID	requestedTLI = GetPromotionTimeLine();
+
+		if (requestedTLI != 0)
+		{
+			char		path[MAXPGPATH];
+			int			fd;
+
+			checkTimeLineID(requestedTLI,
+							Max(recoveryTargetTLI, endOfRecoveryInfo->lastRecTLI),
+							FATAL);
+			newTLI = requestedTLI;
+
+			/*
+			 * Recovery must already have obtained the parent's history.  Do
+			 * not call restore_command again, or silently omit ancestors if
+			 * the local file is missing.  Check before removing signal files.
+			 */
+			if (recoveryTargetTLI != 1)
+			{
+				TLHistoryFilePath(path, recoveryTargetTLI);
+				fd = OpenTransientFile(path, O_RDONLY);
+				if (fd < 0)
+					ereport(FATAL,
+							(errcode_for_file_access(),
+							 errmsg("could not open file \"%s\": %m", path)));
+				if (CloseTransientFile(fd) != 0)
+					ereport(FATAL,
+							(errcode_for_file_access(),
+							 errmsg("could not close file \"%s\": %m", path)));
+			}
+		}
+		else
+		{
+			newTLI = findNewestTimeLine(recoveryTargetTLI);
+			if (newTLI == PG_UINT32_MAX)
+				ereport(FATAL,
+						(errmsg("no more timeline IDs are available")));
+			newTLI++;
+		}
 		ereport(LOG,
 				(errmsg("selected new timeline ID: %u", newTLI)));
 
@@ -6690,7 +6728,8 @@ StartupXLOG(void)
 		 * between here and writing the end-of-recovery record.
 		 */
 		writeTimeLineHistory(newTLI, recoveryTargetTLI,
-							 EndOfLog, endOfRecoveryInfo->recoveryStopReason);
+							 EndOfLog, endOfRecoveryInfo->recoveryStopReason,
+							 requestedTLI == 0);
 
 		ereport(LOG,
 				(errmsg("archive recovery complete")));

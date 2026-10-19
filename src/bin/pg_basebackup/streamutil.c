@@ -439,7 +439,7 @@ RunIdentifySystem(PGconn *conn, char **sysid, TimeLineID *starttli,
 
 	/* Get timeline ID to start streaming from */
 	if (starttli != NULL)
-		*starttli = atoi(PQgetvalue(res, 0, 1));
+		*starttli = strtoul(PQgetvalue(res, 0, 1), NULL, 10);
 
 	/* Get LSN start position if necessary */
 	if (startpos != NULL)

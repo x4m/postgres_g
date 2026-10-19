@@ -816,13 +816,64 @@ postgres=# SELECT '0/0'::pg_lsn + pd.segment_number * ps.setting::int + :offset 
         returns <literal>true</literal> if promotion is successful
         and <literal>false</literal> otherwise.
         If <parameter>wait</parameter> is set to <literal>false</literal>, the
-        function returns <literal>true</literal> immediately after sending a
-        <literal>SIGUSR1</literal> signal to the postmaster to trigger
-        promotion.
+        function returns <literal>true</literal> immediately after requesting
+        promotion.  A timeout, transaction rollback, or client disconnect does
+        not cancel the request.  An uncompleted SQL promotion request is not
+        retained across a server restart.
        </para>
        <para>
         This function is restricted to superusers by default, but other users
         can be granted EXECUTE to run the function.
+       </para></entry>
+      </row>
+
+      <row>
+       <entry role="func_table_entry"><para role="func_signature">
+        <function>pg_promote</function> ( <parameter>wait</parameter> <type>boolean</type>, <parameter>wait_seconds</parameter> <type>integer</type>, <parameter>new_timeline</parameter> <type>bigint</type> )
+        <returnvalue>boolean</returnvalue>
+       </para>
+       <para>
+        Promotes a standby using an externally allocated timeline ID instead
+        of probing the WAL archive for an unused ID.  The caller must allocate
+        an ID that has never been used for this database system, including by
+        another server or an unsuccessful promotion attempt.  The ID must be
+        between 2 and 4294967295 and greater than the recovery target timeline
+        when recovery finishes.  Local WAL and history file conflicts are
+        rejected, but PostgreSQL cannot check cluster-wide uniqueness without
+        contacting the archive.  This function does not elect a primary or
+        prevent another server from accepting writes.
+       </para>
+       <para>
+        The parent history must already be present in <filename>pg_wal</filename>
+        (except for timeline 1, which has no history file).  Neither timeline
+        allocation nor writing the new history invokes
+        <varname>restore_command</varname>.  This does not interrupt an existing
+        restore command or skip fetching and replaying WAL before promotion.
+        History archiving remains asynchronous.
+       </para>
+       <para>
+        A concurrent request cannot change the timeline of an accepted
+        promotion.  A request without <parameter>new_timeline</parameter>
+        can wait for an existing request, including one with an explicit ID.
+        All three arguments are required when specifying a timeline ID.
+        Validation is repeated when recovery ends; if recovery has advanced
+        beyond the requested ID, promotion fails rather than choosing a
+        different ID.  The wait and restart behavior is the same as for the
+        other form of <function>pg_promote</function>.
+       </para>
+       <para>
+        IDs need not be consecutive.  Streaming standbys can follow such a
+        promotion, but archive-only recovery with
+        <literal>recovery_target_timeline = 'latest'</literal> cannot discover
+        histories beyond a gap that is not covered by a local history file.
+        Specify <varname>recovery_target_timeline</varname> explicitly in that
+        case.  Older streaming clients may also assume consecutive IDs.
+       </para>
+       <para>
+        This overload is restricted to superusers by default.  Permission to
+        call the other overload does not grant permission to allocate IDs.
+        <command>pg_ctl promote</command> continues to allocate an ID
+        automatically; it cannot supply <parameter>new_timeline</parameter>.
        </para></entry>
       </row>
 

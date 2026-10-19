@@ -724,7 +724,7 @@ ReadEndOfStreamingResult(PGresult *res, XLogRecPtr *startpos, uint32 *timeline)
 		return false;
 	}
 
-	*timeline = atoi(PQgetvalue(res, 0, 0));
+	*timeline = strtoul(PQgetvalue(res, 0, 0), NULL, 10);
 	if (!pg_parse_lsn(PQgetvalue(res, 0, 1), startpos))
 	{
 		pg_log_error("could not parse next timeline's starting point \"%s\"",
