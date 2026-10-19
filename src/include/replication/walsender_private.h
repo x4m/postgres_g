@@ -113,6 +113,14 @@ typedef struct
 	 */
 	ConditionVariable wal_confirm_rcv_cv;
 
+	/*
+	 * Archive restore retries, protected by restore_mutex. A zero deadline
+	 * allows independent restores; after a failure, admit only one retry.
+	 */
+	slock_t		restore_mutex;
+	TimestampTz restoreRetryAfter;
+	bool		restoreRetryInProgress;
+
 	WalSnd		walsnds[FLEXIBLE_ARRAY_MEMBER];
 } WalSndCtlData;
 

@@ -3573,6 +3573,12 @@
   check_hook => 'check_wal_segment_size',
 },
 
+{ name => 'wal_sender_restore', type => 'bool', context => 'PGC_SIGHUP', group => 'REPLICATION_SENDING',
+  short_desc => 'Allows physical WAL senders to restore missing WAL from the archive.',
+  variable => 'wal_sender_restore',
+  boot_val => 'false',
+},
+
 { name => 'wal_sender_shutdown_timeout', type => 'int', context => 'PGC_USERSET', group => 'REPLICATION_SENDING',
   short_desc => 'Sets the maximum time the server waits during shutdown for all WAL data to be replicated to the receiver.',
   long_desc => '-1 means wait indefinitely. 0 means do not wait.',
