@@ -1,0 +1,27 @@
+# Copyright (c) 2026, PostgreSQL Global Development Group
+
+# A restore_command for 061_walsender_archive.pl. Never create the destination
+# directory: the sender owns its lifetime, including crash cleanup.
+use strict;
+use warnings FATAL => 'all';
+use File::Copy;
+use Time::HiRes qw(time);
+
+my ($archive, $name, $destination, $restart) = @ARGV;
+my $for_sender = $destination =~ /xlogtemp\./;
+die "unexpected archive cleanup request: $restart"
+  if $for_sender && $restart ne '0' x 24;
+
+if ($for_sender && -e "$archive/short")
+{
+	open(my $file, '>', $destination) or die "open $destination: $!";
+	print $file 'short';
+	close($file) or die "close $destination: $!";
+	open(my $attempts, '>>', "$archive/short_attempts")
+	  or die "open short_attempts: $!";
+	printf $attempts "%.6f\n", time;
+	close($attempts) or die "close short_attempts: $!";
+	exit 0;
+}
+
+exit(copy("$archive/$name", $destination) ? 0 : 1);

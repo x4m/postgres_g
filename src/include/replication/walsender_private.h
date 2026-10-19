@@ -16,6 +16,7 @@
 #include "lib/ilist.h"
 #include "nodes/nodes.h"
 #include "nodes/replnodes.h"
+#include "port/atomics.h"
 #include "replication/syncrep.h"
 #include "storage/condition_variable.h"
 #include "storage/shmem.h"
@@ -112,6 +113,9 @@ typedef struct
 	 * logical failover slots when a walreceiver confirms the receipt of LSN.
 	 */
 	ConditionVariable wal_confirm_rcv_cv;
+
+	/* TimestampTz of the last archive restore failure. */
+	pg_atomic_uint64 lastRestoreFailure;
 
 	WalSnd		walsnds[FLEXIBLE_ARRAY_MEMBER];
 } WalSndCtlData;

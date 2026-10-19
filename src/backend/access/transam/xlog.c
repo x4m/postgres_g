@@ -3963,7 +3963,11 @@ RemoveTempXlogFiles(void)
 			continue;
 
 		snprintf(path, MAXPGPATH, XLOGDIR "/%s", xlde->d_name);
-		unlink(path);
+		/* Walsenders restore archived WAL into private temporary directories. */
+		if (get_dirent_type(path, xlde, false, LOG) == PGFILETYPE_DIR)
+			rmtree(path, true);
+		else
+			unlink(path);
 		elog(DEBUG2, "removed temporary WAL segment \"%s\"", path);
 	}
 	FreeDir(xldir);
