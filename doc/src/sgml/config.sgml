@@ -4260,9 +4260,10 @@ include_dir 'conf.d'
     </indexterm>
 
     <para>
-     This section describes the settings that apply only for the duration of
-     the recovery.  They must be reset for any subsequent recovery you wish to
-     perform.
+     This section describes the settings that apply for the duration of
+     recovery.  They must be reset for any subsequent recovery you wish to
+     perform.  The <varname>restore_command</varname> setting is also used
+     outside recovery when <xref linkend="guc-wal-sender-restore"/> is enabled.
     </para>
 
     <para>
@@ -4323,6 +4324,13 @@ include_dir 'conf.d'
         used by warm-standby configurations
         (see <xref linkend="warm-standby"/>).
         Write <literal>%%</literal> to embed an actual <literal>%</literal> character.
+       </para>
+
+       <para>
+        When <xref linkend="guc-wal-sender-restore"/> is enabled, this command
+        also supplies missing WAL to physical replication clients, including
+        outside recovery. See that setting for the requirements on the
+        command in this case.
        </para>
 
        <para>
@@ -5016,6 +5024,50 @@ HINT:  If it is safe for all REPLICATION users to use this library as an output 
         value <literal>true</literal>). Synced slots are always considered to
         be inactive because they don't perform logical decoding to produce
         changes.
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="guc-wal-sender-restore" xreflabel="wal_sender_restore">
+      <term><varname>wal_sender_restore</varname> (<type>boolean</type>)
+      <indexterm>
+       <primary><varname>wal_sender_restore</varname> configuration parameter</primary>
+      </indexterm>
+      </term>
+      <listitem>
+       <para>
+        Allows physical replication senders to use
+        <xref linkend="guc-restore-command"/> when a requested WAL segment is
+        missing from <filename>pg_wal</filename>. This applies to both primary
+        and standby servers. The default is <literal>off</literal>.
+        This parameter can only be set in the <filename>postgresql.conf</filename>
+        file or on the server command line.
+       </para>
+       <para>
+        Each sender restores one segment at a time into a private temporary
+        directory in <filename>pg_wal</filename>. These copies are not used
+        by recovery or archived again, and checkpoints do not recycle them.
+        They are removed when no longer needed or when the sender exits.
+        Crash recovery removes leftover directories. The restore command
+        must not recreate the destination directory or leave background
+        processes writing to the destination after the command exits.
+        It must also remove any temporary files it creates in that directory
+        other than the requested destination file.
+        The <literal>%r</literal> substitution is an all-zero filename, so
+        the command must not remove archived WAL on behalf of the sender.
+       </para>
+       <para>
+        The restore command runs synchronously. While it runs, the sender
+        cannot send keepalive messages or process replication feedback.
+        A slow command can therefore cause the receiver to time out and
+        can delay server shutdown. The command should bound its execution
+        time appropriately.
+       </para>
+       <para>
+        This does not change which timeline or WAL positions may be streamed,
+        enable logical decoding from archived WAL, or make an invalidated
+        replication slot usable again. If the segment cannot be restored,
+        the replication command fails as it does when this setting is disabled.
        </para>
       </listitem>
      </varlistentry>
