@@ -3360,6 +3360,13 @@ WalSndSegmentOpen(XLogReaderState *state, XLogSegNo nextSegNo,
 	 * timeline, 000000040000000000000013, might not exist. Their contents are
 	 * equal up to the switchpoint, because at a timeline switch, the used
 	 * portion of the old segment is copied to the new file.
+	 *
+	 * There can be more than one timeline switch within the segment. Choose
+	 * the timeline in use at the end of the segment, as in
+	 * XLogReadDetermineTimeline(). An intermediate timeline's file might only
+	 * have been archived with a .partial suffix. This does not change the
+	 * switchpoint at which we stop streaming, or the next timeline reported
+	 * to the client.
 	 */
 	*tli_p = sendTimeLine;
 	if (sendTimeLineIsHistoric)
@@ -3368,7 +3375,25 @@ WalSndSegmentOpen(XLogReaderState *state, XLogSegNo nextSegNo,
 
 		XLByteToSeg(sendTimeLineValidUpto, endSegNo, state->segcxt.ws_segsize);
 		if (nextSegNo == endSegNo)
-			*tli_p = sendTimeLineNextTLI;
+		{
+			TimeLineID	currTLI;
+			List	   *history;
+			XLogRecPtr	endOfSegment;
+
+			/*
+			 * Prefer the insertion timeline if promotion has set it, even
+			 * before RecoveryInProgress() becomes false. Otherwise use the
+			 * replay timeline. See logical_read_xlog_page().
+			 */
+			currTLI = GetWALInsertionTimeLineIfSet();
+			if (currTLI == 0)
+				GetXLogReplayRecPtr(&currTLI);
+
+			history = readTimeLineHistory(currTLI);
+			endOfSegment = (nextSegNo + 1) * state->segcxt.ws_segsize - 1;
+			*tli_p = tliOfPointInHistory(endOfSegment, history);
+			list_free_deep(history);
+		}
 	}
 
 	XLogFilePath(path, *tli_p, nextSegNo, state->segcxt.ws_segsize);
