@@ -70,6 +70,7 @@ tests += {
       't/059_remote_apply_status_interval.pl',
       't/060_multixact_crashed_updater.pl',
       't/061_walsender_archive.pl',
+      't/062_walsender_archive_timelines.pl',
     ],
   },
 }
