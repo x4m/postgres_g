@@ -107,6 +107,9 @@ wal_retrieve_retry_interval = '100ms'
 	$sender->wait_for_log(
 		qr/requested WAL segment .* has already been removed/, $log_offset);
 	$receivers[0]->stop;
+	$sender->poll_query_until('postgres',
+		'SELECT count(*) = 0 FROM pg_stat_replication')
+	  or die 'disabled-fallback sender did not exit';
 	is($sender->safe_psql('postgres', $scratch_count),
 		'0', "$label: disabled fallback creates no scratch copies");
 
@@ -121,6 +124,13 @@ wal_retrieve_retry_interval = '100ms'
 		qr/archive file [^\n]* has wrong size.*archive file [^\n]* has wrong size/s,
 		$log_offset);
 	$receivers[0]->stop;
+
+	# A disconnected sender can still be waiting for the restore delay,
+	# before it creates a scratch directory. Let it fail and exit before
+	# removing the short-file marker or attaching another injection point.
+	$sender->poll_query_until('postgres',
+		'SELECT count(*) = 0 FROM pg_stat_replication')
+	  or die 'failed-restore sender did not exit';
 	my @attempts = split /\n/, slurp_file("$archive/short_attempts");
 	cmp_ok($attempts[1] - $attempts[0],
 		'>=', 1, "$label: failed restores are delayed across reconnections");
@@ -150,6 +160,9 @@ wal_retrieve_retry_interval = '100ms'
 			'postgres',
 			"SELECT pg_terminate_backend(pid) FROM pg_stat_activity
               WHERE wait_event = '$restore_point'");
+		$sender->poll_query_until('postgres',
+			'SELECT count(*) = 0 FROM pg_stat_replication')
+		  or die 'terminated senders did not exit';
 		$sender->poll_query_until('postgres', $scratch_count, '0')
 		  or die 'terminated restores left scratch directories';
 		$sender->safe_psql('postgres',
@@ -169,6 +182,9 @@ wal_retrieve_retry_interval = '100ms'
 				qr/error triggered for injection point \Q$point\E/,
 				$log_offset);
 			$receivers[0]->stop;
+			$sender->poll_query_until('postgres',
+				'SELECT count(*) = 0 FROM pg_stat_replication')
+			  or die "$point sender did not exit";
 			$sender->poll_query_until('postgres', $scratch_count, '0')
 			  or die "$point left a scratch directory";
 			$sender->safe_psql('postgres',
