@@ -4328,9 +4328,9 @@ include_dir 'conf.d'
 
        <para>
         When <xref linkend="guc-wal-sender-restore"/> is enabled, this command
-        also supplies missing WAL to physical replication clients, including
-        outside recovery. See that setting for the requirements on the
-        command in this case.
+        also supplies missing WAL and timeline history files to physical
+        replication clients, including outside recovery. See that setting
+        for the requirements on the command in this case.
        </para>
 
        <para>
@@ -5078,14 +5078,15 @@ HINT:  If it is safe for all REPLICATION users to use this library as an output 
       <listitem>
        <para>
         Allows physical replication senders to use
-        <xref linkend="guc-restore-command"/> when a requested WAL segment is
-        missing from <filename>pg_wal</filename>. This applies to both primary
-        and standby servers. The default is <literal>off</literal>.
+        <xref linkend="guc-restore-command"/> when a requested WAL segment or
+        timeline history file is missing from <filename>pg_wal</filename>.
+        This applies to both primary and standby servers. The default is
+        <literal>off</literal>.
         This parameter can only be set in the <filename>postgresql.conf</filename>
         file or on the server command line.
        </para>
        <para>
-        Each sender restores one segment at a time into a private temporary
+        Each sender restores one file at a time into a private temporary
         directory in <filename>pg_wal</filename>. These copies are not used
         by recovery or archived again, and checkpoints do not recycle them.
         They are removed when no longer needed or when the sender exits.
@@ -5105,7 +5106,7 @@ HINT:  If it is safe for all REPLICATION users to use this library as an output 
         command. The failure timestamp is shared across senders, so this
         delay also applies after reconnecting. Each request attempts the
         restore only once, and senders can restore files concurrently.
-        Requests for other archived segments are also delayed, but reads
+        Requests for other archived files are also delayed, but reads
         from <filename>pg_wal</filename> and restoration by recovery are
         unaffected.
        </para>
@@ -5119,7 +5120,7 @@ HINT:  If it is safe for all REPLICATION users to use this library as an output 
        <para>
         This does not change which timeline or WAL positions may be streamed,
         enable logical decoding from archived WAL, or make an invalidated
-        replication slot usable again. If the segment cannot be restored,
+        replication slot usable again. If the file cannot be restored,
         the replication command fails as it does when this setting is disabled.
        </para>
       </listitem>

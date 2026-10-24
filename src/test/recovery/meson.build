@@ -71,6 +71,7 @@ tests += {
       't/060_multixact_crashed_updater.pl',
       't/061_walsender_archive.pl',
       't/062_walsender_archive_timelines.pl',
+      't/063_walsender_archive_history.pl',
     ],
   },
 }

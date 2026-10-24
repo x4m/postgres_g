@@ -164,7 +164,7 @@ bool		wake_wal_senders = false;
  */
 static XLogReaderState *xlogreader = NULL;
 
-/* Private archive copy for physical streaming, never installed as local WAL. */
+/* Private archive copy for physical replication, never installed as local WAL. */
 static char restoreDir[MAXPGPATH];
 static int	restoredFile = -1;
 static bool restoreInProgress = false;
@@ -343,6 +343,7 @@ static void WalSndSegmentOpen(XLogReaderState *state, XLogSegNo nextSegNo,
 							  TimeLineID *tli_p, bool allow_restore);
 static void WalSndSegmentClose(XLogReaderState *state);
 static bool WalSndRestoreSegment(XLogReaderState *state, const char *xlogfname);
+static bool WalSndRestoreFile(const char *xlogfname, off_t expectedSize);
 static void WalSndRestoreCleanup(int code, Datum arg);
 
 
@@ -647,6 +648,7 @@ SendTimeLineHistory(TimeLineHistoryCmd *cmd)
 	off_t		histfilelen;
 	size_t		bytesleft;
 	Size		len;
+	bool		restored = false;
 
 	dest = CreateDestReceiver(DestRemoteSimple);
 
@@ -673,6 +675,19 @@ SendTimeLineHistory(TimeLineHistoryCmd *cmd)
 	pq_sendbytes(&buf, histfname, len);
 
 	fd = OpenTransientFile(path, O_RDONLY | PG_BINARY);
+	if (fd < 0 && errno == ENOENT && wal_sender_restore)
+	{
+		int			save_errno = errno;
+
+		/* A recent base backup need not contain intermediate history files. */
+		if (WalSndRestoreFile(histfname, 0))
+		{
+			fd = restoredFile;
+			restored = true;
+		}
+		else
+			errno = save_errno;
+	}
 	if (fd < 0)
 		ereport(ERROR,
 				(errcode_for_file_access(),
@@ -731,7 +746,9 @@ SendTimeLineHistory(TimeLineHistoryCmd *cmd)
 		bytesleft -= nread;
 	}
 
-	if (CloseTransientFile(fd) != 0)
+	if (restored)
+		WalSndRestoreCleanup(0, 0);
+	else if (CloseTransientFile(fd) != 0)
 		ereport(ERROR,
 				(errcode_for_file_access(),
 				 errmsg("could not close file \"%s\": %m", path)));
@@ -3508,15 +3525,31 @@ WalSndSegmentClose(XLogReaderState *state)
 		wal_segment_close(state);
 }
 
-/*
- * Restore one segment without exposing it to checkpoint recycling, archiving,
- * recovery, or other walsenders.  RemoveTempXlogFiles removes the directory
- * after a crash.  Using a private directory also prevents a surviving restore
- * command from recreating its destination after crash cleanup, provided the
- * command does not itself create the destination directory.
- */
+/* Restore a WAL segment and register it with the physical reader. */
 static bool
 WalSndRestoreSegment(XLogReaderState *state, const char *xlogfname)
+{
+	if (!WalSndRestoreFile(xlogfname, wal_segment_size))
+		return false;
+
+	state->seg.ws_file = restoredFile;
+	XLogReaderRegisterResetCallback(state);
+
+	INJECTION_POINT("walsender-after-archive-restore", NULL);
+	return true;
+}
+
+/*
+ * Restore one WAL or history file without exposing it to checkpoint recycling,
+ * archiving, recovery, or other walsenders.  The caller must arrange to call
+ * WalSndRestoreCleanup when it no longer needs the file.  RemoveTempXlogFiles
+ * removes the directory after a crash.  Using a private directory also
+ * prevents a surviving restore command from recreating its destination after
+ * crash cleanup, provided the command does not itself create the destination
+ * directory.
+ */
+static bool
+WalSndRestoreFile(const char *xlogfname, off_t expectedSize)
 {
 	char		dir[MAXPGPATH];
 	char		recovername[MAXPGPATH];
@@ -3570,7 +3603,7 @@ WalSndRestoreSegment(XLogReaderState *state, const char *xlogfname)
 	/* WalSndErrorCleanup and the exit callback handle failures from here on. */
 	INJECTION_POINT("walsender-before-archive-restore", NULL);
 	if (!RestoreArchivedFile(path, xlogfname, recovername,
-							 wal_segment_size, false))
+							 expectedSize, false))
 	{
 		WalSndRestoreCleanup(0, 0);
 		return false;
@@ -3581,11 +3614,7 @@ WalSndRestoreSegment(XLogReaderState *state, const char *xlogfname)
 		ereport(ERROR,
 				(errcode_for_file_access(),
 				 errmsg("could not open file \"%s\": %m", path)));
-	state->seg.ws_file = restoredFile;
-	XLogReaderRegisterResetCallback(state);
-
 	restoreInProgress = false;
-	INJECTION_POINT("walsender-after-archive-restore", NULL);
 	return true;
 }
 
