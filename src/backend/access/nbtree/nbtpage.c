@@ -2779,15 +2779,17 @@ _bt_unlink_halfdead_page(Relation rel, Buffer leafbuf, BlockNumber scanblkno,
 	 */
 	stats->pages_newly_deleted++;
 	if (target <= scanblkno)
+	{
 		stats->pages_deleted++;
 
-	/*
-	 * Remember information about the target page (now a newly deleted page)
-	 * in dedicated vstate space for later.  The page will be considered as a
-	 * candidate to place in the FSM at the end of the current btvacuumscan()
-	 * call.
-	 */
-	_bt_pendingfsm_add(vstate, target, safexid);
+		/*
+		 * Remember the page for possible recycling at the end of the scan.
+		 * Pages ahead of scanblkno will be visited by btvacuumpage(), which
+		 * might count them as free.  Don't add those pages here, or
+		 * _bt_pendingfsm_finalize() could count them as free a second time.
+		 */
+		_bt_pendingfsm_add(vstate, target, safexid);
+	}
 
 	/* Success - hold on to lock on leafbuf (might also have been target) */
 	return true;
