@@ -17,6 +17,7 @@
 
 #include "access/detoast.h"
 #include "access/htup_details.h"
+#include "catalog/dependency.h"
 #include "catalog/pg_language.h"
 #include "catalog/pg_proc.h"
 #include "catalog/pg_type.h"
@@ -178,6 +179,20 @@ fmgr_info_cxt_security(Oid functionId, FmgrInfo *finfo, MemoryContext mcxt,
 		finfo->fn_oid = functionId;
 		return;
 	}
+
+	/*
+	 * This is a fence for the import experiment, not a sandbox for native
+	 * catalog/page readers.  Source extension membership is untrusted.  Only
+	 * the destination, whose extensions were freshly installed from approved
+	 * packages, may use membership to admit non-builtin functions.
+	 */
+	if (BinaryUpgradeImport &&
+		!(BinaryUpgradeImportTrustedExtensions &&
+		  OidIsValid(getExtensionOfObject(ProcedureRelationId, functionId))))
+		ereport(ERROR,
+				(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
+				 errmsg("function %u is not allowed during physical import",
+						functionId)));
 
 	/* Otherwise we need the pg_proc entry */
 	procedureTuple = SearchSysCache1(PROCOID, ObjectIdGetDatum(functionId));

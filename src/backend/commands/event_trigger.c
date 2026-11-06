@@ -646,6 +646,10 @@ EventTriggerCommonSetup(Node *parsetree,
 	ListCell   *lc;
 	List	   *runlist = NIL;
 
+	/* Source catalog callbacks must not run while extracting a schema. */
+	if (BinaryUpgradeImport)
+		return NIL;
+
 	/*
 	 * We want the list of command tags for which this procedure is actually
 	 * invoked to match up exactly with the list that CREATE EVENT TRIGGER
@@ -906,7 +910,7 @@ EventTriggerOnLogin(void)
 	 * triggers are disabled in single user mode or via a GUC.  We also need a
 	 * database connection (some background workers don't have it).
 	 */
-	if (!IsUnderPostmaster || !event_triggers ||
+	if (!IsUnderPostmaster || !event_triggers || BinaryUpgradeImport ||
 		!OidIsValid(MyDatabaseId) || !MyDatabaseHasLoginEventTriggers)
 		return;
 

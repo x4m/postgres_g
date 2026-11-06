@@ -313,7 +313,8 @@ ProcessConfigFileInternal(GucContext context, bool applySettings, int elevel)
 	 */
 	if (DataDir)
 	{
-		if (!ParseConfigFile(PG_AUTOCONF_FILENAME, false,
+		if (!BinaryUpgradeImport &&
+			!ParseConfigFile(PG_AUTOCONF_FILENAME, false,
 							 NULL, 0, CONF_FILE_START_DEPTH, elevel,
 							 &head, &tail))
 		{

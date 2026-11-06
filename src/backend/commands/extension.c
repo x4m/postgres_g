@@ -2154,6 +2154,8 @@ CreateExtension(ParseState *pstate, CreateExtensionStmt *stmt)
 	char	   *schemaName = NULL;
 	char	   *versionName = NULL;
 	bool		cascade = false;
+	bool		saved_binary_upgrade = IsBinaryUpgrade;
+	ObjectAddress address;
 	ListCell   *lc;
 
 	/* Check extension name validity before any filesystem access */
@@ -2221,13 +2223,28 @@ CreateExtension(ParseState *pstate, CreateExtensionStmt *stmt)
 			elog(ERROR, "unrecognized option: %s", defel->defname);
 	}
 
-	/* Call CreateExtensionInternal to do the real work. */
-	return CreateExtensionInternal(stmt->extname,
-								   schemaName,
-								   versionName,
-								   cascade,
-								   NIL,
-								   true);
+	/*
+	 * Approved provider scripts allocate fresh OIDs, rather than consuming
+	 * source OID overrides.  The import function fence remains active, and
+	 * source sessions never enable this destination-only setting.
+	 */
+	PG_TRY();
+	{
+		if (BinaryUpgradeImportTrustedExtensions)
+			IsBinaryUpgrade = false;
+		address = CreateExtensionInternal(stmt->extname,
+										  schemaName,
+										  versionName,
+										  cascade,
+										  NIL,
+										  true);
+	}
+	PG_FINALLY();
+	{
+		IsBinaryUpgrade = saved_binary_upgrade;
+	}
+	PG_END_TRY();
+	return address;
 }
 
 /*

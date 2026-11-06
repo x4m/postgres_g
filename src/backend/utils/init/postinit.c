@@ -1276,7 +1276,7 @@ InitPostgres(const char *in_dbname, Oid dboid,
 	 * during the initial transaction in case anything that requires database
 	 * access needs to be done.
 	 */
-	if ((flags & INIT_PG_LOAD_SESSION_LIBS) != 0)
+	if ((flags & INIT_PG_LOAD_SESSION_LIBS) != 0 && !BinaryUpgradeImport)
 		process_session_preload_libraries();
 
 	/* fill in the remainder of this entry in the PgBackendStatus array */
@@ -1366,7 +1366,7 @@ process_settings(Oid databaseid, Oid roleid)
 	Relation	relsetting;
 	Snapshot	snapshot;
 
-	if (!IsUnderPostmaster)
+	if (!IsUnderPostmaster || BinaryUpgradeImport)
 		return;
 
 	relsetting = table_open(DbRoleSettingRelationId, AccessShareLock);

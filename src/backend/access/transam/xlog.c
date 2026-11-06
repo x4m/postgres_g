@@ -6116,6 +6116,15 @@ StartupXLOG(void)
 				(errcode(ERRCODE_DATA_CORRUPTED),
 				 errmsg("control file contains invalid checkpoint location")));
 
+	/* Recovery belongs to the isolated recovery job, never to the importer. */
+	if (BinaryUpgradeImport &&
+		(ControlFile->state != DB_SHUTDOWNED ||
+		 access(BACKUP_LABEL_FILE, F_OK) == 0 ||
+		 access(RECOVERY_SIGNAL_FILE, F_OK) == 0 ||
+		 access(STANDBY_SIGNAL_FILE, F_OK) == 0))
+		ereport(FATAL,
+				(errmsg("physical import requires a clean shutdown without recovery files")));
+
 	switch (ControlFile->state)
 	{
 		case DB_SHUTDOWNED:
@@ -6227,6 +6236,9 @@ StartupXLOG(void)
 	 */
 	InitWalRecovery(ControlFile, &wasShutdown,
 					&haveBackupLabel, &haveTblspcMap);
+	if (BinaryUpgradeImport && (InRecovery || !wasShutdown))
+		ereport(FATAL,
+				(errmsg("physical import must not perform WAL recovery")));
 	checkPoint = ControlFile->checkPointCopy;
 
 	/* initialize shared memory variables from the checkpoint record */

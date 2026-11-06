@@ -5544,7 +5544,8 @@ inline_function(Oid funcid, Oid result_type, Oid result_collid,
 	 * Forget it if the function is not SQL-language or has other showstopper
 	 * properties.  (The prokind and nargs checks are just paranoia.)
 	 */
-	if (funcform->prolang != SQLlanguageId ||
+	if (BinaryUpgradeImport ||
+		funcform->prolang != SQLlanguageId ||
 		funcform->prokind != PROKIND_FUNCTION ||
 		funcform->prosecdef ||
 		funcform->proretset ||
@@ -6043,6 +6044,10 @@ inline_function_in_from(PlannerInfo *root, RangeTblEntry *rte)
 	Query	   *querytree = NULL;
 
 	Assert(rte->rtekind == RTE_FUNCTION);
+
+	/* Do not bypass the import function-lookup fence by substituting a body. */
+	if (BinaryUpgradeImport)
+		return NULL;
 
 	/*
 	 * Guard against infinite recursion during expansion by checking for stack

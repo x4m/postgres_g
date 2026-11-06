@@ -364,6 +364,20 @@
   max => '10.0',
 },
 
+{ name => 'binary_upgrade_import', type => 'bool', context => 'PGC_POSTMASTER', group => 'DEVELOPER_OPTIONS',
+  short_desc => 'Restricts startup and function lookup during experimental physical import.',
+  flags => 'GUC_NOT_IN_SAMPLE | GUC_DISALLOW_IN_FILE',
+  variable => 'BinaryUpgradeImport',
+  boot_val => 'false',
+},
+
+{ name => 'binary_upgrade_import_trusted_extensions', type => 'bool', context => 'PGC_POSTMASTER', group => 'DEVELOPER_OPTIONS',
+  short_desc => 'Allows fresh extension functions in an import destination.',
+  flags => 'GUC_NOT_IN_SAMPLE | GUC_DISALLOW_IN_FILE',
+  variable => 'BinaryUpgradeImportTrustedExtensions',
+  boot_val => 'false',
+},
+
 { name => 'block_size', type => 'int', context => 'PGC_INTERNAL', group => 'PRESET_OPTIONS',
   short_desc => 'Shows the size of a disk block.',
   flags => 'GUC_NOT_IN_SAMPLE | GUC_DISALLOW_IN_FILE',

@@ -932,6 +932,12 @@ PostmasterMain(int argc, char *argv[])
 	/*
 	 * process any libraries that should be preloaded at postmaster start
 	 */
+	if (BinaryUpgradeImport && !IsBinaryUpgrade)
+		ereport(FATAL,
+				(errmsg("binary_upgrade_import requires binary upgrade mode")));
+	if (BinaryUpgradeImportTrustedExtensions && !BinaryUpgradeImport)
+		ereport(FATAL,
+				(errmsg("binary_upgrade_import_trusted_extensions requires binary_upgrade_import")));
 	process_shared_preload_libraries();
 
 	/*

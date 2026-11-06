@@ -169,6 +169,8 @@ extern PGDLLIMPORT pid_t PostmasterPid;
 extern PGDLLIMPORT bool IsPostmasterEnvironment;
 extern PGDLLIMPORT bool IsUnderPostmaster;
 extern PGDLLIMPORT bool IsBinaryUpgrade;
+extern PGDLLIMPORT bool BinaryUpgradeImport;
+extern PGDLLIMPORT bool BinaryUpgradeImportTrustedExtensions;
 
 extern PGDLLIMPORT bool ExitOnAnyError;
 
