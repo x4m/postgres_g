@@ -173,6 +173,7 @@ typedef struct _dumpOptions
 	ConnParams	cparams;
 
 	int			binary_upgrade;
+	char	   *import_owner;	/* experimental filtered binary upgrade */
 
 	/* various user-settable parameters */
 	int			dumpSections;	/* bitmask of chosen sections */

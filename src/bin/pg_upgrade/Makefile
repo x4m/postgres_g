@@ -18,6 +18,7 @@ OBJS = \
 	file.o \
 	function.o \
 	info.o \
+	import.o \
 	multixact_read_v18.o \
 	multixact_rewrite.o \
 	option.o \

@@ -17,18 +17,21 @@ generate_old_dump(void)
 {
 	int			dbnum;
 
-	prep_status("Creating dump of global objects");
+	if (!user_opts.import_mode)
+	{
+		prep_status("Creating dump of global objects");
 
-	/* run new pg_dumpall binary for globals */
-	exec_prog(UTILITY_LOG_FILE, NULL, true, true,
-			  "\"%s/pg_dumpall\" %s%s --globals-only --quote-all-identifiers "
-			  "--binary-upgrade %s --no-sync -f \"%s/%s\"",
-			  new_cluster.bindir, cluster_conn_opts(&old_cluster),
-			  protocol_negotiation_supported(&old_cluster) ? "" : " -d \"max_protocol_version=3.0\"",
-			  log_opts.verbose ? "--verbose" : "",
-			  log_opts.dumpdir,
-			  GLOBALS_DUMP_FILE);
-	check_ok();
+		/* run new pg_dumpall binary for globals */
+		exec_prog(UTILITY_LOG_FILE, NULL, true, true,
+				  "\"%s/pg_dumpall\" %s%s --globals-only --quote-all-identifiers "
+				  "--binary-upgrade %s --no-sync -f \"%s/%s\"",
+				  new_cluster.bindir, cluster_conn_opts(&old_cluster),
+				  protocol_negotiation_supported(&old_cluster) ? "" : " -d \"max_protocol_version=3.0\"",
+				  log_opts.verbose ? "--verbose" : "",
+				  log_opts.dumpdir,
+				  GLOBALS_DUMP_FILE);
+		check_ok();
+	}
 
 	prep_status_progress("Creating dump of database schemas");
 
@@ -57,12 +60,13 @@ generate_old_dump(void)
 
 		parallel_exec_prog(log_file_name, NULL,
 						   "\"%s/pg_dump\" %s --no-data %s %s --quote-all-identifiers "
-						   "--binary-upgrade --format=custom %s --no-sync --file=\"%s/%s\" %s",
+						   "--binary-upgrade --format=custom %s %s --no-sync --file=\"%s/%s\" %s",
 						   new_cluster.bindir, cluster_conn_opts(&old_cluster),
 						   (user_opts.transfer_mode == TRANSFER_MODE_SWAP) ?
 						   "" : "--sequence-data",
 						   log_opts.verbose ? "--verbose" : "",
 						   user_opts.do_statistics ? "--statistics" : "--no-statistics",
+						   user_opts.import_mode ? "--binary-upgrade-import-owner=" IMPORT_OWNER : "",
 						   log_opts.dumpdir,
 						   sql_file_name, escaped_connstr.data);
 

@@ -582,6 +582,14 @@ transfer_relfile(FileNameMap *map, const char *type_suffix)
 				return;
 		}
 
+		if (user_opts.import_mode)
+		{
+			if (lstat(old_file, &statbuf) != 0)
+				pg_fatal("could not stat file \"%s\": %m", old_file);
+			if (!S_ISREG(statbuf.st_mode))
+				pg_fatal("physical import requires regular relation files: \"%s\"", old_file);
+		}
+
 		unlink(new_file);
 
 		/* Copying files might take some time, so give feedback. */

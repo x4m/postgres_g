@@ -113,7 +113,10 @@ main(int argc, char **argv)
 	 */
 	check_bin_dirs(argv[0]);
 
-	adjust_data_dir(&old_cluster);
+	if (user_opts.import_mode)
+		old_cluster.pgconfig = pg_strdup(old_cluster.pgdata);
+	else
+		adjust_data_dir(&old_cluster);
 	adjust_data_dir(&new_cluster);
 
 	/*
@@ -136,6 +139,8 @@ main(int argc, char **argv)
 
 	check_data_dir(&old_cluster);
 	check_data_dir(&new_cluster);
+	if (user_opts.import_mode)
+		prepare_import();
 	check_clusters_stopped();
 
 	output_check_banner();
@@ -146,6 +151,10 @@ main(int argc, char **argv)
 	get_sock_dir(&new_cluster);
 
 	check_cluster_compatibility();
+	if (user_opts.import_mode &&
+		(old_cluster.major_version != new_cluster.major_version ||
+		 old_cluster.controldata.cat_ver != new_cluster.controldata.cat_ver))
+		pg_fatal("the import prototype requires identical server and catalog versions");
 
 	check_and_dump_old_cluster();
 
@@ -173,6 +182,14 @@ main(int argc, char **argv)
 
 	copy_xact_xlog_xid();
 	set_new_cluster_char_signedness();
+	if (user_opts.import_mode)
+	{
+		/* Keep freshly created extension types clear of preserved rowtypes. */
+		exec_prog(UTILITY_LOG_FILE, NULL, true, true,
+				  "\"%s/pg_resetwal\" -o %" PRIu64 " \"%s\"",
+				  new_cluster.bindir, old_cluster.controldata.chkpnt_nxtoid,
+				  new_cluster.pgdata);
+	}
 
 	/* New now using xids of the old system */
 
@@ -205,14 +222,17 @@ main(int argc, char **argv)
 	 * the old system, but we do it anyway just in case.  We do it late here
 	 * because there is no need to have the schema load use new oids.
 	 */
-	prep_status("Setting next OID for new cluster");
-	exec_prog(UTILITY_LOG_FILE, NULL, true, true,
-			  "\"%s/pg_resetwal\" -o %" PRIu64 " \"%s\"",
-			  new_cluster.bindir, old_cluster.controldata.chkpnt_nxtoid,
-			  new_cluster.pgdata);
-	check_ok();
+	if (!user_opts.import_mode)
+	{
+		prep_status("Setting next OID for new cluster");
+		exec_prog(UTILITY_LOG_FILE, NULL, true, true,
+				  "\"%s/pg_resetwal\" -o %" PRIu64 " \"%s\"",
+				  new_cluster.bindir, old_cluster.controldata.chkpnt_nxtoid,
+				  new_cluster.pgdata);
+		check_ok();
+	}
 
-	migrate_logical_slots = count_old_cluster_logical_slots();
+	migrate_logical_slots = !user_opts.import_mode && count_old_cluster_logical_slots();
 
 	/*
 	 * Migrate replication slots to the new cluster.
@@ -405,6 +425,9 @@ check_clusters_stopped(void)
 	/* no postmasters should be running, except for a live check */
 	if (pid_lock_file_exists(old_cluster.pgdata))
 	{
+		if (user_opts.import_mode)
+			pg_fatal("physical import requires a stopped source cluster without a postmaster.pid file");
+
 		/*
 		 * If we have a postmaster.pid file, try to start the server.  If it
 		 * starts, the pid file was stale, so stop the server.  If it doesn't
@@ -594,6 +617,20 @@ prepare_new_globals(void)
 	 */
 	set_frozenxids();
 
+	if (user_opts.import_mode)
+	{
+		PGconn	   *conn = connectToServer(&new_cluster, "template1");
+
+		/* No source roles or large-object ownership OIDs are retained. */
+		PQclear(executeQueryOrDie(conn,
+								  "SELECT pg_catalog.binary_upgrade_set_next_pg_authid_oid(16384::pg_catalog.oid)"));
+		PQclear(executeQueryOrDie(conn,
+								  "CREATE ROLE " IMPORT_OWNER " NOLOGIN NOSUPERUSER "
+								  "NOCREATEROLE NOCREATEDB NOREPLICATION NOBYPASSRLS"));
+		PQfinish(conn);
+		return;
+	}
+
 	/*
 	 * Now restore global objects (roles and tablespaces).
 	 */
@@ -766,6 +803,13 @@ copy_subdir_files(const char *old_subdir, const char *new_subdir)
 	snprintf(new_path, sizeof(new_path), "%s/%s", new_cluster.pgdata, new_subdir);
 
 	prep_status("Copying old %s to new server", old_subdir);
+	if (user_opts.import_mode)
+	{
+		copy_import_slru(old_path, new_path,
+						 strcmp(old_subdir, "pg_multixact/members") == 0);
+		check_ok();
+		return;
+	}
 
 	exec_prog(UTILITY_LOG_FILE, NULL, true, true,
 #ifndef WIN32

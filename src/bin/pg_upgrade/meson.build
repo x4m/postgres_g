@@ -8,6 +8,7 @@ pg_upgrade_sources = files(
   'file.c',
   'function.c',
   'info.c',
+  'import.c',
   'multixact_read_v18.c',
   'multixact_rewrite.c',
   'option.c',
@@ -69,6 +70,7 @@ tests += {
       't/006_transfer_modes.pl',
       't/007_multixact_conversion.pl',
       't/008_extension_control_path.pl',
+      't/009_import.pl',
     ],
     'deps': [test_ext],
     'test_kwargs': {'priority': 40}, # pg_upgrade tests are slow

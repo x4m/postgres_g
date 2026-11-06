@@ -1266,6 +1266,12 @@ ArchiveEntry(Archive *AHX, CatalogId catalogId, DumpId dumpId,
 	newToc->tableam = opts->tableam ? pg_strdup(opts->tableam) : NULL;
 	newToc->relkind = opts->relkind;
 	newToc->owner = opts->owner ? pg_strdup(opts->owner) : NULL;
+	if (AHX->dopt && AHX->dopt->import_owner &&
+		opts->owner && opts->owner[0])
+	{
+		pg_free(newToc->owner);
+		newToc->owner = pg_strdup(AHX->dopt->import_owner);
+	}
 	newToc->desc = pg_strdup(opts->description);
 	newToc->defn = opts->createStmt ? pg_strdup(opts->createStmt) : NULL;
 	newToc->dropStmt = opts->dropStmt ? pg_strdup(opts->dropStmt) : NULL;

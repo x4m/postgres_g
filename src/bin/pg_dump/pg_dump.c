@@ -536,6 +536,7 @@ main(int argc, char **argv)
 		{"exclude-extension", required_argument, NULL, 17},
 		{"sequence-data", no_argument, &dopt.sequence_data, 1},
 		{"restrict-key", required_argument, NULL, 25},
+		{"binary-upgrade-import-owner", required_argument, NULL, 26},
 
 		{NULL, 0, NULL, 0}
 	};
@@ -800,6 +801,10 @@ main(int argc, char **argv)
 				dopt.restrict_key = pg_strdup(optarg);
 				break;
 
+			case 26:
+				dopt.import_owner = pg_strdup(optarg);
+				break;
+
 			default:
 				/* getopt_long already emitted a complaint */
 				pg_log_error_hint("Try \"%s --help\" for more information.", progname);
@@ -821,6 +826,20 @@ main(int argc, char **argv)
 					 argv[optind]);
 		pg_log_error_hint("Try \"%s --help\" for more information.", progname);
 		exit_nicely(1);
+	}
+
+	if (dopt.import_owner)
+	{
+		if (!dopt.binary_upgrade || !no_data)
+			pg_fatal("--binary-upgrade-import-owner requires --binary-upgrade and --no-data");
+		dopt.aclsSkip = true;
+		dopt.no_comments = true;
+		dopt.no_security_labels = true;
+		dopt.no_policies = true;
+		dopt.no_publications = true;
+		dopt.no_subscriptions = true;
+		dopt.outputNoTablespaces = true;
+		no_statistics = true;
 	}
 
 	/* --column-inserts implies --inserts */
@@ -889,6 +908,8 @@ main(int argc, char **argv)
 
 	/* Identify archive format to emit */
 	archiveFormat = parseArchiveFormat(format, &archiveMode);
+	if (dopt.import_owner && archiveFormat == archNull)
+		pg_fatal("--binary-upgrade-import-owner requires an archive format");
 
 	/* archiveFormat specific setup */
 	if (archiveFormat == archNull)
@@ -1950,7 +1971,7 @@ checkExtensionMembership(DumpableObject *dobj, Archive *fout)
 	 * have privileges for that.  We need no lock to examine a table's ACLs,
 	 * so the current feature doesn't have a problem of that sort.
 	 */
-	if (fout->dopt->binary_upgrade)
+	if (fout->dopt->binary_upgrade && !fout->dopt->import_owner)
 		dobj->dump = ext->dobj.dump;
 	else
 		dobj->dump = ext->dobj.dump_contains & (DUMP_COMPONENT_ACL);
@@ -3305,8 +3326,12 @@ dumpDatabase(Archive *fout)
 	else
 		appendPQExpBufferStr(dbQry, "NULL AS daticurules, ");
 	appendPQExpBufferStr(dbQry,
-						 "(SELECT spcname FROM pg_tablespace t WHERE t.oid = dattablespace) AS tablespace, "
-						 "shobj_description(oid, 'pg_database') AS description "
+						 "(SELECT spcname FROM pg_tablespace t WHERE t.oid = dattablespace) AS tablespace, ");
+	/* The SQL implementation in the source catalog is not trusted. */
+	appendPQExpBufferStr(dbQry, dopt->import_owner ?
+						 "NULL::pg_catalog.text AS description " :
+						 "shobj_description(oid, 'pg_database') AS description ");
+	appendPQExpBufferStr(dbQry,
 						 "FROM pg_database "
 						 "WHERE datname = current_database()");
 
@@ -3585,7 +3610,8 @@ dumpDatabase(Archive *fout)
 	 */
 
 	/* Add database-specific SET options */
-	dumpDatabaseConfig(fout, creaQry, datname, dbCatId.oid);
+	if (!dopt->import_owner)
+		dumpDatabaseConfig(fout, creaQry, datname, dbCatId.oid);
 
 	/*
 	 * We stick this binary-upgrade query into the DATABASE PROPERTIES archive
@@ -11615,6 +11641,42 @@ static void
 dumpDumpableObject(Archive *fout, DumpableObject *dobj)
 {
 	/*
+	 * Start with a small import vocabulary.  Dependencies on omitted objects
+	 * are deliberately not repaired: restore must fail rather than silently
+	 * change an expression or substitute an unsafe callback.
+	 */
+	if (fout->dopt->import_owner)
+	{
+		if (dobj->ext_member)
+			return;
+		switch (dobj->objType)
+		{
+			case DO_NAMESPACE:
+			case DO_EXTENSION:
+			case DO_FUNC:
+			case DO_TABLE:
+			case DO_TABLE_ATTACH:
+			case DO_ATTRDEF:
+			case DO_INDEX:
+			case DO_INDEX_ATTACH:
+			case DO_RULE:
+			case DO_TRIGGER:
+			case DO_CONSTRAINT:
+			case DO_FK_CONSTRAINT:
+			case DO_SEQUENCE_SET:
+			case DO_DUMMY_TYPE:
+			case DO_PRE_DATA_BOUNDARY:
+			case DO_POST_DATA_BOUNDARY:
+				break;
+			default:
+				if (dobj->dump & DUMP_COMPONENT_DEFINITION)
+					pg_log_warning("omitting object \"%s\" from physical import",
+								   dobj->name);
+				return;
+		}
+	}
+
+	/*
 	 * Clear any dump-request bits for components that don't exist for this
 	 * object.  (This makes it safe to initially use DUMP_COMPONENT_ALL as the
 	 * request for every kind of object.)
@@ -11904,7 +11966,7 @@ dumpExtension(Archive *fout, const ExtensionInfo *extinfo)
 
 	appendPQExpBuffer(delq, "DROP EXTENSION %s;\n", qextname);
 
-	if (!dopt->binary_upgrade)
+	if (!dopt->binary_upgrade || dopt->import_owner)
 	{
 		/*
 		 * In a regular dump, we simply create the extension, intentionally
@@ -13539,6 +13601,20 @@ dumpFunc(Archive *fout, const FuncInfo *finfo)
 	prosupport = PQgetvalue(res, 0, PQfnumber(res, "prosupport"));
 	proparallel = PQgetvalue(res, 0, PQfnumber(res, "proparallel"));
 	lanname = PQgetvalue(res, 0, PQfnumber(res, "lanname"));
+
+	if (dopt->import_owner &&
+		(prosecdef[0] == 't' || proleakproof[0] == 't' ||
+		 (strcmp(lanname, "sql") != 0 && strcmp(lanname, "plpgsql") != 0)))
+	{
+		pg_log_warning("omitting function \"%s\" from physical import",
+					   finfo->dobj.name);
+		PQclear(res);
+		destroyPQExpBuffer(query);
+		destroyPQExpBuffer(q);
+		destroyPQExpBuffer(delqry);
+		destroyPQExpBuffer(asPart);
+		return;
+	}
 
 	/*
 	 * See backend/commands/functioncmds.c for details of how the 'AS' clause

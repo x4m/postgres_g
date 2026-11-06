@@ -63,6 +63,8 @@ parseCommandLine(int argc, char *argv[])
 		{"no-statistics", no_argument, NULL, 5},
 		{"set-char-signedness", required_argument, NULL, 6},
 		{"swap", no_argument, NULL, 7},
+		{"import", no_argument, NULL, 8},
+		{"import-extension", required_argument, NULL, 9},
 
 		{NULL, 0, NULL, 0}
 	};
@@ -234,6 +236,14 @@ parseCommandLine(int argc, char *argv[])
 				user_opts.transfer_mode = TRANSFER_MODE_SWAP;
 				break;
 
+			case 8:
+				user_opts.import_mode = true;
+				break;
+
+			case 9:
+				simple_string_list_append(&user_opts.import_extensions, optarg);
+				break;
+
 			default:
 				fprintf(stderr, _("Try \"%s --help\" for more information.\n"),
 						os_info.progname);
@@ -243,6 +253,23 @@ parseCommandLine(int argc, char *argv[])
 
 	if (optind < argc)
 		pg_fatal("too many command-line arguments (first is \"%s\")", argv[optind]);
+
+	if (!user_opts.import_mode && user_opts.import_extensions.head)
+		pg_fatal("--import-extension requires --import");
+	if (user_opts.import_mode)
+	{
+#ifdef WIN32
+		pg_fatal("the import prototype requires Unix sockets");
+#endif
+		if (user_opts.transfer_mode == TRANSFER_MODE_SWAP ||
+			user_opts.transfer_mode == TRANSFER_MODE_LINK)
+			pg_fatal("--import requires copy, clone or copy-file-range mode");
+		if (old_cluster.pgopts)
+			pg_fatal("--old-options cannot be used with --import");
+		if (strcmp(os_info.user, IMPORT_OWNER) == 0)
+			pg_fatal("the install user must not be named \"%s\"", IMPORT_OWNER);
+		user_opts.do_statistics = false;
+	}
 
 	if (!user_opts.sync_method)
 		user_opts.sync_method = pg_strdup("fsync");
@@ -328,6 +355,8 @@ usage(void)
 	printf(_("  --clone                       clone instead of copying files to new cluster\n"));
 	printf(_("  --copy                        copy files to new cluster (default)\n"));
 	printf(_("  --copy-file-range             copy files to new cluster with copy_file_range\n"));
+	printf(_("  --import                      experimental restricted same-version import\n"));
+	printf(_("  --import-extension=NAME       approve a fresh provider extension (repeatable)\n"));
 	printf(_("  --no-statistics               do not import statistics from old cluster\n"));
 	printf(_("  --set-char-signedness=OPTION  set new cluster char signedness to \"signed\" or\n"
 			 "                                \"unsigned\"\n"));

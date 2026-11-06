@@ -263,6 +263,78 @@ PostgreSQL documentation
      </varlistentry>
 
      <varlistentry>
+      <term><option>--import</option></term>
+      <listitem>
+       <para>
+        Experimentally rebuild catalogs with a restricted schema while reusing
+        physical relation files.  This prototype requires identical server and
+        catalog versions, patched source and destination binaries, Unix sockets,
+        and a clean shutdown as a primary.  Complete recovery in an isolated
+        environment before invoking this option.  Recovery signal files,
+        <filename>backup_label</filename>, and two-phase state are rejected.
+       </para>
+       <para>
+        Source roles, memberships, passwords, ACLs, database and role settings,
+        event triggers, replication configuration, and statistics are omitted.
+        Imported objects are owned by a new <literal>imported_owner</literal>
+        role with no login or administrative attributes.  Only invoker functions
+        in SQL and PL/pgSQL are imported; source security-definer, leakproof, and
+        other-language functions are omitted.  Dependencies on omitted objects
+        can cause schema restoration to fail.  Discard the destination and
+        initialize it again after any failure during restoration or transfer.
+       </para>
+       <para>
+        Extensions other than PL/pgSQL require explicit approval with
+        <option>--import-extension</option>.  They are created from the provider's
+        installed default package, which must match the source version, without
+        restoring source member definitions.  Security-definer functions created
+        by those packages are allowed.  Source membership is not evidence of
+        trusted code.  Extension-owned relations, user-defined column types,
+        non-heap tables, foreign tables, large objects, and user tablespaces are
+        outside the initial storage contract and cause rejection.  Other schema
+        objects outside the small import vocabulary are omitted with warnings.
+       </para>
+       <para>
+        The importer starts the source with a generated configuration and local
+        authentication file.  It suppresses preload libraries, role/database
+        settings and event triggers, and restricts function lookup to built-in
+        functions.  The destination additionally admits functions belonging to
+        freshly installed approved extensions.  Copy, clone and copy-file-range
+        modes transfer known relation forks and SLRU segments; link and swap
+        modes are not supported.  There is no compulsory heap/index scan or
+        reindex.  Original physical WAL cannot be applied after reconstruction.
+       </para>
+       <warning>
+        <para>
+         This is an experiment, not a security boundary.  Source catalogs,
+         checkpoint records, transaction state, and copied heap, TOAST and index
+         pages still reach native code.  The restrictions do not establish
+         integrity of hostile bytes or prevent native-code vulnerabilities.
+         Schema SQL still comes from source deparsers and is restored as the
+         install superuser.  A compromised extractor can forge that SQL;
+         independently validating a declarative manifest or using a restricted
+         restore capability is outside this prototype.
+         Keep the source extractor and subsequent physical-data consumers
+         isolated from the control plane and its credentials.  No container
+         implementation or verification of that isolation is provided here.
+        </para>
+       </warning>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term><option>--import-extension=</option><replaceable>name</replaceable></term>
+      <listitem>
+       <para>
+        Approve recreating the named extension from the provider package during
+        <option>--import</option>.  Repeat for each approved extension.  This
+        option does not approve source extension members or persisted extension
+        data, and is not accepted without <option>--import</option>.
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
       <term><option>--no-statistics</option></term>
       <listitem>
        <para>

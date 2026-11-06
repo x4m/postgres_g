@@ -165,6 +165,8 @@ start_postmaster(ClusterInfo *cluster, bool report_and_exit_on_error)
 	bool		pg_ctl_return = false;
 	char		socket_string[MAXPGPATH + 200];
 	PQExpBufferData pgoptions;
+	PQExpBufferData server_options;
+	PQExpBufferData escaped_options;
 
 	static bool exit_hook_registered = false;
 
@@ -202,20 +204,27 @@ start_postmaster(ClusterInfo *cluster, bool report_and_exit_on_error)
 	 */
 	if (cluster == &new_cluster)
 		appendPQExpBufferStr(&pgoptions, " -c synchronous_commit=off -c fsync=off -c full_page_writes=off");
+	import_server_options(&pgoptions, cluster);
 
 	/*
 	 * Use -b to disable autovacuum and logical replication launcher
 	 * (effective in PG17 or later for the latter).
 	 */
+	initPQExpBuffer(&server_options);
+	initPQExpBuffer(&escaped_options);
+	appendPQExpBuffer(&server_options, "-p %d -b%s %s%s",
+					  cluster->port, pgoptions.data,
+					  cluster->pgopts ? cluster->pgopts : "", socket_string);
+	appendShellString(&escaped_options, server_options.data);
 	snprintf(cmd, sizeof(cmd),
-			 "\"%s/pg_ctl\" -w -l \"%s/%s\" -D \"%s\" -o \"-p %d -b%s %s%s\" start",
+			 "\"%s/pg_ctl\" -w -l \"%s/%s\" -D \"%s\" -o %s start",
 			 cluster->bindir,
 			 log_opts.logdir,
-			 SERVER_LOG_FILE, cluster->pgconfig, cluster->port,
-			 pgoptions.data,
-			 cluster->pgopts ? cluster->pgopts : "", socket_string);
+			 SERVER_LOG_FILE, cluster->pgconfig, escaped_options.data);
 
 	termPQExpBuffer(&pgoptions);
+	termPQExpBuffer(&server_options);
+	termPQExpBuffer(&escaped_options);
 
 	/*
 	 * Don't throw an error right away, let connecting throw the error because

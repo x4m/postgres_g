@@ -571,6 +571,8 @@ check_and_dump_old_cluster(void)
 
 	if (!user_opts.live_check)
 		start_postmaster(&old_cluster, true);
+	if (user_opts.import_mode)
+		check_import_source();
 
 	/*
 	 * First check that all databases allow connections since we'll otherwise
@@ -599,7 +601,8 @@ check_and_dump_old_cluster(void)
 
 	init_tablespaces();
 
-	get_loadable_libraries();
+	if (!user_opts.import_mode)
+		get_loadable_libraries();
 
 
 	/*
@@ -608,9 +611,10 @@ check_and_dump_old_cluster(void)
 	check_is_install_user(&old_cluster);
 	check_for_prepared_transactions(&old_cluster);
 	check_for_oldestxid_consistency(&old_cluster);
-	check_for_isn_and_int8_passing_mismatch(&old_cluster);
+	if (!user_opts.import_mode)
+		check_for_isn_and_int8_passing_mismatch(&old_cluster);
 
-	if (GET_MAJOR_VERSION(old_cluster.major_version) >= 1700)
+	if (!user_opts.import_mode && GET_MAJOR_VERSION(old_cluster.major_version) >= 1700)
 	{
 		/*
 		 * Logical replication slots can be migrated since PG17. See comments
@@ -707,7 +711,10 @@ check_new_cluster(void)
 
 	check_new_cluster_is_empty();
 
-	check_loadable_libraries();
+	if (user_opts.import_mode)
+		check_import_target();
+	else
+		check_loadable_libraries();
 
 	switch (user_opts.transfer_mode)
 	{

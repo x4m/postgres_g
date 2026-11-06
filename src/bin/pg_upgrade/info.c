@@ -302,7 +302,7 @@ get_db_rel_and_slot_infos(ClusterInfo *cluster)
 	 * subsequent checks done in check_old_cluster_for_valid_slots() would
 	 * raise a FATAL error if such slots are included.
 	 */
-	if (cluster == &old_cluster &&
+	if (!user_opts.import_mode && cluster == &old_cluster &&
 		GET_MAJOR_VERSION(cluster->major_version) > 1600)
 		upgrade_task_add_step(task,
 							  get_old_cluster_logical_slot_infos_query(cluster),
@@ -501,12 +501,13 @@ get_rel_infos_query(void)
 					  "                        'binary_upgrade', 'pg_toast') AND "
 					  "      c.oid >= %u::pg_catalog.oid) OR "
 					  "     (n.nspname = 'pg_catalog' AND "
-					  "      relname IN ('pg_largeobject'%s) ))), ",
+					  "      relname IN ('pg_largeobject'%s) AND %s ))), ",
 					  (user_opts.transfer_mode == TRANSFER_MODE_SWAP) ?
 					  ", " CppAsString2(RELKIND_SEQUENCE) : "",
 					  FirstNormalObjectId,
 					  (GET_MAJOR_VERSION(old_cluster.major_version) >= 1600) ?
-					  ", 'pg_largeobject_metadata'" : "");
+					  ", 'pg_largeobject_metadata'" : "",
+					  user_opts.import_mode ? "false" : "true");
 
 	/*
 	 * Add a CTE that collects OIDs of toast tables belonging to the tables

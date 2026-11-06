@@ -11,7 +11,9 @@
 #include <sys/time.h>
 
 #include "common/relpath.h"
+#include "fe_utils/simple_list.h"
 #include "libpq-fe.h"
+#include "pqexpbuffer.h"
 
 /* For now, pg_upgrade does not use common/logging.c; use our own pg_fatal */
 #undef pg_fatal
@@ -29,6 +31,7 @@
 /* contains both global db information and CREATE DATABASE commands */
 #define GLOBALS_DUMP_FILE	"pg_upgrade_dump_globals.sql"
 #define DB_DUMP_FILE_MASK	"pg_upgrade_dump_%u.custom"
+#define IMPORT_OWNER "imported_owner"
 
 /*
  * Base directories that include all the files generated internally, from the
@@ -316,6 +319,8 @@ typedef struct
 {
 	bool		check;			/* check clusters only, don't change any data */
 	bool		live_check;		/* check clusters only, old server is running */
+	bool		import_mode;	/* experimental same-version physical import */
+	SimpleStringList import_extensions;
 	bool		do_sync;		/* flush changes to disk */
 	transferMode transfer_mode; /* copy files or link them? */
 	int			jobs;			/* number of processes/threads to use */
@@ -355,6 +360,7 @@ typedef bool (*DataTypesUsageVersionCheck) (ClusterInfo *cluster);
  */
 extern LogOpts log_opts;
 extern UserOpts user_opts;
+
 extern ClusterInfo old_cluster,
 			new_cluster;
 extern OSInfo os_info;
@@ -480,6 +486,14 @@ uint64		str2uint64(const char *str);
 bool		protocol_negotiation_supported(const ClusterInfo *cluster);
 
 void		report_extension_updates(ClusterInfo *cluster);
+
+/* import.c */
+void		prepare_import(void);
+void		import_server_options(PQExpBuffer options, ClusterInfo *cluster);
+void		check_import_source(void);
+void		check_import_target(void);
+void		copy_import_slru(const char *old_path, const char *new_path,
+							 bool long_names);
 
 /* multixact_rewrite.c */
 MultiXactOffset rewrite_multixacts(MultiXactId from_multi, MultiXactId to_multi);
