@@ -274,6 +274,15 @@ PostgreSQL documentation
         <filename>backup_label</filename>, and two-phase state are rejected.
        </para>
        <para>
+        Source databases named <literal>postgres</literal>,
+        <literal>template0</literal> or <literal>template1</literal>, or having
+        their initial object identifiers (5, 4 and 1 respectively), are excluded.
+        The destination keeps its freshly initialized service databases.  The
+        source template flag does not select databases for exclusion.  This
+        fixed policy is a prototype; it does not authenticate the database
+        roster against the provider's original export.
+       </para>
+       <para>
         Source roles, memberships, passwords, ACLs, database and role settings,
         event triggers, replication configuration, and statistics are omitted.
         Imported objects are owned by a new <literal>imported_owner</literal>
@@ -284,13 +293,27 @@ PostgreSQL documentation
         initialize it again after any failure during restoration or transfer.
        </para>
        <para>
+        A separate authenticated login, <literal>import_maintenance</literal>,
+        restores source-derived schema SQL with the privileges of
+        <literal>imported_owner</literal>.  Neither role has superuser, role
+        administration, replication or row-security bypass attributes.  The
+        coordinator creates databases and approved extensions before that
+        restore.  Maintenance connections can assign non-system object
+        identifiers and set frozen transaction metadata only on imported heaps
+        and TOAST relations.  Other binary-upgrade helpers are denied, including
+        when called through a provider security-definer function.  The login is
+        disabled after a successful restore.
+       </para>
+       <para>
         Extensions other than PL/pgSQL require explicit approval with
         <option>--import-extension</option>.  They are created from the provider's
         installed default package, which must match the source version, without
         restoring source member definitions.  Security-definer functions created
         by those packages are allowed.  Source membership is not evidence of
         trusted code.  Extension-owned relations, user-defined column types,
-        non-heap tables, foreign tables, large objects, and user tablespaces are
+        non-heap tables, foreign tables, materialized views, partitioned or
+        inherited tables, dropped, generated or missing-value columns, large
+        objects, and user tablespaces are
         outside the initial storage contract and cause rejection.  Other schema
         objects outside the small import vocabulary are omitted with warnings.
        </para>
@@ -310,10 +333,11 @@ PostgreSQL documentation
          checkpoint records, transaction state, and copied heap, TOAST and index
          pages still reach native code.  The restrictions do not establish
          integrity of hostile bytes or prevent native-code vulnerabilities.
-         Schema SQL still comes from source deparsers and is restored as the
-         install superuser.  A compromised extractor can forge that SQL;
-         independently validating a declarative manifest or using a restricted
-         restore capability is outside this prototype.
+         Source deparsers can emit arbitrary schema SQL.  The bounded login
+         limits its database authority; it does not isolate a compromised
+         source process from the coordinator's operating-system identity or
+         authentication channels.  A signed export manifest and a provider
+         service-bootstrap profile are not implemented.
          Keep the source extractor and subsequent physical-data consumers
          isolated from the control plane and its credentials.  No container
          implementation or verification of that isolation is provided here.
