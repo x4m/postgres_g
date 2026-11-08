@@ -284,7 +284,8 @@ get_db_rel_and_slot_infos(ClusterInfo *cluster)
 	if (cluster->dbarr.dbs != NULL)
 		free_db_and_rel_infos(&cluster->dbarr);
 
-	get_template0_info(cluster);
+	if (!user_opts.import_mode)
+		get_template0_info(cluster);
 	get_db_infos(cluster);
 
 	rel_infos_query = get_rel_infos_query();
@@ -412,9 +413,10 @@ get_db_infos(ClusterInfo *cluster)
 			 "FROM pg_catalog.pg_database d "
 			 " LEFT OUTER JOIN pg_catalog.pg_tablespace t "
 			 " ON d.dattablespace = t.oid "
-			 "WHERE d.datallowconn = true %s"
+			 "WHERE d.datallowconn = true %s %s"
 			 "ORDER BY 1",
-			 cluster == &old_cluster ? "AND d.datconnlimit <> -2 " : "");
+			 cluster == &old_cluster ? "AND d.datconnlimit <> -2 " : "",
+			 user_opts.import_mode ? "AND " IMPORT_DB_FILTER " " : "");
 
 	res = executeQueryOrDie(conn, "%s", query);
 

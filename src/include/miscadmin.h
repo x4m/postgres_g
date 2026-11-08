@@ -171,6 +171,7 @@ extern PGDLLIMPORT bool IsUnderPostmaster;
 extern PGDLLIMPORT bool IsBinaryUpgrade;
 extern PGDLLIMPORT bool BinaryUpgradeImport;
 extern PGDLLIMPORT bool BinaryUpgradeImportTrustedExtensions;
+extern bool IsBinaryUpgradeImportUser(void);
 
 extern PGDLLIMPORT bool ExitOnAnyError;
 

@@ -966,7 +966,7 @@ InitPostgres(const char *in_dbname, Oid dboid,
 	/*
 	 * Binary upgrades only allowed super-user connections
 	 */
-	if (IsBinaryUpgrade && !am_superuser)
+	if (IsBinaryUpgrade && !am_superuser && !IsBinaryUpgradeImportUser())
 	{
 		ereport(FATAL,
 				(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),

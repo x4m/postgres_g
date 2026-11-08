@@ -16,6 +16,9 @@
 
 #include "common/relpath.h"
 
+#define BINARY_UPGRADE_IMPORT_OWNER "imported_owner"
+#define BINARY_UPGRADE_IMPORT_ROLE "import_maintenance"
+
 extern PGDLLIMPORT Oid binary_upgrade_next_pg_tablespace_oid;
 
 extern PGDLLIMPORT Oid binary_upgrade_next_pg_type_oid;

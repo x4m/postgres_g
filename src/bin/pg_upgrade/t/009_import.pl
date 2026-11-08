@@ -51,8 +51,9 @@ for my $node ($old, $new)
 		"extension_control_path = '\$system:$extension_path'\n");
 }
 $old->start;
+$old->safe_psql('postgres', 'CREATE DATABASE customer');
 $old->safe_psql(
-	'postgres', q{
+	'customer', q{
 CREATE ROLE source_admin SUPERUSER LOGIN;
 GRANT pg_read_server_files TO source_admin;
 CREATE TABLE payload(id integer PRIMARY KEY, body text);
@@ -81,43 +82,43 @@ ALTER EXTENSION import_fixture ADD FUNCTION forged_member();
 });
 
 my $heap =
-  $old->safe_psql('postgres', q{SELECT pg_relation_filepath('payload')});
+  $old->safe_psql('customer', q{SELECT pg_relation_filepath('payload')});
 my $index =
-  $old->safe_psql('postgres', q{SELECT pg_relation_filepath('payload_pkey')});
+  $old->safe_psql('customer', q{SELECT pg_relation_filepath('payload_pkey')});
 my $payload =
-  $old->safe_psql('postgres', q{SELECT length(body), md5(body) FROM payload});
+  $old->safe_psql('customer', q{SELECT length(body), md5(body) FROM payload});
 
 # These would prevent ordinary -b startup/connections.  The importer must
 # override configuration and suppress role/database settings and login hooks.
 $old->safe_psql(
-	'postgres', q{
+	'customer', q{
 ALTER ROLE CURRENT_USER SET local_preload_libraries = 'import_missing_local';
-ALTER DATABASE postgres SET session_preload_libraries = 'import_missing_session';
+ALTER DATABASE customer SET session_preload_libraries = 'import_missing_session';
 CREATE FUNCTION reject_login() RETURNS event_trigger
   LANGUAGE plpgsql AS $$BEGIN RAISE EXCEPTION 'source login hook ran'; END$$;
 CREATE EVENT TRIGGER reject_login ON login EXECUTE FUNCTION reject_login();
 });
 $old->stop;
 $old->start(options => '-b -c binary_upgrade_import=on');
-is( $old->safe_psql('postgres', 'SELECT 1'),
+is( $old->safe_psql('customer', 'SELECT 1'),
 	'1',
 	'import source suppresses login hook and role/database preload settings');
 my ($call_result, $call_stdout, $call_stderr) =
-  $old->psql('postgres', 'SELECT ordinary_function()');
+  $old->psql('customer', 'SELECT ordinary_function()');
 isnt($call_result, 0, 'source invoker SQL function cannot execute');
 like(
 	$call_stderr,
 	qr/function \d+ is not allowed during physical import/,
 	'function lookup fence also covers a scalar SQL inlining candidate');
 ($call_result, $call_stdout, $call_stderr) =
-  $old->psql('postgres', 'SELECT * FROM ordinary_set()');
+  $old->psql('customer', 'SELECT * FROM ordinary_set()');
 isnt($call_result, 0, 'source set-returning SQL function cannot execute');
 like(
 	$call_stderr,
 	qr/function \d+ is not allowed during physical import/,
 	'function lookup fence also covers SQL inlining in FROM');
 ($call_result, $call_stdout, $call_stderr) =
-  $old->psql('postgres', 'SET binary_upgrade_import = off');
+  $old->psql('customer', 'SET binary_upgrade_import = off');
 isnt($call_result, 0, 'SQL cannot turn off the import fence');
 like(
 	$call_stderr,
@@ -162,66 +163,66 @@ ok(!-e $new->data_dir . '/pg_xact/not_a_segment',
 
 $new->start;
 is( $new->safe_psql(
-		'postgres', q{SELECT length(body), md5(body) FROM payload}),
+		'customer', q{SELECT length(body), md5(body) FROM payload}),
 	$payload,
 	'heap and external TOAST data are readable');
 is( $new->safe_psql(
-		'postgres', q{
+		'customer', q{
 SET enable_seqscan = off;
 SELECT id FROM payload WHERE id = 1;
 }),
 	'1',
 	'transferred index supports lookup');
-is($new->safe_psql('postgres', q{SELECT nextval('imported_seq')}),
+is($new->safe_psql('customer', q{SELECT nextval('imported_seq')}),
 	'43', 'sequence state is retained');
-is($new->safe_psql('postgres', q{SELECT ordinary_function()}),
+is($new->safe_psql('customer', q{SELECT ordinary_function()}),
 	'42', 'invoker SQL function is retained');
 is( $new->safe_psql(
-		'postgres', q{
+		'customer', q{
 SELECT count(*) FROM pg_proc WHERE proname IN
   ('unsafe_definer', 'unsafe_native', 'unsafe_leakproof', 'forged_member');
 }),
 	'0',
 	'unsafe functions and forged extension member are absent');
-is($new->safe_psql('postgres', q{SELECT provider_answer()}),
+is($new->safe_psql('customer', q{SELECT provider_answer()}),
 	'provider', 'extension SQL came from the provider package');
 is( $new->safe_psql(
-		'postgres', q{
+		'customer', q{
 SELECT prosecdef FROM pg_proc WHERE proname = 'provider_answer';
 }),
 	't',
 	'fresh provider SECURITY DEFINER function is retained');
-is($new->safe_psql('postgres', q{SELECT count(*) FROM pg_event_trigger}),
+is($new->safe_psql('customer', q{SELECT count(*) FROM pg_event_trigger}),
 	'0', 'login event trigger is absent');
 is( $new->safe_psql(
-		'postgres', q{
+		'customer', q{
 SELECT count(*) FROM pg_roles WHERE rolname = 'source_admin';
 }),
 	'0',
 	'source superuser is absent');
 is( $new->safe_psql(
-		'postgres', q{
+		'customer', q{
 SELECT rolcanlogin OR rolsuper OR rolcreaterole OR rolcreatedb OR
        rolreplication OR rolbypassrls FROM pg_roles WHERE rolname = 'imported_owner';
 }),
 	'f',
 	'import owner has no login or administrative attributes');
 is( $new->safe_psql(
-		'postgres', q{
+		'customer', q{
 SELECT pg_get_userbyid(relowner) FROM pg_class WHERE oid = 'payload'::regclass;
 }),
 	'imported_owner',
 	'relation ownership is normalized');
 is( $new->safe_psql(
-		'postgres', q{
+		'customer', q{
 SELECT pg_get_userbyid(proowner) FROM pg_proc WHERE proname = 'ordinary_function';
 }),
 	'imported_owner',
 	'function ownership is normalized');
-is($new->safe_psql('postgres', q{SELECT count(*) FROM pg_db_role_setting}),
+is($new->safe_psql('customer', q{SELECT count(*) FROM pg_db_role_setting}),
 	'0', 'role and database settings are absent');
 is( $new->safe_psql(
-		'postgres', q{
+		'customer', q{
 SELECT relacl IS NULL FROM pg_class WHERE oid = 'payload'::regclass;
 }),
 	't',
@@ -235,8 +236,9 @@ my $empty = PostgreSQL::Test::Cluster->new('unsupported_new');
 $bad->init;
 $empty->init;
 $bad->start;
+$bad->safe_psql('postgres', 'CREATE DATABASE customer');
 $bad->safe_psql(
-	'postgres', q{
+	'customer', q{
 CREATE TYPE user_enum AS ENUM ('a');
 CREATE TABLE unsupported(v user_enum);
 });
@@ -279,7 +281,7 @@ command_checks_all(\@unsupported, 1,
 # Normal startup here recovers our own test fixture, outside import mode.
 $bad->start;
 $bad->safe_psql(
-	'postgres', q{
+	'customer', q{
 DROP TABLE unsupported;
 DROP TYPE user_enum;
 CREATE TABLE extension_data(v integer);
@@ -292,7 +294,7 @@ command_checks_all(\@unsupported, 1,
 
 $bad->start;
 $bad->safe_psql(
-	'postgres', q{
+	'customer', q{
 ALTER EXTENSION plpgsql DROP TABLE extension_data;
 DROP TABLE extension_data;
 CREATE FUNCTION required_definer() RETURNS integer
@@ -303,7 +305,7 @@ $bad->stop;
 command_fails(\@unsupported,
 	'dependency on an omitted definer function fails restoration');
 my @restore_logs =
-  glob($empty->data_dir . '/pg_upgrade_output.d/*/log/pg_upgrade_dump_5.log');
+  glob($empty->data_dir . '/pg_upgrade_output.d/*/log/pg_upgrade_dump_*.log');
 like(
 	join('', map { slurp_file($_) } @restore_logs),
 	qr/function public.required_definer\(\) does not exist/,

@@ -11,6 +11,7 @@
 #include <sys/time.h>
 
 #include "common/relpath.h"
+#include "catalog/binary_upgrade.h"
 #include "fe_utils/simple_list.h"
 #include "libpq-fe.h"
 #include "pqexpbuffer.h"
@@ -31,7 +32,9 @@
 /* contains both global db information and CREATE DATABASE commands */
 #define GLOBALS_DUMP_FILE	"pg_upgrade_dump_globals.sql"
 #define DB_DUMP_FILE_MASK	"pg_upgrade_dump_%u.custom"
-#define IMPORT_OWNER "imported_owner"
+#define IMPORT_OWNER BINARY_UPGRADE_IMPORT_OWNER
+#define IMPORT_ROLE BINARY_UPGRADE_IMPORT_ROLE
+#define IMPORT_DB_FILTER "d.oid NOT IN (1, 4, 5) AND d.datname NOT IN ('postgres', 'template0', 'template1')"
 
 /*
  * Base directories that include all the files generated internally, from the
@@ -492,6 +495,8 @@ void		prepare_import(void);
 void		import_server_options(PQExpBuffer options, ClusterInfo *cluster);
 void		check_import_source(void);
 void		check_import_target(void);
+void		prepare_import_databases(void);
+void		restore_import_schemas(void);
 void		copy_import_slru(const char *old_path, const char *new_path,
 							 bool long_names);
 

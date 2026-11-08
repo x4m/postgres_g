@@ -170,7 +170,8 @@ main(int argc, char **argv)
 		   "Performing Upgrade\n"
 		   "------------------");
 
-	set_locale_and_encoding();
+	if (!user_opts.import_mode)
+		set_locale_and_encoding();
 
 	prepare_new_cluster();
 
@@ -627,7 +628,15 @@ prepare_new_globals(void)
 		PQclear(executeQueryOrDie(conn,
 								  "CREATE ROLE " IMPORT_OWNER " NOLOGIN NOSUPERUSER "
 								  "NOCREATEROLE NOCREATEDB NOREPLICATION NOBYPASSRLS"));
+		PQclear(executeQueryOrDie(conn,
+								  "SELECT pg_catalog.binary_upgrade_set_next_pg_authid_oid(16385::pg_catalog.oid)"));
+		PQclear(executeQueryOrDie(conn,
+								  "CREATE ROLE " IMPORT_ROLE " LOGIN NOSUPERUSER "
+								  "NOCREATEROLE NOCREATEDB NOREPLICATION NOBYPASSRLS"));
+		PQclear(executeQueryOrDie(conn,
+								  "GRANT " IMPORT_OWNER " TO " IMPORT_ROLE " WITH INHERIT TRUE, SET TRUE, ADMIN FALSE"));
 		PQfinish(conn);
+		prepare_import_databases();
 		return;
 	}
 
@@ -650,6 +659,13 @@ create_new_objects(void)
 {
 	int			dbnum;
 	PGconn	   *conn_new_template1;
+
+	if (user_opts.import_mode)
+	{
+		restore_import_schemas();
+		get_db_rel_and_slot_infos(&new_cluster);
+		return;
+	}
 
 	prep_status_progress("Restoring database schemas in the new cluster");
 

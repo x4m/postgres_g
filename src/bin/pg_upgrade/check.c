@@ -599,7 +599,13 @@ check_and_dump_old_cluster(void)
 	 */
 	get_db_rel_and_slot_infos(&old_cluster);
 
-	init_tablespaces();
+	if (user_opts.import_mode)
+	{
+		old_cluster.tablespace_suffix = pg_strdup("");
+		new_cluster.tablespace_suffix = pg_strdup("");
+	}
+	else
+		init_tablespaces();
 
 	if (!user_opts.import_mode)
 		get_loadable_libraries();
@@ -903,6 +909,9 @@ check_new_cluster_is_empty(void)
 {
 	int			dbnum;
 
+	if (user_opts.import_mode && new_cluster.dbarr.ndbs)
+		pg_fatal("physical import requires a target without user databases");
+
 	for (dbnum = 0; dbnum < new_cluster.dbarr.ndbs; dbnum++)
 	{
 		int			relnum;
@@ -1138,8 +1147,9 @@ check_for_connection_status(ClusterInfo *cluster)
 	/* get database names */
 	dbres = executeQueryOrDie(conn_template1,
 							  "SELECT datname, datallowconn "
-							  "FROM	pg_catalog.pg_database "
-							  "WHERE datconnlimit <> -2");
+							  "FROM	pg_catalog.pg_database d "
+							  "WHERE datconnlimit <> -2 %s",
+							  user_opts.import_mode ? "AND " IMPORT_DB_FILTER : "");
 
 	i_datname = PQfnumber(dbres, "datname");
 	i_datallowconn = PQfnumber(dbres, "datallowconn");

@@ -2159,6 +2159,10 @@ CreateExtension(ParseState *pstate, CreateExtensionStmt *stmt)
 	ListCell   *lc;
 
 	/* Check extension name validity before any filesystem access */
+	if (IsBinaryUpgradeImportUser())
+		ereport(ERROR,
+				(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
+				 errmsg("extensions must be installed by the import coordinator")));
 	check_valid_extension_name(stmt->extname);
 
 	/*

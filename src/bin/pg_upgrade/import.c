@@ -21,13 +21,43 @@
 
 typedef struct ImportExtension
 {
+	char	   *database;
 	char	   *name;
 	char	   *version;
+	char	   *schema;
 	struct ImportExtension *next;
 } ImportExtension;
 
+typedef struct ImportDatabase
+{
+	char	   *name;
+	Oid			oid;
+	char	   *encoding;
+	char		provider;
+	char	   *collate;
+	char	   *ctype;
+	char	   *locale;
+	char	   *icurules;
+	char	   *collversion;
+	uint32		frozen;
+	uint32		minmulti;
+	struct ImportDatabase *next;
+} ImportDatabase;
+
 static ImportExtension *extensions;
+static ImportDatabase *databases;
 static char *import_config;
+
+static void
+import_literal(PQExpBuffer buf, PGconn *conn, const char *value)
+{
+	char	   *literal = PQescapeLiteral(conn, value, strlen(value));
+
+	if (!literal)
+		pg_fatal("could not quote import metadata: %s", PQerrorMessage(conn));
+	appendPQExpBufferStr(buf, literal);
+	PQfreemem(literal);
+}
 
 /*
  * Use no source configuration, including authentication and ALTER SYSTEM
@@ -104,21 +134,35 @@ check_import_source(void)
 	int			dbnum;
 
 	prep_status("Checking experimental import contracts");
-	res = executeQueryOrDie(conn,
-							"SELECT 1 FROM pg_catalog.pg_tablespace "
-							"WHERE oid NOT IN (1663, 1664)");
-	if (PQntuples(res))
-		pg_fatal("the import prototype does not support user tablespaces");
-	PQclear(res);
 	dbs = executeQueryOrDie(conn,
-							"SELECT datname FROM pg_catalog.pg_database "
-							"WHERE datallowconn ORDER BY datname");
+							"SELECT d.datname, d.oid, pg_catalog.pg_encoding_to_char(d.encoding), "
+							"d.datlocprovider, d.datcollate, d.datctype, d.datlocale, "
+							"d.daticurules, d.datcollversion, d.datfrozenxid, d.datminmxid, d.dattablespace "
+							"FROM pg_catalog.pg_database d WHERE " IMPORT_DB_FILTER " "
+							"AND d.datallowconn AND d.datconnlimit <> -2 ORDER BY d.oid");
 	PQfinish(conn);
 
 	for (dbnum = 0; dbnum < PQntuples(dbs); dbnum++)
 	{
 		const char *dbname = PQgetvalue(dbs, dbnum, 0);
+		ImportDatabase *db = pg_malloc0_object(ImportDatabase);
 		int			i;
+
+		db->name = pg_strdup(dbname);
+		db->oid = atooid(PQgetvalue(dbs, dbnum, 1));
+		if (db->oid < 16384 || atooid(PQgetvalue(dbs, dbnum, 11)) != 1663)
+			pg_fatal("physical import requires normal database OIDs and the default tablespace");
+		db->encoding = pg_strdup(PQgetvalue(dbs, dbnum, 2));
+		db->provider = PQgetvalue(dbs, dbnum, 3)[0];
+		db->collate = pg_strdup(PQgetvalue(dbs, dbnum, 4));
+		db->ctype = pg_strdup(PQgetvalue(dbs, dbnum, 5));
+		db->locale = PQgetisnull(dbs, dbnum, 6) ? NULL : pg_strdup(PQgetvalue(dbs, dbnum, 6));
+		db->icurules = PQgetisnull(dbs, dbnum, 7) ? NULL : pg_strdup(PQgetvalue(dbs, dbnum, 7));
+		db->collversion = PQgetisnull(dbs, dbnum, 8) ? NULL : pg_strdup(PQgetvalue(dbs, dbnum, 8));
+		db->frozen = str2uint(PQgetvalue(dbs, dbnum, 9));
+		db->minmulti = str2uint(PQgetvalue(dbs, dbnum, 10));
+		db->next = databases;
+		databases = db;
 
 		conn = connectToServer(&old_cluster, dbname);
 		res = executeQueryOrDie(conn,
@@ -143,18 +187,20 @@ check_import_source(void)
 								"WHERE c.oid >= 16384 "
 								"AND n.nspname NOT IN ('pg_catalog', 'pg_toast', 'information_schema') "
 								"AND n.nspname !~ '^pg_(toast_)?temp_' AND ("
-								"c.relkind = 'f' OR "
+								"c.relkind IN ('f', 'm', 'p') OR c.reltablespace NOT IN (0, 1663) OR "
+								"EXISTS (SELECT 1 FROM pg_catalog.pg_inherits h WHERE h.inhrelid = c.oid) OR "
 								"(c.relkind IN ('r', 'm') AND am.amname <> 'heap') OR "
 								"EXISTS (SELECT 1 FROM pg_catalog.pg_attribute a "
 								"WHERE a.attrelid = c.oid AND a.attnum > 0 "
-								"AND NOT a.attisdropped AND a.atttypid >= 16384)) LIMIT 1");
+								"AND (a.attisdropped OR a.atthasmissing OR a.attgenerated <> '' OR a.atttypid >= 16384))) LIMIT 1");
 		if (PQntuples(res))
 			pg_fatal("database \"%s\", relation \"%s\": the import prototype requires heap storage and built-in column types",
 					 dbname, PQgetvalue(res, 0, 0));
 		PQclear(res);
 
 		res = executeQueryOrDie(conn,
-								"SELECT extname, extversion FROM pg_catalog.pg_extension");
+								"SELECT e.extname, e.extversion, n.nspname FROM pg_catalog.pg_extension e "
+								"JOIN pg_catalog.pg_namespace n ON n.oid = e.extnamespace");
 		for (i = 0; i < PQntuples(res); i++)
 		{
 			const char *name = PQgetvalue(res, i, 0);
@@ -165,8 +211,10 @@ check_import_source(void)
 				pg_fatal("database \"%s\": extension \"%s\" requires --import-extension",
 						 dbname, name);
 			ext = pg_malloc_object(ImportExtension);
+			ext->database = pg_strdup(dbname);
 			ext->name = pg_strdup(name);
 			ext->version = pg_strdup(PQgetvalue(res, i, 1));
+			ext->schema = pg_strdup(PQgetvalue(res, i, 2));
 			ext->next = extensions;
 			extensions = ext;
 		}
@@ -242,4 +290,129 @@ check_import_target(void)
 	}
 	PQfinish(conn);
 	check_ok();
+}
+
+/* Only typed metadata reaches the privileged connection. Never archive SQL. */
+void
+prepare_import_databases(void)
+{
+	PGconn	   *conn = connectToServer(&new_cluster, "template1");
+	ImportDatabase *db;
+	ImportExtension *ext;
+
+	prep_status("Creating customer databases from trusted template0");
+	for (db = databases; db; db = db->next)
+	{
+		PQExpBufferData sql;
+
+		initPQExpBuffer(&sql);
+		appendPQExpBuffer(&sql,
+						  "CREATE DATABASE %s WITH TEMPLATE template0 OWNER " IMPORT_OWNER " OID %u STRATEGY FILE_COPY ENCODING ",
+						  quote_identifier(db->name), db->oid);
+		import_literal(&sql, conn, db->encoding);
+		switch (db->provider)
+		{
+			case 'b':
+				appendPQExpBufferStr(&sql, " LOCALE_PROVIDER builtin");
+				break;
+			case 'c':
+				appendPQExpBufferStr(&sql, " LOCALE_PROVIDER libc");
+				break;
+			case 'i':
+				appendPQExpBufferStr(&sql, " LOCALE_PROVIDER icu");
+				break;
+			default:
+				pg_fatal("unsupported locale provider in import metadata");
+		}
+		if (db->collate[0])
+		{
+			appendPQExpBufferStr(&sql, " LC_COLLATE ");
+			import_literal(&sql, conn, db->collate);
+		}
+		if (db->ctype[0])
+		{
+			appendPQExpBufferStr(&sql, " LC_CTYPE ");
+			import_literal(&sql, conn, db->ctype);
+		}
+		if (db->locale)
+		{
+			appendPQExpBufferStr(&sql, db->provider == 'b' ? " BUILTIN_LOCALE " : " ICU_LOCALE ");
+			import_literal(&sql, conn, db->locale);
+		}
+		if (db->icurules)
+		{
+			appendPQExpBufferStr(&sql, " ICU_RULES ");
+			import_literal(&sql, conn, db->icurules);
+		}
+		if (db->collversion)
+		{
+			appendPQExpBufferStr(&sql, " COLLATION_VERSION ");
+			import_literal(&sql, conn, db->collversion);
+		}
+		PQclear(executeQueryOrDie(conn, "%s", sql.data));
+		PQclear(executeQueryOrDie(conn,
+								  "UPDATE pg_catalog.pg_database SET datfrozenxid = '%u', datminmxid = '%u' WHERE oid = '%u'",
+								  db->frozen, db->minmulti, db->oid));
+		termPQExpBuffer(&sql);
+	}
+	PQclear(executeQueryOrDie(conn, "CHECKPOINT"));
+	PQfinish(conn);
+	check_ok();
+
+	prep_status("Installing provider extensions before customer SQL");
+	for (ext = extensions; ext; ext = ext->next)
+	{
+		conn = connectToServer(&new_cluster, ext->database);
+		if (strcmp(ext->schema, "pg_catalog") != 0 && strcmp(ext->schema, "public") != 0)
+			PQclear(executeQueryOrDie(conn, "CREATE SCHEMA IF NOT EXISTS %s AUTHORIZATION " IMPORT_OWNER,
+									  quote_identifier(ext->schema)));
+		/* Separate fmtId calls: quote_identifier may reuse its buffer. */
+		{
+			char	   *schema = pg_strdup(quote_identifier(ext->schema));
+
+			PQclear(executeQueryOrDie(conn, "CREATE EXTENSION IF NOT EXISTS %s WITH SCHEMA %s",
+									  quote_identifier(ext->name), schema));
+			pg_free(schema);
+		}
+		PQfinish(conn);
+	}
+	check_ok();
+}
+
+void
+restore_import_schemas(void)
+{
+	int			dbnum;
+	PGconn	   *conn;
+
+	prep_status_progress("Restoring customer schemas as import maintenance");
+	for (dbnum = 0; dbnum < old_cluster.dbarr.ndbs; dbnum++)
+	{
+		DbInfo	   *db = &old_cluster.dbarr.dbs[dbnum];
+		PQExpBufferData connstr;
+		PQExpBufferData escaped;
+		char		logfile[MAXPGPATH];
+
+		initPQExpBuffer(&connstr);
+		initPQExpBuffer(&escaped);
+		appendPQExpBufferStr(&connstr, "dbname=");
+		appendConnStrVal(&connstr, db->db_name);
+		appendPQExpBufferStr(&connstr, " user=" IMPORT_ROLE);
+		appendShellString(&escaped, connstr.data);
+		snprintf(logfile, sizeof(logfile), DB_DUMP_LOG_FILE_MASK, db->db_oid);
+		parallel_exec_prog(logfile, NULL,
+						   "\"%s/pg_restore\" %s --username=" IMPORT_ROLE " --exit-on-error --verbose "
+						   "--transaction-size=1000 --dbname %s \"%s/" DB_DUMP_FILE_MASK "\"",
+						   new_cluster.bindir, cluster_conn_opts(&new_cluster), escaped.data,
+						   log_opts.dumpdir, db->db_oid);
+		termPQExpBuffer(&connstr);
+		termPQExpBuffer(&escaped);
+	}
+	while (reap_child(true))
+		;
+	end_progress_output();
+	check_ok();
+	conn = connectToServer(&new_cluster, "template1");
+	PQclear(executeQueryOrDie(conn, "ALTER ROLE " IMPORT_ROLE " NOLOGIN"));
+	PQfinish(conn);
 }

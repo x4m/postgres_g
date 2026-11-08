@@ -1112,6 +1112,11 @@ CreateFunction(ParseState *pstate, CreateFunctionStmt *stmt)
 								&proconfig, &procost, &prorows,
 								&prosupport, &parallel);
 
+	if (BinaryUpgradeImport && !creating_extension && security)
+		ereport(ERROR,
+				(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
+				 errmsg("source SECURITY DEFINER functions are not allowed during physical import")));
+
 	if (!language)
 	{
 		if (stmt->sql_body)

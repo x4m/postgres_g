@@ -1228,7 +1228,7 @@ main(int argc, char **argv)
 	dumpSearchPath(fout);
 
 	/* The database items are always next, unless we don't want them at all */
-	if (dopt.outputCreateDB)
+	if (dopt.outputCreateDB && !dopt.import_owner)
 		dumpDatabase(fout);
 
 	/* Now the rearrangeable objects. */
@@ -11647,7 +11647,7 @@ dumpDumpableObject(Archive *fout, DumpableObject *dobj)
 	 */
 	if (fout->dopt->import_owner)
 	{
-		if (dobj->ext_member)
+		if (dobj->ext_member || dobj->objType == DO_EXTENSION)
 			return;
 		switch (dobj->objType)
 		{
@@ -11890,7 +11890,8 @@ dumpNamespace(Archive *fout, const NamespaceInfo *nspinfo)
 	if (nspinfo->create)
 	{
 		appendPQExpBuffer(delq, "DROP SCHEMA %s;\n", qnspname);
-		appendPQExpBuffer(q, "CREATE SCHEMA %s;\n", qnspname);
+		appendPQExpBuffer(q, "CREATE SCHEMA %s%s;\n",
+						  dopt->import_owner ? "IF NOT EXISTS " : "", qnspname);
 	}
 	else
 	{
@@ -17797,26 +17798,39 @@ dumpTableSchema(Archive *fout, const TableInfo *tbinfo)
 			(tbinfo->relkind == RELKIND_RELATION ||
 			 tbinfo->relkind == RELKIND_MATVIEW))
 		{
-			appendPQExpBufferStr(q, "\n-- For binary upgrade, set heap's relfrozenxid and relminmxid\n");
-			appendPQExpBuffer(q, "UPDATE pg_catalog.pg_class\n"
-							  "SET relfrozenxid = '%u', relminmxid = '%u'\n"
-							  "WHERE oid = ",
-							  tbinfo->frozenxid, tbinfo->minmxid);
-			appendStringLiteralAH(q, qualrelname, fout);
-			appendPQExpBufferStr(q, "::pg_catalog.regclass;\n");
-
-			if (tbinfo->toast_oid)
+			if (dopt->import_owner)
 			{
-				/*
-				 * The toast table will have the same OID at restore, so we
-				 * can safely target it by OID.
-				 */
-				appendPQExpBufferStr(q, "\n-- For binary upgrade, set toast's relfrozenxid and relminmxid\n");
+				appendPQExpBuffer(q,
+								  "SELECT pg_catalog.binary_upgrade_import_set_relation_frozen('%u', '%u', '%u');\n",
+								  tbinfo->dobj.catId.oid, tbinfo->frozenxid, tbinfo->minmxid);
+				if (tbinfo->toast_oid)
+					appendPQExpBuffer(q,
+									  "SELECT pg_catalog.binary_upgrade_import_set_relation_frozen('%u', '%u', '%u');\n",
+									  tbinfo->toast_oid, tbinfo->toast_frozenxid, tbinfo->toast_minmxid);
+			}
+			else
+			{
+				appendPQExpBufferStr(q, "\n-- For binary upgrade, set heap's relfrozenxid and relminmxid\n");
 				appendPQExpBuffer(q, "UPDATE pg_catalog.pg_class\n"
 								  "SET relfrozenxid = '%u', relminmxid = '%u'\n"
-								  "WHERE oid = '%u';\n",
-								  tbinfo->toast_frozenxid,
-								  tbinfo->toast_minmxid, tbinfo->toast_oid);
+								  "WHERE oid = ",
+								  tbinfo->frozenxid, tbinfo->minmxid);
+				appendStringLiteralAH(q, qualrelname, fout);
+				appendPQExpBufferStr(q, "::pg_catalog.regclass;\n");
+
+				if (tbinfo->toast_oid)
+				{
+					/*
+					 * The toast table will have the same OID at restore, so
+					 * we can safely target it by OID.
+					 */
+					appendPQExpBufferStr(q, "\n-- For binary upgrade, set toast's relfrozenxid and relminmxid\n");
+					appendPQExpBuffer(q, "UPDATE pg_catalog.pg_class\n"
+									  "SET relfrozenxid = '%u', relminmxid = '%u'\n"
+									  "WHERE oid = '%u';\n",
+									  tbinfo->toast_frozenxid,
+									  tbinfo->toast_minmxid, tbinfo->toast_oid);
+				}
 			}
 		}
 

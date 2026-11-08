@@ -11,13 +11,18 @@
 
 #include "postgres.h"
 
+#include "access/multixact.h"
+
 #include "access/relation.h"
 #include "access/table.h"
 #include "catalog/binary_upgrade.h"
+#include "catalog/catalog.h"
+#include "catalog/indexing.h"
 #include "catalog/heap.h"
 #include "catalog/namespace.h"
 #include "catalog/pg_subscription_rel.h"
 #include "catalog/pg_type.h"
+#include "catalog/pg_class.h"
 #include "commands/extension.h"
 #include "miscadmin.h"
 #include "replication/logical.h"
@@ -26,9 +31,11 @@
 #include "replication/worker_internal.h"
 #include "storage/lmgr.h"
 #include "utils/array.h"
+#include "utils/acl.h"
 #include "utils/builtins.h"
 #include "utils/lsyscache.h"
 #include "utils/pg_lsn.h"
+#include "utils/syscache.h"
 
 
 #define CHECK_IS_BINARY_UPGRADE									\
@@ -37,7 +44,81 @@ do {															\
 		ereport(ERROR,											\
 				(errcode(ERRCODE_CANT_CHANGE_RUNTIME_PARAM),	\
 				 errmsg("function can only be called when server is in binary upgrade mode"))); \
+	if (BinaryUpgradeImport && !superuser())                     \
+		ereport(ERROR,                                           \
+				(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),         \
+				 errmsg("upgrade helper is not allowed for import maintenance"))); \
 } while (0)
+
+/* This is an authenticated identity, not a reversible SET ROLE from root. */
+bool
+IsBinaryUpgradeImportUser(void)
+{
+	return BinaryUpgradeImport && BinaryUpgradeImportTrustedExtensions &&
+		GetAuthenticatedUserId() == get_role_oid(BINARY_UPGRADE_IMPORT_ROLE, true);
+}
+
+static void
+check_import_oid(Oid oid)
+{
+	if (!IsBinaryUpgradeImportUser())
+	{
+		CHECK_IS_BINARY_UPGRADE;
+		return;
+	}
+	if (!IsBinaryUpgrade || oid < FirstNormalObjectId)
+		ereport(ERROR,
+				(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
+				 errmsg("physical import requires a non-system object identifier")));
+}
+
+/* A narrow substitute for source-supplied UPDATE pg_class statements. */
+Datum
+binary_upgrade_import_set_relation_frozen(PG_FUNCTION_ARGS)
+{
+	Oid			relid = PG_GETARG_OID(0);
+	TransactionId frozen = PG_GETARG_TRANSACTIONID(1);
+	MultiXactId minmulti = PG_GETARG_TRANSACTIONID(2);
+	Relation	rel;
+	Relation	classrel;
+	HeapTuple	tuple;
+	Form_pg_class form;
+	Oid			owner;
+	Oid			maintenance;
+
+	if (!IsBinaryUpgrade || !BinaryUpgradeImportTrustedExtensions ||
+		!IsBinaryUpgradeImportUser())
+		ereport(ERROR,
+				(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
+				 errmsg("relation metadata helper requires import maintenance")));
+	owner = get_role_oid(BINARY_UPGRADE_IMPORT_OWNER, false);
+	maintenance = get_role_oid(BINARY_UPGRADE_IMPORT_ROLE, false);
+	rel = table_open(relid, AccessExclusiveLock);
+	if (relid < FirstNormalObjectId ||
+		(rel->rd_rel->relowner != owner && rel->rd_rel->relowner != maintenance) ||
+		(rel->rd_rel->relkind != RELKIND_RELATION &&
+		 rel->rd_rel->relkind != RELKIND_TOASTVALUE) ||
+		IsCatalogNamespace(RelationGetNamespace(rel)))
+		ereport(ERROR,
+				(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
+				 errmsg("relation is outside the import maintenance boundary")));
+	if (!TransactionIdIsNormal(frozen) || !MultiXactIdIsValid(minmulti))
+		ereport(ERROR,
+				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+				 errmsg("invalid frozen transaction metadata for physical import")));
+	classrel = table_open(RelationRelationId, RowExclusiveLock);
+	tuple = SearchSysCacheCopy1(RELOID, ObjectIdGetDatum(relid));
+	if (!HeapTupleIsValid(tuple))
+		elog(ERROR, "cache lookup failed for relation %u", relid);
+	form = (Form_pg_class) GETSTRUCT(tuple);
+	form->relfrozenxid = frozen;
+	form->relminmxid = minmulti;
+	CatalogTupleUpdate(classrel, &tuple->t_self, tuple);
+	heap_freetuple(tuple);
+	table_close(classrel, RowExclusiveLock);
+	table_close(rel, NoLock);
+	PG_RETURN_VOID();
+}
 
 Datum
 binary_upgrade_set_next_pg_tablespace_oid(PG_FUNCTION_ARGS)
@@ -55,7 +136,7 @@ binary_upgrade_set_next_pg_type_oid(PG_FUNCTION_ARGS)
 {
 	Oid			typoid = PG_GETARG_OID(0);
 
-	CHECK_IS_BINARY_UPGRADE;
+	check_import_oid(typoid);
 	binary_upgrade_next_pg_type_oid = typoid;
 
 	PG_RETURN_VOID();
@@ -66,7 +147,7 @@ binary_upgrade_set_next_array_pg_type_oid(PG_FUNCTION_ARGS)
 {
 	Oid			typoid = PG_GETARG_OID(0);
 
-	CHECK_IS_BINARY_UPGRADE;
+	check_import_oid(typoid);
 	binary_upgrade_next_array_pg_type_oid = typoid;
 
 	PG_RETURN_VOID();
@@ -99,7 +180,7 @@ binary_upgrade_set_next_heap_pg_class_oid(PG_FUNCTION_ARGS)
 {
 	Oid			reloid = PG_GETARG_OID(0);
 
-	CHECK_IS_BINARY_UPGRADE;
+	check_import_oid(reloid);
 	binary_upgrade_next_heap_pg_class_oid = reloid;
 
 	PG_RETURN_VOID();
@@ -110,7 +191,7 @@ binary_upgrade_set_next_heap_relfilenode(PG_FUNCTION_ARGS)
 {
 	RelFileNumber relfilenumber = PG_GETARG_OID(0);
 
-	CHECK_IS_BINARY_UPGRADE;
+	check_import_oid(relfilenumber);
 	binary_upgrade_next_heap_pg_class_relfilenumber = relfilenumber;
 
 	PG_RETURN_VOID();
@@ -121,7 +202,7 @@ binary_upgrade_set_next_index_pg_class_oid(PG_FUNCTION_ARGS)
 {
 	Oid			reloid = PG_GETARG_OID(0);
 
-	CHECK_IS_BINARY_UPGRADE;
+	check_import_oid(reloid);
 	binary_upgrade_next_index_pg_class_oid = reloid;
 
 	PG_RETURN_VOID();
@@ -132,7 +213,7 @@ binary_upgrade_set_next_index_relfilenode(PG_FUNCTION_ARGS)
 {
 	RelFileNumber relfilenumber = PG_GETARG_OID(0);
 
-	CHECK_IS_BINARY_UPGRADE;
+	check_import_oid(relfilenumber);
 	binary_upgrade_next_index_pg_class_relfilenumber = relfilenumber;
 
 	PG_RETURN_VOID();
@@ -143,7 +224,7 @@ binary_upgrade_set_next_toast_pg_class_oid(PG_FUNCTION_ARGS)
 {
 	Oid			reloid = PG_GETARG_OID(0);
 
-	CHECK_IS_BINARY_UPGRADE;
+	check_import_oid(reloid);
 	binary_upgrade_next_toast_pg_class_oid = reloid;
 
 	PG_RETURN_VOID();
@@ -154,7 +235,17 @@ binary_upgrade_set_next_toast_chunk_id_typoid(PG_FUNCTION_ARGS)
 {
 	Oid			typoid = PG_GETARG_OID(0);
 
-	CHECK_IS_BINARY_UPGRADE;
+	if (IsBinaryUpgradeImportUser())
+	{
+		if (typoid != OIDOID && typoid != OID8OID)
+			ereport(ERROR,
+					(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
+					 errmsg("physical import requires a built-in TOAST identifier type")));
+	}
+	else
+	{
+		CHECK_IS_BINARY_UPGRADE;
+	}
 	binary_upgrade_next_toast_chunk_id_typoid = typoid;
 
 	PG_RETURN_VOID();
@@ -165,7 +256,7 @@ binary_upgrade_set_next_toast_relfilenode(PG_FUNCTION_ARGS)
 {
 	RelFileNumber relfilenumber = PG_GETARG_OID(0);
 
-	CHECK_IS_BINARY_UPGRADE;
+	check_import_oid(relfilenumber);
 	binary_upgrade_next_toast_pg_class_relfilenumber = relfilenumber;
 
 	PG_RETURN_VOID();

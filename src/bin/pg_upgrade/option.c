@@ -266,7 +266,7 @@ parseCommandLine(int argc, char *argv[])
 			pg_fatal("--import requires copy, clone or copy-file-range mode");
 		if (old_cluster.pgopts)
 			pg_fatal("--old-options cannot be used with --import");
-		if (strcmp(os_info.user, IMPORT_OWNER) == 0)
+		if (strcmp(os_info.user, IMPORT_OWNER) == 0 || strcmp(os_info.user, IMPORT_ROLE) == 0)
 			pg_fatal("the install user must not be named \"%s\"", IMPORT_OWNER);
 		user_opts.do_statistics = false;
 	}
