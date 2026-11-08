@@ -12,17 +12,16 @@
 #include "postgres.h"
 
 #include "access/multixact.h"
-
 #include "access/relation.h"
 #include "access/table.h"
 #include "catalog/binary_upgrade.h"
 #include "catalog/catalog.h"
-#include "catalog/indexing.h"
 #include "catalog/heap.h"
+#include "catalog/indexing.h"
 #include "catalog/namespace.h"
+#include "catalog/pg_class.h"
 #include "catalog/pg_subscription_rel.h"
 #include "catalog/pg_type.h"
-#include "catalog/pg_class.h"
 #include "commands/extension.h"
 #include "miscadmin.h"
 #include "replication/logical.h"
@@ -30,25 +29,33 @@
 #include "replication/origin.h"
 #include "replication/worker_internal.h"
 #include "storage/lmgr.h"
-#include "utils/array.h"
 #include "utils/acl.h"
+#include "utils/array.h"
 #include "utils/builtins.h"
 #include "utils/lsyscache.h"
 #include "utils/pg_lsn.h"
 #include "utils/syscache.h"
 
 
-#define CHECK_IS_BINARY_UPGRADE									\
-do {															\
-	if (!IsBinaryUpgrade)										\
-		ereport(ERROR,											\
-				(errcode(ERRCODE_CANT_CHANGE_RUNTIME_PARAM),	\
-				 errmsg("function can only be called when server is in binary upgrade mode"))); \
-	if (BinaryUpgradeImport && !superuser())                     \
-		ereport(ERROR,                                           \
-				(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),         \
-				 errmsg("upgrade helper is not allowed for import maintenance"))); \
-} while (0)
+static void
+check_binary_upgrade(void)
+{
+	if (!IsBinaryUpgrade)
+		ereport(ERROR,
+				(errcode(ERRCODE_CANT_CHANGE_RUNTIME_PARAM),
+				 errmsg("function can only be called when server is in binary upgrade mode")));
+
+	/*
+	 * A provider definer must not lift this session's import capability
+	 * ceiling.
+	 */
+	if (BinaryUpgradeImport && (IsBinaryUpgradeImportUser() || !superuser()))
+		ereport(ERROR,
+				(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
+				 errmsg("upgrade helper is not allowed for import maintenance")));
+}
+
+#define CHECK_IS_BINARY_UPGRADE check_binary_upgrade()
 
 /* This is an authenticated identity, not a reversible SET ROLE from root. */
 bool
@@ -72,6 +79,15 @@ check_import_oid(Oid oid)
 				 errmsg("physical import requires a non-system object identifier")));
 }
 
+static bool
+import_relation_eligible(Oid relid, Form_pg_class form, Oid owner, Oid maintenance)
+{
+	return relid >= FirstNormalObjectId &&
+		(form->relowner == owner || form->relowner == maintenance) &&
+		(form->relkind == RELKIND_RELATION || form->relkind == RELKIND_TOASTVALUE) &&
+		!IsCatalogNamespace(form->relnamespace);
+}
+
 /* A narrow substitute for source-supplied UPDATE pg_class statements. */
 Datum
 binary_upgrade_import_set_relation_frozen(PG_FUNCTION_ARGS)
@@ -93,12 +109,21 @@ binary_upgrade_import_set_relation_frozen(PG_FUNCTION_ARGS)
 				 errmsg("relation metadata helper requires import maintenance")));
 	owner = get_role_oid(BINARY_UPGRADE_IMPORT_OWNER, false);
 	maintenance = get_role_oid(BINARY_UPGRADE_IMPORT_ROLE, false);
+
+	/*
+	 * Reject before taking a strong lock, then recheck under the relation
+	 * lock.
+	 */
+	tuple = SearchSysCache1(RELOID, ObjectIdGetDatum(relid));
+	if (!HeapTupleIsValid(tuple))
+		elog(ERROR, "cache lookup failed for relation %u", relid);
+	if (!import_relation_eligible(relid, (Form_pg_class) GETSTRUCT(tuple), owner, maintenance))
+		ereport(ERROR,
+				(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
+				 errmsg("relation is outside the import maintenance boundary")));
+	ReleaseSysCache(tuple);
 	rel = table_open(relid, AccessExclusiveLock);
-	if (relid < FirstNormalObjectId ||
-		(rel->rd_rel->relowner != owner && rel->rd_rel->relowner != maintenance) ||
-		(rel->rd_rel->relkind != RELKIND_RELATION &&
-		 rel->rd_rel->relkind != RELKIND_TOASTVALUE) ||
-		IsCatalogNamespace(RelationGetNamespace(rel)))
+	if (!import_relation_eligible(relid, rel->rd_rel, owner, maintenance))
 		ereport(ERROR,
 				(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
 				 errmsg("relation is outside the import maintenance boundary")));

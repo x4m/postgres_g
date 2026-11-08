@@ -1447,7 +1447,13 @@ AlterFunction(ParseState *pstate, AlterFunctionStmt *stmt)
 	if (strict_item)
 		procForm->proisstrict = boolVal(strict_item->arg);
 	if (security_def_item)
+	{
+		if (BinaryUpgradeImport && !creating_extension && boolVal(security_def_item->arg))
+			ereport(ERROR,
+					(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
+					 errmsg("source SECURITY DEFINER functions are not allowed during physical import")));
 		procForm->prosecdef = boolVal(security_def_item->arg);
+	}
 	if (leakproof_item)
 	{
 		procForm->proleakproof = boolVal(leakproof_item->arg);
