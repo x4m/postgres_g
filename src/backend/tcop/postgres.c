@@ -3769,17 +3769,19 @@ check_log_stats(bool *newval, void **extra, GucSource source)
 void
 assign_transaction_timeout(int newval, void *extra)
 {
-	if (IsTransactionState())
+	/*
+	 * GUC restoration runs after the current subtransaction has entered
+	 * TRANS_ABORT, but its parent's transaction timeout must still be
+	 * updated. Do not enable a timer while restoring GUCs at top-level
+	 * transaction end.
+	 */
+	if (newval > 0 && (IsTransactionState() || IsSubTransaction()))
 	{
-		/*
-		 * If transaction_timeout GUC has changed within the transaction block
-		 * enable or disable the timer correspondingly.
-		 */
-		if (newval > 0 && !get_timeout_active(TRANSACTION_TIMEOUT))
+		if (!get_timeout_active(TRANSACTION_TIMEOUT))
 			enable_timeout_after(TRANSACTION_TIMEOUT, newval);
-		else if (newval <= 0 && get_timeout_active(TRANSACTION_TIMEOUT))
-			disable_timeout(TRANSACTION_TIMEOUT, false);
 	}
+	else if (newval <= 0 && get_timeout_active(TRANSACTION_TIMEOUT))
+		disable_timeout(TRANSACTION_TIMEOUT, false);
 }
 
 /*

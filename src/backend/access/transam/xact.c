@@ -2410,7 +2410,7 @@ CommitTransaction(void)
 	s->parallelChildXact = false;	/* should be false already */
 
 	/* Disable transaction timeout */
-	if (TransactionTimeout > 0)
+	if (get_timeout_active(TRANSACTION_TIMEOUT))
 		disable_timeout(TRANSACTION_TIMEOUT, false);
 
 	if (!is_parallel_worker)
@@ -2694,7 +2694,7 @@ PrepareTransaction(void)
 	s->state = TRANS_PREPARE;
 
 	/* Disable transaction timeout */
-	if (TransactionTimeout > 0)
+	if (get_timeout_active(TRANSACTION_TIMEOUT))
 		disable_timeout(TRANSACTION_TIMEOUT, false);
 
 	prepared_at = GetCurrentTimestamp();
@@ -2877,7 +2877,7 @@ AbortTransaction(void)
 	HOLD_INTERRUPTS();
 
 	/* Disable transaction timeout */
-	if (TransactionTimeout > 0)
+	if (get_timeout_active(TRANSACTION_TIMEOUT))
 		disable_timeout(TRANSACTION_TIMEOUT, false);
 
 	/* Make sure we have a valid memory context and resource owner */
