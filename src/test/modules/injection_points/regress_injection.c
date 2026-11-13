@@ -21,11 +21,28 @@
 #include "replication/logicalproto.h"
 #include "storage/procarray.h"
 #include "utils/rel.h"
+#include "utils/timeout.h"
+#include "utils/timestamp.h"
 #include "utils/xid8.h"
 
 extern PGDLLEXPORT void logicalrep_relation_redirect(const char *name,
 													 const void *private_data,
 													 void *arg);
+
+/*
+ * Inspect transaction timeout state without waiting for a timer to fire.
+ * Using a long timeout lets tests exercise transaction and GUC cleanup
+ * without depending on how quickly those operations finish.
+ */
+PG_FUNCTION_INFO_V1(transaction_timeout_deadline);
+Datum
+transaction_timeout_deadline(PG_FUNCTION_ARGS)
+{
+	if (!get_timeout_active(TRANSACTION_TIMEOUT))
+		PG_RETURN_NULL();
+
+	PG_RETURN_TIMESTAMPTZ(get_timeout_finish_time(TRANSACTION_TIMEOUT));
+}
 
 /*
  * Pretend that the publisher asked for a different target relation than it
