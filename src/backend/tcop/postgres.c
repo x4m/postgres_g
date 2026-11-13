@@ -4571,6 +4571,9 @@ PostgresMain(const char *dbname, const char *username)
 
 	if (sigsetjmp(local_sigjmp_buf, 1) != 0)
 	{
+		bool		transaction_timeout_active;
+		TimestampTz transaction_timeout_finish = 0;
+
 		/*
 		 * NOTE: if you are tempted to add more code in this if-block,
 		 * consider the high probability that it should be in
@@ -4587,16 +4590,23 @@ PostgresMain(const char *dbname, const char *username)
 
 		/*
 		 * Forget any pending QueryCancel request, since we're returning to
-		 * the idle loop anyway, and cancel any active timeout requests.  (In
-		 * future we might want to allow some timeout requests to survive, but
-		 * at minimum it'd be necessary to do reschedule_timeouts(), in case
-		 * we got here because of a query cancel interrupting the SIGALRM
-		 * interrupt handler.)	Note in particular that we must clear the
-		 * statement and lock timeout indicators, to prevent any future plain
-		 * query cancels from being misreported as timeouts in case we're
-		 * forgetting a timeout cancel.
+		 * the idle loop anyway, and cancel active timeout requests except for
+		 * the transaction timeout.  A transaction can survive this error
+		 * through ROLLBACK TO SAVEPOINT, so preserve its existing deadline.
+		 * AbortTransaction will disable the timer if the whole transaction is
+		 * being aborted.  Rearming it also repairs a possibly lost SIGALRM
+		 * interrupt, if query cancel interrupted the SIGALRM handler.
+		 *
+		 * Clear the statement and lock timeout indicators, to prevent future
+		 * plain query cancels from being misreported as timeouts in case
+		 * we're forgetting a timeout cancel.
 		 */
+		transaction_timeout_active = get_timeout_active(TRANSACTION_TIMEOUT);
+		if (transaction_timeout_active)
+			transaction_timeout_finish = get_timeout_finish_time(TRANSACTION_TIMEOUT);
 		disable_all_timeouts(false);	/* do first to avoid race condition */
+		if (transaction_timeout_active)
+			enable_timeout_at(TRANSACTION_TIMEOUT, transaction_timeout_finish);
 		QueryCancelPending = false;
 		idle_in_transaction_timeout_enabled = false;
 		idle_session_timeout_enabled = false;
