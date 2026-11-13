@@ -105,6 +105,11 @@ LANGUAGE C STRICT VOLATILE PARALLEL RESTRICTED;
 --
 -- regress_injection.c functions
 --
+CREATE FUNCTION transaction_timeout_deadline()
+RETURNS timestamptz
+AS 'MODULE_PATHNAME'
+LANGUAGE C;
+
 CREATE FUNCTION removable_cutoff(rel regclass)
 RETURNS xid8
 AS 'MODULE_PATHNAME'

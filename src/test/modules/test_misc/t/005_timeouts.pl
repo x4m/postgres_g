@@ -35,6 +35,168 @@ if (!$node->check_extension('injection_points'))
 
 $node->safe_psql('postgres', 'CREATE EXTENSION injection_points;');
 
+# Check timer ownership and GUC restoration with long timeouts, so that slow
+# machines cannot expire a timer before reaching the cleanup being tested.
+my $state_session = $node->background_psql('postgres', on_error_stop => 0);
+
+is( $state_session->query_safe(
+		q{
+	BEGIN;
+	SAVEPOINT s;
+	SET LOCAL transaction_timeout = '1d';
+	ROLLBACK TO SAVEPOINT s;
+	SELECT transaction_timeout_deadline() IS NULL;
+}),
+	't',
+	'savepoint rollback disables a timeout restored to zero');
+
+is( $state_session->query_safe(
+		q{
+	COMMIT;
+	SELECT transaction_timeout_deadline() IS NULL;
+}),
+	't',
+	'transaction timeout does not survive commit');
+
+is( $state_session->query_safe(
+		q{
+	BEGIN;
+	SET LOCAL transaction_timeout = '2d';
+	SELECT transaction_timeout_deadline() >
+		clock_timestamp() + interval '47 hours';
+	COMMIT;
+}),
+	't',
+	'next transaction uses its own timeout');
+
+is( $state_session->query_safe(
+		q{
+	BEGIN;
+	SET LOCAL transaction_timeout = '1d';
+	SELECT transaction_timeout_deadline() AS parent_deadline \gset
+	SAVEPOINT s;
+	SET LOCAL transaction_timeout = 0;
+	ROLLBACK TO SAVEPOINT s;
+	SELECT transaction_timeout_deadline() = :'parent_deadline'::timestamptz;
+	COMMIT;
+}),
+	't',
+	'savepoint rollback preserves the restored timeout deadline');
+
+is( $state_session->query_safe(
+		q{
+	BEGIN;
+	SET LOCAL transaction_timeout = '1d';
+	SELECT transaction_timeout_deadline() AS parent_deadline \gset
+	SAVEPOINT s;
+	SET LOCAL transaction_timeout = '2d';
+	SELECT transaction_timeout_deadline() =
+		:'parent_deadline'::timestamptz + interval '24 hours';
+	SET LOCAL transaction_timeout = '12h';
+	SELECT transaction_timeout_deadline() =
+		:'parent_deadline'::timestamptz - interval '12 hours';
+	ROLLBACK TO SAVEPOINT s;
+	SELECT transaction_timeout_deadline() = :'parent_deadline'::timestamptz;
+	COMMIT;
+}),
+	"t\nt\nt",
+	'positive changes and rollback retain the transaction time origin');
+
+is( $state_session->query_safe(
+		q{
+	BEGIN;
+	SET LOCAL transaction_timeout = '1d';
+	SELECT transaction_timeout_deadline() =
+		transaction_timestamp() + interval '24 hours';
+	COMMIT;
+}),
+	't',
+	'enabling a timeout accounts for time already spent in the transaction');
+
+# psql's escaped semicolons send each group in one Query message.  Chained
+# transactions can share transaction_timestamp(), but must get a fresh budget.
+$state_session->query_safe(
+	q{
+	CREATE TEMP TABLE saved_timeout (deadline timestamptz);
+	SET transaction_timeout = '1d';
+});
+is( $state_session->query_safe(
+		q{
+	BEGIN\;
+	INSERT INTO saved_timeout SELECT transaction_timeout_deadline()\;
+	COMMIT AND CHAIN\;
+	SELECT transaction_timeout_deadline() > (SELECT deadline FROM saved_timeout)\;
+	UPDATE saved_timeout SET deadline = transaction_timeout_deadline()\;
+	SET LOCAL transaction_timeout = '2d'\;
+	SELECT transaction_timeout_deadline() =
+		(SELECT deadline + interval '24 hours' FROM saved_timeout)\;
+	ROLLBACK;
+}),
+	"t\nt",
+	'COMMIT AND CHAIN starts a new timeout budget in one Query message');
+
+$state_session->query_safe(
+	q{
+	TRUNCATE saved_timeout;
+	SET transaction_timeout = 0;
+});
+is( $state_session->query_safe(
+		q{
+	BEGIN\;
+	INSERT INTO saved_timeout SELECT clock_timestamp()\;
+	COMMIT AND CHAIN\;
+	SET LOCAL transaction_timeout = '1d'\;
+	SELECT transaction_timeout_deadline() >
+		(SELECT deadline + interval '24 hours' FROM saved_timeout)\;
+	COMMIT;
+}),
+	't',
+	'enabling after COMMIT AND CHAIN uses the new transaction start');
+
+$state_session->query_safe('DROP TABLE saved_timeout');
+
+is( $state_session->query_safe(
+		q{
+	DO $$
+	BEGIN
+		PERFORM set_config('transaction_timeout', '1d', true);
+		RAISE EXCEPTION 'rollback';
+	EXCEPTION WHEN raise_exception THEN
+		NULL;
+	END
+	$$;
+	SELECT transaction_timeout_deadline() IS NULL;
+}),
+	't',
+	'caught PL/pgSQL exception restores the timeout');
+
+$state_session->query_safe(
+	q{
+	BEGIN;
+	SET LOCAL transaction_timeout = '1d';
+	SELECT transaction_timeout_deadline() AS deadline \gset
+	SAVEPOINT s;
+});
+
+for my $attempt (1 .. 2)
+{
+	my $result = $state_session->query(
+		q{
+		SELECT 1 / 0;
+		ROLLBACK TO SAVEPOINT s;
+		SELECT transaction_timeout_deadline() = :'deadline'::timestamptz;
+	});
+	like(
+		$state_session->{stderr},
+		qr/division by zero/,
+		"recoverable error $attempt occurred");
+	$state_session->{stderr} = '';
+	is($result, 't', "recoverable error $attempt preserves the deadline");
+}
+
+$state_session->query_safe('COMMIT');
+ok($state_session->quit);
+
 #
 # 1. Test of the transaction timeout
 #
@@ -138,5 +300,84 @@ $node->wait_for_log('terminating connection due to idle-session timeout',
 	$log_offset);
 
 ok($psql_session->quit);
+
+# A reload can set transaction_timeout while a block is already aborted,
+# without arming its timer.  This lets us check the idle timeout independently
+# of how quickly a transaction can be made to fail.
+$node->safe_psql(
+	'postgres', q{
+	SELECT injection_points_detach('transaction-timeout');
+});
+
+# Keep a control connection with a session-level setting that overrides the
+# shorter transaction timeout we will load from the configuration file.
+my $control_session = $node->background_psql('postgres',
+	timeout => 2 * $PostgreSQL::Test::Utils::timeout_default);
+$control_session->query_safe('SET transaction_timeout = 0');
+
+$psql_session = $node->background_psql(
+	'postgres',
+	on_error_stop => 0,
+	timeout => 2 * $PostgreSQL::Test::Utils::timeout_default);
+my $pid = $psql_session->query_safe('SELECT pg_backend_pid()');
+# Attach the callback's shared memory before releasing transaction resources.
+$psql_session->query_safe(
+	q{
+	SELECT injection_points_load('idle-in-transaction-session-timeout');
+});
+$psql_session->query('BEGIN; SELECT 1 / 0;');
+like(
+	$psql_session->{stderr},
+	qr/division by zero/,
+	'transaction is aborted before enabling the timeouts');
+$psql_session->{stderr} = '';
+
+$log_offset = -s $node->logfile;
+$node->append_conf(
+	'postgresql.conf', q{
+transaction_timeout = '1ms'
+idle_in_transaction_session_timeout = '10ms'
+});
+$node->reload;
+
+# Send commands until the backend processes the reload and reaches the idle
+# timeout injection point.  Do not wait for a response after sending a command:
+# the timer could fire before the client receives it.  The injection point
+# prevents FATAL from racing with the next command.
+my $idle_timeout_fired = 0;
+for my $attempt (1 .. $PostgreSQL::Test::Utils::timeout_default * 10)
+{
+	if ($control_session->query_safe(
+			qq{
+		SELECT EXISTS (SELECT FROM pg_stat_activity WHERE pid = $pid
+			AND wait_event = 'idle-in-transaction-session-timeout');
+	}) eq 't')
+	{
+		$idle_timeout_fired = 1;
+		last;
+	}
+	$psql_session->{stdin} .= "SELECT 1;\n";
+	$psql_session->{run}->pump_nb;
+	usleep(100_000);
+}
+ok($idle_timeout_fired,
+	'inactive transaction timer does not suppress idle timeout');
+
+if ($idle_timeout_fired)
+{
+	$control_session->query_safe(
+		q{
+		SELECT injection_points_wakeup('idle-in-transaction-session-timeout');
+	});
+	$node->wait_for_log(
+		qr/\[$pid\].*terminating connection due to idle-in-transaction timeout/,
+		$log_offset);
+}
+
+# A command may still be queued behind the injection point, so psql can exit
+# with a connection-lost error.  The server log above checks the FATAL reason.
+$psql_session->{stdin} .= "\\q\n";
+$psql_session->{run}->finish;
+ok($control_session->quit);
 
 done_testing();
