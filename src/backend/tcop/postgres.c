@@ -4760,7 +4760,8 @@ PostgresMain(const char *dbname, const char *username)
 
 				/* Start the idle-in-transaction timer */
 				if (IdleInTransactionSessionTimeout > 0
-					&& (IdleInTransactionSessionTimeout < TransactionTimeout || TransactionTimeout == 0))
+					&& (IdleInTransactionSessionTimeout < TransactionTimeout ||
+						!get_timeout_active(TRANSACTION_TIMEOUT)))
 				{
 					idle_in_transaction_timeout_enabled = true;
 					enable_timeout_after(IDLE_IN_TRANSACTION_SESSION_TIMEOUT,
@@ -4774,7 +4775,8 @@ PostgresMain(const char *dbname, const char *username)
 
 				/* Start the idle-in-transaction timer */
 				if (IdleInTransactionSessionTimeout > 0
-					&& (IdleInTransactionSessionTimeout < TransactionTimeout || TransactionTimeout == 0))
+					&& (IdleInTransactionSessionTimeout < TransactionTimeout ||
+						!get_timeout_active(TRANSACTION_TIMEOUT)))
 				{
 					idle_in_transaction_timeout_enabled = true;
 					enable_timeout_after(IDLE_IN_TRANSACTION_SESSION_TIMEOUT,
