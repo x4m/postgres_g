@@ -17,6 +17,7 @@
 
 #include "access/transam.h"
 #include "catalog/pg_type.h"
+#include "miscadmin.h"
 #include "nodes/makefuncs.h"
 #include "nodes/nodeFuncs.h"
 #include "optimizer/optimizer.h"
@@ -26,9 +27,12 @@
 #include "optimizer/subselect.h"
 #include "optimizer/tlist.h"
 #include "parser/parse_relation.h"
+#include "parser/parse_type.h"
 #include "rewrite/rewriteManip.h"
 #include "tcop/utility.h"
+#include "utils/lsyscache.h"
 #include "utils/syscache.h"
+#include "utils/typcache.h"
 
 
 typedef enum
@@ -499,6 +503,76 @@ add_rtes_to_flat_rtable(PlannerInfo *root, bool recursing)
 }
 
 /*
+ * Collect relation dependencies for composite types within a function result.
+ * Look through domains, arrays, and composite fields, since a cached query
+ * can expand fields of any contained rowtype.  This must also work for an
+ * empty rowtype, whose expansion leaves no FieldSelect nodes in the query.
+ */
+static void
+add_rowtype_relation_deps(PlannerGlobal *glob, Oid typid, List **visited)
+{
+	Oid			elemtype;
+	Oid			typrelid;
+	TupleDesc	tupdesc;
+	int			i;
+
+	check_stack_depth();
+	typid = getBaseType(typid);
+	if (list_member_oid(*visited, typid))
+		return;
+	*visited = lappend_oid(*visited, typid);
+
+	elemtype = get_element_type(typid);
+	if (OidIsValid(elemtype))
+	{
+		add_rowtype_relation_deps(glob, elemtype, visited);
+		return;
+	}
+
+	typrelid = typeidTypeRelid(typid);
+	if (!OidIsValid(typrelid))
+		return;
+	glob->relationOids = lappend_oid(glob->relationOids, typrelid);
+
+	/* Keep the descriptor pinned across recursive catalog lookups. */
+	tupdesc = lookup_rowtype_tupdesc(typid, -1);
+	for (i = 0; i < tupdesc->natts; i++)
+	{
+		Form_pg_attribute attr = TupleDescAttr(tupdesc, i);
+
+		if (!attr->attisdropped)
+			add_rowtype_relation_deps(glob, attr->atttypid, visited);
+	}
+	ReleaseTupleDesc(tupdesc);
+}
+
+/*
+ * Record RTE_FUNCTION result dependencies through the relcache, since
+ * composite attribute changes need not change the type or function OID.
+ * Keep this in sync with extract_query_dependencies_walker.
+ */
+static void
+add_function_rte_relation_deps(PlannerGlobal *glob, const RangeTblEntry *rte)
+{
+	ListCell   *lc;
+	List	   *visited = NIL;
+
+	Assert(rte->rtekind == RTE_FUNCTION);
+
+	foreach(lc, rte->functions)
+	{
+		RangeTblFunction *rtfunc = (RangeTblFunction *) lfirst(lc);
+		ListCell   *lc2;
+
+		add_rowtype_relation_deps(glob, exprType(rtfunc->funcexpr), &visited);
+		/* RECORD results can have named composite types in their columns. */
+		foreach(lc2, rtfunc->funccoltypes)
+			add_rowtype_relation_deps(glob, lfirst_oid(lc2), &visited);
+	}
+	list_free(visited);
+}
+
+/*
  * Extract RangeTblEntries from a subquery that was never planned at all
  */
 
@@ -527,6 +601,8 @@ flatten_rtes_walker(Node *node, flatten_rtes_walker_context *cxt)
 		if (rte->rtekind == RTE_RELATION ||
 			(rte->rtekind == RTE_SUBQUERY && OidIsValid(rte->relid)))
 			add_rte_to_flat_rtable(cxt->glob, cxt->query->rteperminfos, rte);
+		else if (rte->rtekind == RTE_FUNCTION)
+			add_function_rte_relation_deps(cxt->glob, rte);
 		return false;
 	}
 	if (IsA(node, Query))
@@ -564,6 +640,9 @@ add_rte_to_flat_rtable(PlannerGlobal *glob, List *rteperminfos,
 					   RangeTblEntry *rte)
 {
 	RangeTblEntry *newrte;
+
+	if (rte->rtekind == RTE_FUNCTION)
+		add_function_rte_relation_deps(glob, rte);
 
 	/* flat copy to duplicate all the scalar fields */
 	newrte = palloc_object(RangeTblEntry);
@@ -3833,6 +3912,8 @@ extract_query_dependencies_walker(Node *node, PlannerInfo *context)
 				(rte->rtekind == RTE_NAMEDTUPLESTORE && OidIsValid(rte->relid)))
 				context->glob->relationOids =
 					lappend_oid(context->glob->relationOids, rte->relid);
+			else if (rte->rtekind == RTE_FUNCTION)
+				add_function_rte_relation_deps(context->glob, rte);
 		}
 
 		/* And recurse into the query's subexpressions */
