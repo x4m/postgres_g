@@ -25,7 +25,9 @@
 #include "miscadmin.h"
 #include "nodes/nodeFuncs.h"
 #include "parser/parse_coerce.h"
+#include "parser/parse_type.h"
 #include "pgstat.h"
+#include "storage/lmgr.h"
 #include "utils/acl.h"
 #include "utils/builtins.h"
 #include "utils/lsyscache.h"
@@ -771,6 +773,18 @@ init_sexpr(Oid foid, Oid input_collation, Expr *node,
 
 	/* Otherwise, caller should have marked the sexpr correctly */
 	Assert(sexpr->func.fn_retset == sexpr->funcReturnsSet);
+
+	/*
+	 * Lock a named composite SRF result before copying its descriptor here or
+	 * in ExecInitFunctionScan().  ALTER TYPE must wait until transaction end.
+	 */
+	if (sexpr->func.fn_retset)
+	{
+		Oid			typrelid = typeOrDomainTypeRelid(exprType((Node *) node));
+
+		if (OidIsValid(typrelid))
+			LockRelationOid(typrelid, AccessShareLock);
+	}
 
 	/* If function returns set, prepare expected tuple descriptor */
 	if (sexpr->func.fn_retset && needDescForSRF)
