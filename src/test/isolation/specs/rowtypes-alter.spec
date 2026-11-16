@@ -9,6 +9,26 @@ setup
 {
     CREATE TABLE rta_tab (a int, b bytea);
     CREATE TYPE rta_type AS (a int, b bytea);
+    CREATE DOMAIN rta_domain AS rta_type;
+    CREATE FUNCTION rta_srf() RETURNS SETOF rta_type LANGUAGE plpgsql AS $$
+    BEGIN
+        RETURN QUERY SELECT * FROM rta_tab;
+    END;
+    $$;
+    CREATE FUNCTION rta_domain_srf() RETURNS SETOF rta_domain
+      LANGUAGE plpgsql AS $$
+    BEGIN
+        RETURN QUERY SELECT * FROM rta_tab;
+    END;
+    $$;
+    CREATE FUNCTION rta_open_cursor() RETURNS refcursor LANGUAGE plpgsql AS $$
+    DECLARE
+        c refcursor := 'rta_cur';
+    BEGIN
+        OPEN c FOR SELECT * FROM rta_srf();
+        RETURN c;
+    END;
+    $$;
     CREATE TABLE rta_lockme ();
 
     -- Blocks until s2 releases its advisory lock, then processes the
@@ -38,6 +58,8 @@ setup
 teardown
 {
     DROP FUNCTION rta_wait(), rta_wait_read(rta_type);
+    DROP FUNCTION rta_srf(), rta_domain_srf(), rta_open_cursor();
+    DROP DOMAIN rta_domain;
     DROP TABLE rta_tab, rta_lockme, rta_ptab;
     DROP TYPE rta_type;
 }
@@ -86,6 +108,16 @@ step s1_query
     SELECT x::text, rta_wait(), x::text
     FROM (SELECT '(1,\\x4649584d45)'::rta_tab AS x OFFSET 0) s;
 }
+step s1_srf_data
+{
+    SET plan_cache_mode = force_generic_plan;
+    INSERT INTO rta_tab VALUES (1, '\x4649584d45');
+}
+step s1_declare_srf { DECLARE rta_cur CURSOR FOR SELECT * FROM rta_srf(); }
+step s1_declare_target_srf { DECLARE rta_cur CURSOR FOR SELECT rta_srf(); }
+step s1_declare_domain_srf { DECLARE rta_cur CURSOR FOR SELECT * FROM rta_domain_srf(); }
+step s1_open_cached { SELECT rta_open_cursor(); }
+step s1_call_srf { SELECT * FROM rta_srf(); }
 teardown { DEALLOCATE ALL; CLOSE ALL; }
 
 session s2
@@ -94,6 +126,13 @@ step s2_alter_type { ALTER TYPE rta_type ALTER ATTRIBUTE b TYPE text; }
 step s2_alter_tab_same { ALTER TABLE rta_tab ALTER COLUMN b TYPE bytea; }
 step s2_lock { SELECT pg_advisory_lock(1); }
 step s2_unlock { SELECT pg_advisory_unlock(1); }
+step s2_add_column
+{
+    BEGIN;
+    ALTER TYPE rta_type ADD ATTRIBUTE c int;
+    ALTER TABLE rta_tab ADD COLUMN c int DEFAULT 99;
+    COMMIT;
+}
 
 session s3
 # The leader doesn't participate.  Plans are made for two workers, as one
@@ -134,3 +173,13 @@ permutation s2_lock s1_query s2_alter_tab s2_unlock
 permutation s1_prepare s1_exec_tab s2_alter_tab_same s1_exec_tab
 # a datum formed in a parallel worker, read by the leader after waiting for s2
 permutation s3_explain s2_lock s3_leader s2_alter_type s2_unlock
+
+# A named composite SRF result must stay unchanged after cursor setup,
+# even before the first call of the function.
+permutation s1_srf_data s1_begin s1_declare_srf s2_add_column s1_fetch s1_commit s1_call_srf
+permutation s1_srf_data s1_begin s1_declare_target_srf s2_add_column s1_fetch s1_commit s1_call_srf
+permutation s1_srf_data s1_begin s1_declare_domain_srf s2_add_column s1_fetch s1_commit s1_call_srf
+# Reusing an SPI plan must reacquire the lock.  Reopen after DDL as well.
+permutation s1_srf_data s1_begin s1_open_cached s1_fetch s1_commit
+            s1_begin s1_open_cached s2_add_column s1_fetch s1_commit
+            s1_begin s1_open_cached s1_fetch s1_commit
