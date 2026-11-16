@@ -3687,6 +3687,190 @@ ALTER TYPE test_type3 DROP ATTRIBUTE a, ADD ATTRIBUTE b int;
 CREATE TYPE test_type_empty AS ();
 DROP TYPE test_type_empty;
 --
+-- Cached plans must follow changes to composite function results, including
+-- fields expanded from arrays and nested composites.  SECURITY DEFINER
+-- prevents inlining of the SQL functions.
+--
+CREATE TYPE planinv_ct AS (a int, b int);
+CREATE TYPE planinv_nested AS (v planinv_ct);
+CREATE TABLE planinv_tbl (a int, b int);
+INSERT INTO planinv_tbl VALUES (1, 2);
+CREATE FUNCTION planinv_srf() RETURNS SETOF planinv_ct
+  LANGUAGE sql STABLE SECURITY DEFINER AS $$ SELECT * FROM planinv_tbl $$;
+CREATE FUNCTION planinv_array_srf() RETURNS SETOF planinv_ct[]
+  LANGUAGE sql STABLE SECURITY DEFINER AS $$
+  SELECT ARRAY(SELECT ROW(t.*)::planinv_ct FROM planinv_tbl t)
+$$;
+CREATE FUNCTION planinv_nested_srf() RETURNS SETOF planinv_nested
+  LANGUAGE sql STABLE SECURITY DEFINER AS $$
+  SELECT ROW(ROW(t.*)::planinv_ct)::planinv_nested FROM planinv_tbl t
+$$;
+CREATE FUNCTION planinv_caller() RETURNS SETOF planinv_ct LANGUAGE plpgsql AS $$
+BEGIN
+  RETURN QUERY SELECT r.* FROM planinv_srf() r;
+END; $$;
+CREATE FUNCTION planinv_array_caller() RETURNS SETOF planinv_ct
+  LANGUAGE plpgsql AS $$
+BEGIN
+  RETURN QUERY SELECT (r.v[1]).* FROM planinv_array_srf() AS r(v);
+END; $$;
+CREATE FUNCTION planinv_nested_caller() RETURNS SETOF planinv_ct
+  LANGUAGE plpgsql AS $$
+BEGIN
+  RETURN QUERY SELECT (r.v).* FROM planinv_nested_srf() r;
+END; $$;
+-- Warm up the plan cache.
+SELECT * FROM planinv_caller();
+ a | b 
+---+---
+ 1 | 2
+(1 row)
+
+SELECT * FROM planinv_array_caller();
+ a | b 
+---+---
+ 1 | 2
+(1 row)
+
+SELECT * FROM planinv_nested_caller();
+ a | b 
+---+---
+ 1 | 2
+(1 row)
+
+-- Returning the whole array does not change the query's result rowtype.
+PREPARE planinv_array_plan AS SELECT * FROM planinv_array_srf();
+EXECUTE planinv_array_plan;
+ planinv_array_srf 
+-------------------
+ {"(1,2)"}
+(1 row)
+
+ALTER TYPE planinv_ct ADD ATTRIBUTE c int;
+ALTER TABLE planinv_tbl ADD COLUMN c int DEFAULT 99;
+-- Reparse expanded fields, while a whole-array result keeps its array type.
+SELECT * FROM planinv_caller();
+ a | b | c  
+---+---+----
+ 1 | 2 | 99
+(1 row)
+
+SELECT * FROM planinv_array_caller();
+ a | b | c  
+---+---+----
+ 1 | 2 | 99
+(1 row)
+
+SELECT * FROM planinv_nested_caller();
+ a | b | c  
+---+---+----
+ 1 | 2 | 99
+(1 row)
+
+EXECUTE planinv_array_plan;
+ planinv_array_srf 
+-------------------
+ {"(1,2,99)"}
+(1 row)
+
+ALTER TYPE planinv_ct ALTER ATTRIBUTE b TYPE text;
+ALTER TABLE planinv_tbl ALTER COLUMN b TYPE text USING 'two';
+SELECT * FROM planinv_caller();
+ a |  b  | c  
+---+-----+----
+ 1 | two | 99
+(1 row)
+
+SELECT * FROM planinv_array_caller();
+ a |  b  | c  
+---+-----+----
+ 1 | two | 99
+(1 row)
+
+SELECT * FROM planinv_nested_caller();
+ a |  b  | c  
+---+-----+----
+ 1 | two | 99
+(1 row)
+
+EXECUTE planinv_array_plan;
+ planinv_array_srf 
+-------------------
+ {"(1,two,99)"}
+(1 row)
+
+ALTER TYPE planinv_ct DROP ATTRIBUTE c;
+ALTER TABLE planinv_tbl DROP COLUMN c;
+SELECT * FROM planinv_caller();
+ a |  b  
+---+-----
+ 1 | two
+(1 row)
+
+SELECT * FROM planinv_array_caller();
+ a |  b  
+---+-----
+ 1 | two
+(1 row)
+
+SELECT * FROM planinv_nested_caller();
+ a |  b  
+---+-----
+ 1 | two
+(1 row)
+
+EXECUTE planinv_array_plan;
+ planinv_array_srf 
+-------------------
+ {"(1,two)"}
+(1 row)
+
+DEALLOCATE planinv_array_plan;
+DROP FUNCTION planinv_caller();
+DROP FUNCTION planinv_array_caller();
+DROP FUNCTION planinv_nested_caller();
+DROP FUNCTION planinv_srf();
+DROP FUNCTION planinv_array_srf();
+DROP FUNCTION planinv_nested_srf();
+DROP TABLE planinv_tbl;
+DROP TYPE planinv_nested;
+DROP TYPE planinv_ct;
+-- Even an empty rowtype inside a domain and array needs invalidation.
+CREATE TYPE planinv_empty_ct AS ();
+CREATE DOMAIN planinv_empty_domain AS planinv_empty_ct[];
+CREATE TABLE planinv_empty_tbl ();
+INSERT INTO planinv_empty_tbl DEFAULT VALUES;
+CREATE FUNCTION planinv_empty_srf() RETURNS SETOF record
+  LANGUAGE sql STABLE SECURITY DEFINER AS $$
+  SELECT ARRAY(SELECT ROW(t.*)::planinv_empty_ct FROM planinv_empty_tbl t)
+    ::planinv_empty_domain
+$$;
+CREATE FUNCTION planinv_empty_caller() RETURNS SETOF planinv_empty_ct
+  LANGUAGE plpgsql AS $$
+BEGIN
+  RETURN QUERY SELECT (r.v[1]).*
+    FROM planinv_empty_srf() AS r(v planinv_empty_domain);
+END; $$;
+SELECT count(*) FROM planinv_empty_caller();
+ count 
+-------
+     1
+(1 row)
+
+ALTER TYPE planinv_empty_ct ADD ATTRIBUTE a int;
+ALTER TABLE planinv_empty_tbl ADD COLUMN a int DEFAULT 42;
+SELECT * FROM planinv_empty_caller();
+ a  
+----
+ 42
+(1 row)
+
+DROP FUNCTION planinv_empty_caller();
+DROP FUNCTION planinv_empty_srf();
+DROP TABLE planinv_empty_tbl;
+DROP DOMAIN planinv_empty_domain;
+DROP TYPE planinv_empty_ct;
+--
 -- typed tables: OF / NOT OF
 --
 CREATE TYPE tt_t0 AS (z inet, x int, y numeric(8,2));
