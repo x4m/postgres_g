@@ -10873,6 +10873,13 @@ COPY postgres_log FROM '/full/path/to/logfile.csv' WITH csv;
        </para>
 
        <para>
+        Changing this setting within a transaction applies the new limit to
+        the time since that transaction began, including time spent before
+        the change.  Restoring a previous setting with
+        <command>ROLLBACK TO SAVEPOINT</command> does not restart the timeout.
+       </para>
+
+       <para>
         If <varname>transaction_timeout</varname> is shorter or equal to
         <varname>idle_in_transaction_session_timeout</varname> or <varname>statement_timeout</varname>
         then the longer timeout is ignored.

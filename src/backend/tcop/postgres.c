@@ -3777,8 +3777,10 @@ assign_transaction_timeout(int newval, void *extra)
 	 */
 	if (newval > 0 && (IsTransactionState() || IsSubTransaction()))
 	{
-		if (!get_timeout_active(TRANSACTION_TIMEOUT))
-			enable_timeout_after(TRANSACTION_TIMEOUT, newval);
+		/* Include time already spent, including in a rolled-back savepoint. */
+		enable_timeout_at(TRANSACTION_TIMEOUT,
+						  TimestampTzPlusMilliseconds(GetCurrentTransactionTimeoutStartTimestamp(),
+													  newval));
 	}
 	else if (newval <= 0 && get_timeout_active(TRANSACTION_TIMEOUT))
 		disable_timeout(TRANSACTION_TIMEOUT, false);

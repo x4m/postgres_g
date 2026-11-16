@@ -273,6 +273,9 @@ static bool currentCommandIdUsed;
 /*
  * xactStartTimestamp is the value of transaction_timestamp().
  * stmtStartTimestamp is the value of statement_timestamp().
+ * xactTimeoutStartTimestamp is the time origin for transaction_timeout.
+ * Unlike xactStartTimestamp, it advances for each transaction started in
+ * the same client message.
  * xactStopTimestamp is the time at which we log a commit / abort WAL record,
  * or if that was skipped, the time of the first subsequent
  * GetCurrentTransactionStopTimestamp() call.
@@ -281,6 +284,7 @@ static bool currentCommandIdUsed;
  * keep them inside the TransactionState stack.
  */
 static TimestampTz xactStartTimestamp;
+static TimestampTz xactTimeoutStartTimestamp;
 static TimestampTz stmtStartTimestamp;
 static TimestampTz xactStopTimestamp;
 
@@ -873,6 +877,15 @@ TimestampTz
 GetCurrentTransactionStartTimestamp(void)
 {
 	return xactStartTimestamp;
+}
+
+/*
+ *	GetCurrentTransactionTimeoutStartTimestamp
+ */
+TimestampTz
+GetCurrentTransactionTimeoutStartTimestamp(void)
+{
+	return xactTimeoutStartTimestamp;
 }
 
 /*
@@ -2268,9 +2281,23 @@ StartTransaction(void)
 	 */
 	s->state = TRANS_INPROGRESS;
 
+	/*
+	 * A single client message can start several transactions, all sharing
+	 * transaction_timestamp().  Each needs a fresh timeout budget.  Chaining
+	 * can also wait for the previous commit after taking that timestamp.
+	 * Parallel workers use their own start time, not the leader's timestamp.
+	 */
+	if (IsParallelWorker() || s->chain ||
+		xactStartTimestamp <= xactTimeoutStartTimestamp)
+		xactTimeoutStartTimestamp = GetCurrentTimestamp();
+	else
+		xactTimeoutStartTimestamp = xactStartTimestamp;
+
 	/* Schedule transaction timeout */
 	if (TransactionTimeout > 0)
-		enable_timeout_after(TRANSACTION_TIMEOUT, TransactionTimeout);
+		enable_timeout_at(TRANSACTION_TIMEOUT,
+						  TimestampTzPlusMilliseconds(xactTimeoutStartTimestamp,
+													  TransactionTimeout));
 
 	ShowTransactionState("StartTransaction");
 }
