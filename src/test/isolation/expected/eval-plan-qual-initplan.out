@@ -1,0 +1,193 @@
+Parsed test spec with 2 sessions
+
+starting permutation: begin1 update1 commit1 lock2
+step begin1: BEGIN;
+step update1: UPDATE epq_ip SET id = id + 10;
+step commit1: COMMIT;
+step lock2: 
+  SELECT t.id, t.val, u.id AS uid
+  FROM epq_ip t
+  JOIN (
+    SELECT id FROM epq_ip WHERE id > 0
+    UNION ALL
+    SELECT id FROM epq_ip WHERE val = (SELECT 'a'::text OFFSET 0)
+  ) u ON t.id = u.id
+  FOR UPDATE OF t;
+
+id|val|uid
+--+---+---
+11|a  | 11
+12|a  | 12
+11|a  | 11
+12|a  | 12
+(4 rows)
+
+
+starting permutation: explain2
+step explain2: 
+  EXPLAIN (COSTS OFF)
+  SELECT t.id, t.val, u.id AS uid
+  FROM epq_ip t
+  JOIN (
+    SELECT id FROM epq_ip WHERE id > 0
+    UNION ALL
+    SELECT id FROM epq_ip WHERE val = (SELECT 'a'::text OFFSET 0)
+  ) u ON t.id = u.id
+  FOR UPDATE OF t;
+
+QUERY PLAN                                                      
+----------------------------------------------------------------
+LockRows                                                        
+  ->  Hash Join                                                 
+        Hash Cond: (unnamed_subquery.id = t.id)                 
+        ->  Append                                              
+              ->  Subquery Scan on unnamed_subquery             
+                    ->  Seq Scan on epq_ip                      
+                          Filter: (id > 0)                      
+              ->  Subquery Scan on unnamed_subquery_1           
+                    ->  Seq Scan on epq_ip epq_ip_1             
+                          Filter: (val = (InitPlan expr_1).col1)
+                          InitPlan expr_1                       
+                            ->  Result                          
+        ->  Hash                                                
+              ->  Seq Scan on epq_ip t                          
+(14 rows)
+
+
+starting permutation: begin1 update1 lock2 commit1
+step begin1: BEGIN;
+step update1: UPDATE epq_ip SET id = id + 10;
+step lock2: 
+  SELECT t.id, t.val, u.id AS uid
+  FROM epq_ip t
+  JOIN (
+    SELECT id FROM epq_ip WHERE id > 0
+    UNION ALL
+    SELECT id FROM epq_ip WHERE val = (SELECT 'a'::text OFFSET 0)
+  ) u ON t.id = u.id
+  FOR UPDATE OF t;
+ <waiting ...>
+step commit1: COMMIT;
+step lock2: <... completed>
+id|val|uid
+--+---+---
+(0 rows)
+
+
+starting permutation: begin1 update_one1 lock2 commit1
+step begin1: BEGIN;
+step update_one1: UPDATE epq_ip SET id = id + 10 WHERE id = 1;
+step lock2: 
+  SELECT t.id, t.val, u.id AS uid
+  FROM epq_ip t
+  JOIN (
+    SELECT id FROM epq_ip WHERE id > 0
+    UNION ALL
+    SELECT id FROM epq_ip WHERE val = (SELECT 'a'::text OFFSET 0)
+  ) u ON t.id = u.id
+  FOR UPDATE OF t;
+ <waiting ...>
+step commit1: COMMIT;
+step lock2: <... completed>
+id|val|uid
+--+---+---
+ 2|a  |  2
+ 2|a  |  2
+(2 rows)
+
+
+starting permutation: begin1 update1 literal2 commit1
+step begin1: BEGIN;
+step update1: UPDATE epq_ip SET id = id + 10;
+step literal2: 
+  SELECT t.id, t.val, u.id AS uid
+  FROM epq_ip t
+  JOIN (
+    SELECT id FROM epq_ip WHERE id > 0
+    UNION ALL
+    SELECT id FROM epq_ip WHERE val = 'a'
+  ) u ON t.id = u.id
+  FOR UPDATE OF t;
+ <waiting ...>
+step commit1: COMMIT;
+step literal2: <... completed>
+id|val|uid
+--+---+---
+(0 rows)
+
+
+starting permutation: begin1 update_one1 literal2 commit1
+step begin1: BEGIN;
+step update_one1: UPDATE epq_ip SET id = id + 10 WHERE id = 1;
+step literal2: 
+  SELECT t.id, t.val, u.id AS uid
+  FROM epq_ip t
+  JOIN (
+    SELECT id FROM epq_ip WHERE id > 0
+    UNION ALL
+    SELECT id FROM epq_ip WHERE val = 'a'
+  ) u ON t.id = u.id
+  FOR UPDATE OF t;
+ <waiting ...>
+step commit1: COMMIT;
+step literal2: <... completed>
+id|val|uid
+--+---+---
+ 2|a  |  2
+ 2|a  |  2
+(2 rows)
+
+
+starting permutation: begin1 negate1 lateral2 commit1
+step begin1: BEGIN;
+step negate1: UPDATE epq_ip SET id = -id;
+step lateral2: 
+  SELECT o.i, q.* FROM (VALUES (1), (2)) o(i)
+  CROSS JOIN LATERAL (
+    SELECT t.id, t.val, u.id AS uid
+    FROM epq_ip t
+    JOIN (
+      SELECT id FROM epq_ip WHERE id > 0
+      UNION ALL
+      SELECT -id FROM epq_ip WHERE (SELECT o.i OFFSET 0) = o.i
+    ) u ON t.id = u.id
+    FOR UPDATE OF t
+  ) q;
+ <waiting ...>
+step commit1: COMMIT;
+step lateral2: <... completed>
+i|id|val|uid
+-+--+---+---
+1|-1|a  | -1
+1|-2|a  | -2
+2|-1|a  | -1
+2|-2|a  | -2
+(4 rows)
+
+
+starting permutation: begin1 negate1 lateral_ref2 commit1
+step begin1: BEGIN;
+step negate1: UPDATE epq_ip SET id = -id;
+step lateral_ref2: 
+  SELECT o.i, q.* FROM (VALUES (1), (2)) o(i)
+  CROSS JOIN LATERAL (
+    SELECT t.id, t.val, u.id AS uid
+    FROM epq_ip t
+    JOIN (
+      SELECT id FROM epq_ip WHERE id > 0
+      UNION ALL
+      SELECT -id FROM epq_ip WHERE o.i = o.i
+    ) u ON t.id = u.id
+    FOR UPDATE OF t
+  ) q;
+ <waiting ...>
+step commit1: COMMIT;
+step lateral_ref2: <... completed>
+i|id|val|uid
+-+--+---+---
+1|-1|a  | -1
+1|-2|a  | -2
+2|-1|a  | -1
+2|-2|a  | -2
+(4 rows)
+
