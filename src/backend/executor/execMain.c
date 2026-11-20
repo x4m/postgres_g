@@ -3032,11 +3032,12 @@ EvalPlanQualBegin(EPQState *epqstate)
 			ExecSetParamPlanMulti(rcplanstate->plan->extParam,
 								  GetPerTupleExprContext(parentestate));
 
-			i = list_length(parentestate->es_plannedstmt->paramExecTypes);
-
-			while (--i >= 0)
+			/* Leave parameters produced within the EPQ plan in its own state. */
+			i = -1;
+			while ((i = bms_next_member(rcplanstate->plan->extParam, i)) >= 0)
 			{
-				/* copy value if any, but not execPlan link */
+				Assert(parentestate->es_param_exec_vals[i].execPlan == NULL);
+				recheckestate->es_param_exec_vals[i].execPlan = NULL;
 				recheckestate->es_param_exec_vals[i].value =
 					parentestate->es_param_exec_vals[i].value;
 				recheckestate->es_param_exec_vals[i].isnull =
@@ -3122,12 +3123,9 @@ EvalPlanQualStart(EPQState *epqstate, Plan *planTree)
 		 * the trouble; this is a corner case already, since usually the
 		 * InitPlans would have been evaluated before reaching EvalPlanQual.)
 		 *
-		 * This will not touch output params of InitPlans that occur somewhere
-		 * within the subplan tree, only those that are attached to the
-		 * ModifyTable node or above it and are referenced within the subplan.
-		 * That's OK though, because the planner would only attach such
-		 * InitPlans to a lower-level SubqueryScan node, and EPQ execution
-		 * will not descend into a SubqueryScan.
+		 * Only parameters produced outside the recheck plan are inputs to
+		 * copy from the parent.  InitPlans within the recheck plan have their
+		 * own state and will compute their outputs in the child EState.
 		 *
 		 * The EState's per-output-tuple econtext is sufficiently short-lived
 		 * for this, since it should get reset before there is any chance of
@@ -3139,10 +3137,11 @@ EvalPlanQualStart(EPQState *epqstate, Plan *planTree)
 		/* now make the internal param workspace ... */
 		i = list_length(parentestate->es_plannedstmt->paramExecTypes);
 		rcestate->es_param_exec_vals = palloc0_array(ParamExecData, i);
-		/* ... and copy down all values, whether really needed or not */
-		while (--i >= 0)
+		/* ... and copy the external inputs, but not execPlan links. */
+		i = -1;
+		while ((i = bms_next_member(planTree->extParam, i)) >= 0)
 		{
-			/* copy value if any, but not execPlan link */
+			Assert(parentestate->es_param_exec_vals[i].execPlan == NULL);
 			rcestate->es_param_exec_vals[i].value =
 				parentestate->es_param_exec_vals[i].value;
 			rcestate->es_param_exec_vals[i].isnull =
